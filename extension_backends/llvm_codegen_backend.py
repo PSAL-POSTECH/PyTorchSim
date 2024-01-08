@@ -273,25 +273,25 @@ class LoopLevel:
         def ctx():
             idx_var = f"%loop_idx{loop_index}"
             loop_var = f"%loop{loop_index}"
-            loop_var2 = f"%loop.inc{loop_index}"
+            loop_var2 = f"{loop_var}.ph"
             loop_var3 = f"%inc{loop_index}"
             cmp_var = f"%cmp{loop_index}"
             line.writeline(f"store {self.INDEX_TYPE} 0, ptr {idx_var}, align {self.INDEX_SIZE}")
             line.writeline(f"br label %for{loop_index}")
 
-            line.writeline(f"\nfor{loop_index}:")
-            line.writeline(f"{loop_var} = load {self.INDEX_TYPE}, ptr {idx_var}, align {self.INDEX_SIZE}")
-            line.writeline(f"{cmp_var} = icmp slt {self.INDEX_TYPE} {loop_var}, {self.size}")
-            line.writeline(f"br i1 {cmp_var}, label %for.body{loop_index}, label %for.end{loop_index}")
+            line.writeline(f"\nmiddle.block{loop_index}:")
+            line.writeline(f"{cmp_var} = icmp eq {self.INDEX_TYPE} %n.vec, {self.size}") # TODO: n.vec -> variable
+            line.writeline(f"br i1 {cmp_var}, label %for.end{loop_index}, label %for.body.preheader{loop_index}")
+            line.writeline(f"\nfor.body.preheader{loop_index}:")
+            line.writeline(f"{loop_var2} = phi {self.INDEX_TYPE} [0, %entry], [%n.vec, %middle.block{loop_index}]") # TODO: n.vec -> variable
+            line.writeline(f"br label %for.body{loop_index}")
 
             line.writeline(f"\nfor.body{loop_index}:")
+            line.writeline(f"{loop_var} = phi {self.INDEX_TYPE} [{loop_var3}, %for.body{loop_index}], [{loop_var2}, %for.body.preheader{loop_index}]")
             yield
-            line.writeline(f"br label %for.inc{loop_index}")
-            line.writeline(f"\nfor.inc{loop_index}:")
-            line.writeline(f"{loop_var2} = load {self.INDEX_TYPE}, ptr {idx_var}, align {self.INDEX_SIZE}")
-            line.writeline(f"{loop_var3} = add nsw {self.INDEX_TYPE} {loop_var2}, 1")
-            line.writeline(f"store {self.INDEX_TYPE} {loop_var3}, ptr {idx_var}, align {self.INDEX_SIZE}")
-            line.writeline(f"br label %for{loop_index}")
+            line.writeline(f"{loop_var3} = add nuw nsw {self.INDEX_TYPE} {loop_var}, 1")
+            line.writeline(f"%exitcond{loop_index} = icmp eq {self.INDEX_TYPE} {loop_var3}, {self.size}")
+            line.writeline(f"br i1 %exitcond{loop_index}, label %for.end{loop_index}, label %for.body{loop_index}")
             line.writeline(f"\nfor.end{loop_index}:")
         return ctx()
 

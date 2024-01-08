@@ -93,6 +93,13 @@ class ExtensionKernel(common.Kernel):
                 code.splice(self.reduction_suffix)
         return code
 
+    def define_kernel(self, wrapper, src_code, kernel_name):
+        if src_code in wrapper.src_to_kernel:
+            kernel_name = wrapper.src_to_kernel[src_code]
+        else:
+            wrapper.src_to_kernel[src_code] = kernel_name
+            wrapper.define_kernel(kernel_name, src_code, cuda=False)
+        
     def codegen_kernel(self, wrapper):
         arg_defs, call_args, arg_types = self.args.cpp_argdefs()
         arg_defs = ",\n".ljust(25).join(arg_defs)
@@ -115,8 +122,8 @@ class ExtensionKernel(common.Kernel):
         codecache_def.splice(code)
         if not V.graph.cpp_wrapper:
             codecache_def.writeline("''')")
-
-        wrapper.define_kernel(kernel_name, codecache_def.getvalue(), cuda=False)
+        
+        self.define_kernel(wrapper, codecache_def.getvalue(), kernel_name)
         # generate the code to call this
         wrapper.generate_kernel_call(kernel_name, call_args, cuda=False)
         print(code.getvalue())
@@ -180,9 +187,15 @@ class ExtensionScheduling(BaseScheduling):
         self._scheduling = cpp.CppScheduling(scheduler)
 
     def can_fuse_vertical(self, node1, node2):
-        return False
+        return self._can_fuse_horizontal_impl(node1, node2) and not node1.is_reduction()
 
     def can_fuse_horizontal(self, node1, node2):
+        _, (vars1, reduce1) = node1.group
+        _, (vars2, reduce2) = node2.group
+        if vars1 == vars2 and reduce1 == reduce2:
+            return True
+        if reduce1 == () and vars1 == vars2 + reduce2:
+            return True
         return False
 
     def group_fn(self, sizes):
@@ -193,8 +206,9 @@ class ExtensionScheduling(BaseScheduling):
             nodes, key=lambda x: int(x.is_reduction())
         ).group
 
+        ex_kernel = ExtensionKernel()
+        
         for node in nodes:
-            ex_kernel = ExtensionKernel()
             vars, reduction_vars = ex_kernel.set_ranges(group, reduction_group)
             with ex_kernel:
                 node.run(vars, reduction_vars)

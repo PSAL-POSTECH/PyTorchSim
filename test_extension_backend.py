@@ -52,6 +52,29 @@ def remove_build_path():
         shutil.rmtree(default_build_root, ignore_errors=True)
 
 
+class AddModule(torch.nn.Module):
+    def __init__(self):
+        super(AddModule, self).__init__()
+
+    def forward(self, a, b):
+        return a + b
+
+class MultiplyModule(torch.nn.Module):
+    def __init__(self):
+        super(MultiplyModule, self).__init__()
+
+    def forward(self, a, b):
+        return a * b
+
+class MultiplyAddModule(torch.nn.Module):
+    def __init__(self):
+        super(MultiplyAddModule, self).__init__()
+        self.add = AddModule()
+        self.multiply = MultiplyModule()
+    def forward(self, a, b, c):
+        tmp = self.multiply(a, b)
+        return self.add(tmp, c)
+
 class ExtensionBackendTests(TestCase):
     module = None
 
@@ -114,33 +137,43 @@ class ExtensionBackendTests(TestCase):
 
         self.assertFalse(self.module.custom_op_called())
         device = self.module.custom_device()
-        x = torch.empty(1000, 1000).to(device=device).fill_(1)
+        a = torch.empty(1000, 1000).to(device=device).fill_(1)
         self.assertTrue(self.module.custom_op_called())
-        y = torch.empty(1000, 1000).to(device=device).fill_(2)
-        z = torch.empty(1000).to(device=device).fill_(3)
-        ref = torch.empty(1000, 1000).fill_(3)
+        b = torch.empty(1000, 1000).to(device=device).fill_(2)
+        c = torch.empty(1000, 1000).to(device=device).fill_(3)
+        d = torch.empty(1000, 1000).to(device=device).fill_(4)
+        ref = torch.empty(1000, 1000).fill_(8)
 
-        self.assertTrue(x.device == device)
-        self.assertTrue(y.device == device)
-        self.assertTrue(z.device == device)
+        self.assertTrue(a.device == device)
+        self.assertTrue(b.device == device)
+        self.assertTrue(c.device == device)
+        self.assertTrue(d.device == device)
 
-        def fn(a, b, c):
-            return a / b + c
-        
+        def fn(a, b, c, d):
+            return vectoradd(a, b), vectoradd(c, d)
+
         def vectoradd(a, b):
             return a + b
+
+        def vectorsub(a, b):
+            return a - b
+
+        def vectormult(a, b):
+            return a * b
+
+        def vectordiv(a, b):
+            return a / b
 
         def reduce_sum(a):
             return torch.sum(a, axis=-1)
 
         metrics.reset()
-        opt_fn = torch.compile()(reduce_sum)
-        code = run_and_get_cpp_code(opt_fn, x)
+        opt_fn = torch.compile()(fn)
+        code = run_and_get_cpp_code(opt_fn, a, b, c, d)
         FileCheck().check("void kernel").check("extension_device").run(
             code
         )
-        opt_fn(x)
-        res = opt_fn(x)
+        res = opt_fn(a, b, c, d)
         self.assertEqual(ref, res.to(device="cpu"))
 
 

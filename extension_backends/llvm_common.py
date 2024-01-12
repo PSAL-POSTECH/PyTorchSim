@@ -93,9 +93,10 @@ class LLVMKernelArgs(common.KernelArgs):
         return arg_defs, call_args
 
 
-class LLVM_Kernel(common.CodeGen):
+class BaseLLVMKernel(common.CodeGen):
     newvar_prefix = "%"
     name_prefix = "body"
+    vector_prefix = "vector_body"
     suffix = ""
     overrides = None
     load_format = None
@@ -107,9 +108,11 @@ class LLVM_Kernel(common.CodeGen):
         self.args = args or common.KernelArgs()
         self.loads = IndentedBuffer()
         self.compute = IndentedBuffer()
+        self.vector_compute = IndentedBuffer()
         self.stores = IndentedBuffer()
         self.reductions_suffix = IndentedBuffer()
         self.cse = common.CSE(self.newvar_prefix, self.suffix, self.name_prefix)
+        self.vector_cse = common.CSE(self.newvar_prefix, self.suffix, self.vector_prefix)
         self.must_keep_buffers = set()
         self.store_buffer_names = set()
         # set in set_current_node
@@ -197,12 +200,23 @@ class LLVM_Kernel(common.CodeGen):
                             fx_node, ValueRanges.unknown()
                         )
 
+                    if isinstance(args[0], list):
+                        vector_args = (args[0][0], args[1][0])
+                        vector_csevar = self.vector_cse.generate(
+                            self.vector_compute,
+                            getattr(parent_handler, "vector_" + name)(*vector_args, **kwargs),  # type: ignore[has-type]
+                            bounds=buf_bounds,
+                        )
+                        vector_csevar.update_on_args(name, vector_args, kwargs)
+                        args = (args[0][1], args[1][1])
                     csevar = self.cse.generate(
                         self.compute,
                         getattr(parent_handler, name)(*args, **kwargs),  # type: ignore[has-type]
                         bounds=buf_bounds,
                     )
                     csevar.update_on_args(name, args, kwargs)
+                    if vector_csevar is not None:
+                        return [vector_csevar, csevar]
                     return csevar
 
                 return inner

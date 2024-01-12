@@ -49,6 +49,23 @@ def reduction_combine(reduction_type, var, next_value):
         raise NotImplementedError()
     raise AssertionError(reduction_type)
 
+def vector_reduction_combine(reduction_type, start_value, vector_value):
+    if reduction_type == "sum":
+        return f"tail call float @llvm.vector.reduce.fadd.nxv2f32(float %{start_value}, <vscale x 2 x float> %{vector_value})"
+    if reduction_type == "prod":
+        return f"tail call float @llvm.vector.reduce.fmul.nxv2f32(float %{start_value}, <vscale x 2 x float> %{vector_value})"
+    if reduction_type == "xor_sum":
+        raise NotImplementedError() # TODO: implement
+    if reduction_type == "any":
+        raise NotImplementedError()
+    if reduction_type in ("min", "max"):
+        raise NotImplementedError()
+    if reduction_type == "welford_reduce":
+        raise NotImplementedError()
+    if reduction_type == "welford_combine":
+        raise NotImplementedError()
+    raise AssertionError(reduction_type)
+
 class ExtensionWrapperCodegen(wrapper.WrapperCodeGen):
     def __init__(self):
         super().__init__()
@@ -57,24 +74,44 @@ class ExtensionOverrides(common.OpOverrides):
     """Map element-wise ops to LLVM IR"""
 
     @staticmethod
-    def add(self, other):
-        return f'fadd float {self}, {other}' # TODO: separate float and integer
+    def add(operand1, operand2):
+        return f'fadd float %{operand1}, %{operand2}' # TODO: separate float and integer
 
-    def sub(self, other):
-        return f'fsub float {self}, {other}'
+    @staticmethod
+    def sub(operand1, operand2):
+        return f'fsub float %{operand1}, %{operand2}'
+ 
+    @staticmethod
+    def mul(operand1, operand2):
+        return f'fmul float %{operand1}, %{operand2}'
 
-    def mul(self, operand1, operand2):
-        return f'fmul float {operand1}, {operand2}'
+    @staticmethod
+    def div(operand1, operand2):
+        return f'fdiv float %{operand1}, %{operand2}'
 
-    def div(self, operand1, operand2):
-        return f'fdiv float {operand1}, {operand2}'
+class VectorOverrides(ExtensionOverrides):
+    @staticmethod
+    def vector_add(operand1, operand2):
+        return f'fadd <vscale x 2 x float> %{operand1}, %{operand2}'
+
+    @staticmethod
+    def vector_sub(operand1, operand2):
+        return f'fsub <vscale x 2 x float> %{operand1}, %{operand2}'   
+
+    @staticmethod
+    def vector_mul(operand1, operand2):
+        return f'fmul <vscale x 2 x float> %{operand1}, %{operand2}'
+
+    @staticmethod
+    def vector_div(operand1, operand2):
+        return f'fdiv <vscale x 2 x float> %{operand1}, %{operand2}'
 
 SYMPY_TO_LLVM = {
     sympy.core.mul.Mul: "mul",
     sympy.core.add.Add: "add",
 }
 
-class ExtensionKernel(llvm_common.LLVM_Kernel):
+class LLVMKernel(llvm_common.BaseLLVMKernel):
     overrides = ExtensionOverrides
     newvar_prefix = "%"
 
@@ -90,10 +127,10 @@ class ExtensionKernel(llvm_common.LLVM_Kernel):
         self.reduction_cse = common.CSE(self.newvar_prefix, self.suffix, name_prefix="tmp_acc")
         self.index_cse = common.CSE(self.newvar_prefix, self.suffix, name_prefix="tmp_idx")
 
-    def depth_first_traverse(self, expr, buffer):
+    def depth_first_traverse(self, expr, buffer, cse):
         child_var = []
         for arg in expr.args:
-            child_var.append(self.depth_first_traverse(arg, buffer))
+            child_var.append(self.depth_first_traverse(arg, buffer, cse))
 
         while len(child_var) >= 3:
             first = child_var.pop(0)
@@ -102,7 +139,7 @@ class ExtensionKernel(llvm_common.LLVM_Kernel):
             second_prefix = "" if second.is_number else "%"
 
             line = f"{SYMPY_TO_LLVM[expr.func]} nsw i64 {first_prefix}{first}, {second_prefix}{second}"
-            var = self.index_cse.generate(buffer, line)
+            var = cse.generate(buffer, line)
             var = sympy.symbols(f"{var}")
             child_var.append(var)
 
@@ -115,7 +152,7 @@ class ExtensionKernel(llvm_common.LLVM_Kernel):
             first_prefix = "" if first.is_number else "%"
             second_prefix = "" if second.is_number else "%"
             line = f"{SYMPY_TO_LLVM[expr.func]} nsw i64 {first_prefix}{first}, {second_prefix}{second}"
-            var = self.index_cse.generate(buffer, line)
+            var = cse.generate(buffer, line)
             var = sympy.symbols(f"{var}")
             return var
         else:
@@ -123,7 +160,7 @@ class ExtensionKernel(llvm_common.LLVM_Kernel):
 
     def load(self, name: str, index: sympy.Expr):
         index = self.rename_indexing(index)
-        index = self.depth_first_traverse(index, self.loads)
+        index = self.depth_first_traverse(index, self.loads, self.index_cse)
         var = self.args.input(name)
         dtype = V.graph.get_dtype(name)
         type_name = llvm_common.DTYPE_TO_LLVM[dtype]
@@ -137,7 +174,7 @@ class ExtensionKernel(llvm_common.LLVM_Kernel):
 
     def store(self, name: str, index: sympy.Expr, value, *args, **kwargs):
         index = self.rename_indexing(index)
-        index = self.depth_first_traverse(index, self.stores)
+        index = self.depth_first_traverse(index, self.stores, self.index_cse)
         var = self.args.output(name)
         dtype = V.graph.get_dtype(name)
         type_name = llvm_common.DTYPE_TO_LLVM[dtype]
@@ -146,7 +183,9 @@ class ExtensionKernel(llvm_common.LLVM_Kernel):
         offset = self.cse.generate(self.stores, line)
         line = f"getelementptr inbounds {type_name}, ptr %{var}, i64 %{offset}"
         var = self.cse.generate(self.stores, line)
-        line = f"store {type_name} {value}, ptr %{var}, align {align}"
+        if (isinstance(value, list)):
+            value = value[1]
+        line = f"store {type_name} %{value}, ptr %{var}, align {align}"
         self.cse.generate(self.stores, line, assignment = False)
 
     def reduction(self, dtype, src_dtype, reduction_type, value):
@@ -163,7 +202,9 @@ class ExtensionKernel(llvm_common.LLVM_Kernel):
             align = llvm_common.DTYPE_SIZE[dtype]
             self.reduction_prefix.writeline(f"store {type_name} {reduction_init(reduction_type, dtype)}, ptr %{acc}, align {align}")
             line = f"load {type_name}, ptr %{acc}, align {align}"
-            temp = self.cse.generate(self.loads, line)
+
+            # NOTE. To keep below line be under the compute, used store buffers
+            temp = self.cse.generate(self.stores, line)
             output = self.cse.generate(self.stores, reduction_combine(reduction_type, temp, value))
             line = f"store {type_name} %{output}, ptr %{acc}, align {align}"
             self.cse.generate(self.stores, line, assignment = False)
@@ -172,7 +213,7 @@ class ExtensionKernel(llvm_common.LLVM_Kernel):
 
     def store_reduction(self, name, index, value):
         index = self.rename_indexing(index)
-        index = self.depth_first_traverse(index, self.reduction_suffix)
+        index = self.depth_first_traverse(index, self.reduction_suffix, self.index_cse)
         var = self.args.output(name)
         dtype = V.graph.get_dtype(name)
         type_name = llvm_common.DTYPE_TO_LLVM[dtype]
@@ -224,6 +265,12 @@ class ExtensionKernel(llvm_common.LLVM_Kernel):
             # Loop body part
             code.splice(self.codegen_loops())
 
+        # Add llvm intrinsics definition
+        code.writeline(f'declare i64 @llvm.vscale.i64() #2')
+        code.writeline(f'declare i32 @llvm.vscale.i32() #2')
+        code.writeline(f'declare i64 @llvm.umax.i64(i64, i64) #1')
+        code.writeline(f'declare i32 @llvm.umax.i32(i32, i32) #1')
+
         codecache_def = IndentedBuffer()
         if not V.graph.cpp_wrapper:
             codecache_def.writeline("async_compile.cpp('''")
@@ -246,53 +293,238 @@ class ExtensionKernel(llvm_common.LLVM_Kernel):
         else:
             self.call_ranges = tuple(lengths) + tuple(reduction_lengths)
             self.ranges = [self.rename_indexing(x) for x in self.call_ranges]
-            self.itervars = [sympy.Symbol(f"loop{n}") for n in range(len(self.ranges))]
+            self.itervars = [sympy.Symbol(f"index{n}") for n in range(len(self.ranges))]
             self.reduction_depth = len(lengths)
         return (
             self.itervars[: self.reduction_depth],
             self.itervars[self.reduction_depth :],
         )
 
+class VectorizedLLVMKernel(LLVMKernel):
+    overrides = VectorOverrides
+
+    def __init__(self):
+        super().__init__()
+        self.vector_loads = IndentedBuffer()
+        self.vector_stores = IndentedBuffer()
+        self.vector_index_cse = common.CSE(self.newvar_prefix, self.suffix, name_prefix="tmp_vec_idx")
+        self.vector_cse = common.CSE(self.newvar_prefix, self.suffix, name_prefix="vector_body")
+        self.vector_reduction_cse = common.CSE(self.newvar_prefix, self.suffix, name_prefix="tmp_acc")
+
+    def load(self, name: str, index: sympy.Expr):
+        scalar_var = super().load(name, index)
+        index = self.rename_indexing(index)
+        index = index.replace(sympy.symbols(f"index{len(self.itervars)-1}"), sympy.symbols(f"vector.index{len(self.itervars)-1}"))
+        index = self.depth_first_traverse(index, self.vector_loads, self.vector_index_cse)
+        var = self.args.input(name)
+        dtype = V.graph.get_dtype(name)
+        type_name = llvm_common.DTYPE_TO_LLVM[dtype]
+        align = llvm_common.DTYPE_SIZE[dtype]
+        line = f"mul nsw i64 %{index}, {align}"
+        offset = self.vector_cse.generate(self.vector_loads, line)
+        line = f"getelementptr inbounds {type_name}, ptr %{var}, i64 %{offset}"
+        var = self.vector_cse.generate(self.vector_loads, line)
+
+        # NOTE. Since clang 16.0 always used this constant, 2 is hard coded
+        line = f"load <vscale x 2 x {type_name}>, ptr %{var}, align {align}"
+        return [self.vector_cse.generate(self.vector_loads, line), scalar_var]
+
+    def store(self, name: str, index: sympy.Expr, value, *args, **kwargs):
+        super().store(name, index, value, *args, **kwargs)
+        index = self.rename_indexing(index)
+        index = index.replace(sympy.symbols(f"index{len(self.itervars)-1}"), sympy.symbols(f"vector.index{len(self.itervars)-1}"))
+        index = self.depth_first_traverse(index, self.vector_stores, self.vector_index_cse)
+        var = self.args.output(name)
+        dtype = V.graph.get_dtype(name)
+        type_name = llvm_common.DTYPE_TO_LLVM[dtype]
+        align = llvm_common.DTYPE_SIZE[dtype]
+        line = f"mul nsw i64 %{index}, {align}"
+        offset = self.vector_cse.generate(self.vector_stores, line)
+        line = f"getelementptr inbounds {type_name}, ptr %{var}, i64 %{offset}"
+        var = self.vector_cse.generate(self.vector_stores, line)
+
+        # NOTE. Since clang 16.0 always used this constant, 2 is hard coded
+        if (isinstance(value, list)):
+            value = value[0]
+        line = f"store <vscale x 2 x {type_name}> %{value}, ptr %{var}, align {align}"
+        self.vector_cse.generate(self.vector_stores, line, assignment = False)
+
+    def reduction(self, dtype, src_dtype, reduction_type, value):
+        super().reduction(dtype, src_dtype, reduction_type, value[1])
+        argmax_or_argmin = reduction_type in {"argmax", "argmin"}
+        if argmax_or_argmin:
+            raise NotImplementedError() #TODO: argmin, argmax
+        else:
+            reduction_key = src_dtype, reduction_type, value
+            acc = self.vector_reduction_cse.generate(
+                self.loads, f"reduction {reduction_key}", write=False
+            )
+            type_name = llvm_common.DTYPE_TO_LLVM[dtype]
+            align = llvm_common.DTYPE_SIZE[dtype]
+            line = f"load {type_name}, ptr %{acc}, align {align}"
+
+            # NOTE. To keep lines below under the compute lines, used store buffers
+            temp = self.vector_cse.generate(self.vector_stores, line)
+            output = self.vector_cse.generate(self.vector_stores, vector_reduction_combine(reduction_type, temp, value[0]))
+            line = f"store {type_name} %{output}, ptr %{acc}, align {align}"
+            self.vector_cse.generate(self.vector_stores, line, assignment = False)
+        return acc
+
+    def codegen_loops(self):
+        code = common.BracesBuffer()
+        # Loop arguments
+        loops_args = [[var, size, idx] for idx, (var, size) in enumerate(zip(self.itervars, self.ranges))]
+
+        # Loop initialize
+        loops_list = [LoopLevel(*args) for args in loops_args[:-1]]
+        vector_loops_list = [VectorLoopLevel(*loops_args[-1])]
+        scalar_loop = [LoopLevel(loops_args[-1][0], loops_args[-1][1], loops_args[-1][2], f"%scalar.index.ph")]
+
+        loops = LoopNest(loops_list[: self.reduction_depth])
+        reductions = LoopNest(loops_list[self.reduction_depth :])
+        inner_most = LoopNest(vector_loops_list)
+        inner_most_scalar = LoopNest(scalar_loop)
+
+        reductions.mark_reduction(self.reduction_vars)
+
+        with contextlib.ExitStack() as stack:
+            if self.reduction_vars:
+                reduction_alloc(code, stack, self.reduction_vars)
+            loops.codegen(code, stack)
+            code.splice(self.reduction_prefix)
+            with contextlib.ExitStack() as stack:
+                reductions.codegen(code, stack)
+                with contextlib.ExitStack() as stack_inner:
+                    inner_most.codegen(code,stack_inner)
+                    code.splice(self.vector_loads)
+                    code.splice(self.vector_compute)
+                    code.splice(self.vector_stores)
+
+                with contextlib.ExitStack() as stack_inner:
+                    inner_most_scalar.codegen(code, stack_inner)
+                    code.splice(self.loads)
+                    code.splice(self.compute) #FIXME. replace scalar computes!
+                    code.splice(self.stores)
+                code.splice(self.reductions_suffix)
+        code.writeline(f"ret void")
+        return code
+
 @dataclasses.dataclass
 class LoopLevel:
     var: sympy.Expr
     size: sympy.Expr
     idx: int
+    start: int = 0
     reduction_vars: Dict[str, str] = None
 
     # Todo. Type change for reduction
     INDEX_TYPE = "i64"
     INDEX_SIZE = 8
-    def init_lines(self):
-        idx_var = f"%loop_idx{self.idx}"
-        return f"{idx_var} = alloca {self.INDEX_TYPE}, align {self.INDEX_SIZE}"
 
     def lines(self, line, stride=1):
         loop_index = self.idx
         @contextlib.contextmanager
         def ctx():
-            idx_var = f"%loop_idx{loop_index}"
-            loop_var = f"%loop{loop_index}"
-            loop_var2 = f"%loop.inc{loop_index}"
-            loop_var3 = f"%inc{loop_index}"
+            entry_label = f"entry{loop_index}"
+            for_body_label = f"for.body{loop_index}"
+            for_inc_label = f"for.inc{loop_index}"
+            for_end_label = f"for.end{loop_index}"
+
+            index = f"%index{loop_index}"
+            index_next = f"%index.next{loop_index}"
             cmp_var = f"%cmp{loop_index}"
-            line.writeline(f"store {self.INDEX_TYPE} 0, ptr {idx_var}, align {self.INDEX_SIZE}")
-            line.writeline(f"br label %for{loop_index}")
 
-            line.writeline(f"\nfor{loop_index}:")
-            line.writeline(f"{loop_var} = load {self.INDEX_TYPE}, ptr {idx_var}, align {self.INDEX_SIZE}")
-            line.writeline(f"{cmp_var} = icmp slt {self.INDEX_TYPE} {loop_var}, {self.size}")
-            line.writeline(f"br i1 {cmp_var}, label %for.body{loop_index}, label %for.end{loop_index}")
+            line.writeline(f"br label %{entry_label}")
+            line.writeline(f"\n{entry_label}:")
+            line.writeline(f"br label %{for_body_label}")
 
-            line.writeline(f"\nfor.body{loop_index}:")
+            line.writeline(f"\n{for_body_label}:")
+            line.writeline(f"{index} = phi {self.INDEX_TYPE} [ {self.start}, %{entry_label} ], [ {index_next}, %{for_inc_label} ]")
             yield
-            line.writeline(f"br label %for.inc{loop_index}")
-            line.writeline(f"\nfor.inc{loop_index}:")
-            line.writeline(f"{loop_var2} = load {self.INDEX_TYPE}, ptr {idx_var}, align {self.INDEX_SIZE}")
-            line.writeline(f"{loop_var3} = add nsw {self.INDEX_TYPE} {loop_var2}, 1")
-            line.writeline(f"store {self.INDEX_TYPE} {loop_var3}, ptr {idx_var}, align {self.INDEX_SIZE}")
-            line.writeline(f"br label %for{loop_index}")
-            line.writeline(f"\nfor.end{loop_index}:")
+            line.writeline(f"br label %{for_inc_label}")
+            line.writeline(f"\n{for_inc_label}:")
+            line.writeline(f"{index_next} = add nsw {self.INDEX_TYPE} {index}, {stride}")
+            line.writeline(f"{cmp_var} = icmp eq {self.INDEX_TYPE} {index_next}, {self.size}")
+            line.writeline(f"br i1 {cmp_var}, label %{for_end_label}, label %{for_body_label}")
+
+            line.writeline(f"\n{for_end_label}:")
+        return ctx()
+
+@dataclasses.dataclass
+class VectorLoopLevel(LoopLevel):
+    var: sympy.Expr
+    size: sympy.Expr
+    idx: int
+    reduction_vars: Dict[str, str] = None
+
+    DATA_TYPE = "i32"
+    DATA_SIZE = 4
+    def lines(self, line, stride=1):
+        loop_index = self.idx
+        @contextlib.contextmanager
+        def ctx():
+            # Label definition
+            entry_label = f"vector.entry{loop_index}"
+            vector_body_label = f"vector.body{loop_index}"
+            ph_label = f"vector.ph{loop_index}"
+            middle_label = f"middle.block{loop_index}"
+            preheader_label = f"vector.for.body.preheader{loop_index}"
+            for_body_label = f"vector.for.body{loop_index}"
+            func_ret_label = f"for.end{loop_index}"
+
+            # Variable definition
+            entry_var0 = f"%entry_var.0"
+            entry_var1 = f"%entry_var.1"
+            entry_var2 = f"%entry_var.2"
+            min_iter_check = f"%min.iters.check"
+            ph_var0 = f"%ph_var.0"
+            ph_var1 = f"%ph_var.1"
+            ph_mod = f"%n_mod.vf"
+            ph_vec = f"%n.vec"
+            ph_stride0 = f"%ph_stride.0"
+            ph_stride1 = f"%ph_stride.1"
+            ph_stride2 = f"%ph_stride.2"
+            min_iter_check = f"%min.iters.check{loop_index}"
+            idx = f"%vector.index{loop_index}"
+            idx_next = f"%vector.index.next{loop_index}"
+            loop_condition = f"%vector.condition{loop_index}"
+            scalar_condition = f"%scalar.condition"
+            scalar_index_ph = f"%scalar.index.ph"
+
+            line.writeline(f"br label %{entry_label}")
+            line.writeline(f"\n{entry_label}:")
+            line.writeline(f"{entry_var0} = tail call {self.INDEX_TYPE} @llvm.vscale.{self.INDEX_TYPE}()")
+            line.writeline(f"{entry_var1} = shl nuw nsw {self.INDEX_TYPE} {entry_var0}, 2")
+            line.writeline(f"{entry_var2} = tail call {self.INDEX_TYPE} @llvm.umax.{self.INDEX_TYPE}({self.INDEX_TYPE} {entry_var1}, {self.INDEX_TYPE} 16)")
+            line.writeline(f"{min_iter_check} = icmp ugt {self.INDEX_TYPE} {entry_var2}, {self.size}")
+            line.writeline(f"br i1 {min_iter_check}, label %{preheader_label}, label %{ph_label}")
+
+            # Vector loop body part
+            line.writeline(f"\n{ph_label}:")
+            line.writeline(f"{ph_var0} = tail call {self.INDEX_TYPE} @llvm.vscale.{self.INDEX_TYPE}()")
+            line.writeline(f"{ph_var1} = shl nuw nsw {self.INDEX_TYPE} {ph_var0}, 2") # FIXME. 2 is hardcoded...
+            line.writeline(f"{ph_mod} = urem {self.INDEX_TYPE} {self.size}, {ph_var1}")
+            line.writeline(f"{ph_vec} = sub nuw nsw {self.INDEX_TYPE} {self.size}, {ph_mod}")
+            line.writeline(f"{ph_stride0} = tail call {self.DATA_TYPE} @llvm.vscale.{self.DATA_TYPE}()")
+            line.writeline(f"{ph_stride1} = shl nuw nsw {self.DATA_TYPE} {ph_stride0}, 1")
+            line.writeline(f"{ph_stride2} = zext {self.DATA_TYPE} {ph_stride1} to {self.INDEX_TYPE}")
+
+            line.writeline(f"br label %{vector_body_label}")
+            line.writeline(f"\n{vector_body_label}:")
+            line.writeline(f"{idx} = phi {self.INDEX_TYPE} [ 0, %{ph_label} ], [ {idx_next}, %{vector_body_label} ]")
+            yield
+
+            # Increment & condition check part
+            line.writeline(f"{idx_next} = add nuw {self.INDEX_TYPE} {idx}, {ph_stride2}")
+            line.writeline(f"{loop_condition} = icmp eq {self.INDEX_TYPE} {idx_next}, {ph_vec}")
+            line.writeline(f"br i1 {loop_condition}, label %{middle_label}, label %{vector_body_label}")
+
+            line.writeline(f"\n{middle_label}:")
+            line.writeline(f"{scalar_condition} = icmp eq {self.INDEX_TYPE} {ph_mod}, 0")
+            line.writeline(f"br i1 {scalar_condition}, label %{func_ret_label}, label %{preheader_label}")
+
+            line.writeline(f"\n{preheader_label}:")
+            line.writeline(f"{scalar_index_ph} = phi {self.INDEX_TYPE} [ 0, %{entry_label} ], [ {ph_vec}, %{middle_label} ]")
         return ctx()
 
 
@@ -319,7 +551,6 @@ class LoopNest:
         stride_list = []
         for loop in self.loops:
             stride_list.append(loop.size)
-            code.writeline(loop.init_lines())
         stride_list.append(1)
 
         var = 1
@@ -331,7 +562,7 @@ class LoopNest:
         for loop, stride in zip(self.loops, stride_list):
             stack.enter_context(loop.lines(code, stride=stride))
 
-class ExtensionScheduling(BaseScheduling):
+class LLVMScheduling(BaseScheduling):
     count = 0
     def __init__(self, scheduler):
         self.scheduler = scheduler
@@ -350,7 +581,7 @@ class ExtensionScheduling(BaseScheduling):
         _, (group, reduction_group) = max(
             nodes, key=lambda x: int(x.is_reduction())
         ).group
-        ex_kernel = ExtensionKernel()
+        ex_kernel = LLVMKernel()
         with ex_kernel as kernel:
             for node in nodes:
                 vars, reduction_vars = ex_kernel.set_ranges(group, reduction_group)
@@ -365,3 +596,18 @@ class ExtensionScheduling(BaseScheduling):
 
     def flush(self):
         self._scheduling.flush()
+
+class VectorizedLLVMScheduling(LLVMScheduling):
+    def codegen_nodes(self, nodes):
+        _, (group, reduction_group) = max(
+            nodes, key=lambda x: int(x.is_reduction())
+        ).group
+        ex_kernel = VectorizedLLVMKernel()
+        with ex_kernel as kernel:
+            for node in nodes:
+                vars, reduction_vars = ex_kernel.set_ranges(group, reduction_group)
+                node.run(vars, reduction_vars)
+
+        wrapper = V.graph.wrapper_code
+        ex_kernel.codegen_kernel(wrapper)
+        pass

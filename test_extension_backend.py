@@ -10,12 +10,12 @@ import torch.utils.cpp_extension
 
 try:
     from extension_backends.llvm_codegen_backend import (
-        ExtensionScheduling,
+        VectorizedLLVMScheduling,
         ExtensionWrapperCodegen,
     )
 except ImportError:
     from .extension_backends.llvm_codegen_backend import (
-        ExtensionScheduling,
+        VectorizedLLVMScheduling,
         ExtensionWrapperCodegen,
     )
 
@@ -125,10 +125,10 @@ class ExtensionBackendTests(TestCase):
         torch.utils.rename_privateuse1_backend("extension_device")
 
         register_backend_for_device(
-            "extension_device", ExtensionScheduling, ExtensionWrapperCodegen
+            "extension_device", VectorizedLLVMScheduling, ExtensionWrapperCodegen
         )
         self.assertTrue(
-            get_scheduling_for_device("extension_device") == ExtensionScheduling
+            get_scheduling_for_device("extension_device") == VectorizedLLVMScheduling
         )
         self.assertTrue(
             get_wrapper_codegen_for_device("extension_device")
@@ -152,28 +152,23 @@ class ExtensionBackendTests(TestCase):
         def fn(a, b, c, d):
             return vectoradd(a, b), vectoradd(c, d)
 
+        def fn(a, b, c):
+            return a * b + c
+        
         def vectoradd(a, b):
             return a + b
 
-        def vectorsub(a, b):
-            return a - b
-
-        def vectormult(a, b):
-            return a * b
-
-        def vectordiv(a, b):
-            return a / b
-
-        def reduce_sum(a):
-            return torch.sum(a, axis=-1)
+        def reduce_sum(a, b):
+            return torch.sum(a + b, axis=-1)
 
         metrics.reset()
-        opt_fn = torch.compile()(fn)
-        code = run_and_get_cpp_code(opt_fn, a, b, c, d)
+        opt_fn = torch.compile()(reduce_sum)
+        code = run_and_get_cpp_code(opt_fn, x, y)
         FileCheck().check("void kernel").check("extension_device").run(
             code
         )
-        res = opt_fn(a, b, c, d)
+        opt_fn(x, y)
+        res = opt_fn(x, y)
         self.assertEqual(ref, res.to(device="cpu"))
 
 

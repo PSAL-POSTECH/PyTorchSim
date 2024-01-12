@@ -187,15 +187,9 @@ class ExtensionScheduling(BaseScheduling):
         self._scheduling = cpp.CppScheduling(scheduler)
 
     def can_fuse_vertical(self, node1, node2):
-        return self._can_fuse_horizontal_impl(node1, node2) and not node1.is_reduction()
+        return False
 
     def can_fuse_horizontal(self, node1, node2):
-        _, (vars1, reduce1) = node1.group
-        _, (vars2, reduce2) = node2.group
-        if vars1 == vars2 and reduce1 == reduce2:
-            return True
-        if reduce1 == () and vars1 == vars2 + reduce2:
-            return True
         return False
 
     def group_fn(self, sizes):

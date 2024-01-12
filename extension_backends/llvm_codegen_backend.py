@@ -250,6 +250,13 @@ class LLVMKernel(llvm_common.BaseLLVMKernel):
         code.writeline(f"ret void")
         return code
 
+    def define_kernel(self, wrapper, src_code, kernel_name):
+        if src_code in wrapper.src_to_kernel:
+            kernel_name = wrapper.src_to_kernel[src_code]
+        else:
+            wrapper.src_to_kernel[src_code] = kernel_name
+            wrapper.define_kernel(kernel_name, src_code, cuda=False)
+
     def codegen_kernel(self, wrapper):
         arg_defs, call_args = self.args.llvm_argdefs()
         arg_defs = ",\n".ljust(25).join(arg_defs)
@@ -278,7 +285,7 @@ class LLVMKernel(llvm_common.BaseLLVMKernel):
         if not V.graph.cpp_wrapper:
             codecache_def.writeline("''')")
 
-        wrapper.define_kernel(kernel_name, codecache_def.getvalue(), cuda=False)
+        self.define_kernel(wrapper, codecache_def.getvalue(), kernel_name)
         # generate the code to call this
         wrapper.generate_kernel_call(kernel_name, call_args, cuda=False)
         print(code.getvalue())

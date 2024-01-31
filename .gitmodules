@@ -1,0 +1,3 @@
+[submodule "ONNXim"]
+	path = ONNXim
+	url = https://github.com/PSAL-POSTECH/ONNXim.git

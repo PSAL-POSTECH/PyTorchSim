@@ -5,6 +5,8 @@ import re
 import shlex
 import subprocess
 
+import sys
+
 import torch
 from torch._inductor.codecache import AsyncCompile, get_lock_dir, get_hash, write
 from AsmParser.riscv_parser import riscv_parser
@@ -16,13 +18,16 @@ TORCHSIM_DUMP_PATH = os.environ.get('TORCHSIM_DUMP_PATH',
 TORCHSIM_DUMP_FILE = int(os.environ.get('TORCHSIM_DUMP_FILE', default="True") == "True")
 TORCHSIM_LLVM_PATH = os.environ.get('TORCHSIM_LLVM_PATH', default="/usr/bin")
 TORCHSIM_CUSTOM_PASS_PATH = os.environ.get('TORCHSIM_CUSTOM_PASS_PATH', default="./GemminiLowerPass/build")
+TORCHSIM_DIR = os.environ.get('TORCHSIM_DIR', default='/workspace/TorchSim')
+TORCHSIM_ONNXIM_CONFIG = os.environ.get('TORCHSIM_CONFIG', default='configs/systolic_ws_8x8_c1_simple_noc.json')
 
 GEM5_DUMP_PATH = os.environ.get('GEM5_DUMP_PATH',
-                                default = f"{TORCHSIM_DUMP_PATH}/../gem5/")
+                                default = f"{TORCHSIM_DUMP_PATH}../gem5")
 GEM5_PATH = os.environ.get('GEM5_PATH',
-                           default = f"{GEM5_DUMP_PATH}/gem5/build/RISCV/gem5.opt")
+                           default = f"{GEM5_DUMP_PATH}/build/RISCV/gem5.opt")
 GEM5_SCRIPT_PATH = os.environ.get('GEM5_SCRIPT_PATH',
-                                  default = f"{GEM5_DUMP_PATH}/gem5_script/script.py")
+                                  default = f"/workspace/gem5/configs/learning_gem5/part1/script.py")
+                                #   default = f"{GEM5_DUMP_PATH}/gem5_script/script.py")
 # this will be removed
 PREMADE_BINARY_PATH = "/test/test.o"
 
@@ -106,6 +111,10 @@ class LLVMCodeCache:
         write_path = os.path.join(TORCHSIM_DUMP_PATH, "tmp", hash_prefix(get_hash(source_code)))
         key, input_path = write(source_code, "ll", specified_dir=write_path)
         output_path = input_path[:-2] + "s"
+        
+        result_path = os.path.join(TORCHSIM_DUMP_PATH, "tmp", hash_prefix(key))
+        assembly_path = os.path.join(result_path, f'{key}.s')
+        binary_path = os.path.join(result_path, f'out.o')
 
         cmds = llvm_compile_command(input_path, output_path)
         opt_cmd = shlex.split(cmds[0])
@@ -128,12 +137,21 @@ class LLVMCodeCache:
                                                loop_info=loop_info,
                                                load_tile_info=load_tile_info,
                                                store_tile_info=store_tile_info)
+                ticks = compile_and_simulate(assembly_path, binary_path, "clang")
                 if TORCHSIM_DUMP_FILE:
                     tile_graph_generator.dump_basic_block_graph(os.path.join(write_path, "basic_block.onnx"))
                 tile_graph_generator.cycle_analysis(name=os.path.join(write_path, "tile_graph"))
             else:
                 pass
         return key
+
+def get_onnxim_command(model_path):
+    base_dir = os.path.join(TORCHSIM_DIR, "ONNXim")
+    bin = os.path.join(base_dir, "build/bin/Simulator")
+    config = os.path.join(base_dir, TORCHSIM_ONNXIM_CONFIG)
+    model_list = os.path.join(base_dir, "models_list.json") # TODO: file format will be changed
+    cmd = f"{bin} --config {config} --model {model_path} --models_list {model_list}"
+    return cmd.strip()
 
 class CustomAsyncCompile(AsyncCompile):
     def __init__(self):
@@ -164,7 +182,7 @@ class CustomAsyncCompile(AsyncCompile):
                 print(f'{assembly_path} not found.')
             except Exception as e:
                 print(f"Error while reading.")
-
-            compile_and_simulate(assembly_path, result_path+"/out.o", "clang")     
-
+                   
+            cmd = get_onnxim_command(result_path)
+            subprocess.check_call(shlex.split(cmd))
         return dummy_simulator

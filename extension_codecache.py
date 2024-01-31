@@ -18,7 +18,7 @@ TORCHSIM_LLVM_PATH = os.environ.get('TORCHSIM_LLVM_PATH', default="/usr/bin")
 TORCHSIM_CUSTOM_PASS_PATH = os.environ.get('TORCHSIM_CUSTOM_PASS_PATH', default="./GemminiLowerPass/build")
 
 GEM5_DUMP_PATH = os.environ.get('GEM5_DUMP_PATH',
-                                default = f"/workspace/gem5/")
+                                default = f"{TORCHSIM_DUMP_PATH}/../gem5/")
 GEM5_PATH = os.environ.get('GEM5_PATH',
                            default = f"{GEM5_DUMP_PATH}/gem5/build/RISCV/gem5.opt")
 GEM5_SCRIPT_PATH = os.environ.get('GEM5_SCRIPT_PATH',

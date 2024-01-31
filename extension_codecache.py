@@ -22,7 +22,7 @@ TORCHSIM_DIR = os.environ.get('TORCHSIM_DIR', default='/workspace/TorchSim')
 TORCHSIM_ONNXIM_CONFIG = os.environ.get('TORCHSIM_CONFIG', default='configs/systolic_ws_8x8_c1_simple_noc.json')
 
 GEM5_DUMP_PATH = os.environ.get('GEM5_DUMP_PATH',
-                                default = f"{TORCHSIM_DUMP_PATH}../gem5")
+                                default = f"{TORCHSIM_DUMP_PATH}/../gem5/")
 GEM5_PATH = os.environ.get('GEM5_PATH',
                            default = f"{GEM5_DUMP_PATH}/build/RISCV/gem5.opt")
 GEM5_SCRIPT_PATH = os.environ.get('GEM5_SCRIPT_PATH',
@@ -114,7 +114,7 @@ class LLVMCodeCache:
         
         result_path = os.path.join(TORCHSIM_DUMP_PATH, "tmp", hash_prefix(key))
         assembly_path = os.path.join(result_path, f'{key}.s')
-        binary_path = os.path.join(result_path, f'out.o')
+        binary_path = os.path.join(result_path, f'{key}.o')
 
         cmds = llvm_compile_command(input_path, output_path)
         opt_cmd = shlex.split(cmds[0])

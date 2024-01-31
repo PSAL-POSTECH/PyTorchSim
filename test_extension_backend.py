@@ -134,7 +134,7 @@ class ExtensionBackendTests(TestCase):
             return torch.sum(a + b, axis=-1)
 
         metrics.reset()
-        opt_fn = torch.compile()(reduce_sum)
+        opt_fn = torch.compile()(vectoradd)
         code = run_and_get_cpp_code(opt_fn, x, y)
         FileCheck().check("void kernel").check("extension_device").run(
             code

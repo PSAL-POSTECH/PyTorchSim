@@ -5,10 +5,18 @@ import re
 import shlex
 import subprocess
 
+import sys
+import subprocess
+
 import torch
 from torch._inductor.codecache import AsyncCompile, get_lock_dir, get_hash, write
 from AsmParser.riscv_parser import riscv_parser
 from extension_backends.llvm_common import LLVMKernelArgs
+
+GEM5_PATH = "/workspace/gem5/build/RISCV/gem5.opt"
+GEM5_SCRIPT_PATH = "gem5_script/script.py"
+# this will be removed
+PREMADE_BINARY_PATH = "/test/test.o"
 
 LOCK_TIMEOUT = 600
 TORCHSIM_DUMP_PATH = os.environ.get('TORCHSIM_DUMP_PATH',
@@ -16,6 +24,33 @@ TORCHSIM_DUMP_PATH = os.environ.get('TORCHSIM_DUMP_PATH',
 TORCHSIM_DUMP_FILE = int(os.environ.get('TORCHSIM_DUMP_FILE', default="True") == "True")
 TORCHSIM_LLVM_PATH = os.environ.get('TORCHSIM_LLVM_PATH', default="/usr/bin")
 TORCHSIM_CUSTOM_PASS_PATH = os.environ.get('TORCHSIM_CUSTOM_PASS_PATH', default="./GemminiLowerPass/build")
+
+def compile_and_simulate(asm_file_path, output_binary_path, compiler_path):
+    print(f"Compling... {compiler_path} {asm_file_path} -o {output_binary_path}...\n")
+    try:
+        compile_cmd = [compiler_path, "--target=riscv64", "-march=rv64gcv", "-o2", asm_file_path, "-nostdlib", "-o", output_binary_path]
+        subprocess.run(compile_cmd, check=True)
+        print(f"Compiled success!!! {asm_file_path} to {output_binary_path}\n")
+    except subprocess.CalledProcessError as e:
+        print(f"Failed to compile {asm_file_path} to {output_binary_path}")
+        print(e)
+        sys.exit(1)
+
+    print(f"Running Gem5...\n")
+    try:
+        if PREMADE_BINARY_PATH is not None:
+            gem5_cmd = [GEM5_PATH, GEM5_SCRIPT_PATH, PREMADE_BINARY_PATH]
+        else:
+            gem5_cmd = [GEM5_PATH, GEM5_SCRIPT_PATH, output_binary_path]
+
+        output = subprocess.check_output(gem5_cmd)
+        lines = output.decode('utf-8').split('\n')
+        ticks = int(lines[-2] if lines[-1] == '' else lines[-1])
+        print(f"Gem5 success!!! with {ticks} ticks")
+    except subprocess.CalledProcessError as e:
+        print(f"Gem5 Error! {gem5_cmd}")
+        print(e)
+        sys.exit(1)
 
 def hash_prefix(hash_value):
     return hash_value[1:5]
@@ -133,4 +168,7 @@ class CustomAsyncCompile(AsyncCompile):
                 print(f'{assembly_path} not found.')
             except Exception as e:
                 print(f"Error while reading.")
+
+            compile_and_simulate(assembly_path, result_path+"/out.o", "clang")     
+
         return dummy_simulator

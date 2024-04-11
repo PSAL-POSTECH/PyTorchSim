@@ -1,7 +1,7 @@
 from typing import List, Optional, cast
 
-from extension_backends.llvm_template import LLVMTemplate
-from extension_backends.llvm_template import LLVMTemplateKernel
+from PyTorchSimFrontend.llvm_template import LLVMTemplate
+from PyTorchSimFrontend.llvm_template import LLVMTemplateKernel
 from torch._inductor.ir import Buffer
 from torch._inductor.ir import IRNode
 

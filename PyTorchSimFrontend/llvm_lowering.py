@@ -1,7 +1,7 @@
 import torch
 from torch._inductor.lowering import lowerings
 from torch._inductor.kernel.mm_common import mm_args
-from extension_backends.llvm_gemm_template import LLVMGemmTemplate
+from PyTorchSimFrontend.llvm_gemm_template import LLVMGemmTemplate
 
 aten = torch.ops.aten
 

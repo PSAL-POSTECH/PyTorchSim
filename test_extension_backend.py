@@ -12,12 +12,12 @@ import torch.utils.cpp_extension
 from torch._inductor import config
 
 try:
-    from extension_backends.llvm_codegen_backend import (
+    from PyTorchSimFrontend.llvm_codegen_backend import (
         MatrixLLVMScheduling,
         ExtensionWrapperCodegen,
     )
 except ImportError:
-    from .extension_backends.llvm_codegen_backend import (
+    from .PyTorchSimFrontend.llvm_codegen_backend import (
         MatrixLLVMScheduling,
         ExtensionWrapperCodegen,
     )
@@ -88,7 +88,7 @@ class ExtensionBackendTests(TestCase):
         remove_build_path()
         source_file_path = os.path.dirname(os.path.abspath(__file__))
         source_file = os.path.join(
-            source_file_path, "extension_backends/extension_device.cpp"
+            source_file_path, "PyTorchSimFrontend/extension_device.cpp"
         )
         cls.module = torch.utils.cpp_extension.load(
             name="extension_device",

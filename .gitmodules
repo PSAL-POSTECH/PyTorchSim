@@ -1,3 +1,12 @@
-[submodule "ONNXim"]
-	path = ONNXim
-	url = https://github.com/PSAL-POSTECH/ONNXim.git
+[submodule "PyTorchSimBackend/extern/onnx"]
+	path = PyTorchSimBackend/extern/onnx
+	url = https://github.com/onnx/onnx.git
+[submodule "PyTorchSimBackend/extern/protobuf"]
+	path = PyTorchSimBackend/extern/protobuf
+	url = https://github.com/protocolbuffers/protobuf.git
+[submodule "PyTorchSimBackend/extern/booksim"]
+	path = PyTorchSimBackend/extern/booksim
+	url = https://github.com/PSAL-POSTECH/booksim.git
+[submodule "PyTorchSimBackend/extern/torch2timeloop"]
+        path = PyTorchSimBackend/extern/torch2timeloop
+        url = https://github.com/Accelergy-Project/pytorch2timeloop-converter.git

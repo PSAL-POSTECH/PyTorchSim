@@ -9,8 +9,7 @@ make -j
 cd ../..
 
 # checkout to TorchSim branch
-cd ONNXim
-git checkout TorchSim
+cd PyTorchSimBackend
 git submodule update --recursive --init
 
 # ONNXim build

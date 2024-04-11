@@ -1,0 +1,43 @@
+#pragma once
+
+#include <nlohmann/json.hpp>
+#include <string>
+
+using json = nlohmann::json;
+
+enum class DramType { SIMPLE, RAMULATOR };
+
+enum class IcntType { SIMPLE, BOOKSIM2 };
+
+struct SimulationConfig {
+  /* Core config */
+  uint32_t num_cores;
+  uint32_t core_freq;
+
+  /* DRAM config */
+  DramType dram_type;
+  uint32_t dram_freq;
+  uint32_t dram_channels;
+  uint32_t dram_req_size;
+  uint32_t dram_latency;
+  uint32_t dram_print_interval;
+  std::string dram_config_path;
+
+  /* ICNT config */
+  IcntType icnt_type;
+  std::string icnt_config_path;
+  uint32_t icnt_freq;
+  uint32_t icnt_latency;
+
+  /* Sheduler config */
+  std::string scheduler_type;
+
+  /* Other configs */
+  uint32_t precision;
+  std::string layout;
+  std::map<uint32_t, std::vector<uint32_t>> partiton_map;
+
+  uint64_t align_address(uint64_t addr) {
+    return addr - (addr % dram_req_size);
+  }
+};

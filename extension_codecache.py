@@ -10,8 +10,8 @@ import functools
 import torch
 from torch._inductor.codecache import AsyncCompile, get_lock_dir, get_hash, write
 from AsmParser.riscv_parser import riscv_parser
-from extension_backends.llvm_common import LLVMKernelArgs
-from extension_backends.llvm_caller_codegen import LLVMKernelCallerCodeGen
+from PyTorchSimFrontend.llvm_common import LLVMKernelArgs
+from PyTorchSimFrontend.llvm_caller_codegen import LLVMKernelCallerCodeGen
 from Simulator.simulator import FunctionalSimulator, CycleSimulator
 
 LOCK_TIMEOUT = 600

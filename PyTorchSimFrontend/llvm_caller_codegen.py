@@ -6,7 +6,7 @@ from torch._inductor.utils import IndentedBuffer
 from torch._inductor.codegen import cpp
 from torch._inductor.codecache import write_atomic
 
-from extension_backends.llvm_common import LLVMKernelArgs
+from PyTorchSimFrontend.llvm_common import LLVMKernelArgs
 
 class LLVMKernelCallerCodeGen():
     """

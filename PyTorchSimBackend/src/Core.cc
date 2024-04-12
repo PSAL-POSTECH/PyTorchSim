@@ -98,7 +98,12 @@ void Core::cycle() {
         issued = true;
         break;
       case Opcode::COMP:
-        _ex_inst_queue.push(std::move(inst));
+        if (_compute_pipeline.empty())
+          inst->finish_cycle = _core_cycle + inst->get_compute_cycle();
+        else
+          inst->finish_cycle = _compute_pipeline.back()->finish_cycle + inst->get_compute_cycle();
+
+        _compute_pipeline.push(std::move(inst));
         issued = true;
         break;
       default:
@@ -127,7 +132,6 @@ bool Core::running() {
   running = running || _waiting_write_reqs != 0;
   running = running || !_ld_inst_queue.empty();
   running = running || !_st_inst_queue.empty();
-  running = running || !_ex_inst_queue.empty();
   return running;
 }
 

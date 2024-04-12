@@ -46,13 +46,10 @@ class Core {
   cycle_type _stat_tma_cycle;
   cycle_type _stat_issued_cycle;
   cycle_type _compute_memory_stall_cycle;
-  cycle_type _load_memory_cycle;
-  cycle_type _store_memory_cycle;
 
   std::deque<std::unique_ptr<Tile>> _tiles;
   std::queue<std::unique_ptr<Tile>> _finished_tiles;
 
-  std::queue<std::unique_ptr<Instruction>> _ex_inst_queue;
   std::queue<std::unique_ptr<Instruction>> _compute_pipeline;
   std::queue<std::unique_ptr<Instruction>> _ld_inst_queue;
   std::queue<std::unique_ptr<Instruction>> _st_inst_queue;

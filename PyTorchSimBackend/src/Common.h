@@ -37,12 +37,13 @@ typedef struct {
     INITIALIZED,
     RUNNING,
     FINISH,
-    BAR,
     EMPTY,
   };
   Status status = Status::EMPTY;
   uint32_t required_sram_size;
+  size_t num_parent_tiles = 0;
   std::deque<std::unique_ptr<Instruction>> instructions;
+  std::vector<size_t*> child_tiles_counter;
 } Tile;
 
 uint32_t generate_id();

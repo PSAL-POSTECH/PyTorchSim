@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "SimulationConfig.h"
+#include "Instruction.h"
 #include "helper/HelperFunctions.h"
 #include "nlohmann/json.hpp"
 #include "onnx/defs/schema.h"
@@ -41,30 +42,6 @@ typedef struct {
   cycle_type dram_finish_cycle;
   int buffer_id;
 } MemoryAccess;
-
-enum class Opcode {
-  MOVIN,
-  MOVOUT,
-  MOVOUT_POOL,
-  COMP,
-  BAR
-};
-
-typedef struct {
-  Opcode opcode;
-  cycle_type start_cycle;
-  cycle_type finish_cycle;
-  std::string id;
-  uint32_t compute_size;
-  std::vector<addr_type> src_addrs;
-  int spad_id;
-  int accum_spad_id;
-  uint32_t operand_id  = 0;
-  addr_type base_addr;
-
-  bool src_from_accum = false;
-  bool zero_init = false;
-} Instruction;
 
 typedef struct {
   enum class Status {

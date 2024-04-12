@@ -13,6 +13,7 @@ struct SimulationConfig {
   /* Core config */
   uint32_t num_cores;
   uint32_t core_freq;
+  uint32_t sram_size;
 
   /* DRAM config */
   DramType dram_type;

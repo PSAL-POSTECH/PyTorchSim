@@ -13,7 +13,7 @@ class Scheduler {
   public:
     Scheduler(SimulationConfig config, const cycle_type* core_cycle, const uint64_t* core_time);
     virtual void schedule_model(std::unique_ptr<Model> model, uint32_t sampe_size);
-    virtual std::unique_ptr<Tile> get_tile(uint32_t core_id);
+    virtual std::unique_ptr<Tile>& get_tile(uint32_t core_id);
     virtual void finish_tile(uint32_t core_id);
     virtual bool empty();
 

@@ -1,7 +1,7 @@
 {
   "num_cores" : 4,  
   "core_freq" : 1000,
-  "spad_size" : 65536,
+  "sram_size" : 65536,
 
   "dram_type" : "ramulator",
   "dram_freq" : 877,

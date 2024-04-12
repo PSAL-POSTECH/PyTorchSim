@@ -4,10 +4,6 @@ uint32_t generate_id() {
   static uint32_t id_counter{0};
   return id_counter++;
 }
-uint32_t generate_mem_access_id() {
-  static uint32_t id_counter{0};
-  return id_counter++;
-}
 
 SimulationConfig initialize_config(json config) {
   SimulationConfig parsed_config;
@@ -15,6 +11,7 @@ SimulationConfig initialize_config(json config) {
   /* Core configs */
   parsed_config.num_cores = config["num_cores"];
   parsed_config.core_freq = config["core_freq"];
+  parsed_config.sram_size = config["sram_size"];
 
   /* DRAM config */
   if ((std::string)config["dram_type"] == "simple")
@@ -50,22 +47,5 @@ SimulationConfig initialize_config(json config) {
     parsed_config.icnt_config_path = config["icnt_config_path"];
 
   parsed_config.scheduler_type = config["scheduler"];
-  parsed_config.precision = config["precision"];
-  parsed_config.layout = config["layout"];
-
-  if (config.contains("partition")) {
-    for (int i=0; i<parsed_config.num_cores; i++) {
-      std::string core_partition = "core_" + std::to_string(i);
-      uint32_t partition_id = uint32_t(config["partition"][core_partition]);
-      parsed_config.partiton_map[partition_id].push_back(i);
-      spdlog::info("CPU {}: Partition {}", i, partition_id);
-    }
-  } else {
-    /* Default: all partition 0 */
-    for (int i=0; i<parsed_config.num_cores; i++) {
-      parsed_config.partiton_map[0].push_back(i);
-      spdlog::info("CPU {}: Partition {}", i, 0);
-    }
-  }
   return parsed_config;
 }

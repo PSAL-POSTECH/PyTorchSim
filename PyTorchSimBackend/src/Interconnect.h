@@ -1,6 +1,6 @@
 #ifndef INTERCONNECT_H
 #define INTERCONNECT_H
-#include "Common.h"
+#include "TMA.h"
 #include "booksim2/Interconnect.hpp"
 #include "helper/HelperFunctions.h"
 #include <cmath>

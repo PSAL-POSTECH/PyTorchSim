@@ -19,13 +19,17 @@ typedef uint64_t cycle_type;
 class Instruction {
  public:
   Instruction(Opcode opcode, cycle_type compute_cycle, size_t num_parents, addr_type dram_addr,
-              std::vector<size_t> tile_size, std::vector<size_t> tile_stride)
-    : opcode(opcode), compute_cycle(compute_cycle), ready_counter(num_parents), dram_addr(dram_addr),
-      tile_size(tile_size), tile_stride(tile_stride) {}
-  
+              std::vector<size_t> tile_size, std::vector<size_t> tile_stride);
   void finish_instruction();
   void add_child_ready_counter(size_t* counter);
   bool check_ready() { return ready_counter == 0; }
+  const Opcode get_opcode() { return opcode; }
+  bool is_dma_read() { return opcode == Opcode::MOVIN; }
+  bool is_dma_write() { return opcode == Opcode::MOVOUT; }
+  bool is_ready() { return ready_counter == 0; }
+  size_t get_tile_numel() { return _tile_numel; }
+  size_t get_precision() { return _precision; }
+  std::vector<size_t>& get_tile_size() { return tile_size; }
   cycle_type get_compute_cycle() { return compute_cycle; }
   // lamda function to get the dram address
   addr_type get_dram_address(int row, int col) {
@@ -44,5 +48,7 @@ class Instruction {
   std::vector<size_t*> child_ready_counter;
   std::vector<size_t> tile_size;
   std::vector<size_t> tile_stride;
+  size_t _tile_numel;
+  size_t _precision;
   addr_type dram_addr;
 };

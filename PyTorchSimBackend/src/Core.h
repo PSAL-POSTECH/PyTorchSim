@@ -7,16 +7,19 @@
 #include "Dram.h"
 #include "SimulationConfig.h"
 #include "helper/HelperFunctions.h"
+#include "TMA.h"
 
 class Core {
  public:
   Core(uint32_t id, SimulationConfig config);
   ~Core() = default;
   bool running();
-  bool can_issue(bool is_accum_tile=false);
+  bool can_issue(std::unique_ptr<Tile>& op);
   void issue(std::unique_ptr<Tile> tile);
   std::unique_ptr<Tile> pop_finished_tile();
   void cycle();
+  void compute_cycle();
+  void dma_cycle();
   bool has_memory_request();
   void pop_memory_request();
   MemoryAccess* top_memory_request() { return _request_queue.front(); }
@@ -30,13 +33,18 @@ class Core {
   /* Core id & config file */
   const uint32_t _id;   
   const SimulationConfig _config;
+  size_t _sram_size;
+  size_t _remain_sram_size;
+
+  /* TMA Unit */
+  TMA _tma;
 
   /* cycle */
   cycle_type _core_cycle;
-  cycle_type _compute_end_cycle;
   cycle_type _stat_compute_cycle;
   cycle_type _stat_idle_cycle;
-  cycle_type _stat_memory_cycle;
+  cycle_type _stat_tma_cycle;
+  cycle_type _stat_issued_cycle;
   cycle_type _compute_memory_stall_cycle;
   cycle_type _load_memory_cycle;
   cycle_type _store_memory_cycle;

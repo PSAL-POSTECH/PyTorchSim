@@ -58,8 +58,8 @@ void Simulator::core_cycle() {
       _scheduler->finish_tile(core_id);
     }
     // Issue new tile to core
-    if (!_scheduler->empty() & _cores[core_id]->can_issue()) {
-      std::unique_ptr<Tile> tile = _scheduler->get_tile(core_id);
+    std::unique_ptr<Tile>& tile = _scheduler->get_tile(core_id);
+    if (!_scheduler->empty() & _cores[core_id]->can_issue(tile)) {
       if (tile->status == Tile::Status::INITIALIZED) {
         _cores[core_id]->issue(std::move(tile));
       }

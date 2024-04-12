@@ -30,20 +30,6 @@ typedef uint64_t addr_type;
 typedef uint64_t cycle_type;
 
 typedef struct {
-  uint32_t id;
-  addr_type dram_address;
-  addr_type spad_address;
-  uint64_t size;
-  bool write;
-  bool request;
-  uint32_t core_id;
-  cycle_type start_cycle;
-  cycle_type dram_enter_cycle;
-  cycle_type dram_finish_cycle;
-  int buffer_id;
-} MemoryAccess;
-
-typedef struct {
   enum class Status {
     INITIALIZED,
     RUNNING,
@@ -52,10 +38,9 @@ typedef struct {
     EMPTY,
   };
   Status status = Status::EMPTY;
-
+  uint32_t required_sram_size;
   std::deque<std::unique_ptr<Instruction>> instructions;
 } Tile;
 
 uint32_t generate_id();
-uint32_t generate_mem_access_id();
 SimulationConfig initialize_config(json config);

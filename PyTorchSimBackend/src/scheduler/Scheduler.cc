@@ -17,7 +17,7 @@ void Scheduler::schedule_model(std::unique_ptr<Model> model,
 
 
 /* TODO: FIXME */ 
-std::unique_ptr<Tile> Scheduler::get_tile(uint32_t core_id) {
+std::unique_ptr<Tile>& Scheduler::get_tile(uint32_t core_id) {
   std::unique_ptr<Tile> tile = std::make_unique<Tile>(Tile{});
   tile->status = Tile::Status::EMPTY;
   return tile;

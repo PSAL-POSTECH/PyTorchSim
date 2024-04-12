@@ -6,6 +6,7 @@
 #include <utility>
 
 #include "Common.h"
+#include "TMA.h"
 #include "ramulator/Ramulator.hpp"
 #include "Hashing.h"
 #include "helper/HelperFunctions.h"

@@ -29,6 +29,9 @@ class Instruction {
   bool is_ready() { return ready_counter == 0; }
   size_t get_tile_numel() { return _tile_numel; }
   size_t get_precision() { return _precision; }
+  void inc_waiting_request();
+  void dec_waiting_request();
+  size_t get_waiting_request() { return _nr_waiting_request; }
   std::vector<size_t>& get_tile_size() { return tile_size; }
   cycle_type get_compute_cycle() { return compute_cycle; }
   // lamda function to get the dram address
@@ -49,6 +52,7 @@ class Instruction {
   std::vector<size_t> tile_size;
   std::vector<size_t> tile_stride;
   size_t _tile_numel;
+  size_t _nr_waiting_request=0;
   size_t _precision;
   addr_type dram_addr;
 };

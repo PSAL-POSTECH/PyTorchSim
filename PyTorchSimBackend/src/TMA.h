@@ -13,6 +13,7 @@ typedef struct {
   bool write;
   bool request;
   uint32_t core_id;
+  Instruction* owner_instruction;
   cycle_type start_cycle;
   cycle_type dram_enter_cycle;
   cycle_type dram_finish_cycle;
@@ -24,6 +25,7 @@ class TMA {
 
   void issue_tile(std::unique_ptr<Instruction> inst);
   bool is_finished() { return _finished; }
+  std::unique_ptr<Instruction>& get_current_inst() { return _current_inst; }
   MemoryAccess* get_memory_access();
   uint32_t generate_mem_access_id();
 

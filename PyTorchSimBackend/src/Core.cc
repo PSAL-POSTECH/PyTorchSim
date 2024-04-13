@@ -10,7 +10,6 @@ Core::Core(uint32_t id, SimulationConfig config)
       _stat_issued_cycle(0),
       _compute_memory_stall_cycle(0),
       _tma(config.dram_req_size) {
-  _waiting_write_reqs = 0;
   _sram_size = _config.sram_size;
   _remain_sram_size = _sram_size;
 }
@@ -38,13 +37,45 @@ std::unique_ptr<Tile> Core::pop_finished_tile() {
 void Core::compute_cycle() {
   if (!_compute_pipeline.empty()) {
     _stat_compute_cycle++;
-    if(_compute_pipeline.front()->finish_cycle <= _core_cycle)
+    if(_compute_pipeline.front()->finish_cycle <= _core_cycle) {
+      _compute_pipeline.front()->finish_instruction();
       _compute_pipeline.pop();
+    }
   }
 }
 
 void Core::dma_cycle() {
+  /* Check finished dma operation */
+  for (int i=0; i<_dma_waiting_queue.size(); i++){
+    std::unique_ptr<Instruction>& instruction = _dma_waiting_queue.at(i);
+    /* Pass not finished instruction */
+    if (instruction->get_waiting_request())
+      continue;
+
+    /* Finish DMA read instruction */
+    if (instruction->is_dma_read())
+      instruction->finish_instruction();
+
+    /* Erase the instruction in DMA waiting queue */
+    _dma_waiting_queue.erase(_dma_waiting_queue.begin() + i);
+    break;
+  }
+
   if (_tma.is_finished()) {
+    /* Finish instruction when it is DMA store */
+    if (_tma.get_current_inst() != nullptr) {
+      std::unique_ptr<Instruction> finished_inst = std::move(_tma.get_current_inst());
+      if (finished_inst->is_dma_write()) {
+        /* Only DMA write operation is finished! */
+        finished_inst->finish_instruction();
+      } else {
+        spdlog::error("[Core] TMA instruction in not valid");
+        exit(EXIT_FAILURE);
+      }
+      /*Pass to waiting queue */
+      _dma_waiting_queue.push_back(std::move(finished_inst));
+    }
+
     /* Issue new DMA operation */
     if (!_ld_inst_queue.empty()) {
       std::unique_ptr<Instruction>& inst = _ld_inst_queue.front();
@@ -129,7 +160,7 @@ bool Core::running() {
   bool running = false;
   running = running || _tiles.size() > 0;
   running = running || !_compute_pipeline.empty();
-  running = running || _waiting_write_reqs != 0;
+  running = running || !_dma_waiting_queue.empty();
   running = running || !_ld_inst_queue.empty();
   running = running || !_st_inst_queue.empty();
   return running;
@@ -142,8 +173,12 @@ void Core::pop_memory_request() {
 }
 
 void Core::push_memory_response(MemoryAccess *response) {
-  if (response->write)
-    _waiting_write_reqs--;
+  Instruction * owner_inst = response->owner_instruction;
+
+  assert(owner_inst);
+  assert(owner_inst->get_waiting_request());
+
+  owner_inst->dec_waiting_request();
   delete response;
 }
 

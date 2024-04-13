@@ -18,3 +18,12 @@ void Instruction::finish_instruction() {
 void Instruction::add_child_ready_counter(size_t* counter) {
   child_ready_counter.push_back(counter);
 }
+
+void Instruction::inc_waiting_request() {
+  _nr_waiting_request++;
+}
+
+void Instruction::dec_waiting_request() {
+  assert(_nr_waiting_request!=0);
+  _nr_waiting_request--;
+}

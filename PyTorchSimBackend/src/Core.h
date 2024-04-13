@@ -54,6 +54,7 @@ class Core {
   std::queue<std::unique_ptr<Instruction>> _ld_inst_queue;
   std::queue<std::unique_ptr<Instruction>> _st_inst_queue;
 
+  std::vector<std::unique_ptr<Instruction>> _dma_waiting_queue;
   /* Interconnect queue */
   std::queue<MemoryAccess*> _request_queue;
   std::queue<MemoryAccess*> _response_queue;

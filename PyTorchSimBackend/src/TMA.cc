@@ -22,7 +22,7 @@ MemoryAccess* TMA::get_memory_access() {
   if (_current_inst == nullptr)
     return nullptr;
 
-  if (_current_inst->get_tile_numel() == _tile_idx)
+  if (_current_inst->get_tile_numel() <= _tile_idx)
     return nullptr;
 
   addr_type addr = _current_inst->get_dram_address(_tile_idx / _tile_size_x, _tile_idx % _tile_size_x);
@@ -31,11 +31,13 @@ MemoryAccess* TMA::get_memory_access() {
     .dram_address = addr,
     .size = _dram_req_size,
     .write = _current_inst->is_dma_write(),
-    .request = true
+    .request = true,
+    .owner_instruction = _current_inst.get()
   });
 
   /* Increase tile idx */
-  _tile_idx+= _tile_idx_stride;
+  _tile_idx += _tile_idx_stride;
+  _current_inst->inc_waiting_request();
   return access;
 }
 

@@ -10,9 +10,12 @@ void Scheduler::schedule_model() {
   refresh_status();
 }
 
-std::unique_ptr<Tile>& Scheduler::get_tile() {
-  std::unique_ptr<Tile> tile = std::make_unique<Tile>(Tile{});
-  tile->status = Tile::Status::EMPTY;
+std::unique_ptr<Tile>& Scheduler::peek_tile(int core_id) {
+  return _tile_queue.front();
+}
+
+std::unique_ptr<Tile> Scheduler::get_tile(int core_id) {
+  std::unique_ptr<Tile> tile = std::make_unique<Tile>(Tile(Tile::Status::EMPTY));
   if (_tile_queue.empty()) {
     return tile;
   } else {
@@ -25,12 +28,12 @@ std::unique_ptr<Tile>& Scheduler::get_tile() {
 }
 
 void Scheduler::finish_tile(std::unique_ptr<Tile> tile) {
-  for (auto child_tile_counter : tile->child_tiles_counter) {
-    (*child_tile_counter)--;
-  }
+  tile->finish_tile();
 }
 
-bool Scheduler::empty() { return _tile_graph.empty(); }
+bool Scheduler::empty(int core_id) {
+  return _tile_graph.empty();
+}
 
 void Scheduler::refresh_status() {
   if (_tile_queue.empty()) {

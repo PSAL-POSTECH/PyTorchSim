@@ -29,7 +29,7 @@ class TMA {
   MemoryAccess* get_memory_access();
   uint32_t generate_mem_access_id();
 
-protected:
+ protected:
   std::unique_ptr<Instruction> _current_inst;
   uint32_t _dram_req_size;
   uint32_t _tile_size_x=0;

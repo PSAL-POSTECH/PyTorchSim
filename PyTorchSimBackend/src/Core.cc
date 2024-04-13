@@ -16,17 +16,16 @@ Core::Core(uint32_t id, SimulationConfig config)
 
 bool Core::can_issue(std::unique_ptr<Tile>& op) {
   /* Check SRAM is enough to run tile */
-  return op->required_sram_size + _remain_sram_size < _sram_size;
+  return op->get_required_sram_size() + _remain_sram_size < _sram_size;
 }
 
 void Core::issue(std::unique_ptr<Tile> op) {
-  _remain_sram_size += op->required_sram_size;
+  _remain_sram_size += op->get_required_sram_size();
   _tiles.push_back(std::move(op));
 }
 
 std::unique_ptr<Tile> Core::pop_finished_tile() {
-  std::unique_ptr<Tile> result = std::make_unique<Tile>(Tile{});
-  result->status = Tile::Status::EMPTY;
+  std::unique_ptr<Tile> result = std::make_unique<Tile>(Tile(Tile::Status::EMPTY));
   if (_finished_tiles.size() > 0) {
     result = std::move(_finished_tiles.front());
     _finished_tiles.pop();
@@ -114,7 +113,7 @@ void Core::cycle() {
   bool issued = false;
 
   for (int i=0; i<_tiles.size() && !issued; i++) {
-    std::unique_ptr<Instruction>& inst = _tiles[i]->instructions.front();
+    std::unique_ptr<Instruction>& inst = _tiles[i]->get_instructions().front();
     /* Skip instruction is not ready */
     if (!inst->is_ready())
       continue;
@@ -143,9 +142,9 @@ void Core::cycle() {
     }
 
     if (issued) {
-      _tiles[i]->instructions.pop_front();
-      if (_tiles[i]->instructions.empty()) {
-        _tiles[i]->status = Tile::Status::FINISH;
+      _tiles[i]->get_instructions().pop_front();
+      if (_tiles[i]->get_instructions().empty()) {
+        _tiles[i]->set_status(Tile::Status::FINISH);
         _finished_tiles.push(std::move(_tiles[i]));
         _tiles.pop_front();
       }

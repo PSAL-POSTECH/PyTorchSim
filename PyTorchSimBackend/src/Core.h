@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "Dram.h"
+#include "Tile.h"
 #include "SimulationConfig.h"
 #include "TMA.h"
 

@@ -32,19 +32,5 @@ using json = nlohmann::json;
 typedef uint64_t addr_type;
 typedef uint64_t cycle_type;
 
-typedef struct {
-  enum class Status {
-    INITIALIZED,
-    RUNNING,
-    FINISH,
-    EMPTY,
-  };
-  Status status = Status::EMPTY;
-  uint32_t required_sram_size;
-  size_t num_parent_tiles = 0;
-  std::deque<std::unique_ptr<Instruction>> instructions;
-  std::vector<size_t*> child_tiles_counter;
-} Tile;
-
 uint32_t generate_id();
 SimulationConfig initialize_config(json config);

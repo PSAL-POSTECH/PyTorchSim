@@ -27,6 +27,7 @@ class Instruction {
   bool is_dma_read() { return opcode == Opcode::MOVIN; }
   bool is_dma_write() { return opcode == Opcode::MOVOUT; }
   bool is_ready() { return ready_counter == 0; }
+  size_t* get_ready_counter_ptr() { return &ready_counter; }
   size_t get_tile_numel() { return _tile_numel; }
   size_t get_precision() { return _precision; }
   void inc_waiting_request();

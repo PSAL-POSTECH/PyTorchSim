@@ -54,14 +54,18 @@ void Simulator::run_simulator() {
 void Simulator::core_cycle() {
   for (int core_id = 0; core_id < _n_cores; core_id++) {
     std::unique_ptr<Tile> finished_tile = _cores[core_id]->pop_finished_tile();
-    if (finished_tile->status == Tile::Status::FINISH) {
+    if (finished_tile->get_status() == Tile::Status::FINISH) {
       _scheduler->finish_tile(std::move(finished_tile));
     }
+
+    if (_scheduler->empty(core_id))
+      continue;
+
     // Issue new tile to core
-    std::unique_ptr<Tile>& tile = _scheduler->get_tile();
-    if (!_scheduler->empty() & _cores[core_id]->can_issue(tile)) {
-      if (tile->status == Tile::Status::INITIALIZED) {
-        _cores[core_id]->issue(std::move(tile));
+    std::unique_ptr<Tile>& tile = _scheduler->peek_tile(core_id);
+    if (_cores[core_id]->can_issue(tile))  {
+      if (tile->get_status() == Tile::Status::INITIALIZED) {
+        _cores[core_id]->issue(std::move(_scheduler->get_tile(core_id)));
       }
     }
     _cores[core_id]->cycle();

@@ -9,7 +9,6 @@
 #include "TMA.h"
 #include "ramulator/Ramulator.hpp"
 #include "Hashing.h"
-#include "helper/HelperFunctions.h"
 
 class Dram {
  public:

@@ -6,7 +6,6 @@
 
 #include "Dram.h"
 #include "SimulationConfig.h"
-#include "helper/HelperFunctions.h"
 #include "TMA.h"
 
 class Core {

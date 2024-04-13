@@ -2,7 +2,6 @@
 #define INSTRUCTION_H
 
 #include "Common.h"
-#include "helper/HelperFunctions.h"
 
 class Model {
   public:

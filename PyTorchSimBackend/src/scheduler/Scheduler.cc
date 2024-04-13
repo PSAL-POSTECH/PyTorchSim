@@ -4,41 +4,40 @@ Scheduler::Scheduler(SimulationConfig config, const cycle_type* core_cycle, cons
     : _config(config), _core_cycle(core_cycle), _core_time(core_time) {
 }
 
-void Scheduler::schedule_model() {
+void Scheduler::schedule_graph(std::unique_ptr<TileGraph> tile_graph) {
   spdlog::info("Tile Graph {} Scheduled", "TODO"); // TODO: tile graph id
   // _tile_graph = TileGraphScheduler->get_tile_graph();
+  _tile_graph.push_back(std::move(tile_graph));
   refresh_status();
 }
 
-std::unique_ptr<Tile>& Scheduler::peek_tile(int core_id) {
-  return _tile_queue.front();
+const std::shared_ptr<Tile> Scheduler::peek_tile(int core_id) {
+  return _tile_graph.at(0)->peek_tile(core_id);
 }
 
-std::unique_ptr<Tile> Scheduler::get_tile(int core_id) {
-  std::unique_ptr<Tile> tile = std::make_unique<Tile>(Tile(Tile::Status::EMPTY));
-  if (_tile_queue.empty()) {
+std::shared_ptr<Tile> Scheduler::get_tile(int core_id) {
+  std::shared_ptr<Tile> tile = std::make_unique<Tile>(Tile(Tile::Status::EMPTY));
+  if (empty(core_id)) {
     return tile;
   } else {
-    tile = std::move(_tile_queue.front());
-    std::pop_heap(_tile_queue.begin(), _tile_queue.end(), CompareTile());
-    _tile_queue.pop_back();
+    tile = std::move(_tile_graph.at(0)->get_tile(core_id));
   }
   refresh_status();
   return tile;
 }
 
-void Scheduler::finish_tile(std::unique_ptr<Tile> tile) {
-  tile->finish_tile();
-}
-
 bool Scheduler::empty(int core_id) {
-  return _tile_graph.empty();
+  if (_tile_graph.empty())
+    return true;
+  return _tile_graph.at(0)->empty(core_id);
 }
 
 void Scheduler::refresh_status() {
-  if (_tile_queue.empty()) {
-    _tile_queue = std::move(_tile_graph.front());
+  if (_tile_graph.empty())
+    return;
+
+  /* Remove finished request */
+  if (_tile_graph.at(0)->is_finished()) {
     _tile_graph.pop_front();
-    std::make_heap(_tile_queue.begin(), _tile_queue.end(), CompareTile());
   }
 }

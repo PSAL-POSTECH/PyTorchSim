@@ -14,18 +14,18 @@ Core::Core(uint32_t id, SimulationConfig config)
   _remain_sram_size = _sram_size;
 }
 
-bool Core::can_issue(std::unique_ptr<Tile>& op) {
+bool Core::can_issue(const std::shared_ptr<Tile>& op) {
   /* Check SRAM is enough to run tile */
   return op->get_required_sram_size() + _remain_sram_size < _sram_size;
 }
 
-void Core::issue(std::unique_ptr<Tile> op) {
+void Core::issue(std::shared_ptr<Tile> op) {
   _remain_sram_size += op->get_required_sram_size();
   _tiles.push_back(std::move(op));
 }
 
-std::unique_ptr<Tile> Core::pop_finished_tile() {
-  std::unique_ptr<Tile> result = std::make_unique<Tile>(Tile(Tile::Status::EMPTY));
+std::shared_ptr<Tile> Core::pop_finished_tile() {
+  std::shared_ptr<Tile> result = std::make_unique<Tile>(Tile(Tile::Status::EMPTY));
   if (_finished_tiles.size() > 0) {
     result = std::move(_finished_tiles.front());
     _finished_tiles.pop();

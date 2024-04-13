@@ -14,9 +14,9 @@ class Core {
   Core(uint32_t id, SimulationConfig config);
   ~Core() = default;
   bool running();
-  bool can_issue(std::unique_ptr<Tile>& op);
-  void issue(std::unique_ptr<Tile> tile);
-  std::unique_ptr<Tile> pop_finished_tile();
+  bool can_issue(const std::shared_ptr<Tile>& op);
+  void issue(std::shared_ptr<Tile> tile);
+  std::shared_ptr<Tile> pop_finished_tile();
   void cycle();
   void compute_cycle();
   void dma_cycle();
@@ -47,8 +47,8 @@ class Core {
   cycle_type _stat_issued_cycle;
   cycle_type _compute_memory_stall_cycle;
 
-  std::deque<std::unique_ptr<Tile>> _tiles;
-  std::queue<std::unique_ptr<Tile>> _finished_tiles;
+  std::deque<std::shared_ptr<Tile>> _tiles;
+  std::queue<std::shared_ptr<Tile>> _finished_tiles;
 
   std::queue<std::unique_ptr<Instruction>> _compute_pipeline;
   std::queue<std::unique_ptr<Instruction>> _ld_inst_queue;

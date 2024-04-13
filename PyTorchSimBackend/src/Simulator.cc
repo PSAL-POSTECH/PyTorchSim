@@ -53,7 +53,7 @@ void Simulator::run_simulator() {
 
 void Simulator::core_cycle() {
   for (int core_id = 0; core_id < _n_cores; core_id++) {
-    std::unique_ptr<Tile> finished_tile = _cores[core_id]->pop_finished_tile();
+    std::shared_ptr<Tile> finished_tile = _cores[core_id]->pop_finished_tile();
     if (finished_tile->get_status() == Tile::Status::FINISH) {
       _scheduler->finish_tile(std::move(finished_tile));
     }
@@ -62,10 +62,13 @@ void Simulator::core_cycle() {
       continue;
 
     // Issue new tile to core
-    std::unique_ptr<Tile>& tile = _scheduler->peek_tile(core_id);
+    const std::shared_ptr<Tile> tile = _scheduler->peek_tile(core_id);
     if (_cores[core_id]->can_issue(tile))  {
       if (tile->get_status() == Tile::Status::INITIALIZED) {
         _cores[core_id]->issue(std::move(_scheduler->get_tile(core_id)));
+      } else {
+        spdlog::error("[Simulator] issued tile is not valid status...!");
+        exit(EXIT_FAILURE);
       }
     }
     _cores[core_id]->cycle();

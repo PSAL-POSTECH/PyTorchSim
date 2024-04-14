@@ -27,7 +27,7 @@ class TileSubGraph {
 class TileGraph {
  public:
   void append_subgraph(std::shared_ptr<TileSubGraph> subgraph);
-  bool empty(int core_id) { return _vec_index==_subgraph_vec.size(); }
+  bool empty(int core_id) { return _vec_index==_subgraph_vec.size() && _cpu_graph_map[core_id] == nullptr; }
   bool is_finished();
   const std::shared_ptr<Tile> peek_tile(int core_id);
   std::shared_ptr<Tile> get_tile(int core_id);

@@ -26,19 +26,20 @@ class Tile {
   void dec_ready_counter(); 
   size_t get_required_sram_size() { return _required_sram_size; }
   void set_required_sram_size(size_t sram_size) { _required_sram_size=sram_size; }
-  void append_instuctions(std::vector<std::unique_ptr<Instruction>>& inst_vector);
+  void append_instuction(std::shared_ptr<Instruction>& inst);
   void append_child(std::shared_ptr<Tile> child);
   std::vector<std::shared_ptr<Tile>>& get_child_tile () { return _child_tiles; }
   void finish_tile();
   bool is_ready() { return _ready_counter==0; }
-  std::deque<std::unique_ptr<Instruction>>& get_instructions() { return _instructions; } 
+  std::deque<std::shared_ptr<Instruction>>& get_instructions() { return _instructions; } 
+  void print();
   
  protected:
   TileSubGraph* _onwer_graph;
   Status _status = Status::EMPTY;
   size_t _required_sram_size=0;
   size_t _ready_counter=0;
-  std::deque<std::unique_ptr<Instruction>> _instructions;
+  std::deque<std::shared_ptr<Instruction>> _instructions;
   std::vector<std::shared_ptr<Tile>> _child_tiles;
 };
 

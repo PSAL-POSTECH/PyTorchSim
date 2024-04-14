@@ -11,16 +11,16 @@ Core::Core(uint32_t id, SimulationConfig config)
       _compute_memory_stall_cycle(0),
       _tma(config.dram_req_size) {
   _sram_size = _config.sram_size;
-  _remain_sram_size = _sram_size;
+  _used_sram_size = 0;
 }
 
 bool Core::can_issue(const std::shared_ptr<Tile>& op) {
   /* Check SRAM is enough to run tile */
-  return op->get_required_sram_size() + _remain_sram_size < _sram_size;
+  return op->get_required_sram_size() + _used_sram_size < _sram_size;
 }
 
 void Core::issue(std::shared_ptr<Tile> op) {
-  _remain_sram_size += op->get_required_sram_size();
+  _used_sram_size += op->get_required_sram_size();
   _tiles.push_back(std::move(op));
 }
 
@@ -46,7 +46,7 @@ void Core::compute_cycle() {
 void Core::dma_cycle() {
   /* Check finished dma operation */
   for (int i=0; i<_dma_waiting_queue.size(); i++){
-    std::unique_ptr<Instruction>& instruction = _dma_waiting_queue.at(i);
+    std::shared_ptr<Instruction>& instruction = _dma_waiting_queue.at(i);
     /* Pass not finished instruction */
     if (instruction->get_waiting_request())
       continue;
@@ -63,11 +63,11 @@ void Core::dma_cycle() {
   if (_tma.is_finished()) {
     /* Finish instruction when it is DMA store */
     if (_tma.get_current_inst() != nullptr) {
-      std::unique_ptr<Instruction> finished_inst = std::move(_tma.get_current_inst());
+      std::shared_ptr<Instruction> finished_inst = std::move(_tma.get_current_inst());
       if (finished_inst->is_dma_write()) {
         /* Only DMA write operation is finished! */
         finished_inst->finish_instruction();
-      } else {
+      } else if(!finished_inst->is_dma_read()) {
         spdlog::error("[Core] TMA instruction in not valid");
         exit(EXIT_FAILURE);
       }
@@ -77,12 +77,12 @@ void Core::dma_cycle() {
 
     /* Issue new DMA operation */
     if (!_ld_inst_queue.empty()) {
-      std::unique_ptr<Instruction>& inst = _ld_inst_queue.front();
-      _tma.issue_tile(std::move(inst));
+      std::shared_ptr<Instruction> inst = _ld_inst_queue.front();
+      _tma.issue_tile(inst);
       _ld_inst_queue.pop();
     } else if (!_st_inst_queue.empty()) {
-      std::unique_ptr<Instruction>& inst = _st_inst_queue.front();
-      _tma.issue_tile(std::move(inst));
+      std::shared_ptr<Instruction> inst = _st_inst_queue.front();
+      _tma.issue_tile(inst);
       _st_inst_queue.pop();
     } else {
       /* TMA is idle */
@@ -91,7 +91,7 @@ void Core::dma_cycle() {
   }
   MemoryAccess *access = _tma.get_memory_access();
   /* Access couldn't be nullptr, since it is not finished */
-  assert(access == nullptr);
+  assert(access != nullptr);
 
   access->core_id = _id;
   access->start_cycle = _core_cycle;
@@ -113,18 +113,18 @@ void Core::cycle() {
   bool issued = false;
 
   for (int i=0; i<_tiles.size() && !issued; i++) {
-    std::unique_ptr<Instruction>& inst = _tiles[i]->get_instructions().front();
+    std::shared_ptr<Instruction>& inst = _tiles[i]->get_instructions().front();
     /* Skip instruction is not ready */
     if (!inst->is_ready())
       continue;
 
     switch (inst->get_opcode()) {
       case Opcode::MOVIN:
-        _ld_inst_queue.push(std::move(inst));
+        _ld_inst_queue.push(inst);
         issued = true;
         break;
       case Opcode::MOVOUT:
-        _st_inst_queue.push(std::move(inst));
+        _st_inst_queue.push(inst);
         issued = true;
         break;
       case Opcode::COMP:
@@ -181,7 +181,7 @@ void Core::push_memory_response(MemoryAccess *response) {
   delete response;
 }
 
-bool Core::can_issue_compute(std::unique_ptr<Instruction>& inst) {
+bool Core::can_issue_compute(std::shared_ptr<Instruction>& inst) {
   return inst->is_ready();
 }
 

@@ -5,9 +5,11 @@ TMA::TMA(uint32_t dram_req_size) {
   _current_inst = nullptr;
 }
 
-void TMA::issue_tile(std::unique_ptr<Instruction> inst) {
+void TMA::issue_tile(std::shared_ptr<Instruction> inst) {
   _current_inst = std::move(inst);
   std::vector<size_t>& tile_size = _current_inst->get_tile_size();
+  spdlog::info("[TMA] instruction issued ");
+  _current_inst->print();
   if (tile_size.size() != 2) {
     spdlog::error("[TMA] issued tile is not [y,x] format..");
     exit(EXIT_FAILURE);
@@ -38,6 +40,9 @@ MemoryAccess* TMA::get_memory_access() {
   /* Increase tile idx */
   _tile_idx += _tile_idx_stride;
   _current_inst->inc_waiting_request();
+  if (_current_inst->get_tile_numel() <= _tile_idx)
+    _finished = true;
+
   return access;
 }
 

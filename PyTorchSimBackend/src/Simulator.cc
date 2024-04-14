@@ -11,7 +11,7 @@ Simulator::Simulator(SimulationConfig config)
   _icnt_time = 0;
   _n_cores = config.num_cores;
   _n_memories = config.dram_channels;
- 
+
   if (config.dram_type == DramType::SIMPLE) {
     _dram = std::make_unique<SimpleDram>(config);
   } else if (config.dram_type == DramType::RAMULATOR) {
@@ -42,8 +42,11 @@ Simulator::Simulator(SimulationConfig config)
 
   // Create core objects
   _cores.resize(config.num_cores);
- for (int core_index = 0; core_index < _n_cores; core_index++)
+  for (int core_index = 0; core_index < _n_cores; core_index++)
     _cores[core_index] = std::make_unique<Core>(core_index, _config);
+
+  // Initialize Scheduler
+  _scheduler = std::make_unique<Scheduler>(Scheduler(config, &_core_cycles, &_core_time));
 }
 
 void Simulator::run_simulator() {
@@ -58,13 +61,11 @@ void Simulator::core_cycle() {
       _scheduler->finish_tile(std::move(finished_tile));
     }
 
-    if (_scheduler->empty(core_id))
-      continue;
-
     // Issue new tile to core
     const std::shared_ptr<Tile> tile = _scheduler->peek_tile(core_id);
-    if (_cores[core_id]->can_issue(tile))  {
+    if (tile->get_status() != Tile::Status::EMPTY && _cores[core_id]->can_issue(tile))  {
       if (tile->get_status() == Tile::Status::INITIALIZED) {
+        spdlog::debug("[Scheduelr] Tile issued");
         _cores[core_id]->issue(std::move(_scheduler->get_tile(core_id)));
       } else {
         spdlog::error("[Simulator] issued tile is not valid status...!");
@@ -148,9 +149,11 @@ bool Simulator::running() {
   for (auto &core : _cores) {
     running = running || core->running();
   }
+  for (int core_id = 0; core_id < _n_cores; core_id++) {
+    running = running || !_scheduler->empty(core_id);
+  }
   running = running || _icnt->running();
   running = running || _dram->running();
-  running = running || !_scheduler->empty();
   return running;
 }
 

@@ -57,9 +57,12 @@ int main(int argc, char** argv) {
   cmd_parser.set_if_defined("models_list", &onnx_path);
 
   auto simulator = std::make_unique<Simulator>(config);
-  auto model = std::make_unique<TileGraphParser>(onnx_path);
+  auto graph_praser = TileGraphParser(onnx_path);
+  std::unique_ptr<TileGraph>& tile_graph = graph_praser.get_tile_graph();
   spdlog::info("Register graph: {}", onnx_path);
 
+  simulator->schedule_graph(std::move(tile_graph));
+  simulator->run_simulator();
   /* Simulation time measurement */
   auto end = std::chrono::high_resolution_clock::now();
   std::chrono::duration<double> duration = end - start;

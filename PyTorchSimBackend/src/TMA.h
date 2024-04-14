@@ -23,14 +23,14 @@ class TMA {
  public:
   TMA(uint32_t dram_req_size);
 
-  void issue_tile(std::unique_ptr<Instruction> inst);
+  void issue_tile(std::shared_ptr<Instruction> inst);
   bool is_finished() { return _finished; }
-  std::unique_ptr<Instruction>& get_current_inst() { return _current_inst; }
+  std::shared_ptr<Instruction>& get_current_inst() { return _current_inst; }
   MemoryAccess* get_memory_access();
   uint32_t generate_mem_access_id();
 
  protected:
-  std::unique_ptr<Instruction> _current_inst;
+  std::shared_ptr<Instruction> _current_inst;
   uint32_t _dram_req_size;
   uint32_t _tile_size_x=0;
   uint32_t _tile_size_y=0;

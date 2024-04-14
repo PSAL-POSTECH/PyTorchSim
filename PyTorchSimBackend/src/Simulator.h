@@ -22,6 +22,7 @@ namespace fs = std::filesystem;
 class Simulator {
  public:
   Simulator(SimulationConfig config);
+  void schedule_graph(std::unique_ptr<TileGraph> tile_graph) { _scheduler->schedule_graph(std::move(tile_graph)); }
   void run_simulator();
  private:
   void cycle();

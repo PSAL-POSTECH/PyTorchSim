@@ -28,13 +28,13 @@ class Core {
   cycle_type get_compute_cycles() { return _stat_compute_cycle; }
 
  protected:
-  bool can_issue_compute(std::unique_ptr<Instruction>& inst);
+  bool can_issue_compute(std::shared_ptr<Instruction>& inst);
 
   /* Core id & config file */
   const uint32_t _id;   
   const SimulationConfig _config;
   size_t _sram_size;
-  size_t _remain_sram_size;
+  size_t _used_sram_size;
 
   /* TMA Unit */
   TMA _tma;
@@ -50,11 +50,11 @@ class Core {
   std::deque<std::shared_ptr<Tile>> _tiles;
   std::queue<std::shared_ptr<Tile>> _finished_tiles;
 
-  std::queue<std::unique_ptr<Instruction>> _compute_pipeline;
-  std::queue<std::unique_ptr<Instruction>> _ld_inst_queue;
-  std::queue<std::unique_ptr<Instruction>> _st_inst_queue;
+  std::queue<std::shared_ptr<Instruction>> _compute_pipeline;
+  std::queue<std::shared_ptr<Instruction>> _ld_inst_queue;
+  std::queue<std::shared_ptr<Instruction>> _st_inst_queue;
 
-  std::vector<std::unique_ptr<Instruction>> _dma_waiting_queue;
+  std::vector<std::shared_ptr<Instruction>> _dma_waiting_queue;
   /* Interconnect queue */
   std::queue<MemoryAccess*> _request_queue;
   std::queue<MemoryAccess*> _response_queue;

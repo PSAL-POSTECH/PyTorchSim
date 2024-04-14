@@ -5,13 +5,15 @@ Scheduler::Scheduler(SimulationConfig config, const cycle_type* core_cycle, cons
 }
 
 void Scheduler::schedule_graph(std::unique_ptr<TileGraph> tile_graph) {
-  spdlog::info("Tile Graph {} Scheduled", "TODO"); // TODO: tile graph id
+  spdlog::info("Tile Graph {} Scheduled", "FIFO"); // TODO: tile graph id
   // _tile_graph = TileGraphScheduler->get_tile_graph();
   _tile_graph.push_back(std::move(tile_graph));
   refresh_status();
 }
 
 const std::shared_ptr<Tile> Scheduler::peek_tile(int core_id) {
+  if (_tile_graph.empty())
+    return std::make_unique<Tile>(Tile(Tile::Status::EMPTY));
   return _tile_graph.at(0)->peek_tile(core_id);
 }
 

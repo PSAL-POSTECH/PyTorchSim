@@ -2,6 +2,7 @@
 #include <fstream>
 #include <google/protobuf/io/zero_copy_stream_impl.h>
 #include "TileGraph.h"
+#include "Instruction.h"
 #include "onnx/defs/schema.h"
 #include "onnx/onnx-operators_pb.h"
 #include "onnx/onnx_pb.h"
@@ -57,12 +58,15 @@ class TileComputeNode : public TileNode {
 class TileMemoryNode : public TileNode {
  public:
   TileMemoryNode(onnx::NodeProto& node);
+  addr_type get_base_addr() { return _base_addr; }
+  std::vector<size_t> get_tile_size() { return _tile_size; }
+  std::vector<size_t> get_tile_stride() { return _tile_stride; }
   void print_node();
 
  private:
-  std::vector<uint32_t> _tile_size;
-  std::vector<uint32_t> _tile_stride;
-  std::vector<uint32_t> _stride_list;
+  std::vector<size_t> _tile_size;
+  std::vector<size_t> _tile_stride;
+  std::vector<size_t> _stride_list;
   uint32_t _element_size;
   addr_type _base_addr = 0;
   std::string _base_addr_name;
@@ -72,6 +76,10 @@ class TileLoopNode : public TileNode {
  public:
   TileLoopNode(onnx::NodeProto& node);
   void add_body(std::shared_ptr<TileNode> body) { _body_node.push_back(body); }
+  std::vector<std::shared_ptr<Tile>> get_tiles_from_iter(int iter);
+  uint64_t get_start() { return _start; }
+  uint64_t get_stride() { return _stride; }
+  uint64_t get_end() { return _end; }
   void print_node();
 
  private:
@@ -92,6 +100,7 @@ class TileGraphParser {
   TileGraphParser(std::string onnx_path);
   void initialize_tile(std::string op_type);
   std::shared_ptr<TileNode> get_top_loop();
+  std::unique_ptr<TileGraph>& get_tile_graph() { return _tile_graph; }
  private:
   void register_tile(std::shared_ptr<TileNode> tile_node);
   void _tile_generate() {}
@@ -101,4 +110,5 @@ class TileGraphParser {
   std::map<std::string, std::shared_ptr<TileNode>> _output_map;
   std::vector<std::shared_ptr<TileNode>> _loop_nodes;
   std::vector<std::shared_ptr<TileNode>> _tile_vec;
+  std::unique_ptr<TileGraph> _tile_graph;
 };

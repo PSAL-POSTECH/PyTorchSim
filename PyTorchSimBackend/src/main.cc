@@ -3,6 +3,7 @@
 #include <filesystem>
 
 #include "Simulator.h"
+#include "TileGraphParser.h"
 #include "helper/CommandLineParser.h"
 
 namespace fs = std::filesystem;
@@ -52,22 +53,12 @@ int main(int argc, char** argv) {
   config_file.close();
   SimulationConfig config = initialize_config(config_json);
 
-  std::string models_list_path;
-  cmd_parser.set_if_defined("models_list", &models_list_path);
-  std::ifstream models_list_file(models_list_path);
-  json models_list;
-  models_list_file >> models_list;
-  models_list_file.close();
-  auto simulator = std::make_unique<Simulator>(config);
-  for (json model_config : models_list["models"]) {
-    std::string model_name = model_config["name"];
-    std::string onnx_path =
-        fmt::format("{}/{}/{}.onnx", model_base_path, model_name, model_name);
+  std::string onnx_path;
+  cmd_parser.set_if_defined("models_list", &onnx_path);
 
-    auto model = std::make_unique<Model>();
-    spdlog::info("Register model: {}", model_name);
-  }
-  simulator->run_simulator();
+  auto simulator = std::make_unique<Simulator>(config);
+  auto model = std::make_unique<TileGraphParser>(onnx_path);
+  spdlog::info("Register graph: {}", onnx_path);
 
   /* Simulation time measurement */
   auto end = std::chrono::high_resolution_clock::now();

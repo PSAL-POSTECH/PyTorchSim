@@ -11,8 +11,6 @@
 
 enum class Opcode { MOVIN, MOVOUT, GEMM_PRELOAD, GEMM, GEMM_WRITE, COMP, BAR };
 
-#define SPAD_BASE 0x10000000
-#define ASPAD_BASE 0x20000000
 typedef uint64_t addr_type;
 typedef uint64_t cycle_type;
 

@@ -15,9 +15,6 @@
 #include "SimulationConfig.h"
 #include "Instruction.h"
 #include "nlohmann/json.hpp"
-#include "onnx/defs/schema.h"
-#include "onnx/onnx-operators_pb.h"
-#include "onnx/onnx_pb.h"
 
 #define MIN(x, y) (((x) > (y)) ? (y) : (x))
 #define MIN3(x, y, z) MIN(MIN(x, y), z)

@@ -21,7 +21,7 @@ typedef struct {
 
 class TMA {
  public:
-  TMA(uint32_t dram_req_size);
+  TMA(uint32_t id, uint32_t dram_req_size);
 
   void issue_tile(std::shared_ptr<Instruction> inst);
   bool is_finished() { return _finished; }
@@ -31,6 +31,7 @@ class TMA {
   uint32_t generate_mem_access_id();
 
  protected:
+  uint32_t _id;
   std::shared_ptr<Instruction> _current_inst;
   uint32_t _dram_req_size;
   uint32_t _tile_size_x=0;

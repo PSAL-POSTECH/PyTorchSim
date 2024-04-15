@@ -20,7 +20,7 @@ std::string opcode_to_string(Opcode opcode);
 class Instruction {
  public:
   Instruction(Opcode opcode, cycle_type compute_cycle, size_t num_parents, addr_type dram_addr,
-              std::vector<size_t> tile_size, std::vector<size_t> tile_stride);
+              std::vector<size_t> tile_size, std::vector<size_t> tile_stride, size_t precision=0);
   void finish_instruction();
   void add_child(std::shared_ptr<Instruction> child);
   bool check_ready() { return ready_counter == 0; }
@@ -29,7 +29,10 @@ class Instruction {
   bool is_dma_write() { return opcode == Opcode::MOVOUT; }
   bool is_ready() { return ready_counter == 0; }
   void inc_ready_counter() { ready_counter++; }
-  void dec_ready_counter() { ready_counter--; }
+  void dec_ready_counter() {
+    assert(ready_counter!=0);
+    ready_counter--;
+  }
   size_t get_tile_numel() { return _tile_numel; }
   size_t get_precision() { return _precision; }
   void inc_waiting_request();
@@ -41,10 +44,13 @@ class Instruction {
   // lamda function to get the dram address
   addr_type get_dram_address(int row, int col) {
     auto get_tile_address = [this](size_t i, size_t j) -> addr_type {
-      return dram_addr + i * tile_size[0] * tile_stride[0] + j * tile_size[1] * tile_stride[1];
+      return dram_addr + (i * tile_size[1] * tile_stride[0] + j) * _precision;
     };
     return get_tile_address(row, col);
   }
+  size_t get_free_sram_size() { return _free_sram_size; }
+  void set_free_sram_size(size_t sram_size) { _free_sram_size=sram_size; }
+
   cycle_type start_cycle;
   cycle_type finish_cycle;
 
@@ -52,11 +58,13 @@ class Instruction {
   Opcode opcode;
   cycle_type compute_cycle;
   size_t ready_counter;
+  bool finished=false;
   std::set<std::shared_ptr<Instruction>> child_inst;
   std::vector<size_t> tile_size;
   std::vector<size_t> tile_stride;
   size_t _tile_numel;
   size_t _nr_waiting_request=0;
-  size_t _precision;
+  size_t _precision=0;
+  size_t _free_sram_size=0;
   addr_type dram_addr;
 };

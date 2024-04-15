@@ -65,7 +65,6 @@ void Simulator::core_cycle() {
     const std::shared_ptr<Tile> tile = _scheduler->peek_tile(core_id);
     if (tile->get_status() != Tile::Status::EMPTY && _cores[core_id]->can_issue(tile))  {
       if (tile->get_status() == Tile::Status::INITIALIZED) {
-        spdlog::debug("[Scheduelr] Tile issued");
         _cores[core_id]->issue(std::move(_scheduler->get_tile(core_id)));
       } else {
         spdlog::error("[Simulator] issued tile is not valid status...!");

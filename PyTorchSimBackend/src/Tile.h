@@ -26,6 +26,7 @@ class Tile {
   void dec_ready_counter(); 
   size_t get_required_sram_size() { return _required_sram_size; }
   void set_required_sram_size(size_t sram_size) { _required_sram_size=sram_size; }
+  void inc_required_sram_size(size_t sram_size) { _required_sram_size+=sram_size; }
   void append_instuction(std::shared_ptr<Instruction>& inst);
   void append_child(std::shared_ptr<Tile> child);
   std::vector<std::shared_ptr<Tile>>& get_child_tile () { return _child_tiles; }

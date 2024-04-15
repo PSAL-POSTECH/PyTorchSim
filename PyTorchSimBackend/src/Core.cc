@@ -9,7 +9,7 @@ Core::Core(uint32_t id, SimulationConfig config)
       _stat_tma_cycle(0),
       _stat_issued_cycle(0),
       _compute_memory_stall_cycle(0),
-      _tma(config.dram_req_size) {
+      _tma(id, config.dram_req_size) {
   _sram_size = _config.sram_size;
   _used_sram_size = 0;
 }
@@ -20,6 +20,7 @@ bool Core::can_issue(const std::shared_ptr<Tile>& op) {
 }
 
 void Core::issue(std::shared_ptr<Tile> op) {
+  spdlog::trace("[Core {}] New Tile is issued, remain sram: {}", _id, _sram_size-_used_sram_size);
   _used_sram_size += op->get_required_sram_size();
   _tiles.push_back(std::move(op));
 }
@@ -37,7 +38,7 @@ void Core::compute_cycle() {
   if (!_compute_pipeline.empty()) {
     _stat_compute_cycle++;
     if(_compute_pipeline.front()->finish_cycle <= _core_cycle) {
-      _compute_pipeline.front()->finish_instruction();
+      finish_instruction(_compute_pipeline.front());
       _compute_pipeline.pop();
     }
   }
@@ -53,11 +54,11 @@ void Core::dma_cycle() {
 
     /* Finish DMA read instruction */
     if (instruction->is_dma_read())
-      instruction->finish_instruction();
+      finish_instruction(instruction);
 
     /* Erase the instruction in DMA waiting queue */
     _dma_waiting_queue.erase(_dma_waiting_queue.begin() + i);
-    break;
+    i--;
   }
 
   if (_tma.is_finished()) {
@@ -66,9 +67,9 @@ void Core::dma_cycle() {
       std::shared_ptr<Instruction> finished_inst = std::move(_tma.get_current_inst());
       if (finished_inst->is_dma_write()) {
         /* Only DMA write operation is finished! */
-        finished_inst->finish_instruction();
+        finish_instruction(finished_inst);
       } else if(!finished_inst->is_dma_read()) {
-        spdlog::error("[Core] TMA instruction in not valid");
+        spdlog::error("[Core {}] TMA instruction in not valid", _id);
         exit(EXIT_FAILURE);
       }
       /*Pass to waiting queue */
@@ -94,7 +95,7 @@ void Core::dma_cycle() {
   if (access == nullptr)
     return;
 
-  spdlog::debug("[TMA] access: 0x{:x}, write: {}", access->dram_address, access->write);
+  //spdlog::debug("[TMA {}] access: 0x{:x}, write: {}", _id, access->dram_address, access->write);
   /* Access couldn't be nullptr, since it is not finished */
   assert(access != nullptr);
 
@@ -118,7 +119,13 @@ void Core::cycle() {
   bool issued = false;
 
   for (int i=0; i<_tiles.size() && !issued; i++) {
-    std::shared_ptr<Instruction>& inst = _tiles[i]->get_instructions().front();
+    auto& instructions = _tiles[i]->get_instructions();
+    if (instructions.size()==0) {
+      spdlog::error("[Core {}] tile has non instructions...", _id);
+      exit(EXIT_FAILURE);
+    }
+
+    std::shared_ptr<Instruction> inst = instructions.front();
     /* Skip instruction is not ready */
     if (!inst->is_ready())
       continue;
@@ -137,8 +144,8 @@ void Core::cycle() {
           inst->finish_cycle = _core_cycle + inst->get_compute_cycle();
         else
           inst->finish_cycle = _compute_pipeline.back()->finish_cycle + inst->get_compute_cycle();
-
-        _compute_pipeline.push(std::move(inst));
+        spdlog::trace("[Core {}] compute instruction issued", _id);
+        _compute_pipeline.push(inst);
         issued = true;
         break;
       default:
@@ -147,17 +154,23 @@ void Core::cycle() {
     }
 
     if (issued) {
-      _tiles[i]->get_instructions().pop_front();
-      if (_tiles[i]->get_instructions().empty()) {
+      instructions.pop_front();
+      if (instructions.empty()) {
         _tiles[i]->set_status(Tile::Status::FINISH);
         _finished_tiles.push(std::move(_tiles[i]));
-        _tiles.pop_front();
+        _tiles.erase(_tiles.begin() + i); // FIXME. Inefficient data structure
       }
     }
   }
 
   /* Increate issue stall cycle */
   _stat_issued_cycle += (int)issued;
+}
+
+void Core::finish_instruction(std::shared_ptr<Instruction>& inst) {
+  size_t free_sram_size = inst->get_free_sram_size();
+  inst->finish_instruction();
+  _used_sram_size -= free_sram_size;
 }
 
 bool Core::running() {
@@ -192,6 +205,6 @@ bool Core::can_issue_compute(std::shared_ptr<Instruction>& inst) {
 }
 
 void Core::print_stats() {
-  spdlog::info("Core [{}] : Total tma {} Idle cycle {}", _id, _stat_tma_cycle, _stat_idle_cycle);
-  spdlog::info("Core [{}] : Total cycle: {}", _id, _core_cycle);
+  spdlog::info("[Core {}] : Total tma {} Idle cycle {}", _id, _stat_tma_cycle, _stat_idle_cycle);
+  spdlog::info("[Core {}] : Total cycle: {}", _id, _core_cycle);
 }

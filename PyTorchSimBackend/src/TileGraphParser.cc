@@ -121,7 +121,7 @@ std::vector<std::shared_ptr<Tile>> TileLoopNode::get_tiles_from_iter(int iter) {
       std::shared_ptr<Instruction> inst = std::make_shared<Instruction>(
         Opcode::MOVIN, 0,
         0, mem_node->get_base_addr(),
-        mem_node->get_tile_size(), mem_node->get_tile_size()
+        mem_node->get_tile_size(), mem_node->get_tile_stride(), mem_node->get_precision()
       );
       link_map[tile_node] = inst;
       /* Add instruction to tile */
@@ -131,7 +131,7 @@ std::vector<std::shared_ptr<Tile>> TileLoopNode::get_tiles_from_iter(int iter) {
       std::shared_ptr<Instruction> inst = std::make_shared<Instruction>(
         Opcode::MOVOUT, 0,
         0, mem_node->get_base_addr(),
-        mem_node->get_tile_size(), mem_node->get_tile_size()
+        mem_node->get_tile_size(), mem_node->get_tile_stride(), mem_node->get_precision()
       );
       link_map[tile_node] = inst;
       /* Add instruction to tile */
@@ -139,7 +139,7 @@ std::vector<std::shared_ptr<Tile>> TileLoopNode::get_tiles_from_iter(int iter) {
     } else if (tile_node->get_type() == TileType::COMPUTE_NODE) {
       std::shared_ptr<TileComputeNode> compute_node = std::static_pointer_cast<TileComputeNode>(tile_node);
       std::shared_ptr<Instruction> inst = std::make_shared<Instruction>(
-        Opcode::COMP, compute_node->get_cycle(),
+        Opcode::COMP, 4, //compute_node->get_cycle(),
         0, 0,
         std::vector<size_t>(), std::vector<size_t>()
       );
@@ -165,12 +165,17 @@ std::vector<std::shared_ptr<Tile>> TileLoopNode::get_tiles_from_iter(int iter) {
           }
         }
         /* Add instruction to tile */
+        if (inst->get_opcode() == Opcode::MOVIN)
+          tile_vec.back()->inc_required_sram_size(inst->get_tile_numel() * inst->get_precision());
         tile_vec.back()->append_instuction(inst);
       }
       link_map.clear();
       /* iterate nested loop */
       std::shared_ptr<Tile> parent = tile_vec.back();
       std::shared_ptr<Tile> child = std::make_shared<Tile>(Tile::Status::INITIALIZED);
+
+      /* Set last instruction's free sram size */
+      parent->get_instructions().back()->set_free_sram_size(parent->get_required_sram_size());
 
       for (int i=start; i<end; i+=stride) {
         std::vector<std::shared_ptr<Tile>> ret = loop_node->get_tiles_from_iter(i);
@@ -196,7 +201,16 @@ std::vector<std::shared_ptr<Tile>> TileLoopNode::get_tiles_from_iter(int iter) {
         inst->add_child(child_inst);
       }
     }
- }
+    /* Add instruction to tile */
+    if (inst->get_opcode() == Opcode::MOVIN)
+      tile_vec.back()->inc_required_sram_size(inst->get_tile_numel() * inst->get_precision());
+    tile_vec.back()->append_instuction(inst);
+  }
+
+  /* Set last instruction's free sram size */
+  std::shared_ptr<Tile> parent = tile_vec.back();
+  if (parent->get_instructions().size())
+    parent->get_instructions().back()->set_free_sram_size(parent->get_required_sram_size());
 
   return tile_vec;
 }

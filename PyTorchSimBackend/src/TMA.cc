@@ -4,6 +4,7 @@ TMA::TMA(uint32_t id, uint32_t dram_req_size) {
   _id = id;
   _dram_req_size = dram_req_size;
   _current_inst = nullptr;
+  _finished = true;
 }
 
 void TMA::issue_tile(std::shared_ptr<Instruction> inst) {
@@ -18,6 +19,8 @@ void TMA::issue_tile(std::shared_ptr<Instruction> inst) {
   _tile_size_x = tile_size.at(1);
   _tile_size_y = tile_size.at(0);
   _tile_idx_stride = std::min(size_t(_dram_req_size / _current_inst->get_precision()), size_t(_tile_size_x));
+  _tile_idx = 0;
+  _finished = false;
 }
 
 MemoryAccess* TMA::get_memory_access() {

@@ -29,7 +29,10 @@ class Instruction {
   bool is_dma_write() { return opcode == Opcode::MOVOUT; }
   bool is_ready() { return ready_counter == 0; }
   void inc_ready_counter() { ready_counter++; }
-  void dec_ready_counter() { ready_counter--; }
+  void dec_ready_counter() {
+    assert(ready_counter!=0);
+    ready_counter--;
+  }
   size_t get_tile_numel() { return _tile_numel; }
   size_t get_precision() { return _precision; }
   void inc_waiting_request();
@@ -45,6 +48,9 @@ class Instruction {
     };
     return get_tile_address(row, col);
   }
+  size_t get_free_sram_size() { return _free_sram_size; }
+  void set_free_sram_size(size_t sram_size) { _free_sram_size=sram_size; }
+
   cycle_type start_cycle;
   cycle_type finish_cycle;
 
@@ -52,11 +58,13 @@ class Instruction {
   Opcode opcode;
   cycle_type compute_cycle;
   size_t ready_counter;
+  bool finished=false;
   std::set<std::shared_ptr<Instruction>> child_inst;
   std::vector<size_t> tile_size;
   std::vector<size_t> tile_stride;
   size_t _tile_numel;
   size_t _nr_waiting_request=0;
-  size_t _precision;
+  size_t _precision=0;
+  size_t _free_sram_size=0;
   addr_type dram_addr;
 };

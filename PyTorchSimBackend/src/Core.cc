@@ -20,6 +20,7 @@ bool Core::can_issue(const std::shared_ptr<Tile>& op) {
 }
 
 void Core::issue(std::shared_ptr<Tile> op) {
+  spdlog::trace("[Core {}] New Tile is issued, remain sram: {}", _id, _sram_size-_used_sram_size);
   _used_sram_size += op->get_required_sram_size();
   _tiles.push_back(std::move(op));
 }
@@ -37,7 +38,7 @@ void Core::compute_cycle() {
   if (!_compute_pipeline.empty()) {
     _stat_compute_cycle++;
     if(_compute_pipeline.front()->finish_cycle <= _core_cycle) {
-      _compute_pipeline.front()->finish_instruction();
+      finish_instruction(_compute_pipeline.front());
       _compute_pipeline.pop();
     }
   }
@@ -53,11 +54,11 @@ void Core::dma_cycle() {
 
     /* Finish DMA read instruction */
     if (instruction->is_dma_read())
-      instruction->finish_instruction();
+      finish_instruction(instruction);
 
     /* Erase the instruction in DMA waiting queue */
     _dma_waiting_queue.erase(_dma_waiting_queue.begin() + i);
-    break;
+    i--;
   }
 
   if (_tma.is_finished()) {
@@ -66,7 +67,7 @@ void Core::dma_cycle() {
       std::shared_ptr<Instruction> finished_inst = std::move(_tma.get_current_inst());
       if (finished_inst->is_dma_write()) {
         /* Only DMA write operation is finished! */
-        finished_inst->finish_instruction();
+        finish_instruction(finished_inst);
       } else if(!finished_inst->is_dma_read()) {
         spdlog::error("[Core {}] TMA instruction in not valid", _id);
         exit(EXIT_FAILURE);
@@ -94,7 +95,7 @@ void Core::dma_cycle() {
   if (access == nullptr)
     return;
 
-  spdlog::debug("[TMA {}] access: 0x{:x}, write: {}", _id, access->dram_address, access->write);
+  //spdlog::debug("[TMA {}] access: 0x{:x}, write: {}", _id, access->dram_address, access->write);
   /* Access couldn't be nullptr, since it is not finished */
   assert(access != nullptr);
 
@@ -164,6 +165,12 @@ void Core::cycle() {
 
   /* Increate issue stall cycle */
   _stat_issued_cycle += (int)issued;
+}
+
+void Core::finish_instruction(std::shared_ptr<Instruction>& inst) {
+  size_t free_sram_size = inst->get_free_sram_size();
+  inst->finish_instruction();
+  _used_sram_size -= free_sram_size;
 }
 
 bool Core::running() {

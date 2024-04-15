@@ -25,6 +25,7 @@ class Core {
   MemoryAccess* top_memory_request() { return _request_queue.front(); }
   void push_memory_response(MemoryAccess* response);
   void print_stats();
+  void finish_instruction(std::shared_ptr<Instruction>& inst);
   cycle_type get_compute_cycles() { return _stat_compute_cycle; }
 
  protected:

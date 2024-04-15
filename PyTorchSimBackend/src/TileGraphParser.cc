@@ -121,7 +121,7 @@ std::vector<std::shared_ptr<Tile>> TileLoopNode::get_tiles_from_iter(int iter) {
       std::shared_ptr<Instruction> inst = std::make_shared<Instruction>(
         Opcode::MOVIN, 0,
         0, mem_node->get_base_addr(),
-        mem_node->get_tile_size(), mem_node->get_tile_size()
+        mem_node->get_tile_size(), mem_node->get_tile_size(), mem_node->get_precision()
       );
       link_map[tile_node] = inst;
       /* Add instruction to tile */
@@ -131,7 +131,7 @@ std::vector<std::shared_ptr<Tile>> TileLoopNode::get_tiles_from_iter(int iter) {
       std::shared_ptr<Instruction> inst = std::make_shared<Instruction>(
         Opcode::MOVOUT, 0,
         0, mem_node->get_base_addr(),
-        mem_node->get_tile_size(), mem_node->get_tile_size()
+        mem_node->get_tile_size(), mem_node->get_tile_size(), mem_node->get_precision()
       );
       link_map[tile_node] = inst;
       /* Add instruction to tile */

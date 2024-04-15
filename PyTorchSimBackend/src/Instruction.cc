@@ -14,9 +14,9 @@ std::string opcode_to_string(Opcode opcode) {
 }
 
 Instruction::Instruction(Opcode opcode, cycle_type compute_cycle, size_t num_parents,
-            addr_type dram_addr, std::vector<size_t> tile_size, std::vector<size_t> tile_stride)
+            addr_type dram_addr, std::vector<size_t> tile_size, std::vector<size_t> tile_stride, size_t precision)
   : opcode(opcode), compute_cycle(compute_cycle), ready_counter(num_parents), dram_addr(dram_addr),
-    tile_size(tile_size), tile_stride(tile_stride) {
+    tile_size(tile_size), tile_stride(tile_stride), _precision(precision) {
   _tile_numel = 1;
   for (auto dim : tile_size)
     _tile_numel *= dim;

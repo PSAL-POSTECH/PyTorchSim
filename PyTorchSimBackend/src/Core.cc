@@ -118,7 +118,7 @@ void Core::cycle() {
   bool issued = false;
 
   for (int i=0; i<_tiles.size() && !issued; i++) {
-    std::shared_ptr<Instruction>& inst = _tiles[i]->get_instructions().front();
+    std::shared_ptr<Instruction> inst = _tiles[i]->get_instructions().front();
     /* Skip instruction is not ready */
     if (!inst->is_ready())
       continue;
@@ -138,7 +138,7 @@ void Core::cycle() {
         else
           inst->finish_cycle = _compute_pipeline.back()->finish_cycle + inst->get_compute_cycle();
 
-        _compute_pipeline.push(std::move(inst));
+        _compute_pipeline.push(inst);
         issued = true;
         break;
       default:

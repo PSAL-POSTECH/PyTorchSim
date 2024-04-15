@@ -20,7 +20,7 @@ std::string opcode_to_string(Opcode opcode);
 class Instruction {
  public:
   Instruction(Opcode opcode, cycle_type compute_cycle, size_t num_parents, addr_type dram_addr,
-              std::vector<size_t> tile_size, std::vector<size_t> tile_stride);
+              std::vector<size_t> tile_size, std::vector<size_t> tile_stride, size_t precision=0);
   void finish_instruction();
   void add_child(std::shared_ptr<Instruction> child);
   bool check_ready() { return ready_counter == 0; }

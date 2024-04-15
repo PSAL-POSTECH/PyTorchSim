@@ -59,6 +59,7 @@ class TileMemoryNode : public TileNode {
  public:
   TileMemoryNode(onnx::NodeProto& node);
   addr_type get_base_addr() { return _base_addr; }
+  size_t get_precision() { return _element_size; }
   std::vector<size_t> get_tile_size() { return _tile_size; }
   std::vector<size_t> get_tile_stride() { return _tile_stride; }
   void print_node();
@@ -67,7 +68,7 @@ class TileMemoryNode : public TileNode {
   std::vector<size_t> _tile_size;
   std::vector<size_t> _tile_stride;
   std::vector<size_t> _stride_list;
-  uint32_t _element_size;
+  size_t _element_size;
   addr_type _base_addr = 0;
   std::string _base_addr_name;
 };

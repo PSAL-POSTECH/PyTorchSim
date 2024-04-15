@@ -495,8 +495,8 @@ class MatrixLLVMKernel(LLVMKernel):
     def __init__(self):
         super().__init__()
         # Defaulat tile setting
-        self.tile_row = 4
-        self.tile_col = 4
+        self.tile_row = 64
+        self.tile_col = 64
         self.tile_size = self.tile_row * self.tile_col
 
 
@@ -508,7 +508,7 @@ class MatrixLLVMKernel(LLVMKernel):
 
         index = self.rename_indexing(index)
         cv = self.get_constant_vector(index)
-        self.add_desc(True, name, align, cv, [self.tile_row, self.tile_col])
+        self.add_desc(True, name, align, cv, [self.tile_col, self.tile_row])
         index = self.depth_first_traverse(index, self.loads, self.index_cse)
         line = f"getelementptr inbounds {type_name}, ptr %{var}, i64 %{index}"
         var = self.cse.generate(self.loads, line)
@@ -524,7 +524,7 @@ class MatrixLLVMKernel(LLVMKernel):
 
         index = self.rename_indexing(index)
         cv = self.get_constant_vector(index)
-        self.add_desc(False, name, align, cv, [self.tile_row, self.tile_col])
+        self.add_desc(False, name, align, cv, [self.tile_col, self.tile_row])
         index = self.depth_first_traverse(index, self.stores, self.index_cse)
         line = f"getelementptr inbounds {type_name}, ptr %{var}, i64 %{index}"
         var = self.cse.generate(self.stores, line)
@@ -591,7 +591,7 @@ class MatrixLLVMKernel(LLVMKernel):
 
         index = self.rename_indexing(index)
         cv = self.get_constant_vector(index)
-        self.add_desc(False, name, align, cv, [self.tile_row, 1])
+        self.add_desc(False, name, align, cv, [1, self.tile_row])
         index = self.depth_first_traverse(index, self.reduction_suffix, self.index_cse)
         line = f"load <{self.tile_row} x {type_name}>, ptr %{value}, align {align}"
         value = self.reduction_cse.generate(self.reductions_suffix, line)

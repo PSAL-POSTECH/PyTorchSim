@@ -26,6 +26,8 @@ Instruction::Instruction(Opcode opcode, cycle_type compute_cycle, size_t num_par
 }
 
 void Instruction::finish_instruction() {
+  if (finished)
+    return;
   for (auto& counter : child_inst)
     counter->dec_ready_counter();
   finished = true;

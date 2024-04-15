@@ -44,7 +44,7 @@ class Instruction {
   // lamda function to get the dram address
   addr_type get_dram_address(int row, int col) {
     auto get_tile_address = [this](size_t i, size_t j) -> addr_type {
-      return dram_addr + i * tile_size[0] * tile_stride[0] + j * tile_size[1] * tile_stride[1];
+      return dram_addr + (i * tile_size[1] * tile_stride[0] + j) * _precision;
     };
     return get_tile_address(row, col);
   }

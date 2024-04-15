@@ -44,7 +44,7 @@ class Instruction {
   // lamda function to get the dram address
   addr_type get_dram_address(int row, int col) {
     auto get_tile_address = [this](size_t i, size_t j) -> addr_type {
-      return dram_addr + (i * tile_size[1] * tile_stride[0] + j) * _precision;
+      return dram_addr + (i * tile_size[0] * tile_stride[1] + j) * _precision;
     };
     return get_tile_address(row, col);
   }
@@ -54,11 +54,11 @@ class Instruction {
   cycle_type start_cycle;
   cycle_type finish_cycle;
 
+  bool finished=false;
  private:
   Opcode opcode;
   cycle_type compute_cycle;
   size_t ready_counter;
-  bool finished=false;
   std::set<std::shared_ptr<Instruction>> child_inst;
   std::vector<size_t> tile_size;
   std::vector<size_t> tile_stride;

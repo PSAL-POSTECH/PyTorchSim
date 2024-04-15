@@ -73,7 +73,7 @@ def vector_reduction_combine(reduction_type, start_value, vector_value):
         raise NotImplementedError()
     raise AssertionError(reduction_type)
 
-def matrix_reduction_combine(reduction_type, start_value, vector_value, tile_row=4):
+def matrix_reduction_combine(reduction_type, start_value, vector_value, tile_row=64):
     if reduction_type == "sum":
         return f"tail call float @llvm.vector.reduce.fadd.nxv2f32(float %{start_value}, <{tile_row} x float> %{vector_value})"
     if reduction_type == "prod":
@@ -90,7 +90,7 @@ def matrix_reduction_combine(reduction_type, start_value, vector_value, tile_row
         raise NotImplementedError()
     raise AssertionError(reduction_type)
 
-def matrix_partial_reduction_combine(reduction_type, vector_value, tile_row=4):
+def matrix_partial_reduction_combine(reduction_type, vector_value, tile_row=64):
     if reduction_type == "sum":
         return f"tail call float @llvm.vector.reduce.fadd.nxv2f32(float 0.0, <{tile_row} x float> %{vector_value})"
     if reduction_type == "prod":
@@ -558,7 +558,7 @@ class MatrixLLVMKernel(LLVMKernel):
                 indexes = [f"i32 {i*self.tile_row+j}" for j in range(self.tile_row)]
                 line = f"shufflevector <{self.tile_size} x {type_name}> %{value}, <{self.tile_size} x {type_name}> undef, <{self.tile_row} x i32> <{comma.join(indexes)}>"
                 split_vector = self.cse.generate(self.stores, line)
-                output.append(self.cse.generate(self.stores, matrix_partial_reduction_combine(reduction_type, split_vector)))
+                output.append(self.cse.generate(self.stores, matrix_partial_reduction_combine(reduction_type, split_vector, self.tile_row)))
             length = len(output)
             size = 1
             while(len(output) > 1):
@@ -569,7 +569,7 @@ class MatrixLLVMKernel(LLVMKernel):
                     temp_vec = self.cse.generate(self.stores, line)
                     line = f"insertelement <2 x {type_name}> %{temp_vec}, {type_name} %{op2}, i32 1"
                 else:
-                    indexes = [f"i32 {j}" for j in range(self.tile_row)]
+                    indexes = [f"i32 {j}" for j in range(size * 2)]
                     line = f"shufflevector <{size} x {type_name}> %{op1}, <{size} x {type_name}> %{op2}, <{size * 2} x i32> <{comma.join(indexes)}>"
                 out = self.cse.generate(self.stores, line)
                 output.append(out)
@@ -597,7 +597,8 @@ class MatrixLLVMKernel(LLVMKernel):
         value = self.reduction_cse.generate(self.reductions_suffix, line)
         line = f"getelementptr inbounds {type_name}, ptr %{var}, i64 %{index}"
         var = self.cse.generate(self.reductions_suffix, line)
-        line = f"call void @llvm.matrix.column.major.store.v{self.tile_row}f32.p0f32(<{self.tile_row} x {type_name}> %{value}, ptr %{var}, i64 {align}, i1 0, i32 {self.tile_row}, i32 1)"
+        stride = self.ranges[-1]
+        line = f"call void @llvm.matrix.column.major.store.v{self.tile_row}f32.p0f32(<{self.tile_row} x {type_name}> %{value}, ptr %{var}, i64 {stride}, i1 0, i32 {self.tile_row}, i32 1)"
         self.cse.generate(self.reductions_suffix, line, assignment = False)
 
     def codegen_loops(self):

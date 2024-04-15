@@ -54,11 +54,11 @@ class Instruction {
   cycle_type start_cycle;
   cycle_type finish_cycle;
 
+  bool finished=false;
  private:
   Opcode opcode;
   cycle_type compute_cycle;
   size_t ready_counter;
-  bool finished=false;
   std::set<std::shared_ptr<Instruction>> child_inst;
   std::vector<size_t> tile_size;
   std::vector<size_t> tile_stride;

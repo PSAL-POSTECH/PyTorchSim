@@ -124,8 +124,6 @@ std::vector<std::shared_ptr<Tile>> TileLoopNode::get_tiles_from_iter(int iter) {
         mem_node->get_tile_size(), mem_node->get_tile_stride(), mem_node->get_precision()
       );
       link_map[tile_node] = inst;
-      /* Add instruction to tile */
-      tile_vec.back()->append_instuction(inst);
     } else if (tile_node->get_type() == TileType::STORE_NODE) {
       std::shared_ptr<TileMemoryNode> mem_node = std::static_pointer_cast<TileMemoryNode>(tile_node);
       std::shared_ptr<Instruction> inst = std::make_shared<Instruction>(
@@ -134,8 +132,6 @@ std::vector<std::shared_ptr<Tile>> TileLoopNode::get_tiles_from_iter(int iter) {
         mem_node->get_tile_size(), mem_node->get_tile_stride(), mem_node->get_precision()
       );
       link_map[tile_node] = inst;
-      /* Add instruction to tile */
-      tile_vec.back()->append_instuction(inst);
     } else if (tile_node->get_type() == TileType::COMPUTE_NODE) {
       std::shared_ptr<TileComputeNode> compute_node = std::static_pointer_cast<TileComputeNode>(tile_node);
       std::shared_ptr<Instruction> inst = std::make_shared<Instruction>(
@@ -144,8 +140,6 @@ std::vector<std::shared_ptr<Tile>> TileLoopNode::get_tiles_from_iter(int iter) {
         std::vector<size_t>(), std::vector<size_t>()
       );
       link_map[tile_node] = inst;
-      /* Add instruction to tile */
-      tile_vec.back()->append_instuction(inst);
     } else if (tile_node->get_type() == TileType::LOOP_INDEX_NODE) {
       std::shared_ptr<TileLoopNode> loop_node = std::static_pointer_cast<TileLoopNode>(tile_node);
       uint64_t start = loop_node->get_start();

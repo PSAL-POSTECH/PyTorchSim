@@ -16,11 +16,11 @@ Core::Core(uint32_t id, SimulationConfig config)
 
 bool Core::can_issue(const std::shared_ptr<Tile>& op) {
   /* Check SRAM is enough to run tile */
-  return op->get_required_sram_size() + _used_sram_size < _sram_size;
+  return op->get_required_sram_size() + _used_sram_size <= _sram_size;
 }
 
 void Core::issue(std::shared_ptr<Tile> op) {
-  spdlog::trace("[Core {}] New Tile is issued, remain sram: {}", _id, _sram_size-_used_sram_size);
+  spdlog::trace("[Core {}] New Tile is issued, remain sram: {} Required size: {}, Free size: {}", _id, _sram_size-_used_sram_size, op->get_required_sram_size(), op->get_instructions().back()->get_free_sram_size());
   _used_sram_size += op->get_required_sram_size();
   _tiles.push_back(std::move(op));
 }
@@ -169,7 +169,12 @@ void Core::cycle() {
 
 void Core::finish_instruction(std::shared_ptr<Instruction>& inst) {
   size_t free_sram_size = inst->get_free_sram_size();
+  if (inst->finished) {
+    spdlog::error("[Core {}] {} inst already finished!!", _id, opcode_to_string(inst->get_opcode()));
+    exit(EXIT_FAILURE);
+  }
   inst->finish_instruction();
+  spdlog::trace("[Core {}] Used sram: {}, Release sram: {}, inst: {}", _id,  _used_sram_size, inst->get_free_sram_size(), opcode_to_string(inst->get_opcode()));
   _used_sram_size -= free_sram_size;
 }
 

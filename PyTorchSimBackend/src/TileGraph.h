@@ -8,6 +8,7 @@
 
 class TileSubGraph {
  public:
+  TileSubGraph();
   void add_tile(std::shared_ptr<Tile> tile);
   void finish_tile(std::shared_ptr<Tile> tile);
   bool is_finished() { return _ready_tile_queue.empty() && _tile_set.empty(); }
@@ -26,6 +27,7 @@ class TileSubGraph {
 
 class TileGraph {
  public:
+  TileGraph() : _subgraph_vec(), _cpu_graph_map() {}
   void append_subgraph(std::shared_ptr<TileSubGraph> subgraph);
   bool empty(int core_id) { return _vec_index==_subgraph_vec.size() && _cpu_graph_map[core_id] == nullptr; }
   bool is_finished();

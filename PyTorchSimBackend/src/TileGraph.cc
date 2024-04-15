@@ -1,22 +1,25 @@
 #include "TileGraph.h"
+TileSubGraph::TileSubGraph() : _ready_tile_queue(), _tile_set() {
+}
 
 void TileSubGraph::add_tile(std::shared_ptr<Tile> tile) {
+  tile->set_ownwer(this);
   if (tile->get_ready_counter() == 0) {
-    _ready_tile_queue.push(std::move(tile));
+    _ready_tile_queue.push(tile);
   } else {
-    _tile_set.insert(std::move(tile));
+    _tile_set.insert(tile);
   }
 }
 
 void TileSubGraph::finish_tile(std::shared_ptr<Tile> tile) {
   /* TODO. */
   tile->finish_tile();
-  for (auto& child_tile_ptr: tile->get_child_tile()) {
+  for (auto child_tile_ptr: tile->get_child_tile()) {
     if (child_tile_ptr->get_ready_counter())
       continue;
     /* if child is ready, add ready queue */
-    _tile_set.erase(tile);
-    _ready_tile_queue.push(tile);
+    _ready_tile_queue.push(child_tile_ptr);
+    _tile_set.erase(child_tile_ptr);
   }
   return;
 }

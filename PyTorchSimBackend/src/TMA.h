@@ -25,6 +25,7 @@ class TMA {
 
   void issue_tile(std::shared_ptr<Instruction> inst);
   bool is_finished() { return _finished; }
+  bool empty() { return _current_inst==nullptr; }
   std::shared_ptr<Instruction>& get_current_inst() { return _current_inst; }
   MemoryAccess* get_memory_access();
   uint32_t generate_mem_access_id();

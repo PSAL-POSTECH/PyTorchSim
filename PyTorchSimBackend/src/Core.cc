@@ -89,7 +89,12 @@ void Core::dma_cycle() {
       return;
     }
   }
+  /* Generate MemoryAccess */
   MemoryAccess *access = _tma.get_memory_access();
+  if (access == nullptr)
+    return;
+
+  spdlog::debug("[TMA] access: 0x{:x}, write: {}", access->dram_address, access->write);
   /* Access couldn't be nullptr, since it is not finished */
   assert(access != nullptr);
 
@@ -160,6 +165,7 @@ bool Core::running() {
   running = running || _tiles.size() > 0;
   running = running || !_compute_pipeline.empty();
   running = running || !_dma_waiting_queue.empty();
+  running = running || !_tma.empty();
   running = running || !_ld_inst_queue.empty();
   running = running || !_st_inst_queue.empty();
   return running;

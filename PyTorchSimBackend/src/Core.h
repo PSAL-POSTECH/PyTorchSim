@@ -47,7 +47,7 @@ class Core {
   cycle_type _stat_issued_cycle;
   cycle_type _compute_memory_stall_cycle;
 
-  std::deque<std::shared_ptr<Tile>> _tiles;
+  std::vector<std::shared_ptr<Tile>> _tiles;
   std::queue<std::shared_ptr<Tile>> _finished_tiles;
 
   std::queue<std::shared_ptr<Instruction>> _compute_pipeline;

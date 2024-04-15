@@ -1,6 +1,7 @@
 #include "TMA.h"
 
-TMA::TMA(uint32_t dram_req_size) {
+TMA::TMA(uint32_t id, uint32_t dram_req_size) {
+  _id = id;
   _dram_req_size = dram_req_size;
   _current_inst = nullptr;
 }
@@ -8,9 +9,9 @@ TMA::TMA(uint32_t dram_req_size) {
 void TMA::issue_tile(std::shared_ptr<Instruction> inst) {
   _current_inst = std::move(inst);
   std::vector<size_t>& tile_size = _current_inst->get_tile_size();
-  spdlog::info("[TMA] instruction issued ");
+  spdlog::trace("[TMA {}] {} instruction issued", _id, opcode_to_string(_current_inst->get_opcode()));
   if (tile_size.size() != 2) {
-    spdlog::error("[TMA] issued tile is not [y,x] format..");
+    spdlog::error("[TMA {}] issued tile is not [y,x] format..", _id);
     exit(EXIT_FAILURE);
   }
 

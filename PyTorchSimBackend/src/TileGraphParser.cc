@@ -134,18 +134,29 @@ std::vector<std::shared_ptr<Tile>> TileLoopNode::get_tiles_from_iter(int iter) {
       );
       link_map[tile_node] = inst;
 <<<<<<< HEAD
+<<<<<<< HEAD
       tile_vec.back()->append_instuction(inst);
 =======
     } else if (tile_node->get_type() == TileType::COMPUTE_NODE) {
+=======
+      tile_vec.back()->append_instuction(inst);
+    } else if (tile_node->get_type() == TileType::COMPUTE_NODE) {
+      std::shared_ptr<TileComputeNode> compute_node = std::static_pointer_cast<TileComputeNode>(tile_node);
+      std::shared_ptr<Instruction> inst = std::make_shared<Instruction>(
+>>>>>>> 793b4fe (Hotfix7)
         Opcode::COMP, 6, //compute_node->get_cycle(),
         0, 0,
         std::vector<size_t>(), std::vector<size_t>()
       );
       link_map[tile_node] = inst;
 <<<<<<< HEAD
+<<<<<<< HEAD
       tile_vec.back()->append_instuction(inst);
 =======
 >>>>>>> 9e7df6c (Hotfix5)
+=======
+      tile_vec.back()->append_instuction(inst);
+>>>>>>> 793b4fe (Hotfix7)
     } else if (tile_node->get_type() == TileType::LOOP_INDEX_NODE) {
       std::shared_ptr<TileLoopNode> loop_node = std::static_pointer_cast<TileLoopNode>(tile_node);
       uint64_t start = loop_node->get_start();

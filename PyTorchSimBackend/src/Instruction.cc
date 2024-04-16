@@ -20,6 +20,9 @@ Instruction::Instruction(Opcode opcode, cycle_type compute_cycle, size_t num_par
   _tile_numel = 1;
   for (auto dim : tile_size)
     _tile_numel *= dim;
+  if (tile_stride.size() == 1) { // 1D tile (vector)
+    tile_stride.push_back(1);
+  }
 }
 
 void Instruction::finish_instruction() {

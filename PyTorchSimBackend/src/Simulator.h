@@ -16,8 +16,8 @@ namespace fs = std::filesystem;
 #define DRAM_MASK 0x1 << 2
 #define ICNT_MASK 0x1 << 3
 #define IS_CORE_CYCLE(x) (x & CORE_MASK)
-#define IS_DRAM_CYCLE(x) (x & CORE_MASK)
-#define IS_ICNT_CYCLE(x) (x & CORE_MASK)
+#define IS_DRAM_CYCLE(x) (x & DRAM_MASK)
+#define IS_ICNT_CYCLE(x) (x & ICNT_MASK)
 
 class Simulator {
  public:
@@ -35,6 +35,7 @@ class Simulator {
   SimulationConfig _config;
   uint32_t _n_cores;
   uint32_t _n_memories;
+  uint32_t _memory_req_size;
 
   // Components
   std::vector<std::unique_ptr<Core>> _cores;
@@ -55,6 +56,14 @@ class Simulator {
   // Cycle and mask
   uint64_t _core_cycles;
   uint32_t _cycle_mask;
+
+  // Icnt stat
+  uint64_t _nr_from_core=0;
+  uint64_t _nr_to_core=0;
+  uint64_t _nr_from_mem=0;
+  uint64_t _nr_to_mem=0;
+  cycle_type _icnt_cycle=0;
+  uint64_t _icnt_interval=0;
 
   // Model
   std::vector<Model> _models;

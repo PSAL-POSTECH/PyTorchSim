@@ -98,7 +98,7 @@ void TileGraph::allocate_subgraph(int core_id) {
     _cpu_graph_map[core_id] = nullptr;
     return;
   }
-  spdlog::trace("[TileGraph] Core {} allocated new subgraph ({}/{})", core_id, _vec_index, _subgraph_vec.size());
+  spdlog::info("[TileGraph] Core {} allocated new subgraph ({}/{})", core_id, _vec_index, _subgraph_vec.size());
   std::shared_ptr<TileSubGraph> subgraph = _subgraph_vec.at(_vec_index++);
   _cpu_graph_map[core_id] = subgraph;
 }

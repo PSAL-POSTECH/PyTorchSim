@@ -10,7 +10,7 @@ Core::Core(uint32_t id, SimulationConfig config)
       _stat_issued_cycle(0),
       _compute_memory_stall_cycle(0),
       _tma(id, config.dram_req_size) {
-  _sram_size = _config.sram_size;
+  _sram_size = _config.sram_size * 1024;
   _used_sram_size = 0;
 }
 
@@ -69,7 +69,7 @@ void Core::dma_cycle() {
         /* Only DMA write operation is finished! */
         finish_instruction(finished_inst);
       } else if(!finished_inst->is_dma_read()) {
-        spdlog::error("[Core {}] TMA instruction in not valid", _id);
+        spdlog::error("[Core {}][{}] TMA instruction in not valid", _id, _core_cycle);
         exit(EXIT_FAILURE);
       }
       /*Pass to waiting queue */
@@ -121,7 +121,7 @@ void Core::cycle() {
   for (int i=0; i<_tiles.size() && !issued; i++) {
     auto& instructions = _tiles[i]->get_instructions();
     if (instructions.size()==0) {
-      spdlog::error("[Core {}] tile has non instructions...", _id);
+      spdlog::error("[Core {}][{}] tile has non instructions...", _id, _core_cycle);
       exit(EXIT_FAILURE);
     }
 
@@ -132,10 +132,12 @@ void Core::cycle() {
 
     switch (inst->get_opcode()) {
       case Opcode::MOVIN:
+        spdlog::trace("[Core {}][{}] MOVIN issued", _id, _core_cycle, inst->get_free_sram_size());
         _ld_inst_queue.push(inst);
         issued = true;
         break;
       case Opcode::MOVOUT:
+        spdlog::trace("[Core {}][{}] MOVOUT issued", _id, _core_cycle, inst->get_free_sram_size());
         _st_inst_queue.push(inst);
         issued = true;
         break;
@@ -144,7 +146,7 @@ void Core::cycle() {
           inst->finish_cycle = _core_cycle + inst->get_compute_cycle();
         else
           inst->finish_cycle = _compute_pipeline.back()->finish_cycle + inst->get_compute_cycle();
-        spdlog::trace("[Core {}] compute instruction issued", _id);
+        spdlog::trace("[Core {}][{}] compute instruction issued", _id, _core_cycle);
         _compute_pipeline.push(inst);
         issued = true;
         break;
@@ -170,11 +172,11 @@ void Core::cycle() {
 void Core::finish_instruction(std::shared_ptr<Instruction>& inst) {
   size_t free_sram_size = inst->get_free_sram_size();
   if (inst->finished) {
-    spdlog::error("[Core {}] {} inst already finished!!", _id, opcode_to_string(inst->get_opcode()));
+    spdlog::error("[Core {}][{}] {} inst already finished!!", _id, _core_cycle, opcode_to_string(inst->get_opcode()));
     exit(EXIT_FAILURE);
   }
   inst->finish_instruction();
-  spdlog::trace("[Core {}] Used sram: {}, Release sram: {}, inst: {}", _id,  _used_sram_size, inst->get_free_sram_size(), opcode_to_string(inst->get_opcode()));
+  spdlog::trace("[Core {}][{}] Used sram: {}, Release sram: {}, inst: {}", _id, _core_cycle, _used_sram_size, inst->get_free_sram_size(), opcode_to_string(inst->get_opcode()));
   _used_sram_size -= free_sram_size;
 }
 
@@ -210,6 +212,6 @@ bool Core::can_issue_compute(std::shared_ptr<Instruction>& inst) {
 }
 
 void Core::print_stats() {
-  spdlog::info("[Core {}] : Total tma {} Idle cycle {}", _id, _stat_tma_cycle, _stat_idle_cycle);
+  spdlog::info("[Core {}] : Total tma {}, Compute {}, Idle cycle {}", _id, _stat_tma_cycle, _stat_compute_cycle, _stat_idle_cycle);
   spdlog::info("[Core {}] : Total cycle: {}", _id, _core_cycle);
 }

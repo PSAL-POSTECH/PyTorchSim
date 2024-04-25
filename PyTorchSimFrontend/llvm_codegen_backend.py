@@ -547,9 +547,13 @@ class MatrixLLVMKernel(LLVMKernel):
             type_name = llvm_common.DTYPE_TO_LLVM[dtype]
             align = llvm_common.DTYPE_SIZE[dtype]
             comma = ", "
-            array_line = [f"{type_name} {reduction_init(reduction_type, dtype)}" for _ in range(self.tile_row)]
-            self.reduction_prefix.writeline(f"store <{self.tile_row} x {type_name}> <{comma.join(array_line)}>, ptr %{acc}, align {align}")
-            line = f"load <{self.tile_row} x {type_name}>, ptr %{acc}, align {align}"
+            if (self.tile_col == 1): # if the tile is vector
+                self.reduction_prefix.writeline(f"store {type_name} {reduction_init(reduction_type, dtype)}, ptr %{acc}, align {align}")
+                line = f"load <{self.tile_col} x {type_name}>, ptr %{acc}, align {align}"
+            else:
+                array_line = [f"{type_name} {reduction_init(reduction_type, dtype)}" for _ in range(self.tile_row)]
+                self.reduction_prefix.writeline(f"store <{self.tile_row} x {type_name}> <{comma.join(array_line)}>, ptr %{acc}, align {align}")
+                line = f"load <{self.tile_row} x {type_name}>, ptr %{acc}, align {align}"
 
             # NOTE. To keep below line be under the compute, used store buffers
             temp = self.cse.generate(self.stores, line)
@@ -576,9 +580,17 @@ class MatrixLLVMKernel(LLVMKernel):
                 if (len(output) == length / 2):
                     size *= 2
                     length = len(output)
-            line = f"fadd <{self.tile_row} x {type_name}> %{temp}, %{output[0]}"
+            if (self.tile_col == 1):
+                line = f"insertelement <{self.tile_col} x {type_name}> undef, {type_name} %{output[0]}, i32 0"
+                cast_vec = self.cse.generate(self.stores, line)
+                line = f"fadd <{self.tile_col} x {type_name}> %{temp}, %{cast_vec}"
+            else:
+                line = f"fadd <{self.tile_row} x {type_name}> %{temp}, %{output[0]}"
             output = self.cse.generate(self.stores, line)
-            line = f"store <{self.tile_row} x {type_name}> %{output}, ptr %{acc}, align {align}"
+            if (self.tile_col == 1):
+                line = f"store <{self.tile_col} x {type_name}> %{output}, ptr %{acc}, align {align}"
+            else:
+                line = f"store <{self.tile_row} x {type_name}> %{output}, ptr %{acc}, align {align}"
             self.cse.generate(self.stores, line, assignment = False)
             self.reduction_cse.reduction_cache[reduction_key] = acc
         return acc
@@ -593,12 +605,21 @@ class MatrixLLVMKernel(LLVMKernel):
         cv = self.get_constant_vector(index)
         self.add_desc(False, name, align, cv, [1, self.tile_row])
         index = self.depth_first_traverse(index, self.reduction_suffix, self.index_cse)
-        line = f"load <{self.tile_row} x {type_name}>, ptr %{value}, align {align}"
+        if (self.tile_col == 1):
+            line = f"load <{self.tile_col} x {type_name}>, ptr %{value}, align {align}"
+        else:
+            line = f"load <{self.tile_row} x {type_name}>, ptr %{value}, align {align}"
         value = self.reduction_cse.generate(self.reductions_suffix, line)
-        line = f"getelementptr inbounds {type_name}, ptr %{var}, i64 %{index}"
+        if (self.tile_col == 1):
+            line = f"getelementptr inbounds {type_name}, ptr %{var}, i64 0"
+        else:
+            line = f"getelementptr inbounds {type_name}, ptr %{var}, i64 %{index}"
         var = self.cse.generate(self.reductions_suffix, line)
         stride = self.ranges[-1]
-        line = f"call void @llvm.matrix.column.major.store.v{self.tile_row}f32.p0f32(<{self.tile_row} x {type_name}> %{value}, ptr %{var}, i64 {stride}, i1 0, i32 {self.tile_row}, i32 1)"
+        if (self.tile_col == 1):
+            line = f"call void @llvm.matrix.column.major.store.v{self.tile_col}f32.p0f32(<{self.tile_col} x {type_name}> %{value}, ptr %{var}, i64 1, i1 0, i32 {self.tile_col}, i32 1)"
+        else:
+            line = f"call void @llvm.matrix.column.major.store.v{self.tile_row}f32.p0f32(<{self.tile_row} x {type_name}> %{value}, ptr %{var}, i64 {stride}, i1 0, i32 {self.tile_row}, i32 1)"
         self.cse.generate(self.reductions_suffix, line, assignment = False)
 
     def codegen_loops(self):
@@ -644,6 +665,8 @@ class MatrixLLVMKernel(LLVMKernel):
         code.writeline(f'declare <{self.tile_size} x float> @llvm.matrix.column.major.load.v{self.tile_size}f32.p0f32(ptr , i64, i1, i32, i32) #2')
         code.writeline(f'declare <{self.tile_size} x float> @llvm.matrix.multiply.v{self.tile_size}f32.v16f32.v16f32(<16 x float>, <16 x float>, i32, i32, i32) #1')
         code.writeline(f'declare void @llvm.matrix.column.major.store.v{self.tile_size}f32.p0f32(<{self.tile_size} x float>, ptr , i64, i1, i32, i32) #3')
+        if self.tile_col == 1:
+            code.writeline(f'declare void @llvm.matrix.column.major.store.v{self.tile_col}f32.p0f32(<{self.tile_col} x float>, ptr , i64, i1, i32, i32) #3')
         if self.tile_size != self.tile_row:
             code.writeline(f'declare void @llvm.matrix.column.major.store.v{self.tile_row}f32.p0f32(<{self.tile_row} x float>, ptr , i64, i1, i32, i32) #3')
         code.writeline(f'declare float @llvm.vector.reduce.fadd.nxv2f32(float, <{self.tile_row} x float>)')

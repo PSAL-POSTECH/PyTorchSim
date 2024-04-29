@@ -888,6 +888,12 @@ class LLVMScheduling(BaseScheduling):
     def flush(self):
         self._scheduling.flush()
 
+    def define_function(self, kernel):
+        code = kernel.def_function()
+        if code is not None:
+            wrapper = V.graph.wrapper_code
+            wrapper.header.writeline(kernel.def_function())
+
     def define_kernel(self, src_code, kernel_name):
         wrapper = V.graph.wrapper_code
         if src_code in wrapper.src_to_kernel:
@@ -925,4 +931,5 @@ class MatrixLLVMScheduling(LLVMScheduling):
             node_schedule = [template_node, *epilogue_nodes]
             kernel.meta_kernel()
             self.define_kernel(src_code, kernel.kernel_name)
+            self.define_function(kernel)
         kernel.call_kernel()

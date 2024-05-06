@@ -78,7 +78,7 @@ def convolution(
 
     layout = conv_layout(x, weight, None, **kwargs)
     llvm_template = LLVMConvTemplate([x, weight, bias], layout, **kwargs)
-    return llvm_template.generate(kernel_caller_function="Conv2d").output_node()
+    return llvm_template.generate().output_node()
 
 lowerings.update({getattr(aten.mm, overload): tuned_mm for overload in aten.mm.overloads()})
 lowerings.update({getattr(aten.convolution, overload): convolution for overload in aten.convolution.overloads()})

@@ -19,7 +19,10 @@ from PyTorchSimFrontend.llvm_common import LLVMKernelArgs
 
 class LLVMTemplateKernel(Kernel):
     overrides = OpOverrides
-    def __init__(self, kernel_name, kernel_caller_function=None, kernel_function_render=None) -> None:
+    def __init__(self, kernel_name,
+                 kernel_caller_function=None,
+                 kernel_function_render=None,
+                 kernel_arg_attributes=None) -> None:
         super().__init__(LLVMKernelArgs())
         self.kernel_name = kernel_name
         self.named_nodes = {}
@@ -28,18 +31,19 @@ class LLVMTemplateKernel(Kernel):
         self.store_desc = {}
         self.kernel_caller_function = kernel_caller_function
         self.kernel_function_render = kernel_function_render
+        self.kernel_arg_attributes = kernel_arg_attributes
 
-    def load_matrix(self, row, col, dtype, stype, ptr, base_addr, data_size):
+    def load_matrix(self, row, col, stride, dtype, stype, ptr, base_addr, data_size):
         suffix = f"v{row*col}{stype}.p0{stype}"
-        argument = f"(ptr {ptr}, i64 {col}, i1 0, i32 {row}, i32 {col})"
+        argument = f"(ptr {ptr}, i64 {stride}, i1 0, i32 {row}, i32 {col})"
         code = f"<{row*col} x {dtype}> @llvm.matrix.column.major.load.{suffix} {argument}"
 
         self.add_desc(True, base_addr, data_size, [col, 1], [row, col])
         return f"call {code}"
 
-    def store_matrix(self, row, col, dtype, stype, ptr, vec, base_addr, data_size):
+    def store_matrix(self, row, col, stride, dtype, stype, ptr, vec, base_addr, data_size):
         suffix = f"v{row*col}{stype}.p0{stype}"
-        argument = f"(<{row*col} x {dtype}> {vec}, ptr {ptr}, i64 {col}, i1 0, i32 {row}, i32 {col})"
+        argument = f"(<{row*col} x {dtype}> {vec}, ptr {ptr}, i64 {stride}, i1 0, i32 {row}, i32 {col})"
         code = f"void @llvm.matrix.column.major.store.{suffix} {argument}"
 
         self.add_desc(False, base_addr, data_size, [col, 1], [row, col])
@@ -71,7 +75,9 @@ class LLVMTemplateKernel(Kernel):
 
     def meta_kernel(self):
         wrapper = V.graph.wrapper_code
-        _, _, arg_attributes = self.args.llvm_argdefs()
+        arg_attributes = self.kernel_arg_attributes
+        if arg_attributes is None:
+            _, _, arg_attributes = self.args.llvm_argdefs()
         wrapper.add_import_once('\nprint(f\'Wrapper Codegen Path = {__file__}\')')
         wrapper.add_import_once(f'\nfrom extension_codecache import CustomAsyncCompile')
         wrapper.add_import_once(f'\ncustom_async_compile = CustomAsyncCompile()')
@@ -126,7 +132,7 @@ class LLVMTemplateKernel(Kernel):
 
     def def_function(self):
         _, call_args, _ = self.args.python_argdefs()
-        if self.kernel_caller_function is not None:
+        if self.kernel_function_render is not None:
             return self.kernel_function_render(input_args=call_args)
 
 class LLVMTemplateCaller(CUDATemplateCaller):
@@ -156,12 +162,13 @@ class LLVMTemplate(KernelTemplate):
         self.input_reorder = input_reorder
         self.layout = layout
 
-    def generate(self, kernel_caller_function=None, **kwargs) -> ChoiceCaller:
+    def generate(self, **kwargs) -> ChoiceCaller:
         kernel_name = f"llvm_{self.name}"
         with patch.object(V.graph, "get_dtype", self._fake_get_dtype(self.output_node)):
             kernel  = LLVMTemplateKernel(kernel_name=kernel_name,
-                                         kernel_caller_function=kernel_caller_function,
-                                         kernel_function_render=self.function_render if kernel_caller_function else None)
+                                         kernel_caller_function=self.function_name if hasattr(self, 'function_name') else None,
+                                         kernel_function_render=self.function_render if hasattr(self, 'function_render') else None,
+                                         kernel_arg_attributes=self.get_arg_attributes() if hasattr(self, 'get_arg_attributes') else None)
             code = self.render(kernel=kernel, **kwargs)
 
         kernel_hash_name = f"llvm_{self.name}_{next(self.index_counter)}"
@@ -181,12 +188,12 @@ class LLVMTemplate(KernelTemplate):
         ):
             kernel = LLVMTemplateKernel(
                 kernel_name="KERNEL_NAME",
-                kernel_caller_function=kernel_caller_function,
-                # kernel_function_render=self.function_render if kernel_caller_function else None
                 kernel_function_render=functools.partial(
                     self.function_render,
                     kernel_name="KERNEL_NAME"
-                ) if kernel_caller_function else None
+                ) if hasattr(self, 'function_render') else None,
+                kernel_caller_function=self.function_name if hasattr(self, 'function_name') else None,
+                kernel_arg_attributes=self.get_arg_attributes() if hasattr(self, 'get_arg_attributes') else None
             )
             render = functools.partial(
                 self.render,

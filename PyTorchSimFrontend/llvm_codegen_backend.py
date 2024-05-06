@@ -892,7 +892,7 @@ class LLVMScheduling(BaseScheduling):
         code = kernel.def_function()
         if code is not None:
             wrapper = V.graph.wrapper_code
-            wrapper.header.writeline(kernel.def_function())
+            wrapper.header.writeline(code)
 
     def define_kernel(self, src_code, kernel_name):
         wrapper = V.graph.wrapper_code

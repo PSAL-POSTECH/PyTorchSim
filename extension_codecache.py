@@ -43,27 +43,6 @@ def dump_metadata(args, arg_attributes, path):
             file.write(f'{arg_name}=({arg_attribute[0]}, {arg.dtype}, {arg.shape})\n')
     return
 
-def write_arg(arg, path, name):
-    dump_path = os.path.join(path, name)
-    os.makedirs(dump_path, exist_ok=True)
-    index = len(os.listdir(dump_path))
-
-    if (isinstance(arg, torch.Tensor)):
-        data_path = os.path.join(dump_path, f'{index}.raw')
-        tensor = arg.cpu()
-        t_arr = tensor.numpy().flatten()
-        t_arr.tofile(data_path)
-    else:
-        assert(0)
-    return index
-
-def dump_args(args, arg_attributes, path):
-    index = 0
-    for (arg_name, arg_attribute), arg in zip(arg_attributes.items(), args):
-        if LLVMKernelArgs.is_llvm_arg_in(arg_attribute[0]):
-            index = write_arg(arg, path, arg_name)
-    return index
-
 def llvm_compile_command(input, output):
     opt_output = f"{input[:-3]}_opt.ll"
     return [re.sub(r"[ \n]+", " ",
@@ -180,9 +159,10 @@ class CustomAsyncCompile(AsyncCompile):
             # Dump arguments and meta data
             dump_metadata(args, arg_attributes, result_path)
             if TORCHSIM_VALIDATION_MODE:
-                n_call = dump_args(args, arg_attributes, result_path)
-                funcsim = FunctionalSimulator(result_path, self.key, arg_attributes, args)
-                funcsim.run_spike(n_call, os.path.join(result_path, self.validation_binary_name))
+                funcsim = FunctionalSimulator(result_path, self.key)
+                funcsim.run_spike(args, arg_attributes,
+                                  os.path.join(result_path, self.validation_binary_name),
+                                  kwargs['intermediate_op'] if 'intermediate_op' in kwargs else None)
 
             assembly_path = os.path.join(result_path, f'{self.key}.s')
             try:

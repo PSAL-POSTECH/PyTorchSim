@@ -48,7 +48,7 @@ for.body8:
   %2 = mul nuw nsw i64 %indvars.iv, {{ N }}
   %gep = getelementptr inbounds {{ DATA_TYPE }}, ptr %invariant.gep, i64 %2
   %call16 = {{ kernel.load_matrix(TILE_K, TILE_N, N, DATA_TYPE, DATA_STYPE, "%gep", "Y", DATA_SIZE)}}
-  %call17 = call <{{ TILE_M * TILE_N }} x {{ DATA_TYPE }}> @llvm.matrix.multiply.v{{ TILE_M*TILE_K }}{{ DATA_STYPE }}.v{{ TILE_K*TILE_N }}{{ DATA_STYPE }}.v{{ TILE_M*TILE_N }}{{ DATA_STYPE }}(<{{ TILE_M * TILE_K}} x {{ DATA_TYPE }}> %call, <{{ TILE_N * TILE_K}} x {{ DATA_TYPE }}> %call16, i32 {{ TILE_M }}, i32 {{ TILE_K }}, i32 {{ TILE_N }})
+  %call17 = call <{{ TILE_M * TILE_N }} x {{ DATA_TYPE }}> @llvm.matrix.multiply.v{{ TILE_M*TILE_K }}{{ DATA_STYPE }}.v{{ TILE_K*TILE_N }}{{ DATA_STYPE }}.v{{ TILE_M*TILE_N }}{{ DATA_STYPE }}(<{{ TILE_N * TILE_K}} x {{ DATA_TYPE }}> %call16, <{{ TILE_M * TILE_K}} x {{ DATA_TYPE }}> %call, i32 {{ TILE_M }}, i32 {{ TILE_K }}, i32 {{ TILE_N }})
   %tmp_acc = load <{{ TILE_M * TILE_N }} x {{ DATA_TYPE }}>, ptr @sram_accum, align 64
   %call18 = fadd <{{ TILE_M * TILE_N }} x {{ DATA_TYPE }} > %call17, %tmp_acc
   store <{{ TILE_M * TILE_N }} x {{ DATA_TYPE }}> %call18, ptr @sram_accum, align 64

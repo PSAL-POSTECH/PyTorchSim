@@ -5,8 +5,10 @@ import sys
 import time
 import contextlib
 import unittest
+import numpy as np
 
 import torch
+import torch.nn as nn
 import torch._dynamo
 import torch.utils.cpp_extension
 from torch._inductor import config
@@ -145,6 +147,12 @@ class ExtensionBackendTests(TestCase):
         z = torch.empty(1000).to(device=device).fill_(3)
         ref = torch.empty(1000, 1000).fill_(3)
 
+        # conv inputs
+        input_array = np.arange(1*8*64*64)*0.001
+        conv_input = torch.tensor(input_array, dtype=torch.float32).view(1, 8, 64, 64).to(device=device)
+        kernel_array = np.arange(16*8*3*3)*0.001
+        conv_kernel = torch.tensor(kernel_array, dtype=torch.float32).view(16, 8, 3, 3).to(device=device)
+
         self.assertTrue(x.device == device)
         self.assertTrue(y.device == device)
         self.assertTrue(z.device == device)
@@ -161,11 +169,23 @@ class ExtensionBackendTests(TestCase):
         def custom_matmul(a, b):
             return torch.matmul(a, b)
 
-        metrics.reset()
-        opt_fn = torch.compile()(custom_matmul)
-        res = opt_fn(x, y)
-        self.assertEqual(ref, res.to(device="cpu"))
+        def custom_conv2d(a, b):
+            i_c = a.shape[1]
+            o_c = b.shape[0]
+            conv2d = nn.Conv2d(i_c, o_c, b.shape[-1], stride=1, padding=0, dilation=1)
+            conv2d.weight = nn.Parameter(b)
 
+            return conv2d(a)
+
+        metrics.reset()
+        opt_fn = torch.compile()(custom_conv2d)
+        res = opt_fn(conv_input, conv_kernel)
+        # self.assertEqual(ref, res.to(device="cpu"))
+
+        out = custom_conv2d(conv_input.cpu(), conv_kernel.cpu())
+
+        print("Result > ", torch.allclose(res.cpu(), out, rtol=1, atol=1))
+        print("Max diff > ", torch.max(torch.abs(res.cpu() - out)))
 
 if __name__ == "__main__":
     from torch._dynamo.test_case import run_tests

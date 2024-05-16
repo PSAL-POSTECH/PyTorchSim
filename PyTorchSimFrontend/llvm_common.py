@@ -121,6 +121,7 @@ class BaseLLVMKernel(common.Kernel):
         self.cse = common.CSE(self.newvar_prefix, self.suffix, self.name_prefix)
         self.vector_cse = common.CSE(self.newvar_prefix, self.suffix, self.vector_prefix)
         self.tile_size = None
+        self.vec_len = {}
 
     def load(self, name: str, index: sympy.Expr):
         raise NotImplementedError()
@@ -133,6 +134,24 @@ class BaseLLVMKernel(common.Kernel):
 
     def reduction(self, dtype, src_dtype, reduction_type, value):
         raise NotImplementedError()
+
+    def widening(self, args, buf_bounds):
+        vec_len0 = self.vec_len[args[0]]
+        vec_len1 = self.vec_len[args[1]]
+        if vec_len0 != vec_len1:
+            temp = list(args)
+            if (vec_len0 > vec_len1):
+                assert(vec_len1 == 1)
+                indexes = [f"i32 0" for i in range(vec_len0)]
+                line = f"shufflevector <{vec_len1} x float> %{args[1]}, <{vec_len1} x float> undef, <{vec_len0} x i32> <{', '.join(indexes)}>"
+                temp[1] = self.cse.generate(self.compute, line, bounds=buf_bounds)
+            elif (vec_len0 < vec_len1):
+                assert(vec_len0 == 1)
+                indexes = [f"i32 0" for i in range(vec_len1)]
+                line = f"shufflevector <{vec_len0} x float> %{args[0]}, <{vec_len0} x float> undef, <{vec_len1} x i32> <{', '.join(indexes)}>"
+                temp[0] = self.cse.generate(self.compute, line, bounds=buf_bounds)
+            args = tuple(temp)
+        return args
 
     def __enter__(self):
         class CSEProxy:
@@ -160,6 +179,7 @@ class BaseLLVMKernel(common.Kernel):
                         )
                         vector_csevar.update_on_args(name, vector_args, kwargs)
                         args = (args[0][1], args[1][1])
+                    args = self.widening(args, buf_bounds)
                     csevar = self.cse.generate(
                         self.compute,
                         getattr(parent_handler, name)(*args, tile_size=self.tile_size, **kwargs),  # type: ignore[has-type]

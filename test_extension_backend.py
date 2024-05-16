@@ -159,9 +159,13 @@ class ExtensionBackendTests(TestCase):
 
         def fn(a, b, c):
             return a * b + c
-        
+
         def vectoradd(a, b):
             return a + b
+
+        def vectormul(a, b):
+            res = a * b
+            return res.sum()
 
         def reduce_sum(a, b):
             return torch.sum(a + b, axis=-1)
@@ -186,6 +190,13 @@ class ExtensionBackendTests(TestCase):
 
         print("Result > ", torch.allclose(res.cpu(), out, rtol=1, atol=1))
         print("Max diff > ", torch.max(torch.abs(res.cpu() - out)))
+        # Backward Uni-Test (Single Perceptron)
+        x = torch.empty(64).to(device=device).fill_(1)
+        w = torch.empty(64).to(device=device).fill_(2)
+        w.requires_grad = True
+        opt_mlp = torch.compile()(vectormul)
+        y = opt_mlp(x, w)
+        y.backward()
 
 if __name__ == "__main__":
     from torch._dynamo.test_case import run_tests

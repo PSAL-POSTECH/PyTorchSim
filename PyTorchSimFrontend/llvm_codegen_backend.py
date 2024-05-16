@@ -8,6 +8,7 @@ from torch._inductor.codegen import cpp, wrapper, common
 from torch._inductor.scheduler import BaseScheduling
 from torch._inductor.virtualized import V
 from torch._inductor.utils import IndentedBuffer
+import extension_codecache
 
 from . import llvm_common
 from . import llvm_lowering
@@ -100,6 +101,34 @@ def matrix_partial_reduction_combine(reduction_type, vector_value, tile_row=64):
 class ExtensionWrapperCodegen(wrapper.WrapperCodeGen):
     def __init__(self):
         super().__init__()
+
+    def write_header(self):
+        self.header.splice(
+            f"""
+                from ctypes import c_void_p, c_long
+                import torch
+                import math
+                import random
+                import os
+                import tempfile
+                from math import inf, nan
+                from torch._inductor.hooks import run_intermediate_hooks
+                from torch._inductor.utils import maybe_profile
+                from torch._inductor.codegen.memory_planning import _align as align
+
+                from torch import device, empty, empty_strided
+                from {extension_codecache.__name__} import CustomAsyncCompile
+                from torch._inductor.select_algorithm import extern_kernels
+
+                aten = torch.ops.aten
+                inductor_ops = torch.ops.inductor
+                assert_size_stride = torch._C._dynamo.guards.assert_size_stride
+                alloc_from_pool = torch.ops.inductor._alloc_from_pool
+                reinterpret_tensor = torch.ops.aten._reinterpret_tensor
+                async_compile = CustomAsyncCompile()
+
+            """
+        )
 
 class ExtensionOverrides(common.OpOverrides):
     """Map element-wise ops to LLVM IR"""
@@ -496,7 +525,7 @@ class MatrixLLVMKernel(LLVMKernel):
         super().__init__()
         # Defaulat tile setting
         self.tile_row = 64
-        self.tile_col = 64
+        self.tile_col = 1
         self.tile_size = self.tile_row * self.tile_col
 
 
@@ -510,11 +539,18 @@ class MatrixLLVMKernel(LLVMKernel):
         cv = self.get_constant_vector(index)
         self.add_desc(True, name, align, cv, [self.tile_col, self.tile_row])
         index = self.depth_first_traverse(index, self.loads, self.index_cse)
-        line = f"getelementptr inbounds {type_name}, ptr %{var}, i64 %{index}"
+        vec_len = self.tile_size if not index.is_number else 1
+        index = f"%{index}" if not index.is_number else index
+        line = f"getelementptr inbounds {type_name}, ptr %{var}, i64 {index}"
         var = self.cse.generate(self.loads, line)
-        stride = self.ranges[-1] # stride is input row size
-        line = f"call <{self.tile_size} x {type_name}> @llvm.matrix.column.major.load.v{self.tile_size}f32.p0f32(ptr %{var}, i64 {stride}, i1 0, i32 {self.tile_row}, i32 {self.tile_col})"
-        return self.cse.generate(self.loads, line)
+        stride = self.ranges[-1]
+        if vec_len > 1:
+            line = f"call <{vec_len} x {type_name}> @llvm.matrix.column.major.load.v{vec_len}f32.p0f32(ptr %{var}, i64 {stride}, i1 0, i32 {self.tile_row}, i32 {self.tile_col})"
+        elif vec_len == 1: # scalar
+            line = f"call <{vec_len} x {type_name}> @llvm.matrix.column.major.load.v{vec_len}f32.p0f32(ptr %{var}, i64 1, i1 0, i32 1, i32 1)"
+        out_var = self.cse.generate(self.loads, line)
+        self.vec_len[out_var] = vec_len
+        return out_var
 
     def store(self, name: str, index: sympy.Expr, value, *args, **kwargs):
         var = self.args.output(name)
@@ -663,6 +699,7 @@ class MatrixLLVMKernel(LLVMKernel):
         code = super()._codegen_kernel(arg_defs, kernel_name)
         # Add llvm matrix intrinsics definition
         code.writeline(f'declare <{self.tile_size} x float> @llvm.matrix.column.major.load.v{self.tile_size}f32.p0f32(ptr , i64, i1, i32, i32) #2')
+        code.writeline(f'declare <1 x float> @llvm.matrix.column.major.load.v1f32.p0f32(ptr , i64, i1, i32, i32) #2')
         code.writeline(f'declare <{self.tile_size} x float> @llvm.matrix.multiply.v{self.tile_size}f32.v16f32.v16f32(<16 x float>, <16 x float>, i32, i32, i32) #1')
         code.writeline(f'declare void @llvm.matrix.column.major.store.v{self.tile_size}f32.p0f32(<{self.tile_size} x float>, ptr , i64, i1, i32, i32) #3')
         if self.tile_col == 1:

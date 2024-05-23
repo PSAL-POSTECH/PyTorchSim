@@ -47,7 +47,7 @@ class LLVMKernelCallerCodeGen():
         self.writeline(f'sprintf(file_name, "%d.raw", n_call){self.ending}')
         for i, arg_name in enumerate(self.arg_attributes.keys()):
             if self.is_in_arg(arg_name):
-                path = os.path.join(self.dump_path, f'arg{i}_1/')
+                path = os.path.join(self.dump_path, arg_name) + "/"
                 self.writeline(f'strcpy(path, "{path}"){self.ending}')
                 self.writeline(f'strcat(path, file_name){self.ending}')
                 self.writeline(f'if(load_arg({arg_name}, sizeof({arg_name}), path) == -1){self.open_bracket}')

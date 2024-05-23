@@ -163,10 +163,6 @@ class ExtensionBackendTests(TestCase):
         def vectoradd(a, b):
             return a + b
 
-        def vectormul(a, b):
-            res = a * b
-            return res.sum()
-
         def reduce_sum(a, b):
             return torch.sum(a + b, axis=-1)
 
@@ -191,12 +187,33 @@ class ExtensionBackendTests(TestCase):
         print("Result > ", torch.allclose(res.cpu(), out, rtol=1, atol=1))
         print("Max diff > ", torch.max(torch.abs(res.cpu() - out)))
         # Backward Uni-Test (Single Perceptron)
+        def perceptron(a, b, c):
+            res = a * b + c
+            return res.sum()
+
+        def weight_update(a, b, lr):
+            return a - b * lr
+
         x = torch.empty(64).to(device=device).fill_(1)
-        w = torch.empty(64).to(device=device).fill_(2)
+        w = torch.empty(64).to(device=device).fill_(3)
+        target_y = torch.tensor(384, dtype=torch.float32).to(device=device)
+        b = torch.empty(64).to(device=device).fill_(0.1)
         w.requires_grad = True
-        opt_mlp = torch.compile()(vectormul)
-        y = opt_mlp(x, w)
-        y.backward()
+        b.requires_grad = True
+        opt_mlp = torch.compile()(perceptron)
+        opt_w = torch.compile()(weight_update)
+        lr = torch.tensor(1e-3).to(device=device) # learning rate
+        for i in range(50):
+            y = opt_mlp(x, w, b)
+            loss = (target_y - y) ** 2 # TODO: Add loss function
+            # print(loss.cpu().item()) # check loss
+            # loss.to(device=device)
+            loss.backward()
+            with torch.no_grad():
+                w.copy_(opt_w(w, w.grad, lr))
+                b.copy_(opt_w(b, b.grad, lr))
+            w.grad.zero_()
+            b.grad.zero_()
 
 if __name__ == "__main__":
     from torch._dynamo.test_case import run_tests

@@ -183,6 +183,14 @@ class MatrixOverrides(ExtensionOverrides):
     def div(operand1, operand2, tile_size=4):
         return f'fdiv <{tile_size} x float> %{operand1}, %{operand2}'
 
+    @staticmethod
+    def truediv(operand1, operand2, tile_size=4):
+        return f'fdiv <{tile_size} x float> %{operand1}, %{operand2}'
+
+    @staticmethod
+    def constant(value, dtype, tile_size=4):
+        return repr(value)
+
 SYMPY_TO_LLVM = {
     sympy.core.mul.Mul: "mul",
     sympy.core.add.Add: "add",
@@ -543,8 +551,8 @@ class MatrixLLVMKernel(LLVMKernel):
         index = f"%{index}" if not index.is_number else index
         line = f"getelementptr inbounds {type_name}, ptr %{var}, i64 {index}"
         var = self.cse.generate(self.loads, line)
-        stride = self.ranges[-1]
         if vec_len > 1:
+            stride = self.ranges[-1]
             line = f"call <{vec_len} x {type_name}> @llvm.matrix.column.major.load.v{vec_len}f32.p0f32(ptr %{var}, i64 {stride}, i1 0, i32 {self.tile_row}, i32 {self.tile_col})"
         elif vec_len == 1: # scalar
             line = f"call <{vec_len} x {type_name}> @llvm.matrix.column.major.load.v{vec_len}f32.p0f32(ptr %{var}, i64 1, i1 0, i32 1, i32 1)"
@@ -562,12 +570,17 @@ class MatrixLLVMKernel(LLVMKernel):
         cv = self.get_constant_vector(index)
         self.add_desc(False, name, align, cv, [self.tile_col, self.tile_row])
         index = self.depth_first_traverse(index, self.stores, self.index_cse)
-        line = f"getelementptr inbounds {type_name}, ptr %{var}, i64 %{index}"
+        vec_len = self.tile_size if not index.is_number else 1
+        index = f"%{index}" if not index.is_number else index
+        line = f"getelementptr inbounds {type_name}, ptr %{var}, i64 {index}"
         var = self.cse.generate(self.stores, line)
-        stride = self.ranges[-1]
         if (isinstance(value, list)):
             value = value[0]
-        line = f"call void @llvm.matrix.column.major.store.v{self.tile_size}f32.p0f32(<{self.tile_size} x {type_name}> %{value}, ptr %{var}, i64 {stride}, i1 0, i32 {self.tile_row}, i32 {self.tile_col})"
+        if vec_len > 1:
+            stride = self.ranges[-1]
+            line = f"call void @llvm.matrix.column.major.store.v{self.tile_size}f32.p0f32(<{self.tile_size} x {type_name}> %{value}, ptr %{var}, i64 {stride}, i1 0, i32 {self.tile_row}, i32 {self.tile_col})"
+        elif vec_len == 1:
+            line = f"call void @llvm.matrix.column.major.store.v1f32.p0f32(<1 x {type_name}> %{value}, ptr %{var}, i64 1, i1 0, i32 1, i32 1)"
         self.cse.generate(self.stores, line, assignment = False)
 
     def reduction(self, dtype, src_dtype, reduction_type, value):

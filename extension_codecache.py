@@ -23,8 +23,8 @@ TORCHSIM_LLVM_PATH = os.environ.get('TORCHSIM_LLVM_PATH', default="/usr/bin")
 TORCHSIM_DIR = os.environ.get('TORCHSIM_DIR', default='/workspace/TorchSim')
 TORCHSIM_CUSTOM_PASS_PATH = os.environ.get('TORCHSIM_CUSTOM_PASS_PATH',
                                            default=f"{TORCHSIM_DIR}/GemminiLowerPass/build")
-TORCHSIM_ONNXIM_CONFIG = os.environ.get('TORCHSIM_CONFIG',
-                                        default=f'{TORCHSIM_DIR}/ONNXim/configs/systolic_ws_8x8_c1_simple_noc.json')
+TORCHSIM_BACKEND_CONFIG = os.environ.get('TORCHSIM_CONFIG',
+                                        default=f'{TORCHSIM_DIR}/PyTorchSimBackend/configs/systolic_ws_128x128_c4_simple_noc_tpuv4.json')
 GEM5_PATH = os.environ.get('GEM5_PATH',
                            default = f"/workspace/gem5/build/RISCV/gem5.opt")
 GEM5_SCRIPT_PATH = os.environ.get('GEM5_SCRIPT_PATH',
@@ -122,12 +122,11 @@ class LLVMCodeCache:
                 tile_graph_generator.cycle_analysis(cycle_list=cycle_list, name=os.path.join(write_path, "tile_graph"))
         return key
 
-def get_onnxim_command(model_path):
-    base_dir = os.path.join(TORCHSIM_DIR, "ONNXim")
+def get_backend_command(model_path):
+    base_dir = os.path.join(TORCHSIM_DIR, "PyTorchSimBackend")
     bin = os.path.join(base_dir, "build/bin/Simulator")
-    config = os.path.join(base_dir, TORCHSIM_ONNXIM_CONFIG)
-    model_list = os.path.join(base_dir, "models_list.json") # TODO: file format will be changed
-    cmd = f"{bin} --config {config} --model {model_path} --models_list {model_list}"
+    config = os.path.join(base_dir, TORCHSIM_BACKEND_CONFIG)
+    cmd = f"{bin} --config {config} --models_list {model_path}"
     return cmd.strip()
 
 class CustomAsyncCompile(AsyncCompile):
@@ -173,7 +172,8 @@ class CustomAsyncCompile(AsyncCompile):
                 print(f'{assembly_path} not found.')
             except Exception as e:
                 print(f"Error while reading.")
-            cmd = get_onnxim_command(result_path)
+            onnx_path = os.path.join(result_path, "tile_graph.onnx")
+            cmd = get_backend_command(onnx_path)
 
             try:
                 subprocess.check_call(shlex.split(cmd))

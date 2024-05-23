@@ -8,6 +8,18 @@ import numpy as np
 from PyTorchSimFrontend.llvm_common import LLVMKernelArgs
 import extension_codecache
 
+TORCH_TO_NUMPY = {
+    torch.float32: np.float32,
+    torch.float64: np.float64,
+    torch.int64: np.int64,
+    torch.int32: np.int32,
+    torch.int16: np.int16,
+    torch.int8: np.int8,
+    torch.uint8: np.uint8,
+    torch.bool: np.bool_,
+    torch.bfloat16: np.float16,
+}
+
 class FunctionalSimulator():
     def __init__(self, path, key):
         self.path = path
@@ -16,7 +28,7 @@ class FunctionalSimulator():
     def load_tensor(self, arg, arg_name, arg_attribute, dump_path, n_call):
         path = os.path.join(dump_path, arg_name, f'{n_call}.raw')
         with open(path, 'rb') as f:
-            np_array = np.fromfile(f)
+            np_array = np.fromfile(f, dtype=TORCH_TO_NUMPY[arg.dtype])
             src_tensor = torch.from_numpy(np_array).view(dtype=arg.dtype)
             src_tensor = src_tensor.reshape(arg.shape)
             arg.copy_(src_tensor)

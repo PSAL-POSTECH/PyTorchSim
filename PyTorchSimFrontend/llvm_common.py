@@ -136,6 +136,8 @@ class BaseLLVMKernel(common.Kernel):
         raise NotImplementedError()
 
     def widening(self, args, buf_bounds):
+        if not args[0] in self.vec_len or not args[1] in self.vec_len:
+            return args, 1
         vec_len0 = self.vec_len[args[0]]
         vec_len1 = self.vec_len[args[1]]
         if vec_len0 != vec_len1:
@@ -151,7 +153,7 @@ class BaseLLVMKernel(common.Kernel):
                 line = f"shufflevector <{vec_len0} x float> %{args[0]}, <{vec_len0} x float> undef, <{vec_len1} x i32> <{', '.join(indexes)}>"
                 temp[0] = self.cse.generate(self.compute, line, bounds=buf_bounds)
             args = tuple(temp)
-        return args
+        return args, max(vec_len0, vec_len1)
 
     def __enter__(self):
         class CSEProxy:
@@ -179,12 +181,18 @@ class BaseLLVMKernel(common.Kernel):
                         )
                         vector_csevar.update_on_args(name, vector_args, kwargs)
                         args = (args[0][1], args[1][1])
-                    args = self.widening(args, buf_bounds)
+                    if len(args) == 2:
+                        args, vec_len = self.widening(args, buf_bounds)
+                    elif len(args) == 1:
+                        vec_len = self.vec_len[args[0]]
+                    else:
+                        assert(0) # not implemented yet.
                     csevar = self.cse.generate(
                         self.compute,
-                        getattr(parent_handler, name)(*args, tile_size=self.tile_size, **kwargs),  # type: ignore[has-type]
+                        getattr(parent_handler, name)(*args, tile_size=vec_len, **kwargs),  # type: ignore[has-type]
                         bounds=buf_bounds,
                     )
+                    self.vec_len[csevar] = vec_len
                     csevar.update_on_args(name, args, kwargs)
                     if vector_csevar is not None:
                         return [vector_csevar, csevar]

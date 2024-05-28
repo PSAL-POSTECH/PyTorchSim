@@ -243,6 +243,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("_copy_from_and_resize", &custom__copy_from_and_resize);
   m.impl("empty_strided", &custom_empty_strided);
   m.impl("empty.memory_format", &custom_empty);
+  m.impl("as_strided", at::native::as_strided_tensorimpl);
 }
 
 TORCH_LIBRARY_FRAGMENT(aten, m) {
@@ -270,6 +271,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("index.Tensor", torch::CppFunction::makeFromBoxedFunction<&custom_cpu_fallback>());
   m.impl("triu_indices", torch::CppFunction::makeFromBoxedFunction<&custom_cpu_fallback>());
   m.impl("neg.out", torch::CppFunction::makeFromBoxedFunction<&custom_cpu_fallback>());
+  m.impl("sum.IntList_out", torch::CppFunction::makeFromBoxedFunction<&custom_cpu_fallback>());
 }
 
 // This basic implementation doesn't bother dealing with different device indices

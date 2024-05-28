@@ -84,42 +84,42 @@ class LLVMCodeCache:
         lock_dir = get_lock_dir()
         lock = FileLock(os.path.join(lock_dir, key + ".lock"), timeout=LOCK_TIMEOUT)
         with lock:
-            if not os.path.exists(output_path):
-                try:
-                    subprocess.check_call(opt_cmd)
-                    subprocess.check_call(llc_cmd)
-                except subprocess.CalledProcessError as e:
-                    print("Command failed with exit code", e.returncode)
-                    print("Error output:", e.output)
-                    assert(0)   # Todo: make LLVMCompileError
+            # if not os.path.exists(output_path):
+            try:
+                subprocess.check_call(opt_cmd)
+                subprocess.check_call(llc_cmd)
+            except subprocess.CalledProcessError as e:
+                print("Command failed with exit code", e.returncode)
+                print("Error output:", e.output)
+                assert(0)   # Todo: make LLVMCompileError
 
-                # Launch tile graph generator
-                tile_graph_generator = riscv_parser()
-                tile_graph_generator.load_file(output_path,
-                                               loop_info=loop_info,
-                                               load_tile_info=load_tile_info,
-                                               store_tile_info=store_tile_info)
-                # Create code for sampling
-                tile_graph_generator.dump_sampling_code(output_path[:-2] + "_sample.s")
+            # Launch tile graph generator
+            tile_graph_generator = riscv_parser()
+            tile_graph_generator.load_file(output_path,
+                                            loop_info=loop_info,
+                                            load_tile_info=load_tile_info,
+                                            store_tile_info=store_tile_info)
+            # Create code for sampling
+            tile_graph_generator.dump_sampling_code(output_path[:-2] + "_sample.s")
 
-                # Generate LLVM kernel calller and binary for validation
-                if TORCHSIM_VALIDATION_MODE:
-                    val_llvm_caller = LLVMKernelCallerCodeGen(TORCHSIM_VALIDATION_MODE, arg_attributes)
-                    val_llvm_caller.generate_wrapper_file(write_path, validation_wrapper_name)
-                    val_llvm_caller.compile_wih_kernel(write_path, key, validation_wrapper_name, validation_binary_name)
+            # Generate LLVM kernel calller and binary for validation
+            if TORCHSIM_VALIDATION_MODE:
+                val_llvm_caller = LLVMKernelCallerCodeGen(TORCHSIM_VALIDATION_MODE, arg_attributes)
+                val_llvm_caller.generate_wrapper_file(write_path, validation_wrapper_name)
+                val_llvm_caller.compile_wih_kernel(write_path, key, validation_wrapper_name, validation_binary_name)
 
-                # Generate LLVM kernel calller and binary for cycle calculation
-                cycle_llvm_caller = LLVMKernelCallerCodeGen(False, arg_attributes)
-                cycle_llvm_caller.generate_wrapper_file(write_path, cycle_wrapper_name)
-                cycle_llvm_caller.compile_wih_kernel(write_path, key + "_sample", cycle_wrapper_name, cycle_binary_name)
+            # Generate LLVM kernel calller and binary for cycle calculation
+            cycle_llvm_caller = LLVMKernelCallerCodeGen(False, arg_attributes)
+            cycle_llvm_caller.generate_wrapper_file(write_path, cycle_wrapper_name)
+            cycle_llvm_caller.compile_wih_kernel(write_path, key + "_sample", cycle_wrapper_name, cycle_binary_name)
 
-                # Run cyclesim
-                cyclesim = CycleSimulator()
-                cycle_list = cyclesim.compile_and_simulate(os.path.join(write_path, cycle_binary_name))
+            # Run cyclesim
+            cyclesim = CycleSimulator()
+            cycle_list = cyclesim.compile_and_simulate(os.path.join(write_path, cycle_binary_name))
 
-                if TORCHSIM_DUMP_FILE:
-                    tile_graph_generator.dump_basic_block_graph(os.path.join(write_path, "basic_block.onnx"))
-                tile_graph_generator.cycle_analysis(cycle_list=cycle_list, name=os.path.join(write_path, "tile_graph"))
+            if TORCHSIM_DUMP_FILE:
+                tile_graph_generator.dump_basic_block_graph(os.path.join(write_path, "basic_block.onnx"))
+            tile_graph_generator.cycle_analysis(cycle_list=cycle_list, name=os.path.join(write_path, "tile_graph"))
         return key
 
 def get_backend_command(model_path):

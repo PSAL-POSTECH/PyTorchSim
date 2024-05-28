@@ -147,12 +147,6 @@ class ExtensionBackendTests(TestCase):
         z = torch.empty(1000).to(device=device).fill_(3)
         ref = torch.empty(1000, 1000).fill_(3)
 
-        # conv inputs
-        input_array = np.arange(1*8*64*64)*0.001
-        conv_input = torch.tensor(input_array, dtype=torch.float32).view(1, 8, 64, 64).to(device=device)
-        kernel_array = np.arange(16*8*3*3)*0.001
-        conv_kernel = torch.tensor(kernel_array, dtype=torch.float32).view(16, 8, 3, 3).to(device=device)
-
         self.assertTrue(x.device == device)
         self.assertTrue(y.device == device)
         self.assertTrue(z.device == device)
@@ -178,6 +172,12 @@ class ExtensionBackendTests(TestCase):
             return conv2d(a)
 
         metrics.reset()
+        # conv test
+        input_array = np.arange(1*8*64*64)*0.001
+        conv_input = torch.tensor(input_array, dtype=torch.float32).view(1, 8, 64, 64).to(device=device)
+        kernel_array = np.arange(16*8*3*3)*0.001
+        conv_kernel = torch.tensor(kernel_array, dtype=torch.float32).view(16, 8, 3, 3).to(device=device)
+
         opt_fn = torch.compile()(custom_conv2d)
         res = opt_fn(conv_input, conv_kernel)
         # self.assertEqual(ref, res.to(device="cpu"))
@@ -186,6 +186,7 @@ class ExtensionBackendTests(TestCase):
 
         print("Result > ", torch.allclose(res.cpu(), out, rtol=1, atol=1))
         print("Max diff > ", torch.max(torch.abs(res.cpu() - out)))
+
         # Backward Uni-Test (Single Perceptron)
         def perceptron(a, b, c):
             res = a * b + c
@@ -214,6 +215,31 @@ class ExtensionBackendTests(TestCase):
                 b.copy_(opt_w(b, b.grad, lr))
             w.grad.zero_()
             b.grad.zero_()
+
+        # GEMM Backward TEST
+        torch.manual_seed(0)
+        input = torch.randn(64, 64)
+        weight = torch.randn(64, 64)
+
+        x1 = input.to(device=device)
+        w1 = weight.to(device=device)
+        x2 = input.to("cpu")
+        w2 = weight.to("cpu")
+        self.assertTrue(x1.device == device)
+        self.assertTrue(w1.device == device)
+        self.assertTrue(x2.device == torch.device("cpu"))
+        self.assertTrue(w2.device == torch.device("cpu"))
+        w1.requires_grad = True
+        opt_fn = torch.compile()(custom_matmul)
+        res = opt_fn(x1, w1)
+        loss = torch.sum(res)
+        loss.backward()
+        print(w1.grad.cpu())
+        w2.requires_grad = True
+        y = custom_matmul(x2, w2)
+        loss2 = torch.sum(y)
+        loss2.backward()
+        print(w2.grad.cpu())
 
 if __name__ == "__main__":
     from torch._dynamo.test_case import run_tests

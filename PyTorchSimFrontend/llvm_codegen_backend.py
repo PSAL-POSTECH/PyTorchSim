@@ -533,7 +533,7 @@ class MatrixLLVMKernel(LLVMKernel):
         super().__init__()
         # Defaulat tile setting
         self.tile_row = 64
-        self.tile_col = 1
+        self.tile_col = 64
         self.tile_size = self.tile_row * self.tile_col
 
 

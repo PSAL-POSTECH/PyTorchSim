@@ -24,6 +24,11 @@ class LLVMKernelCallerCodeGen():
         self.validation = validation
         self.n_arg = len(arg_attributes)
         self.arg_attributes = arg_attributes
+        self.arg_use_count = 1
+
+    def get_argv_idx(self):
+        self.arg_use_count += 1
+        return self.arg_use_count-1
 
     def write_header(self):
         self.writeline('#include <stdio.h>')
@@ -42,23 +47,17 @@ class LLVMKernelCallerCodeGen():
         return LLVMKernelArgs.is_llvm_arg_out(value)
 
     def load_arg(self):
-        self.writeline(f'char file_name[256]{self.ending}')
-        self.writeline(f'char path[512]{self.ending}')
-        self.writeline(f'sprintf(file_name, "%d.raw", n_call){self.ending}')
         for i, arg_name in enumerate(self.arg_attributes.keys()):
             if self.is_in_arg(arg_name):
-                self.writeline(f'sprintf(path, "%s/%s/%s", argv[2], "{arg_name}", file_name){self.ending}')
-                self.writeline(f'if(load_arg({arg_name}, sizeof({arg_name}), path) == -1){self.open_bracket}')
+                self.writeline(f'if(load_arg({arg_name}, sizeof({arg_name}), argv[{self.get_argv_idx()}]) == -1){self.open_bracket}')
                 with self.code.indent():
                     self.writeline(f'return -1{self.ending}')
                 self.writeline(self.closed_bracket)
 
     def dump_arg(self):
-        self.writeline(f'sprintf(file_name, "%d.raw", n_call){self.ending}')
         for i, arg_name in enumerate(self.arg_attributes.keys()):
             if self.is_out_arg(arg_name):
-                self.writeline(f'sprintf(path, "%s/%s/%s", argv[3], "{arg_name}", file_name){self.ending}')
-                self.writeline(f'if(dump_arg({arg_name}, sizeof({arg_name}), path) == -1){self.open_bracket}')
+                self.writeline(f'if(dump_arg({arg_name}, sizeof({arg_name}), argv[{self.get_argv_idx()}]) == -1){self.open_bracket}')
                 with self.code.indent():
                     self.writeline(f'return -1{self.ending}')
                 self.writeline(self.closed_bracket)
@@ -73,7 +72,8 @@ class LLVMKernelCallerCodeGen():
 
     def generate_args_define(self):
         for arg_name, (_, arg_type, arg_shape) in self.arg_attributes.items():
-            self.writeline(f'{cpp.DTYPE_TO_CPP[arg_type]} {arg_name}[{arg_shape}] __attribute__ ((aligned (4096))){self.ending}')
+            self.writeline(f'{cpp.DTYPE_TO_CPP[arg_type]} {arg_name}[atoi(argv[{self.get_argv_idx()}])] __attribute__ ((aligned (4096))){self.ending}')
+        self.writeline(self.newline)
 
     def generate_load_dump_fn(self):
         self.writeline(f'{self.newline}int load_arg(void *arg, int size, const char *path) {self.open_bracket}')
@@ -110,10 +110,9 @@ class LLVMKernelCallerCodeGen():
 
     def generate_main(self):
         self.writeline(f'{self.newline}int main(int argc, char *argv[]) {self.open_bracket}{self.newline}')
-
         with self.code.indent():
+            self.generate_args_define()
             if self.validation:
-                self.writeline(f'int n_call = atoi(argv[1]){self.ending}{self.newline}')
                 self.load_arg()
                 self.writeline(self.newline)
 
@@ -133,7 +132,6 @@ class LLVMKernelCallerCodeGen():
 
         self.write_header()
         self.generate_kernel_declare()
-        self.generate_args_define()
         
         if self.validation:
             self.generate_load_dump_fn()

@@ -8,7 +8,7 @@ from torch._inductor.ir import IRNode
 GEMM_TEMPLATE = r"""
 @sram_accum = dso_local global [{{ TILE_M * TILE_N }} x {{ DATA_TYPE }}] zeroinitializer, align 64
 
-define dso_local void @{{ KERNEL_NAME }}(ptr %X, ptr %Y, ptr %W) {
+define dso_local void @{{KERNEL_NAME}}{{kernel.def_kernel(inputs=[X, W, Bias], outputs=[Y], names_str="X, W, Bias, Y", input_reorder=input_reorder)}} {
 entry:
   br label %for.cond1.preheader
 
@@ -17,7 +17,7 @@ for.cond1.preheader:
   %0 = mul nuw nsw i64 %indvars.iv49, {{ K }}
   %add.ptr = getelementptr inbounds {{ DATA_TYPE }}, ptr %X, i64 %0
   %1 = mul nuw nsw i64 %indvars.iv49, {{ N }}
-  %add.ptr20 = getelementptr inbounds {{ DATA_TYPE }}, ptr %W, i64 %1
+  %add.ptr20 = getelementptr inbounds {{ DATA_TYPE }}, ptr %Y, i64 %1
   br label %for.body4
 
 for.cond.cleanup:
@@ -31,12 +31,12 @@ for.cond.cleanup3:
 for.body4:
   %indvars.iv47 = phi i64 [ 0, %for.cond1.preheader ], [ %indvars.iv.next48, %for.cond.cleanup7 ]
   tail call void @llvm.memset.p0.i64(ptr @sram_accum, i8 0, i64 {{ TILE_M * TILE_N * DATA_SIZE }}, i1 false)
-  %invariant.gep = getelementptr inbounds {{ DATA_TYPE }}, ptr %Y, i64 %indvars.iv47
+  %invariant.gep = getelementptr inbounds {{ DATA_TYPE }}, ptr %W, i64 %indvars.iv47
   br label %for.body8
 
 for.cond.cleanup7:
   %add.ptr22 = getelementptr inbounds {{ DATA_TYPE }}, ptr %add.ptr20, i64 %indvars.iv47
-  {{ kernel.store_matrix(TILE_M, TILE_N, N, DATA_TYPE, DATA_STYPE, "%add.ptr22", "%call18", "W", DATA_SIZE) }}
+  {{ kernel.store_output(TILE_M, TILE_N, N, DATA_TYPE, DATA_STYPE, "%add.ptr22", "%call18", "Y", DATA_SIZE) }}
   %indvars.iv.next48 = add nuw nsw i64 %indvars.iv47, {{ TILE_N }}
   %cmp2 = icmp ult i64 %indvars.iv47, {{ N - TILE_N }}
   br i1 %cmp2, label %for.body4, label %for.cond.cleanup3
@@ -47,7 +47,7 @@ for.body8:
   %call = {{ kernel.load_matrix(TILE_M, TILE_K, K, DATA_TYPE, DATA_STYPE, "%add.ptr10", "X", DATA_SIZE)}}
   %2 = mul nuw nsw i64 %indvars.iv, {{ N }}
   %gep = getelementptr inbounds {{ DATA_TYPE }}, ptr %invariant.gep, i64 %2
-  %call16 = {{ kernel.load_matrix(TILE_K, TILE_N, N, DATA_TYPE, DATA_STYPE, "%gep", "Y", DATA_SIZE)}}
+  %call16 = {{ kernel.load_matrix(TILE_K, TILE_N, N, DATA_TYPE, DATA_STYPE, "%gep", "W", DATA_SIZE)}}
   %call17 = call <{{ TILE_M * TILE_N }} x {{ DATA_TYPE }}> @llvm.matrix.multiply.v{{ TILE_M*TILE_K }}{{ DATA_STYPE }}.v{{ TILE_K*TILE_N }}{{ DATA_STYPE }}.v{{ TILE_M*TILE_N }}{{ DATA_STYPE }}(<{{ TILE_N * TILE_K}} x {{ DATA_TYPE }}> %call16, <{{ TILE_M * TILE_K}} x {{ DATA_TYPE }}> %call, i32 {{ TILE_M }}, i32 {{ TILE_K }}, i32 {{ TILE_N }})
   %tmp_acc = load <{{ TILE_M * TILE_N }} x {{ DATA_TYPE }}>, ptr @sram_accum, align 64
   %call18 = fadd <{{ TILE_M * TILE_N }} x {{ DATA_TYPE }} > %call17, %tmp_acc
@@ -63,6 +63,7 @@ declare <{{TILE_M * TILE_K}} x float> @llvm.matrix.column.major.load.v{{ TILE_M 
 declare <{{TILE_M * TILE_K}} x float> @llvm.matrix.column.major.load.v{{ TILE_M * TILE_K }}{{ DATA_STYPE }}.p0{{ DATA_STYPE }}(ptr , i64, i1, i32, i32) #2
 declare <{{TILE_N * TILE_K}} x float> @llvm.matrix.column.major.load.v{{ TILE_N * TILE_K }}{{ DATA_STYPE }}.p0{{ DATA_STYPE }}(ptr , i64, i1, i32, i32) #2
 {% endif %}
+declare <{{TILE_N}} x float> @llvm.matrix.column.major.load.v{{ TILE_N }}{{ DATA_STYPE }}.p0{{ DATA_STYPE }}(ptr , i64, i1, i32, i32) #2
 declare <{{TILE_M * TILE_N}} x float> @llvm.matrix.multiply.v{{ TILE_M*TILE_K }}{{ DATA_STYPE }}.v{{ TILE_K*TILE_N }}{{ DATA_STYPE }}.v{{ TILE_M*TILE_N }}{{ DATA_STYPE }}(<{{ TILE_M*TILE_K }} x {{ DATA_TYPE }}>, < {{ TILE_N*TILE_K }} x {{ DATA_TYPE }}>, i32, i32, i32) #1
 declare void @llvm.matrix.column.major.store.v{{ TILE_M * TILE_N }}{{ DATA_STYPE }}.p0{{ DATA_STYPE }}(<{{ TILE_M*TILE_N }} x {{ DATA_TYPE }}>, ptr , i64, i1, i32, i32) #3
 """
@@ -97,8 +98,12 @@ class LLVMGemmTemplate(LLVMTemplate):
             DATA_TYPE="float",
             DATA_STYPE="f32",
             DATA_SIZE=4,
+            X = X,
+            W = W,
+            Y = Y,
+            Bias = Bias,
+            input_reorder = self.input_reorder
         )
         code = self._template_from_string(GEMM_TEMPLATE).render(**options)
         kernel.add_loop_info([options["M"], options["N"], options["K"]], [options["TILE_M"], options["TILE_N"], options["TILE_K"]])
-        kernel.def_kernel(inputs=[X, W, Bias], outputs=[Y], names_str="X, W, Bias, Y", input_reorder=self.input_reorder)
         return code

@@ -17,6 +17,12 @@ def tuned_mm(mat1, mat2, * ,layout=None):
 
     return llvm_template.generate().output_node()
 
+def tuned_addmm(inp, mat1, mat2, *, alpha=1, beta=1, layout=None):
+    m, n, k, layout, mat1, mat2, inp_expanded = mm_args(mat1, mat2, inp, layout=layout)
+    llvm_template = LLVMGemmTemplate([mat1, mat2, inp_expanded], layout) # TODO: add alpha and beta
+
+    return llvm_template.generate().output_node()
+
 def conv_layout(
     x: TensorBox,
     weight: TensorBox,
@@ -81,4 +87,5 @@ def convolution(
     return llvm_template.generate().output_node()
 
 lowerings.update({getattr(aten.mm, overload): tuned_mm for overload in aten.mm.overloads()})
+lowerings.update({getattr(aten.addmm, overload): tuned_addmm for overload in aten.addmm.overloads()})
 lowerings.update({getattr(aten.convolution, overload): convolution for overload in aten.convolution.overloads()})

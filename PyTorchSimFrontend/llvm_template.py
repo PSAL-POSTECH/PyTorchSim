@@ -49,6 +49,19 @@ class LLVMTemplateKernel(Kernel):
         self.add_desc(False, base_addr, data_size, [col, 1], [row, col])
         return f"call {code}"
 
+    def store_output(self, row, col, stride, dtype, stype, ptr, vec, base_addr, data_size):
+        code = ""
+        if len(self.args.input_buffers) > 2:
+            indexes = [f"i32 {i%col}" for i in range(row * col)]
+            mask = ", ".join(indexes)
+            code += f"%add.ptr23 = getelementptr inbounds {dtype}, ptr %Bias, i64 %indvars.iv47\n\t"
+            code += f"%call19 = " + self.load_matrix(1, col, 1, dtype, stype, "%add.ptr23", "Bias", data_size) + "\n\t"
+            code += f"%call20 = shufflevector <{col} x {dtype}> %call19, <{col} x {dtype}> undef, <{row*col} x i32> <{mask}>\n\t"
+            code += f"%call21 = fadd <{row*col} x {dtype}> %call18, %call20\n\t"
+            vec = "%call21"
+        code += self.store_matrix(row, col, stride, dtype, stype, ptr, vec, base_addr, data_size)
+        return code
+
     def add_desc(self, is_load, base_addr, element_size, stride_list, tile_size):
         if is_load:
             key = f"load{len(self.load_desc)}"
@@ -129,6 +142,9 @@ class LLVMTemplateKernel(Kernel):
             if node is not None:
                 self.named_nodes[name] = node
                 self.args.output_buffers[node.get_name()] = name
+
+        arg_defs, *_ = self.args.llvm_argdefs(only_args=True)
+        return f"({', '.join(arg_defs)})"
 
     def def_function(self):
         _, call_args, _ = self.args.python_argdefs()

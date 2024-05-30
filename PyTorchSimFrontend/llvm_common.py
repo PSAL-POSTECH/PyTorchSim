@@ -65,7 +65,7 @@ class LLVMKernelArgs(common.KernelArgs):
     def is_llvm_arg_out(value):
         return (LLVMKernelArgs.LLVM_ARGS_OUT & value) | (LLVMKernelArgs.LLVM_ARGS_INOUT & value)
 
-    def llvm_argdefs(self):
+    def llvm_argdefs(self, only_args=False):
         buffer_types = {x.get_name(): [x.get_dtype(), x.get_numel()] for x in V.graph.buffers}
         for name, val in V.graph.graph_inputs.items():
             if isinstance(val, sympy.Expr):
@@ -85,24 +85,28 @@ class LLVMKernelArgs(common.KernelArgs):
             outer = inplaced.other_names[-1]
             inner = inplaced.inner_name
             arg_defs.append(f"ptr %{inner}")
-            call_args.append(outer)
-            arg_attributes[outer] = [self.LLVM_ARGS_INOUT] + buffer_types[outer]
+            if not only_args:
+                call_args.append(outer)
+                arg_attributes[outer] = [self.LLVM_ARGS_INOUT] + buffer_types[outer]
         for outer, inner in self.input_buffers.items():
             if outer in self.inplace_buffers:
                 continue
             arg_defs.append(f"ptr readonly %{inner}")
-            call_args.append(outer)
-            arg_attributes[outer] = [self.LLVM_ARGS_IN] + buffer_types[outer]
+            if not only_args:
+                call_args.append(outer)
+                arg_attributes[outer] = [self.LLVM_ARGS_IN] + buffer_types[outer]
         for outer, inner in self.output_buffers.items():
             if outer in self.inplace_buffers or self._buffer_is_marked_removed(inner):
                 continue
             arg_defs.append(f"ptr %{inner}")
-            call_args.append(outer)
-            arg_attributes[outer] = [self.LLVM_ARGS_OUT] + buffer_types[outer]
+            if not only_args:
+                call_args.append(outer)
+                arg_attributes[outer] = [self.LLVM_ARGS_OUT] + buffer_types[outer]
         for outer, inner in self.sizevars.items():
             arg_defs.append(f"ptr readonly %{inner}")
-            call_args.append(outer)
-            arg_attributes[outer] = [self.LLVM_ARGS_VAR] + buffer_types[outer]
+            if not only_args:
+                call_args.append(outer)
+                arg_attributes[outer] = [self.LLVM_ARGS_VAR] + buffer_types[outer]
         return arg_defs, call_args, arg_attributes
 
 class BaseLLVMKernel(common.Kernel):

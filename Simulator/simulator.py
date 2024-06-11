@@ -100,9 +100,9 @@ class CycleSimulator():
     def __init__(self) -> None:
         pass
 
-    def compile_and_simulate(self, target_binary):
+    def compile_and_simulate(self, target_binary, array_size):
         try:
-            gem5_cmd = [extension_codecache.GEM5_PATH, extension_codecache.GEM5_SCRIPT_PATH, target_binary]
+            gem5_cmd = [extension_codecache.GEM5_PATH, extension_codecache.GEM5_SCRIPT_PATH, "-c", target_binary, "-o", array_size]
             output = subprocess.check_output(gem5_cmd)
         except subprocess.CalledProcessError as e:
             print("Command failed with exit code", e.returncode)

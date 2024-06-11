@@ -20,7 +20,7 @@ TORCHSIM_DUMP_PATH = os.environ.get('TORCHSIM_DUMP_PATH',
 TORCHSIM_DUMP_FILE = int(os.environ.get('TORCHSIM_DUMP_FILE', default="True") == "True")
 TORCHSIM_VALIDATION_MODE = int(os.environ.get('TORCHSIM_VALIDATION_MODE', default="True") == "True")
 TORCHSIM_LLVM_PATH = os.environ.get('TORCHSIM_LLVM_PATH', default="/usr/bin")
-TORCHSIM_DIR = os.environ.get('TORCHSIM_DIR', default='/workspace/TorchSim')
+TORCHSIM_DIR = os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim')
 TORCHSIM_CUSTOM_PASS_PATH = os.environ.get('TORCHSIM_CUSTOM_PASS_PATH',
                                            default=f"{TORCHSIM_DIR}/GemminiLowerPass/build")
 TORCHSIM_BACKEND_CONFIG = os.environ.get('TORCHSIM_CONFIG',
@@ -112,10 +112,13 @@ class LLVMCodeCache:
             cycle_llvm_caller = LLVMKernelCallerCodeGen(False, arg_attributes)
             cycle_llvm_caller.generate_wrapper_file(write_path, cycle_wrapper_name)
             cycle_llvm_caller.compile_wih_kernel(write_path, key + "_sample", cycle_wrapper_name, cycle_binary_name)
+            array_size = []
+            for (arg_name, arg_attribute) in arg_attributes.items():
+                array_size.append(str(arg_attribute[2]))
 
             # Run cyclesim
             cyclesim = CycleSimulator()
-            cycle_list = cyclesim.compile_and_simulate(os.path.join(write_path, cycle_binary_name))
+            cycle_list = cyclesim.compile_and_simulate(os.path.join(write_path, cycle_binary_name), " ".join(array_size))
 
             if TORCHSIM_DUMP_FILE:
                 tile_graph_generator.dump_basic_block_graph(os.path.join(write_path, "basic_block.onnx"))

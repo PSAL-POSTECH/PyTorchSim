@@ -30,13 +30,28 @@ X86 ISA). More detailed documentation can be found in `simple.py`.
 """
 
 import sys
-
+import argparse
 import m5
 from m5.objects import *
 
 from ctypes import cdll
 
 bin_path = sys.argv[1]
+parser = argparse.ArgumentParser()
+parser.add_argument(
+    "-c",
+    "--cmd",
+    default="",
+    help="The binary to run in syscall emulation mode.",
+)
+parser.add_argument(
+    "-o",
+    "--options",
+    default="",
+    help="""The options to pass to the binary, use
+                            around the entire string""",
+)
+args = parser.parse_args()
 
 system = System()
 
@@ -63,16 +78,12 @@ system.mem_ctrl.port = system.membus.mem_side_ports
 system.system_port = system.membus.cpu_side_ports
 
 thispath = os.path.dirname(os.path.realpath(__file__))
-binary = os.path.join(
-    thispath,
-    "../../../",
-    bin_path,
-)
+binary = args.cmd
 
 system.workload = SEWorkload.init_compatible(binary)
 
 process = Process()
-process.cmd = [binary]
+process.cmd = [binary] + args.options.split()
 system.cpu.workload = process
 system.cpu.createThreads()
 

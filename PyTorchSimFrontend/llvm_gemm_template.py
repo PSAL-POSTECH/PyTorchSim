@@ -8,7 +8,7 @@ from torch._inductor.ir import IRNode
 GEMM_TEMPLATE = r"""
 @sram_accum = dso_local global [{{ TILE_M * TILE_N }} x {{ DATA_TYPE }}] zeroinitializer, align 64
 
-define dso_local void @{{KERNEL_NAME}}{{kernel.def_kernel(inputs=[X, W, Bias], outputs=[Y], names_str="X, W, Bias, Y", input_reorder=input_reorder)}} {
+define dso_local void @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[X, W, Bias], outputs=[Y], names_str="X, W, Bias, Y", input_reorder=input_reorder)}} {
 entry:
   br label %for.cond1.preheader
 

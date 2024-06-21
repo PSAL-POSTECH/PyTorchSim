@@ -54,10 +54,10 @@ class LLVMTemplateKernel(Kernel):
         if len(self.args.input_buffers) > 2:
             indexes = [f"i32 {i%col}" for i in range(row * col)]
             mask = ", ".join(indexes)
-            code += f"%add.ptr23 = getelementptr inbounds {dtype}, ptr %Bias, i64 %indvars.iv47\n\t"
-            code += f"%call19 = " + self.load_matrix(1, col, 1, dtype, stype, "%add.ptr23", "Bias", data_size) + "\n\t" #FIXME: Hardcoded %call19
-            code += f"%call20 = shufflevector <{col} x {dtype}> %call19, <{col} x {dtype}> undef, <{row*col} x i32> <{mask}>\n\t"
-            code += f"%call21 = fadd <{row*col} x {dtype}> %call18, %call20\n\t"
+            code += f"%add.ptr23 = getelementptr inbounds {dtype}, ptr %Bias, i64 %indvars.iv47\n  "
+            code += f"%call19 = " + self.load_matrix(1, col, 1, dtype, stype, "%add.ptr23", "Bias", data_size) + "\n  " #FIXME: Hardcoded %call19
+            code += f"%call20 = shufflevector <{col} x {dtype}> %call19, <{col} x {dtype}> undef, <{row*col} x i32> <{mask}>\n  "
+            code += f"%call21 = fadd <{row*col} x {dtype}> %call18, %call20\n  "
             vec = "%call21"
         code += self.store_matrix(row, col, stride, dtype, stype, ptr, vec, base_addr, data_size)
         return code

@@ -4,6 +4,7 @@ from PyTorchSimFrontend.llvm_template import LLVMTemplate
 from PyTorchSimFrontend.llvm_template import LLVMTemplateKernel
 from torch._inductor.ir import Buffer
 from torch._inductor.ir import IRNode
+from torch._inductor.ir import ReinterpretView
 
 GEMM_TEMPLATE = r"""
 @sram_accum = dso_local global [{{ TILE_M * TILE_N }} x {{ DATA_TYPE }}] zeroinitializer, align 64
@@ -31,7 +32,8 @@ for.cond.cleanup3:
 for.body4:
   %indvars.iv47 = phi i64 [ 0, %for.cond1.preheader ], [ %indvars.iv.next48, %for.cond.cleanup7 ]
   tail call void @llvm.memset.p0.i64(ptr @sram_accum, i8 0, i64 {{ TILE_M * TILE_N * DATA_SIZE }}, i1 false)
-  %invariant.gep = getelementptr inbounds {{ DATA_TYPE }}, ptr %W, i64 %indvars.iv47
+  {% if W_transposed %}%2 = mul nuw nsw i64 %indvars.iv47, {{ K }}
+  %invariant.gep = getelementptr inbounds {{ DATA_TYPE }}, ptr %W, i64 %2{% else %}%invariant.gep = getelementptr inbounds {{ DATA_TYPE }}, ptr %W, i64 %indvars.iv47{% endif %}
   br label %for.body8
 
 for.cond.cleanup7:
@@ -45,10 +47,12 @@ for.body8:
   %indvars.iv = phi i64 [ 0, %for.body4 ], [ %indvars.iv.next, %for.body8 ]
   %add.ptr10 = getelementptr inbounds {{ DATA_TYPE }}, ptr %add.ptr, i64 %indvars.iv
   %call = {{ kernel.load_matrix(TILE_M, TILE_K, K, DATA_TYPE, DATA_STYPE, "%add.ptr10", "X", DATA_SIZE)}}
-  %2 = mul nuw nsw i64 %indvars.iv, {{ N }}
+  {% if W_transposed %}%gep = getelementptr inbounds {{ DATA_TYPE }}, ptr %invariant.gep, i64 %indvars.iv
+  %call16 = {{ kernel.load_matrix(TILE_K, TILE_N, K, DATA_TYPE, DATA_STYPE, "%gep", "W", DATA_SIZE)}}{% else %}%2 = mul nuw nsw i64 %indvars.iv, {{ N }}
   %gep = getelementptr inbounds {{ DATA_TYPE }}, ptr %invariant.gep, i64 %2
-  %call16 = {{ kernel.load_matrix(TILE_K, TILE_N, N, DATA_TYPE, DATA_STYPE, "%gep", "W", DATA_SIZE)}}
-  %call17 = call <{{ TILE_M * TILE_N }} x {{ DATA_TYPE }}> @llvm.matrix.multiply.v{{ TILE_M*TILE_K }}{{ DATA_STYPE }}.v{{ TILE_K*TILE_N }}{{ DATA_STYPE }}.v{{ TILE_M*TILE_N }}{{ DATA_STYPE }}(<{{ TILE_N * TILE_K}} x {{ DATA_TYPE }}> %call16, <{{ TILE_M * TILE_K}} x {{ DATA_TYPE }}> %call, i32 {{ TILE_M }}, i32 {{ TILE_K }}, i32 {{ TILE_N }})
+  %call16 = {{ kernel.load_matrix(TILE_K, TILE_N, N, DATA_TYPE, DATA_STYPE, "%gep", "W", DATA_SIZE)}}{% endif %}
+  {% if W_transposed %}%trans0 = call <{{ TILE_K * TILE_N }} x {{ DATA_TYPE }}> @llvm.matrix.transpose.v{{ TILE_K*TILE_N }}{{ DATA_STYPE }}(<{{ TILE_N * TILE_K }} x {{ DATA_TYPE }}> %call16, i32 {{ TILE_N }}, i32 {{ TILE_K }})
+  %call17 = call <{{ TILE_M * TILE_N }} x {{ DATA_TYPE }}> @llvm.matrix.multiply.v{{ TILE_M*TILE_K }}{{ DATA_STYPE }}.v{{ TILE_K*TILE_N }}{{ DATA_STYPE }}.v{{ TILE_M*TILE_N }}{{ DATA_STYPE }}(<{{ TILE_N * TILE_K}} x {{ DATA_TYPE }}> %trans0, <{{ TILE_M * TILE_K}} x {{ DATA_TYPE }}> %call, i32 {{ TILE_M }}, i32 {{ TILE_K }}, i32 {{ TILE_N }}){% else %}%call17 = call <{{ TILE_M * TILE_N }} x {{ DATA_TYPE }}> @llvm.matrix.multiply.v{{ TILE_M*TILE_K }}{{ DATA_STYPE }}.v{{ TILE_K*TILE_N }}{{ DATA_STYPE }}.v{{ TILE_M*TILE_N }}{{ DATA_STYPE }}(<{{ TILE_N * TILE_K}} x {{ DATA_TYPE }}> %call16, <{{ TILE_M * TILE_K}} x {{ DATA_TYPE }}> %call, i32 {{ TILE_M }}, i32 {{ TILE_K }}, i32 {{ TILE_N }}){% endif %}
   %tmp_acc = load <{{ TILE_M * TILE_N }} x {{ DATA_TYPE }}>, ptr @sram_accum, align 64
   %call18 = fadd <{{ TILE_M * TILE_N }} x {{ DATA_TYPE }} > %call17, %tmp_acc
   store <{{ TILE_M * TILE_N }} x {{ DATA_TYPE }}> %call18, ptr @sram_accum, align 64
@@ -66,6 +70,9 @@ declare <{{TILE_N * TILE_K}} x float> @llvm.matrix.column.major.load.v{{ TILE_N 
 declare <{{TILE_N}} x float> @llvm.matrix.column.major.load.v{{ TILE_N }}{{ DATA_STYPE }}.p0{{ DATA_STYPE }}(ptr , i64, i1, i32, i32) #2
 declare <{{TILE_M * TILE_N}} x float> @llvm.matrix.multiply.v{{ TILE_M*TILE_K }}{{ DATA_STYPE }}.v{{ TILE_K*TILE_N }}{{ DATA_STYPE }}.v{{ TILE_M*TILE_N }}{{ DATA_STYPE }}(<{{ TILE_M*TILE_K }} x {{ DATA_TYPE }}>, < {{ TILE_N*TILE_K }} x {{ DATA_TYPE }}>, i32, i32, i32) #1
 declare void @llvm.matrix.column.major.store.v{{ TILE_M * TILE_N }}{{ DATA_STYPE }}.p0{{ DATA_STYPE }}(<{{ TILE_M*TILE_N }} x {{ DATA_TYPE }}>, ptr , i64, i1, i32, i32) #3
+{% if W_transposed %}
+declare <{{TILE_K * TILE_N}} x float> @llvm.matrix.transpose.v{{ TILE_K*TILE_N }}{{ DATA_STYPE }}( <{{ TILE_N*TILE_K }} x {{ DATA_TYPE }}>, i32, i32) #1
+{% endif %}
 """
 
 class LLVMGemmTemplate(LLVMTemplate):
@@ -86,6 +93,14 @@ class LLVMGemmTemplate(LLVMTemplate):
         Y = self.output_node
         Bias = None if len(self.input_nodes) == 2 else self.input_nodes[2]
 
+        W_transposed = False
+        if isinstance(W, ReinterpretView): # ReinterpretView is used to represent reshape
+            if W.layout.stride != W.data.layout.stride:
+              if W.layout.stride[-2] == W.data.layout.stride[-1] and W.layout.stride[-1] == W.data.layout.stride[-2]:
+                  W_transposed = True
+              else:
+                  raise NotImplementedError("If the stride is not equal to the original stride, it should have been transposed.")
+
         options = dict(
             KERNEL_NAME=self.name,
             kernel=kernel,
@@ -102,6 +117,7 @@ class LLVMGemmTemplate(LLVMTemplate):
             W = W,
             Y = Y,
             Bias = Bias,
+            W_transposed = W_transposed,
             input_reorder = self.input_reorder
         )
         code = self._template_from_string(GEMM_TEMPLATE).render(**options)

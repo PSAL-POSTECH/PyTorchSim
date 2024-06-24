@@ -100,7 +100,7 @@ class LLVMTemplateKernel(Kernel):
         wrapper.add_import_once(f"store_tile_info = {self.store_desc}")
         wrapper.add_import_once(f"arg_attributes = {arg_attributes}")
 
-    def call_kernel(self):
+    def call_kernel(self, kernel_name):
         """
         Generates code to call the kernel through V.graph.wrapper_code.
         used from within torch._inductor.wrapper.WrapperCodeGen
@@ -108,7 +108,7 @@ class LLVMTemplateKernel(Kernel):
         wrapper = V.graph.wrapper_code
         _, call_args, _ = self.args.python_argdefs()
         wrapper.generate_kernel_call(
-            self.kernel_name if self.kernel_caller_function is None else self.kernel_caller_function,
+            kernel_name if self.kernel_caller_function is None else self.kernel_caller_function,
             call_args,
             cuda=False,
         )

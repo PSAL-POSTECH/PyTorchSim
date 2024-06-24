@@ -949,7 +949,8 @@ class LLVMScheduling(BaseScheduling):
                 vars, reduction_vars = ex_kernel.set_ranges(group, reduction_group)
                 node.run(vars, reduction_vars)
 
-        kernel_name = f"extension_kernel"
+        kernel_name = f"extension_kernel_{self.count}"
+        self.count += 1
         src_code = ex_kernel.codegen_kernel(kernel_name=kernel_name)
         ex_kernel.meta_kernel()
         self.define_kernel(src_code, kernel_name)
@@ -984,6 +985,7 @@ class LLVMScheduling(BaseScheduling):
             codecache_def.writeline("arg_attributes=arg_attributes)")
 
             wrapper.define_kernel(kernel_name, codecache_def.getvalue(), cuda=False)
+        return kernel_name
 
 class VectorizedLLVMScheduling(LLVMScheduling):
     target_kernel = VectorizedLLVMKernel
@@ -1003,6 +1005,6 @@ class MatrixLLVMScheduling(LLVMScheduling):
         with V.set_kernel_handler(kernel):
             node_schedule = [template_node, *epilogue_nodes]
             kernel.meta_kernel()
-            self.define_kernel(src_code, kernel.kernel_name)
+            kernel_name = self.define_kernel(src_code, kernel.kernel_name)
             self.define_function(kernel)
-        kernel.call_kernel()
+        kernel.call_kernel(kernel_name)

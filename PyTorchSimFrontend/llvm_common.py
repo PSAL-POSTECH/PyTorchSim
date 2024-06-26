@@ -125,7 +125,7 @@ class BaseLLVMKernel(common.Kernel):
         self.cse = common.CSE(self.newvar_prefix, self.suffix, self.name_prefix)
         self.vector_cse = common.CSE(self.newvar_prefix, self.suffix, self.vector_prefix)
         self.tile_size = None
-        self.vec_len = {}
+        self.tile_shape = {}
 
     def load(self, name: str, index: sympy.Expr):
         raise NotImplementedError()
@@ -140,24 +140,31 @@ class BaseLLVMKernel(common.Kernel):
         raise NotImplementedError()
 
     def widening(self, args, buf_bounds):
-        if not args[0] in self.vec_len or not args[1] in self.vec_len:
+        if not args[0] in self.tile_shape or not args[1] in self.tile_shape:
             return args, 1
-        vec_len0 = self.vec_len[args[0]]
-        vec_len1 = self.vec_len[args[1]]
-        if vec_len0 != vec_len1:
+        tile_shape0 = self.tile_shape[args[0]]
+        tile_shape1 = self.tile_shape[args[1]]
+        vec_len0 = tile_shape0[0] * tile_shape0[1]
+        vec_len1 = tile_shape1[0] * tile_shape1[1]
+        if tile_shape0 != tile_shape1:
             temp = list(args)
-            if (vec_len0 > vec_len1):
-                assert(vec_len1 == 1)
-                indexes = [f"i32 0" for i in range(vec_len0)]
+            idx = 0 if tile_shape0[0] != tile_shape1[0] else 1
+            if tile_shape0[idx] > tile_shape1[idx]:
+                if idx == 0:
+                    indexes = [f"i32 {i%tile_shape1[idx-1]}" for i in range(vec_len0)]
+                else:
+                    indexes = [f"i32 {i//tile_shape1[idx-1]}" for i in range(vec_len0)]
                 line = f"shufflevector <{vec_len1} x float> %{args[1]}, <{vec_len1} x float> undef, <{vec_len0} x i32> <{', '.join(indexes)}>"
                 temp[1] = self.cse.generate(self.compute, line, bounds=buf_bounds)
-            elif (vec_len0 < vec_len1):
-                assert(vec_len0 == 1)
-                indexes = [f"i32 0" for i in range(vec_len1)]
+            elif tile_shape0[idx] < tile_shape1[idx]:
+                if idx == 0:
+                    indexes = [f"i32 {i%tile_shape0[idx-1]}" for i in range(vec_len1)]
+                else:
+                    indexes = [f"i32 {i//tile_shape0[idx-1]}" for i in range(vec_len1)]
                 line = f"shufflevector <{vec_len0} x float> %{args[0]}, <{vec_len0} x float> undef, <{vec_len1} x i32> <{', '.join(indexes)}>"
                 temp[0] = self.cse.generate(self.compute, line, bounds=buf_bounds)
             args = tuple(temp)
-        return args, max(vec_len0, vec_len1)
+        return args, max(tile_shape0, tile_shape1)
 
     def __enter__(self):
         class CSEProxy:
@@ -186,17 +193,18 @@ class BaseLLVMKernel(common.Kernel):
                         vector_csevar.update_on_args(name, vector_args, kwargs)
                         args = (args[0][1], args[1][1])
                     if len(args) == 2:
-                        args, vec_len = self.widening(args, buf_bounds)
+                        args, tile_shape = self.widening(args, buf_bounds)
                     elif len(args) == 1:
-                        vec_len = self.vec_len[args[0]]
+                        tile_shape = self.tile_shape[args[0]]
                     else:
                         assert(0) # not implemented yet.
+                    vec_len = tile_shape[0] * tile_shape[1]
                     csevar = self.cse.generate(
                         self.compute,
                         getattr(parent_handler, name)(*args, tile_size=vec_len, **kwargs),  # type: ignore[has-type]
                         bounds=buf_bounds,
                     )
-                    self.vec_len[csevar] = vec_len
+                    self.tile_shape[csevar] = tile_shape
                     csevar.update_on_args(name, args, kwargs)
                     if vector_csevar is not None:
                         return [vector_csevar, csevar]

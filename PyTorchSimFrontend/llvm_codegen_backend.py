@@ -38,6 +38,10 @@ def reduction_init(reduction_type, dtype):
         return "0.0"
     if reduction_type == "prod":
         return "1.0"
+    if reduction_type in {"max", "argmax"}:
+        return "0.0"
+    if reduction_type in {"min", "argmin"}:
+        return "0.0"
     raise AssertionError(reduction_type)
 
 def reduction_combine(reduction_type, var, next_value):
@@ -96,6 +100,8 @@ def matrix_partial_reduction_combine(reduction_type, vector_value, tile_row=64):
         return f"tail call float @llvm.vector.reduce.fadd.nxv2f32(float 0.0, <{tile_row} x float> %{vector_value})"
     if reduction_type == "prod":
         return f"tail call float @llvm.vector.reduce.fmul.nxv2f32(float 1.0, <{tile_row} x float> %{vector_value})"
+    if reduction_type in ("min", "max"):
+        return f"tail call float @llvm.vector.reduce.f{reduction_type}.nxv2f32(<{tile_row} x float> %{vector_value})"
     raise AssertionError(reduction_type)
 
 class ExtensionWrapperCodegen(wrapper.WrapperCodeGen):
@@ -190,6 +196,10 @@ class MatrixOverrides(ExtensionOverrides):
     @staticmethod
     def constant(value, dtype, tile_size=4):
         return repr(value)
+
+    @staticmethod
+    def exp(operand, tile_size=4):
+        return f'tail call <{tile_size} x float> @llvm.exp.f32(<{tile_size} x float> %{operand})'
 
 SYMPY_TO_LLVM = {
     sympy.core.mul.Mul: "mul",
@@ -536,6 +546,18 @@ class MatrixLLVMKernel(LLVMKernel):
         self.tile_col = 64
         self.tile_size = self.tile_row * self.tile_col
 
+    def get_load_info(self, vec_len, cv):
+        tile_row = self.tile_row
+        tile_col = self.tile_col
+        if vec_len > 1:
+            stride = self.ranges[-1]
+            if len(cv) == 2 and cv[1] == 0: # if the tile is row major vector
+                vec_len, tile_col = self.tile_row, 1
+            elif len(cv) == 2 and cv[0] == 0: # if the tile is colum major vector
+                vec_len, tile_row, stride = self.tile_col, 1, 1
+        elif vec_len == 1: # scalar
+            tile_row, tile_col, stride = 1, 1, 1
+        return tile_row, tile_col, stride, vec_len
 
     def load(self, name: str, index: sympy.Expr):
         var = self.args.input(name)
@@ -551,13 +573,10 @@ class MatrixLLVMKernel(LLVMKernel):
         index = f"%{index}" if not index.is_number else index
         line = f"getelementptr inbounds {type_name}, ptr %{var}, i64 {index}"
         var = self.cse.generate(self.loads, line)
-        if vec_len > 1:
-            stride = self.ranges[-1]
-            line = f"call <{vec_len} x {type_name}> @llvm.matrix.column.major.load.v{vec_len}f32.p0f32(ptr %{var}, i64 {stride}, i1 0, i32 {self.tile_row}, i32 {self.tile_col})"
-        elif vec_len == 1: # scalar
-            line = f"call <{vec_len} x {type_name}> @llvm.matrix.column.major.load.v{vec_len}f32.p0f32(ptr %{var}, i64 1, i1 0, i32 1, i32 1)"
+        tile_row, tile_col, stride, vec_len = self.get_load_info(vec_len, cv)
+        line = f"call <{vec_len} x {type_name}> @llvm.matrix.column.major.load.v{vec_len}f32.p0f32(ptr %{var}, i64 {stride}, i1 0, i32 {tile_row}, i32 {tile_col})"
         out_var = self.cse.generate(self.loads, line)
-        self.vec_len[out_var] = vec_len
+        self.tile_shape[out_var] = [tile_row, tile_col]
         return out_var
 
     def store(self, name: str, index: sympy.Expr, value, *args, **kwargs):
@@ -712,6 +731,8 @@ class MatrixLLVMKernel(LLVMKernel):
         code = super()._codegen_kernel(arg_defs, kernel_name)
         # Add llvm matrix intrinsics definition
         code.writeline(f'declare <{self.tile_size} x float> @llvm.matrix.column.major.load.v{self.tile_size}f32.p0f32(ptr , i64, i1, i32, i32) #2')
+        if self.tile_size != self.tile_row:
+            code.writeline(f'declare <{self.tile_row} x float> @llvm.matrix.column.major.load.v{self.tile_row}f32.p0f32(ptr , i64, i1, i32, i32) #2')
         code.writeline(f'declare <1 x float> @llvm.matrix.column.major.load.v1f32.p0f32(ptr , i64, i1, i32, i32) #2')
         code.writeline(f'declare <{self.tile_size} x float> @llvm.matrix.multiply.v{self.tile_size}f32.v16f32.v16f32(<16 x float>, <16 x float>, i32, i32, i32) #1')
         code.writeline(f'declare void @llvm.matrix.column.major.store.v{self.tile_size}f32.p0f32(<{self.tile_size} x float>, ptr , i64, i1, i32, i32) #3')
@@ -720,6 +741,8 @@ class MatrixLLVMKernel(LLVMKernel):
         if self.tile_size != self.tile_row:
             code.writeline(f'declare void @llvm.matrix.column.major.store.v{self.tile_row}f32.p0f32(<{self.tile_row} x float>, ptr , i64, i1, i32, i32) #3')
         code.writeline(f'declare float @llvm.vector.reduce.fadd.nxv2f32(float, <{self.tile_row} x float>)')
+        code.writeline(f'declare float @llvm.vector.reduce.fmax.nxv2f32(<{self.tile_row} x float>)')
+        code.writeline(f'declare <{self.tile_size} x float> @llvm.exp.f32(<{self.tile_size} x float>) #1')
         return code
 
 
@@ -858,7 +881,7 @@ class MatrixLoopLevel(LoopLevel):
 
     def lines(self, line, stride=1):
         loop_index = self.idx
-        self.stride = stride * self.tile_row
+        self.stride = stride * self.tile_row # FIXME: this stride is not correct (it should be stride of tile, not stride of scalar)
         @contextlib.contextmanager
         def ctx():
             entry_label = f"entry{loop_index}"
@@ -879,7 +902,7 @@ class MatrixLoopLevel(LoopLevel):
             yield
             line.writeline(f"br label %{for_inc_label}")
             line.writeline(f"\n{for_inc_label}:")
-            line.writeline(f"{index_next} = add nsw {self.INDEX_TYPE} {index}, {stride * self.tile_row}")
+            line.writeline(f"{index_next} = add nsw {self.INDEX_TYPE} {index}, {self.tile_row}")
             line.writeline(f"{cmp_var} = icmp eq {self.INDEX_TYPE} {index_next}, {self.size}")
             line.writeline(f"br i1 {cmp_var}, label %{for_end_label}, label %{for_body_label}")
 

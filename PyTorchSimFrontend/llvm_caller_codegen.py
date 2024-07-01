@@ -25,6 +25,7 @@ class LLVMKernelCallerCodeGen():
         self.n_arg = len(arg_attributes)
         self.arg_attributes = arg_attributes
         self.arg_use_count = 1
+        self.load_args = {}
 
     def get_argv_idx(self):
         self.arg_use_count += 1
@@ -49,7 +50,9 @@ class LLVMKernelCallerCodeGen():
     def load_arg(self):
         for i, arg_name in enumerate(self.arg_attributes.keys()):
             if self.is_in_arg(arg_name):
-                self.writeline(f'if(load_arg({arg_name}, sizeof({arg_name}), argv[{self.get_argv_idx()}]) == -1){self.open_bracket}')
+                argv_idx = self.get_argv_idx() if arg_name not in self.load_args else self.load_args[arg_name]
+                self.load_args[arg_name] = argv_idx
+                self.writeline(f'if(load_arg({arg_name}, sizeof({arg_name}), argv[{argv_idx}]) == -1){self.open_bracket}')
                 with self.code.indent():
                     self.writeline(f'return -1{self.ending}')
                 self.writeline(self.closed_bracket)
@@ -57,7 +60,8 @@ class LLVMKernelCallerCodeGen():
     def dump_arg(self):
         for i, arg_name in enumerate(self.arg_attributes.keys()):
             if self.is_out_arg(arg_name):
-                self.writeline(f'if(dump_arg({arg_name}, sizeof({arg_name}), argv[{self.get_argv_idx()}]) == -1){self.open_bracket}')
+                argv_idx = self.get_argv_idx() if arg_name not in self.load_args else self.load_args[arg_name]
+                self.writeline(f'if(dump_arg({arg_name}, sizeof({arg_name}), argv[{argv_idx}]) == -1){self.open_bracket}')
                 with self.code.indent():
                     self.writeline(f'return -1{self.ending}')
                 self.writeline(self.closed_bracket)
@@ -132,7 +136,7 @@ class LLVMKernelCallerCodeGen():
 
         self.write_header()
         self.generate_kernel_declare()
-        
+
         if self.validation:
             self.generate_load_dump_fn()
         self.generate_main()

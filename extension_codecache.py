@@ -134,7 +134,6 @@ def get_backend_command(model_path):
 
 class CustomAsyncCompile(AsyncCompile):
     def __init__(self):
-        self.key = None
         self.validation_wrapper_name = "validation_wrapper"
         self.validation_binary_name = "validation_binary"
         self.cycle_wrapper_name = "cycle_wrapper"
@@ -142,31 +141,31 @@ class CustomAsyncCompile(AsyncCompile):
 
     def llvm(self, source_code, arg_attributes={}, **kwargs):
         def task():
-            self.key = LLVMCodeCache.load(source_code,
+            key = LLVMCodeCache.load(source_code,
                                           valdiation_wrapper_name=self.validation_binary_name,
                                           validation_binary_name=self.validation_binary_name,
                                           arg_attributes=arg_attributes, **kwargs)
-            return
+            return key
         future = self.submit(task)
 
         def dummy_simulator(*args, **kwargs):
             # Wait for compilation
-            future.result()
+            key = future.result()
 
             # Run simulator pass
-            result_path = os.path.join(TORCHSIM_DUMP_PATH, "tmp", hash_prefix(self.key))
+            result_path = os.path.join(TORCHSIM_DUMP_PATH, "tmp", hash_prefix(key))
             print("Running dummy simulator!")
             print("OUTPUT PATH > ", result_path)
 
             # Dump arguments and meta data
             dump_metadata(args, arg_attributes, result_path)
             if TORCHSIM_VALIDATION_MODE:
-                funcsim = FunctionalSimulator(result_path, self.key)
+                funcsim = FunctionalSimulator(result_path, key)
                 funcsim.run_spike(args, arg_attributes,
                                   os.path.join(result_path, self.validation_binary_name),
                                   kwargs['intermediate_op'] if 'intermediate_op' in kwargs else None)
 
-            assembly_path = os.path.join(result_path, f'{self.key}.s')
+            assembly_path = os.path.join(result_path, f'{key}.s')
             try:
                 with open(assembly_path, 'r') as file:
                     file_contents = file.read()

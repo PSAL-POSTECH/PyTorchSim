@@ -77,7 +77,7 @@ declare void @llvm.matrix.column.major.store.v{{ TILE_M * TILE_N }}{{ DATA_STYPE
 """
 
 CONV2D_FUNC = r"""
-def Conv2d({{ INPUT }}, {{ WEIGHT }}, {{ BIAS }}, {{ OUT }}):
+def {{ FUNC_NAME }}({{ INPUT }}, {{ WEIGHT }}, {{ BIAS }}, {{ OUT }}):
   {{ INPUT }}_cpu = {{ INPUT }}.cpu()
   {{ WEIGHT }}_cpu = {{ WEIGHT }}.cpu()
   {{ BIAS }}_cpu = {{ BIAS }}.cpu()
@@ -135,7 +135,8 @@ class LLVMConvTemplate(LLVMTemplate):
       self.stride = kwargs["stride"]
       self.padding = kwargs["padding"]
       self.dilation = kwargs["dilation"]
-      self.function_name = "Conv2d"
+      weight_shape = [str(i) for i in input_nodes[1].layout.size]
+      self.function_name = "Conv2D_" + "_".join(weight_shape)
       self.gemm_args = ['input', 'weight', 'bias', 'output']
 
     def render(self,
@@ -191,6 +192,7 @@ class LLVMConvTemplate(LLVMTemplate):
 
       options = dict(
         KERNEL_NAME=kernel_name,
+        FUNC_NAME=self.function_name,
         INPUT=input_args[0],
         WEIGHT=input_args[1],
         BIAS=input_args[2],

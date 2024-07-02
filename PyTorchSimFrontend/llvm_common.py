@@ -141,7 +141,7 @@ class BaseLLVMKernel(common.Kernel):
 
     def widening(self, args, buf_bounds):
         if not args[0] in self.tile_shape or not args[1] in self.tile_shape:
-            return args, 1
+            return args, [1, 1]
         tile_shape0 = self.tile_shape[args[0]]
         tile_shape1 = self.tile_shape[args[1]]
         vec_len0 = tile_shape0[0] * tile_shape0[1]

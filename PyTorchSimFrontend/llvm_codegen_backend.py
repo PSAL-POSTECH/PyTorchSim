@@ -195,7 +195,7 @@ class MatrixOverrides(ExtensionOverrides):
 
     @staticmethod
     def constant(value, dtype, tile_size=4):
-        return repr(value)
+        return f'insertelement <1 x float> undef, float {value}, i32 0'
 
     @staticmethod
     def exp(operand, tile_size=4):
@@ -734,10 +734,9 @@ class MatrixLLVMKernel(LLVMKernel):
         if self.tile_size != self.tile_row:
             code.writeline(f'declare <{self.tile_row} x float> @llvm.matrix.column.major.load.v{self.tile_row}f32.p0f32(ptr , i64, i1, i32, i32) #2')
         code.writeline(f'declare <1 x float> @llvm.matrix.column.major.load.v1f32.p0f32(ptr , i64, i1, i32, i32) #2')
+        code.writeline(f'declare void @llvm.matrix.column.major.store.v1f32.p0f32(<1 x float>, ptr , i64, i1, i32, i32) #3')
         code.writeline(f'declare <{self.tile_size} x float> @llvm.matrix.multiply.v{self.tile_size}f32.v16f32.v16f32(<16 x float>, <16 x float>, i32, i32, i32) #1')
         code.writeline(f'declare void @llvm.matrix.column.major.store.v{self.tile_size}f32.p0f32(<{self.tile_size} x float>, ptr , i64, i1, i32, i32) #3')
-        if self.tile_col == 1:
-            code.writeline(f'declare void @llvm.matrix.column.major.store.v{self.tile_col}f32.p0f32(<{self.tile_col} x float>, ptr , i64, i1, i32, i32) #3')
         if self.tile_size != self.tile_row:
             code.writeline(f'declare void @llvm.matrix.column.major.store.v{self.tile_row}f32.p0f32(<{self.tile_row} x float>, ptr , i64, i1, i32, i32) #3')
         code.writeline(f'declare float @llvm.vector.reduce.fadd.nxv2f32(float, <{self.tile_row} x float>)')

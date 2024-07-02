@@ -6,7 +6,7 @@ from typing import Dict
 import torch
 from torch._inductor.codegen import cpp, wrapper, common
 from torch._inductor.scheduler import BaseScheduling
-from torch._inductor.virtualized import V
+from torch._inductor.virtualized import V, _ops as ops
 from torch._inductor.utils import IndentedBuffer
 import extension_codecache
 
@@ -200,6 +200,14 @@ class MatrixOverrides(ExtensionOverrides):
     @staticmethod
     def exp(operand, tile_size=4):
         return f'tail call <{tile_size} x float> @llvm.exp.f32(<{tile_size} x float> %{operand})'
+
+    @staticmethod
+    def maximum(operand1, operand2, tile_size=4):
+        return f'tail call <{tile_size} x float> @llvm.maximum.f32(<{tile_size} x float> %{operand1}, <{tile_size} x float >%{operand2})'
+
+    @staticmethod
+    def relu(x, tile_size=4):
+        return ops.maximum(x, ops.constant(0.0, torch.int32))
 
 SYMPY_TO_LLVM = {
     sympy.core.mul.Mul: "mul",
@@ -742,6 +750,7 @@ class MatrixLLVMKernel(LLVMKernel):
         code.writeline(f'declare float @llvm.vector.reduce.fadd.nxv2f32(float, <{self.tile_row} x float>)')
         code.writeline(f'declare float @llvm.vector.reduce.fmax.nxv2f32(<{self.tile_row} x float>)')
         code.writeline(f'declare <{self.tile_size} x float> @llvm.exp.f32(<{self.tile_size} x float>) #1')
+        code.writeline(f'declare <{self.tile_size} x float> @llvm.maximum.f32(<{self.tile_size} x float>, <{self.tile_size} x float>) #1')
         return code
 
 

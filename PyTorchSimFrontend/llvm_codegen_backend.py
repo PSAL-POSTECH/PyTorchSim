@@ -1,9 +1,14 @@
 import dataclasses
 import contextlib
 import sympy
+import itertools
+import re
+from functools import reduce
+from operator import mul
 from typing import List
 from typing import Dict
 import torch
+from torch._inductor import dependencies
 from torch._inductor.codegen import cpp, wrapper, common
 from torch._inductor.scheduler import BaseScheduling
 from torch._inductor.virtualized import V, _ops as ops
@@ -80,9 +85,9 @@ def vector_reduction_combine(reduction_type, start_value, vector_value):
 
 def matrix_reduction_combine(reduction_type, start_value, vector_value, tile_row=64):
     if reduction_type == "sum":
-        return f"tail call float @llvm.vector.reduce.fadd.nxv2f32(float %{start_value}, <{tile_row} x float> %{vector_value})"
+        return f"fadd <{tile_row} x float> %{start_value}, %{vector_value}"
     if reduction_type == "prod":
-        return f"tail call float @llvm.vector.reduce.fmul.nxv2f32(float %{start_value}, <{tile_row} x float> %{vector_value})"
+        return f"fmul <{tile_row} x float> %{start_value}, %{vector_value}"
     if reduction_type == "xor_sum":
         raise NotImplementedError() # TODO: implement
     if reduction_type == "any":
@@ -232,6 +237,7 @@ class LLVMKernel(llvm_common.BaseLLVMKernel):
         self.loop_info = {}
         self.load_desc = {}
         self.store_desc = {}
+        self.tiling_indices = [0, 1]
 
     def get_constant_vector(self, expr):
         constant_vector = [int(expr.coeff(var)) for var in self.itervars]
@@ -287,6 +293,64 @@ class LLVMKernel(llvm_common.BaseLLVMKernel):
             return var
         else:
             raise Exception()
+
+    def codegen_nodes(self, nodes, kernel_name):
+        _, (group, reduction_group) = max(
+            nodes, key=lambda x: int(x.is_reduction())
+        ).group
+
+        def select_tiling_indices():
+            all_index = []
+            for node in nodes:
+                rw = dependencies.extract_read_writes(node._body, *node._sizes)
+                all_index += [dep.index for dep in itertools.chain(rw.reads, rw.writes)]
+            contig_vars = set()
+            contig_vars_list = []
+            non_contig_stride_const = set()
+            non_contig_stride_other = set()
+            for index in all_index:
+                for var in index.free_symbols:
+                    if not re.search(r"^d\d+$", var.name):
+                        continue
+                    stride = cpp.stride_at(var, index)
+                    if stride == 1:
+                        contig_vars.add(int(var.name[1:]))
+                        contig_vars_list.append(int(var.name[1:]))
+                    elif all(s.name.startswith("s") for s in stride.free_symbols):
+                        non_contig_stride_const.add(int(var.name[1:]))
+                    else:
+                        non_contig_stride_other.add(int(var.name[1:]))
+            contig_only = (
+                contig_vars - non_contig_stride_const - non_contig_stride_other
+            )
+            if len(contig_vars) == 0:
+                # no contiguous vars
+                return [len(self.itervars) - 1]
+            if contig_only:
+                return sorted(contig_only)[-1:]
+            contig_and_const_stride = (
+                contig_vars & non_contig_stride_const
+            ) - non_contig_stride_other
+            contig_vars_sorted = sorted(contig_vars)
+            if (
+                len(contig_vars_sorted) == 2
+                and contig_vars_sorted[-1] in contig_and_const_stride
+                and contig_vars_sorted[-1] == len(self.itervars) - 1
+            ):
+                return contig_vars_sorted
+            return sorted(contig_vars_sorted, key=contig_vars_list.count)[-1:]
+
+        self.set_ranges(group, reduction_group)
+        self.tiling_indices = select_tiling_indices()
+
+        with self as kernel:
+            for node in nodes:
+                vars, reduction_vars = kernel.set_ranges(group, reduction_group)
+                node.run(vars, reduction_vars)
+
+        src_code = self.codegen_kernel(kernel_name=kernel_name)
+        self.meta_kernel()
+        return src_code
 
     def load(self, name: str, index: sympy.Expr):
         index = self.rename_indexing(index)
@@ -558,14 +622,30 @@ class MatrixLLVMKernel(LLVMKernel):
         tile_row = self.tile_row
         tile_col = self.tile_col
         if vec_len > 1:
-            stride = self.ranges[-1]
+            stride = reduce(mul, cv, 1)
             if len(cv) == 2 and cv[1] == 0: # if the tile is row major vector
-                vec_len, tile_col = self.tile_row, 1
+                vec_len, tile_col, stride = self.tile_row, 1, self.tile_row
             elif len(cv) == 2 and cv[0] == 0: # if the tile is colum major vector
                 vec_len, tile_row, stride = self.tile_col, 1, 1
+            elif len(cv) == 1: # if the tile is vector
+                stride = tile_row
         elif vec_len == 1: # scalar
             tile_row, tile_col, stride = 1, 1, 1
         return tile_row, tile_col, stride, vec_len
+
+    def need_vec_transpose(self, index):
+        return (
+            len(self.itervars) > 1
+            and self.outer_idx is not None
+            and cpp.stride_at(self.itervars[self.outer_idx], index) == 1
+            and index.has(self.itervars[self.tiling_idx])
+            and not cpp.stride_at(self.itervars[self.tiling_idx], index).has(
+                self.itervars[self.tiling_idx]
+            )
+            and not cpp.stride_at(self.itervars[self.tiling_idx], index).has(
+                self.itervars[self.outer_idx]
+            )
+        )
 
     def load(self, name: str, index: sympy.Expr):
         var = self.args.input(name)
@@ -576,14 +656,17 @@ class MatrixLLVMKernel(LLVMKernel):
         index = self.rename_indexing(index)
         cv = self.get_constant_vector(index)
         self.add_desc(True, name, align, cv, [self.tile_col, self.tile_row])
-        index = self.depth_first_traverse(index, self.loads, self.index_cse)
-        vec_len = self.tile_size if not index.is_number else 1
-        index = f"%{index}" if not index.is_number else index
-        line = f"getelementptr inbounds {type_name}, ptr %{var}, i64 {index}"
+        new_index = self.depth_first_traverse(index, self.loads, self.index_cse)
+        vec_len = self.tile_size if not new_index.is_number else 1
+        new_index = f"%{new_index}" if not new_index.is_number else new_index
+        line = f"getelementptr inbounds {type_name}, ptr %{var}, i64 {new_index}"
         var = self.cse.generate(self.loads, line)
         tile_row, tile_col, stride, vec_len = self.get_load_info(vec_len, cv)
         line = f"call <{vec_len} x {type_name}> @llvm.matrix.column.major.load.v{vec_len}f32.p0f32(ptr %{var}, i64 {stride}, i1 0, i32 {tile_row}, i32 {tile_col})"
         out_var = self.cse.generate(self.loads, line)
+        if self.need_vec_transpose(index):
+            line = f"call <{vec_len} x {type_name}> @llvm.matrix.transpose.v{vec_len}f32.p0f32(<{vec_len} x {type_name}> %{out_var}, i32 {tile_row}, i32 {tile_col})"
+            out_var = self.cse.generate(self.loads, line)
         self.tile_shape[out_var] = [tile_row, tile_col]
         return out_var
 
@@ -596,13 +679,16 @@ class MatrixLLVMKernel(LLVMKernel):
         index = self.rename_indexing(index)
         cv = self.get_constant_vector(index)
         self.add_desc(False, name, align, cv, [self.tile_col, self.tile_row])
-        index = self.depth_first_traverse(index, self.stores, self.index_cse)
-        vec_len = self.tile_size if not index.is_number else 1
-        index = f"%{index}" if not index.is_number else index
-        line = f"getelementptr inbounds {type_name}, ptr %{var}, i64 {index}"
+        new_index = self.depth_first_traverse(index, self.stores, self.index_cse)
+        vec_len = self.tile_size if not new_index.is_number else 1
+        new_index = f"%{new_index}" if not new_index.is_number else new_index
+        line = f"getelementptr inbounds {type_name}, ptr %{var}, i64 {new_index}"
         var = self.cse.generate(self.stores, line)
         if (isinstance(value, list)):
             value = value[0]
+        if self.need_vec_transpose(index):
+            line = f"call <{vec_len} x {type_name}> @llvm.matrix.transpose.v{vec_len}f32.p0f32(<{vec_len} x {type_name}> %{value}, i32 {self.tile_row}, i32 {self.tile_col})"
+            value = self.cse.generate(self.stores, line)
         if vec_len > 1:
             stride = self.ranges[-1]
             line = f"call void @llvm.matrix.column.major.store.v{self.tile_size}f32.p0f32(<{self.tile_size} x {type_name}> %{value}, ptr %{var}, i64 {stride}, i1 0, i32 {self.tile_row}, i32 {self.tile_col})"
@@ -633,40 +719,56 @@ class MatrixLLVMKernel(LLVMKernel):
 
             # NOTE. To keep below line be under the compute, used store buffers
             temp = self.cse.generate(self.stores, line)
-            output = []
-            for i in range(self.tile_col):
-                indexes = [f"i32 {i*self.tile_row+j}" for j in range(self.tile_row)]
-                line = f"shufflevector <{self.tile_size} x {type_name}> %{value}, <{self.tile_size} x {type_name}> undef, <{self.tile_row} x i32> <{comma.join(indexes)}>"
-                split_vector = self.cse.generate(self.stores, line)
-                output.append(self.cse.generate(self.stores, matrix_partial_reduction_combine(reduction_type, split_vector, self.tile_row)))
-            length = len(output)
-            size = 1
-            while(len(output) > 1):
-                op1 = output.pop(0)
-                op2 = output.pop(0)
-                if size == 1:
-                    line = f"insertelement <2 x {type_name}> undef, {type_name} %{op1}, i32 0"
-                    temp_vec = self.cse.generate(self.stores, line)
-                    line = f"insertelement <2 x {type_name}> %{temp_vec}, {type_name} %{op2}, i32 1"
+            if self.tiling_idx >= self.reduction_depth: # horizontal reduction
+                output = []
+                for i in range(self.tile_col):
+                    if self.tile_col != 1:
+                        indexes = [f"i32 {i*self.tile_row+j}" for j in range(self.tile_row)]
+                        line = f"shufflevector <{self.tile_size} x {type_name}> %{value}, <{self.tile_size} x {type_name}> undef, <{self.tile_row} x i32> <{comma.join(indexes)}>"
+                        split_vector = self.cse.generate(self.stores, line)
+                        reduced_vector = self.cse.generate(self.stores, matrix_partial_reduction_combine(reduction_type, split_vector, self.tile_row))
+                    else:
+                        reduced_vector = self.cse.generate(self.stores, matrix_partial_reduction_combine(reduction_type, value, self.tile_row))
+                    output.append(reduced_vector)
+                length = len(output)
+                size = 1
+                while(len(output) > 1):
+                    op1 = output.pop(0)
+                    op2 = output.pop(0)
+                    if size == 1:
+                        line = f"insertelement <2 x {type_name}> undef, {type_name} %{op1}, i32 0"
+                        temp_vec = self.cse.generate(self.stores, line)
+                        line = f"insertelement <2 x {type_name}> %{temp_vec}, {type_name} %{op2}, i32 1"
+                    else:
+                        indexes = [f"i32 {j}" for j in range(size * 2)]
+                        line = f"shufflevector <{size} x {type_name}> %{op1}, <{size} x {type_name}> %{op2}, <{size * 2} x i32> <{comma.join(indexes)}>"
+                    out = self.cse.generate(self.stores, line)
+                    output.append(out)
+                    if (len(output) == length / 2):
+                        size *= 2
+                        length = len(output)
+                if (self.tile_col == 1):
+                    line = f"insertelement <{self.tile_col} x {type_name}> undef, {type_name} %{output[0]}, i32 0"
+                    cast_vec = self.cse.generate(self.stores, line)
+                    line = f"fadd <{self.tile_col} x {type_name}> %{temp}, %{cast_vec}"
                 else:
-                    indexes = [f"i32 {j}" for j in range(size * 2)]
-                    line = f"shufflevector <{size} x {type_name}> %{op1}, <{size} x {type_name}> %{op2}, <{size * 2} x i32> <{comma.join(indexes)}>"
-                out = self.cse.generate(self.stores, line)
-                output.append(out)
-                if (len(output) == length / 2):
-                    size *= 2
-                    length = len(output)
-            if (self.tile_col == 1):
-                line = f"insertelement <{self.tile_col} x {type_name}> undef, {type_name} %{output[0]}, i32 0"
-                cast_vec = self.cse.generate(self.stores, line)
-                line = f"fadd <{self.tile_col} x {type_name}> %{temp}, %{cast_vec}"
+                    line = f"fadd <{self.tile_row} x {type_name}> %{temp}, %{output[0]}"
+                stored_vector = self.cse.generate(self.stores, line)
             else:
-                line = f"fadd <{self.tile_row} x {type_name}> %{temp}, %{output[0]}"
-            output = self.cse.generate(self.stores, line)
+                partial_value = temp
+                for i in range(self.tile_col):
+                    if self.tile_col != 1:
+                        indexes = [f"i32 {i*self.tile_row+j}" for j in range(self.tile_row)]
+                        line = f"shufflevector <{self.tile_size} x {type_name}> %{value}, <{self.tile_size} x {type_name}> undef, <{self.tile_row} x i32> <{comma.join(indexes)}>"
+                        split_vector = self.cse.generate(self.stores, line)
+                        partial_value = self.cse.generate(self.stores, matrix_reduction_combine(reduction_type, partial_value, split_vector, self.tile_row))
+                    else:
+                        partial_value = self.cse.generate(self.stores, matrix_reduction_combine(reduction_type, partial_value, value, self.tile_row))
+                stored_vector = partial_value
             if (self.tile_col == 1):
-                line = f"store <{self.tile_col} x {type_name}> %{output}, ptr %{acc}, align {align}"
+                line = f"store <{self.tile_col} x {type_name}> %{stored_vector}, ptr %{acc}, align {align}"
             else:
-                line = f"store <{self.tile_row} x {type_name}> %{output}, ptr %{acc}, align {align}"
+                line = f"store <{self.tile_row} x {type_name}> %{stored_vector}, ptr %{acc}, align {align}"
             self.cse.generate(self.stores, line, assignment = False)
             self.reduction_cse.reduction_cache[reduction_key] = acc
         return acc
@@ -727,12 +829,30 @@ class MatrixLLVMKernel(LLVMKernel):
 
     def set_ranges(self, lengths, reduction_lengths):
         ret = super().set_ranges(lengths, reduction_lengths)
+        # do vertical reduction as the tail loop
+        if len(self.itervars) > 1:
+            if len(self.tiling_indices) == 1:
+                self.tiling_idx = self.tiling_indices[0]
+                self.outer_idx = None
+            else:
+                self.outer_idx, self.tiling_idx = (
+                    self.tiling_indices
+                    if self.tiling_indices[1] < self.reduction_depth
+                    else reversed(self.tiling_indices)
+                )
+        else:
+            self.tiling_idx = self.tiling_indices[0]
+            self.outer_idx = None
 
         # FIXME. this doesn't look pretty...
         # We have to change this logic to configurable tile_size
         if len(self.itervars) == 1:
-            self.tile_row = self.tile_size
+            self.tile_row = min(self.tile_size, self.ranges[0])
             self.tile_col = 1
+        elif len(self.itervars) > 1:
+            self.tile_row = min(self.tile_row, self.ranges[0])
+            self.tile_col = min(self.tile_col, self.ranges[1])
+        self.tile_size = self.tile_row * self.tile_col
         return ret
 
     def _codegen_kernel(self, arg_defs, kernel_name):
@@ -747,6 +867,7 @@ class MatrixLLVMKernel(LLVMKernel):
         code.writeline(f'declare void @llvm.matrix.column.major.store.v{self.tile_size}f32.p0f32(<{self.tile_size} x float>, ptr , i64, i1, i32, i32) #3')
         if self.tile_size != self.tile_row:
             code.writeline(f'declare void @llvm.matrix.column.major.store.v{self.tile_row}f32.p0f32(<{self.tile_row} x float>, ptr , i64, i1, i32, i32) #3')
+        code.writeline(f'declare <{self.tile_size} x float> @llvm.matrix.transpose.v{self.tile_size}f32.p0f32(<{self.tile_size} x float>, i32, i32) #2')
         code.writeline(f'declare float @llvm.vector.reduce.fadd.nxv2f32(float, <{self.tile_row} x float>)')
         code.writeline(f'declare float @llvm.vector.reduce.fmax.nxv2f32(<{self.tile_row} x float>)')
         code.writeline(f'declare <{self.tile_size} x float> @llvm.exp.f32(<{self.tile_size} x float>) #1')
@@ -975,15 +1096,10 @@ class LLVMScheduling(BaseScheduling):
             nodes, key=lambda x: int(x.is_reduction())
         ).group
         ex_kernel = self.target_kernel()
-        with ex_kernel as kernel:
-            for node in nodes:
-                vars, reduction_vars = ex_kernel.set_ranges(group, reduction_group)
-                node.run(vars, reduction_vars)
 
         kernel_name = f"extension_kernel_{self.count}"
         self.count += 1
-        src_code = ex_kernel.codegen_kernel(kernel_name=kernel_name)
-        ex_kernel.meta_kernel()
+        src_code = ex_kernel.codegen_nodes(nodes, kernel_name)
         self.define_kernel(src_code, kernel_name)
         ex_kernel.call_kernel(kernel_name)
 

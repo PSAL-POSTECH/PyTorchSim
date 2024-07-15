@@ -29,8 +29,7 @@ class FunctionalSimulator():
         # path = os.path.join(dump_path, arg_name, f'{n_call}.raw')
         with open(path, 'rb') as f:
             np_array = np.fromfile(f, dtype=TORCH_TO_NUMPY[arg.dtype])
-            src_tensor = torch.from_numpy(np_array).view(dtype=arg.dtype)
-            src_tensor = src_tensor.reshape(arg.shape)
+            src_tensor = torch.as_strided(torch.from_numpy(np_array), arg.size(), arg.stride())
             arg.copy_(src_tensor)
 
     def get_biggest_filename(self, path):
@@ -81,7 +80,7 @@ class FunctionalSimulator():
         array_size, file_path = self.dump_args(args, arg_attributes, load_path, dump_path)
         array_size_str = ' '.join(map(str, array_size))
         file_path_str = ' '.join(file_path)
- 
+
         run = f'spike --isa rv64gcv /workspace/riscv-pk/build/pk {target_binary} {array_size_str} {file_path_str}'
         print("Spike cmd > ", run)
         run_cmd = shlex.split(run)

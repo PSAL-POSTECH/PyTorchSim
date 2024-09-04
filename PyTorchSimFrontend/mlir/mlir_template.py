@@ -75,12 +75,14 @@ class MLIRTemplateKernel(Kernel):
                 self.named_nodes[name] = node
                 self.args.input_buffers[node.get_name()] = name
 
+        extra_node = {}
         for name, node in zip(names[len(inputs) : len(inputs) + len(outputs)], outputs):
             if node is not None:
                 self.named_nodes[name] = node
                 self.args.output_buffers[node.get_name()] = name
+                extra_node[node.get_name()] = node
 
-        arg_defs, *_ = self.args.mlir_argdefs(only_args=True)
+        arg_defs, *_ = self.args.mlir_argdefs(only_args=True, extra_node=extra_node)
         return f"({', '.join(arg_defs)})"
 
     def def_function(self):

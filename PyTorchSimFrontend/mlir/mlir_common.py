@@ -65,7 +65,7 @@ class MLIRKernelArgs(common.KernelArgs):
     def is_mlir_arg_out(value):
         return (MLIRKernelArgs.MLIR_ARGS_OUT & value) | (MLIRKernelArgs.MLIR_ARGS_INOUT & value)
 
-    def mlir_argdefs(self, only_args=False):
+    def mlir_argdefs(self, only_args=False, extra_node=dict()):
         buffer_types = {x.get_name(): [x.get_dtype(), x.get_numel()] for x in V.graph.buffers}
         for name, val in V.graph.graph_inputs.items():
             if isinstance(val, sympy.Expr):
@@ -74,6 +74,9 @@ class MLIRKernelArgs(common.KernelArgs):
                 buffer_types[name] = [val.get_dtype(), val.get_numel()]
         buffer_types.update(
             {name: val.dtype for name, val in V.graph.constants.items()}
+        )
+        buffer_types.update(
+            {name: [val.get_dtype(), val.get_numel()] for name, val in extra_node.items()}
         )
 
         call_args = []

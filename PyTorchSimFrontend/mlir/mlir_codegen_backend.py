@@ -18,6 +18,7 @@ from torch._inductor.codecache import write_atomic, write
 import extension_codecache
 
 from . import mlir_common
+from . import mlir_lowering
 
 def reduction_init(reduction_type, dtype):
     if dtype in cpp.DTYPE_LOWP_FP:
@@ -539,3 +540,25 @@ class MLIRScheduling(BaseScheduling):
 
             wrapper.define_kernel(kernel_name, codecache_def.getvalue(), cuda=False)
         return kernel_name
+
+# class VectorizedMLIRScheduling(MLIRScheduling):
+#     target_kernel = VectorizedMLIRKernel
+
+class MatrixMLIRScheduling(MLIRScheduling):
+    # target_kernel = MatrixMLIRKernel
+    def codegen_template(self, template_node, epilogue_nodes):
+        _, (numel, rnumel) = template_node.group
+
+        template_buffer = template_node.node
+        kernel, render = template_buffer.make_kernel_render(template_buffer, epilogue_nodes=epilogue_nodes)
+        with kernel:
+            for node in [template_node, *epilogue_nodes]:
+                node.mark_run()
+            src_code = render()
+
+        with V.set_kernel_handler(kernel):
+            node_schedule = [template_node, *epilogue_nodes]
+            kernel.meta_kernel()
+            kernel_name = self.define_kernel(src_code, kernel.kernel_name)
+            self.define_function(kernel)
+        kernel.call_kernel(kernel_name)

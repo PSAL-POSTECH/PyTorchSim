@@ -8,16 +8,20 @@ from torch._inductor.ir import ReinterpretView
 
 GEMM_TEMPLATE = r"""
 func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[X, W, Bias], outputs=[Y], names_str="X, W, Bias, Y", input_reorder=input_reorder)}} {
+  %zero = arith.constant 0 : index
   %M = arith.constant {{ M }} : index
   %N = arith.constant {{ N }} : index
   %K = arith.constant {{ K }} : index
+  %X_2d = memref.view %X[%zero][] : memref<{{M*K}}x{{DATA_STYPE}}> to memref<{{M}}x{{K}}x{{DATA_STYPE}}>
+  %W_2d = memref.view %W[%zero][] : memref<{{K*N}}x{{DATA_STYPE}}> to memref<{{K}}x{{N}}x{{DATA_STYPE}}>
+  %Y_2d = memref.view %Y[%zero][] : memref<{{M*N}}x{{DATA_STYPE}}> to memref<{{M}}x{{N}}x{{DATA_STYPE}}>
 
   affine.for %t_m = 0 to %M step {{ TILE_M }} {
     affine.for %t_n = 0 to %N step {{ TILE_N }} {
       affine.for %t_k = 0 to %K step {{ TILE_K }} {
-        %A_tile = memref.subview %X[%t_m, %t_k] [{{ TILE_M }}, {{ TILE_K }}] [1, 1] : memref<?x?x{{ DATA_STYPE }}> to memref<{{ TILE_M }}x{{ TILE_K }}x{{ DATA_STYPE }}, strided<[?, 1], offset: ?>>
-        %B_tile = memref.subview %W[%t_k, %t_n] [{{ TILE_K }}, {{ TILE_N }}] [1, 1] : memref<?x?x{{ DATA_STYPE }}> to memref<{{ TILE_K }}x{{ TILE_N }}x{{ DATA_STYPE }}, strided<[?, 1], offset: ?>>
-        %C_tile = memref.subview %Y[%t_m, %t_n] [{{ TILE_M }}, {{ TILE_N }}] [1, 1] : memref<?x?x{{ DATA_STYPE }}> to memref<{{ TILE_M }}x{{ TILE_N }}x{{ DATA_STYPE }}, strided<[?, 1], offset: ?>>
+        %A_tile = memref.subview %X_2d[%t_m, %t_k] [{{ TILE_M }}, {{ TILE_K }}] [1, 1] : memref<?x?x{{ DATA_STYPE }}> to memref<{{ TILE_M }}x{{ TILE_K }}x{{ DATA_STYPE }}, strided<[?, 1], offset: ?>>
+        %B_tile = memref.subview %W_2d[%t_k, %t_n] [{{ TILE_K }}, {{ TILE_N }}] [1, 1] : memref<?x?x{{ DATA_STYPE }}> to memref<{{ TILE_K }}x{{ TILE_N }}x{{ DATA_STYPE }}, strided<[?, 1], offset: ?>>
+        %C_tile = memref.subview %Y_2d[%t_m, %t_n] [{{ TILE_M }}, {{ TILE_N }}] [1, 1] : memref<?x?x{{ DATA_STYPE }}> to memref<{{ TILE_M }}x{{ TILE_N }}x{{ DATA_STYPE }}, strided<[?, 1], offset: ?>>
 
         linalg.matmul ins(%A_tile, %B_tile : memref<{{ TILE_M }}x{{ TILE_K }}x{{ DATA_STYPE }}, strided<[?, 1], offset: ?>>, memref<{{ TILE_K }}x{{ TILE_N }}x{{ DATA_STYPE }}, strided<[?, 1], offset: ?>>)
                 outs(%C_tile : memref<{{ TILE_M }}x{{ TILE_N }}x{{ DATA_STYPE }}, strided<[?, 1], offset: ?>>)

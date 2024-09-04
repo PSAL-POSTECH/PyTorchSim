@@ -541,11 +541,6 @@ class MLIRScheduling(BaseScheduling):
             wrapper.define_kernel(kernel_name, codecache_def.getvalue(), cuda=False)
         return kernel_name
 
-# class VectorizedMLIRScheduling(MLIRScheduling):
-#     target_kernel = VectorizedMLIRKernel
-
-class MatrixMLIRScheduling(MLIRScheduling):
-    # target_kernel = MatrixMLIRKernel
     def codegen_template(self, template_node, epilogue_nodes):
         _, (numel, rnumel) = template_node.group
 

@@ -10,21 +10,23 @@ from torch._inductor.codegen.common import OpOverrides
 from torch._inductor.ir import Buffer
 from torch._inductor.ir import IRNode
 from torch._inductor.ir import TemplateBuffer
+from torch._inductor.select_algorithm import PartialRender
 from torch._inductor.codegen.cuda.cuda_kernel import CUDATemplateCaller
 from torch._inductor.autotune_process import TensorMeta
 from torch._inductor.virtualized import V
 
 from PyTorchSimFrontend.mlir.mlir_autotune import MLIRBenchmarkRequest
-from PyTorchSimFrontend.mlir.mlir_common import MLIRKernelArgs, BaseMLIRHardwareInfo
+from PyTorchSimFrontend.mlir.mlir_common import BaseMLIRHardwareInfo
+from PyTorchSimFrontend.mlir.mlir_codegen_backend import MLIRKernel
 
-class MLIRTemplateKernel(Kernel, BaseMLIRHardwareInfo):
+class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
     overrides = OpOverrides
     def __init__(self,
                  kernel_name,
                  outer_func_name=None,
                  outer_func_render=None,
                  kernel_arg_attributes=None) -> None:
-        super().__init__(MLIRKernelArgs())
+        super().__init__()
         self.kernel_name = kernel_name
         self.named_nodes = {}
         self.loop_info = {}
@@ -33,6 +35,7 @@ class MLIRTemplateKernel(Kernel, BaseMLIRHardwareInfo):
         self.outer_func_name = outer_func_name
         self.outer_func_render = outer_func_render
         self.kernel_arg_attributes = kernel_arg_attributes
+        self.render_hooks = dict()
 
     def add_loop_info(self, mat_size, tile_size):
         for idx, (loop_size, stride) in enumerate(zip(mat_size, tile_size)):
@@ -93,7 +96,24 @@ class MLIRTemplateKernel(Kernel, BaseMLIRHardwareInfo):
                 extra_node[node.get_name()] = node
 
         arg_defs, *_ = self.args.mlir_argdefs(extra_node=extra_node)
-        return f"({', '.join(arg_defs)})"
+
+        def hook():
+            return f"({', '.join(arg_defs)})"
+
+        assert "<DEF_KERNEL>" not in self.render_hooks
+        self.render_hooks["<DEF_KERNEL>"] = hook
+        return "<DEF_KERNEL>"
+
+    def store_output(self, indices, val, mask):
+
+        def hook():
+            # more stuff might have been added since the codegen_body above
+            self.codegen_body()
+            return textwrap.indent(self.body.getvalue(), "    ").strip()
+
+        assert "<STORE_OUTPUT>" not in self.render_hooks
+        self.render_hooks["<STORE_OUTPUT>"] = hook
+        return "<STORE_OUTPUT>"
 
     def def_function(self):
         _, call_args, _ = self.args.python_argdefs()
@@ -101,6 +121,16 @@ class MLIRTemplateKernel(Kernel, BaseMLIRHardwareInfo):
             return self.outer_func_render(input_args=call_args)
         else:
             return None, None
+
+    def render(self, template, kwargs):
+        # self.render_hooks = {}
+        self.render_hooks["<DEF_KERNEL>"] = self.def_kernel
+        # self.render_hooks["<STORE_OUTPUT>"] = self.store_output
+        self.render_hooks = {}
+        return PartialRender(
+            template.render(**kwargs),
+            self.render_hooks,
+        )
 
 class MLIRTemplateCaller(CUDATemplateCaller):
     def __str__(self):
@@ -163,14 +193,24 @@ class MLIRTemplate(KernelTemplate):
                 ) if hasattr(self, 'outer_func_render') else None,
                 kernel_arg_attributes=self.get_arg_attributes() if hasattr(self, 'get_arg_attributes') else None
             )
+            # render = functools.partial(
+            #     self.render,
+            #     kernel=kernel,
+            #     template_buffer_node=template_node,
+            #     epilogue_nodes=epilogue_nodes,
+            #     **kwargs,  # includes "op" argument in case of CUTLASSGemmTemplate
+            # )
+            kwargs = {
+                'kernel': kernel,
+                'template_buffer_node': template_node,
+                'epilogue_nodes': epilogue_nodes
+            }
             render = functools.partial(
-                self.render,
-                kernel=kernel,
-                template_buffer_node=template_node,
-                epilogue_nodes=epilogue_nodes,
-                **kwargs,  # includes "op" argument in case of CUTLASSGemmTemplate
+                kernel.render,
+                template=self,
+                kwargs=kwargs
             )
-            return kernel, render
+            return kernel, render, self.codegen_header
 
         return MLIRTemplateCaller(
             kernel_hash_name,

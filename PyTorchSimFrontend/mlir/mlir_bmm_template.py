@@ -64,7 +64,7 @@ func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[X, W, Bias], outputs=[Y]
 class MLIRBMMTemplate(MLIRTemplate):
     def __init__(self, input_nodes, layout, input_reorder=None):
         super().__init__("kernel", input_nodes, layout, input_reorder)
-    
+
     def is_transposed(self, node):
         if isinstance(node, ReinterpretView):
             # if node.layout.stride != node.data.layout.stride:
@@ -119,14 +119,18 @@ class MLIRBMMTemplate(MLIRTemplate):
             input_reorder = self.input_reorder
         )
         code = self._template_from_string(BMM_TEMPLATE).render(**options)
-        write_path = extension_codecache.get_write_path(code)
+        kernel.add_loop_info([options["M"], options["N"], options["K"]], [options["TILE_M"], options["TILE_N"], options["TILE_K"]])
+
+        self.header = f"float X_spad[{TILE_M}][{TILE_K}] __attribute__ ((section(\".spad\")));\n"
+        self.header += f"float W_spad[{TILE_K}][{TILE_N}] __attribute__ ((section(\".spad\")));\n"
+        self.header += f"float Y_spad[{TILE_M}][{TILE_N}] __attribute__ ((section(\".spad\")));\n"
+
+        return code
+
+    def codegen_header(self, source):
+        write_path = extension_codecache.get_write_path(source)
         if not os.path.exists(write_path):
             os.makedirs(write_path)
         write_path = os.path.join(write_path, "global_var.h")
-        header = f"float X_spad[{TILE_M}][{TILE_K}] __attribute__ ((section(\".spad\")));\n"
-        header += f"float W_spad[{TILE_K}][{TILE_N}] __attribute__ ((section(\".spad\")));\n"
-        header += f"float Y_spad[{TILE_M}][{TILE_N}] __attribute__ ((section(\".spad\")));\n"
         if not os.path.exists(write_path):
-            write_atomic(write_path, header)
-        kernel.add_loop_info([options["M"], options["N"], options["K"]], [options["TILE_M"], options["TILE_N"], options["TILE_K"]])
-        return code
+            write_atomic(write_path, self.header)

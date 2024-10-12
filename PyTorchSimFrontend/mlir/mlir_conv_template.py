@@ -189,6 +189,7 @@ class MLIRConvTemplate(MLIRTemplate):
             self.output_node = template_buffer_node
         if epilogue_nodes is not None and len(epilogue_nodes) > 0:
             self.output_node = cast(Buffer, epilogue_nodes[-1])
+            self.function_name += f"_fused_{epilogue_nodes[0].node.origin_node.name}"
 
         X, W = self.input_nodes[0], self.input_nodes[1]
         Y = self.output_node
@@ -217,28 +218,20 @@ class MLIRConvTemplate(MLIRTemplate):
             DATA_SIZE=4,
         )
         code = self._template_from_string(GEMM_TEMPLATE).render(**options)
-        write_path = extension_codecache.get_write_path(code)
-        if not os.path.exists(write_path):
-            os.makedirs(write_path)
-        spike_write_path = os.path.join(write_path, "global_var.h")
-        gem5_write_path = os.path.join(write_path, "gem5_global_var.h")
-        header = f"float X_spad[{TILE_M * TILE_K // kernel.vector_lane}] __attribute__ ((section(\".spad\")));\n"
-        header += f"float W_spad[{TILE_K * TILE_N // kernel.vector_lane}] __attribute__ ((section(\".spad\")));\n"
-        header += f"float Y_spad[{TILE_M * TILE_N // kernel.vector_lane}] __attribute__ ((section(\".spad\")));\n"
-        gem5_header = f"float X_spad[{TILE_M * TILE_K}] __attribute__ ((section(\".spad\")));\n"
-        gem5_header += f"float W_spad[{TILE_K * TILE_N}] __attribute__ ((section(\".spad\")));\n"
-        gem5_header += f"float Y_spad[{TILE_M * TILE_N}] __attribute__ ((section(\".spad\"));\n"
+
+        self.header = f"float X_spad[{TILE_M * TILE_K // kernel.vector_lane}] __attribute__ ((section(\".spad\")));\n"
+        self.header += f"float W_spad[{TILE_K * TILE_N // kernel.vector_lane}] __attribute__ ((section(\".spad\")));\n"
+        self.header += f"float Y_spad[{TILE_M * TILE_N // kernel.vector_lane}] __attribute__ ((section(\".spad\")));\n"
+        self.gem5_header = f"float X_spad[{TILE_M * TILE_K}] __attribute__ ((section(\".spad\")));\n"
+        self.gem5_header += f"float W_spad[{TILE_K * TILE_N}] __attribute__ ((section(\".spad\")));\n"
+        self.gem5_header += f"float Y_spad[{TILE_M * TILE_N}] __attribute__ ((section(\".spad\"));\n"
         if Bias is not None:
-            header += f"float B_spad[{TILE_M * TILE_N // kernel.vector_lane}] __attribute__ ((section(\".spad\")));\n"
-            gem5_header += f"float B_spad[{TILE_M * TILE_N}] __attribute__ ((section(\".spad\"));\n"
-        if not os.path.exists(spike_write_path):
-            write_atomic(spike_write_path, header)
-        if not os.path.exists(gem5_write_path):
-            write_atomic(gem5_write_path, gem5_header)
+            self.header += f"float B_spad[{TILE_M * TILE_N // kernel.vector_lane}] __attribute__ ((section(\".spad\")));\n"
+            self.gem5_header += f"float B_spad[{TILE_M * TILE_N}] __attribute__ ((section(\".spad\"));\n"
+
         kernel.add_loop_info([options["M"], options["N"], options["K"]], [options["TILE_M"], options["TILE_N"], options["TILE_K"]])
         kernel.def_kernel(inputs=[X, W, Bias], outputs=[Y], names_str="X, W, Bias, Y", input_reorder=self.input_reorder)
 
-        self.hash_value = get_hash(code.strip())
         return code
 
     def outer_func_render(self, kernel_name, input_args):
@@ -279,3 +272,15 @@ class MLIRConvTemplate(MLIRTemplate):
         arg_attributes.append([self.gemm_args[3], [MLIRKernelArgs.MLIR_ARGS_OUT, self.input_nodes[0].layout.dtype, math.prod(gemm_output_shape)]])
 
         return arg_attributes
+
+    def codegen_header(self, code):
+        write_path = extension_codecache.get_write_path(code)
+        if not os.path.exists(write_path):
+            os.makedirs(write_path)
+        spike_write_path = os.path.join(write_path, "global_var.h")
+        gem5_write_path = os.path.join(write_path, "gem5_global_var.h")
+        if not os.path.exists(spike_write_path):
+            write_atomic(spike_write_path, self.header)
+        if not os.path.exists(gem5_write_path):
+            write_atomic(gem5_write_path, self.gem5_header)
+        self.hash_value = get_hash(code.strip())

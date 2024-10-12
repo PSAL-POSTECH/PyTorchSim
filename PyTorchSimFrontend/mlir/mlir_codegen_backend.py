@@ -4,6 +4,7 @@ import sympy
 import itertools
 import re
 import os
+import math
 from functools import reduce
 from operator import mul
 from typing import List
@@ -24,7 +25,6 @@ import extension_codecache
 
 
 from . import mlir_common
-from . import mlir_lowering
 
 def reduction_init(reduction_type, dtype):
     if dtype in cpp.DTYPE_LOWP_FP:
@@ -288,9 +288,9 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
     overrides = ExtensionOverrides
     newvar_prefix = "%"
 
-    def __init__(self, kernel_group):
+    def __init__(self):
         super().__init__(mlir_common.MLIRKernelArgs())
-        self.kernel_group = kernel_group
+        self.kernel_group = None
         self.call_ranges = None
         self.ranges = None
         self.itervars = None
@@ -847,6 +847,8 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         buffer = self.cse.generate(code_buffer, f"memref.get_global @{name}_spad : memref<{dram_tile_shape}x{mlir_type}, 1>")
         return buffer, indices
 
+from . import mlir_lowering
+
 @dataclasses.dataclass
 class LoopLevel:
     var: sympy.Expr
@@ -913,13 +915,22 @@ class MLIRScheduling(BaseScheduling):
         self.kernel_group = MLIRWrapperKenrelGroup()
 
     def can_fuse_vertical(self, node1, node2):
-        return False
+        return self.can_fuse_horizontal(node1, node2) and not node1.is_reduction()
 
     def can_fuse_horizontal(self, node1, node2):
-        _, (vars1, reduce1) = node1.group
-        _, (vars2, reduce2) = node2.group
-        if vars1 == vars2 and reduce1 == reduce2:
-            return True
+        # _, (vars1, reduce1) = node1.group
+        # _, (vars2, reduce2) = node2.group
+        # if vars1 == vars2 and reduce1 == reduce2:
+        #     return True
+        # #TODO: Temporary solution determining the fusion condition similar to CPP/OpenMP
+        # total_v1 = math.prod(vars1) if len(vars1) else 0
+        # total_v2 = math.prod(vars2) if len(vars2) else 0
+        # total_r1 = math.prod(reduce1) if len(reduce1) else 0
+        # total_r2 = math.prod(reduce2) if len(reduce2) else 0
+        # if reduce1 == () \
+        #     and total_v1 == (total_v2 + total_r2) \
+        #     and node1.node.layout.size == node2.node.layout.size:
+        #     return True
         return False
 
     def group_fn(self, sizes):
@@ -929,7 +940,8 @@ class MLIRScheduling(BaseScheduling):
         _, (group, reduction_group) = max(
             nodes, key=lambda x: int(x.is_reduction())
         ).group
-        ex_kernel = self.target_kernel(self.kernel_group)
+        ex_kernel = self.target_kernel()
+        ex_kernel.kernel_group = self.kernel_group
 
         kernel_name = f"extension_kernel_{MLIRScheduling.count}"
         MLIRScheduling.count += 1
@@ -978,17 +990,25 @@ class MLIRScheduling(BaseScheduling):
         return kernel_name
 
     def codegen_src_code(self, kernel, render, template_node, epilogue_nodes):
-        with kernel:
-            for node in [template_node, *epilogue_nodes]:
+        for node in [template_node, *epilogue_nodes]:
                 node.mark_run()
-            src_code = render()
+        partial_code = render()
+        for node in epilogue_nodes:
+            node.codegen(kernel.split_and_set_ranges(node.get_ranges()))
+        with V.set_kernel_handler(kernel):
+            src_code = (
+                partial_code
+                if isinstance(partial_code, str)
+                else partial_code.finalize()
+            )
         return src_code
 
     def codegen_template(self, template_node, epilogue_nodes):
         _, (numel, rnumel) = template_node.group
 
         template_buffer = template_node.node
-        kernel, render = template_buffer.make_kernel_render(template_buffer, epilogue_nodes=epilogue_nodes)
+
+        kernel, render, codegen_header = template_buffer.make_kernel_render(template_buffer, epilogue_nodes=epilogue_nodes)
         src_code = self.codegen_src_code(kernel, render, template_node, epilogue_nodes)
         wrapper = V.graph.wrapper_code
         if src_code in wrapper.src_to_kernel: # [CONV] check inner function is already defined
@@ -997,6 +1017,7 @@ class MLIRScheduling(BaseScheduling):
             src_code = self.codegen_src_code(kernel, render, template_node, epilogue_nodes)
 
         with V.set_kernel_handler(kernel):
+            codegen_header(src_code)
             node_schedule = [template_node, *epilogue_nodes]
             kernel.meta_kernel()
             kernel_name = self.define_kernel(src_code, kernel.kernel_name, kernel.vector_lane, kernel.spad_info)

@@ -129,7 +129,7 @@ class CycleSimulator():
     def __init__(self) -> None:
         pass
 
-    def compile_and_simulate(self, target_binary, array_size):
+    def compile_and_simulate(self, target_binary, array_size, vectorlane_size):
         def show_progress():
             i = 0
             while not finished:
@@ -145,7 +145,7 @@ class CycleSimulator():
 
         dir_path = os.path.join(os.path.dirname(target_binary), "m5out")
         try:
-            gem5_cmd = [self.GEM5_PATH, "-d", dir_path, self.GEM5_SCRIPT_PATH, "-c", target_binary]
+            gem5_cmd = [self.GEM5_PATH, "-d", dir_path, self.GEM5_SCRIPT_PATH, "-c", target_binary, "--vlane", str(vectorlane_size)]
             output = subprocess.check_output(gem5_cmd, stderr=subprocess.DEVNULL)
             finished = True
             progress_thread.join()

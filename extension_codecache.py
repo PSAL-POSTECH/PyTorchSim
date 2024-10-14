@@ -184,7 +184,7 @@ class MLIRCodeCache:
 
         # Run cyclesim
         cyclesim = CycleSimulator()
-        cycle_list = cyclesim.compile_and_simulate(os.path.join(write_path, cycle_binary_name), " ".join(array_size))
+        cycle_list = cyclesim.compile_and_simulate(os.path.join(write_path, cycle_binary_name), " ".join(array_size), vectorlane_size)
 
         # Create TOG
         tile_graph_generator = tog_generator()
@@ -254,7 +254,7 @@ class LLVMCodeCache:
 
             # Run cyclesim
             cyclesim = CycleSimulator()
-            cycle_list = cyclesim.compile_and_simulate(os.path.join(write_path, cycle_binary_name), " ".join(array_size))
+            cycle_list = cyclesim.compile_and_simulate(os.path.join(write_path, cycle_binary_name), " ".join(array_size), vectorlane_size)
 
             if TORCHSIM_DUMP_FILE:
                 tile_graph_generator.dump_basic_block_graph(os.path.join(write_path, "basic_block.onnx"))

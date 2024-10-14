@@ -21,6 +21,7 @@ from torch._inductor.utils import (
     sympy_symbol,
     unique,
 )
+from torch._inductor.ir import Buffer
 
 schedule_log = torch._logging.getArtifactLogger(__name__, "schedule")
 
@@ -109,7 +110,9 @@ class MLIRKernelArgs(common.KernelArgs):
             {name: val.dtype for name, val in V.graph.constants.items()}
         )
         buffer_types.update(
-            {name: [val.get_dtype(), val.get_numel()] for name, val in extra_node.items()}
+            {name: [val.get_dtype() if isinstance(val, Buffer) else val.node.get_dtype(), \
+                val.get_numel() if isinstance(val, Buffer) else val.node.get_numel()] \
+                    for name, val in extra_node.items()}
         )
 
         call_args = []

@@ -759,6 +759,23 @@ def test_resnet(device):
     res = opt_fn(x1)
     print("ResNet18 Simulation Done")
 
+def test_matmul_fused(device):
+    def matmul_fused(a, b, c):
+        return torch.matmul(a, b) * c
+    torch.manual_seed(0)
+    input = torch.randn(128, 128)
+    weight = torch.randn(128, 128)
+    bias = torch.randn(128)
+    x1 = input.to(device=device)
+    w1 = weight.to(device=device)
+    x2 = input.to("cpu")
+    w2 = weight.to("cpu")
+    c = 7
+    opt_fn = torch.compile()(matmul_fused)
+    res = opt_fn(x1, w1, c)
+    y = matmul_fused(x2, w2, c)
+    test_result("Matmul Forward", res, y)
+
 if __name__ == "__main__":
     #from torch._dynamo.test_case import run_tests
     #from torch.testing._internal.inductor_utils import HAS_CPU
@@ -768,6 +785,7 @@ if __name__ == "__main__":
     from Scheduler.scheduler import ExecutionEngine
     module = ExecutionEngine.setup_device()
     device = module.custom_device()
+    # torch.set_printoptions(threshold=float('inf'), linewidth=600)
     test_vectoradd(device, (47, 10))
     test_reduce_sum(device, (29, 47), 1, keepdim=True)
     test_reduce_sum(device, (16, 64), 0, keepdim=True)
@@ -786,3 +804,10 @@ if __name__ == "__main__":
     test_DecoderBlock(device)
     test_resnet(device)
     test_mlp(device)
+
+    test_BMM(device)
+    test_LayerNorm(device, (64, 128))
+    test_conv2d(device)
+
+    # # Fusion Test
+    test_matmul_fused(device)

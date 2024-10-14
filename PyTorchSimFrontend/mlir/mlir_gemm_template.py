@@ -16,6 +16,7 @@ GEMM_TEMPLATE = r"""
 memref.global @X_spad : memref<{{ TILE_M }}x{{ TILE_K }}xf32, 1>
 memref.global @W_spad : memref<{{ TILE_K }}x{{ TILE_N }}xf32, 1>
 memref.global @Y_spad : memref<{{ TILE_M }}x{{ TILE_N }}xf32, 1>
+{{kernel.def_global_vars()}}
 
 func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[X, W, Bias], outputs=[Y], names_str="X, W, Bias, Y", input_reorder=input_reorder)}} {
   %c_mvin = arith.constant 2 : index
@@ -51,6 +52,7 @@ func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[X, W, Bias], outputs=[Y]
         linalg.matmul ins(%X_buffer, %W_buffer : memref<{{ TILE_M }}x{{ TILE_K }}x{{ DATA_STYPE }}, 1>, memref<{{ TILE_K }}x{{ TILE_N }}x{{ DATA_STYPE }}, 1>)
                 outs(%Y_buffer : memref<{{ TILE_M }}x{{ TILE_N }}x{{ DATA_STYPE }}, 1>)
       } { accumulation_loop=true }
+{{kernel.store_output()}}
       affine.dma_start %Y_buffer[0, 0], %Y[%index2], %tag[0], %c_mvout, %N, %c_set : memref<{{ TILE_M }}x{{ TILE_N }}xf32, 1>, memref<{{ M * N }}xf32>, memref<1xi32>
     } { outer_loop=true }
   } { outer_loop=true }
@@ -79,6 +81,7 @@ class MLIRGemmTemplate(MLIRTemplate):
         if template_buffer_node is not None:
             self.output_node = template_buffer_node
         if epilogue_nodes is not None and len(epilogue_nodes) > 0:
+            kernel.template_buf = self.output_node
             self.output_node = cast(Buffer, epilogue_nodes[-1])
 
         X, W = self.input_nodes[0], self.input_nodes[1]
@@ -111,6 +114,7 @@ class MLIRGemmTemplate(MLIRTemplate):
             Bias_rank = len(Bias.data.get_size()) if Bias is not None else 0,
             W_transposed = W_transposed,
             X_transposed = X_transposed,
+            epilogue_nodes = epilogue_nodes,
             input_reorder = self.input_reorder
         )
         code = self._template_from_string(GEMM_TEMPLATE).render(**options)

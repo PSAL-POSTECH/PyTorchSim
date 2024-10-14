@@ -1,5 +1,6 @@
 import functools
 import itertools
+import textwrap
 from typing import List, Optional
 from unittest.mock import patch
 
@@ -20,14 +21,18 @@ from PyTorchSimFrontend.mlir.mlir_common import BaseMLIRHardwareInfo
 from PyTorchSimFrontend.mlir.mlir_codegen_backend import MLIRKernel
 
 class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
-    overrides = OpOverrides
     def __init__(self,
                  kernel_name,
+                 input_nodes,
+                 call_size,
                  outer_func_name=None,
                  outer_func_render=None,
                  kernel_arg_attributes=None) -> None:
         super().__init__()
         self.kernel_name = kernel_name
+        self.input_nodes = input_nodes
+        self.call_size = call_size
+        self.template_buf = None
         self.named_nodes = {}
         self.loop_info = {}
         self.load_desc = {}
@@ -46,6 +51,8 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         arg_attributes = self.kernel_arg_attributes
         if arg_attributes is None:
             _, _, arg_attributes, _ = self.args.mlir_argdefs()
+        if self.template_buf is not None:
+            arg_attributes = [attribute for attribute in arg_attributes if attribute[0] != self.template_buf.name]
         wrapper.add_import_once('\nprint(f\'Wrapper Codegen Path = {__file__}\')')
         wrapper.add_import_once(f'\nfrom extension_codecache import CustomAsyncCompile')
         wrapper.add_import_once(f'\ncustom_async_compile = CustomAsyncCompile()')
@@ -58,6 +65,8 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
     def call_kernel(self, kernel_name):
         wrapper = V.graph.wrapper_code
         _, call_args, _, _ = self.args.mlir_argdefs()
+        if self.template_buf is not None:
+            call_args.remove(self.template_buf.name)
        # generate the code to call this
         wrapper.generate_kernel_call(
             kernel_name if self.outer_func_name is None else self.outer_func_name,
@@ -104,12 +113,18 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         self.render_hooks["<DEF_KERNEL>"] = hook
         return "<DEF_KERNEL>"
 
-    def store_output(self, indices, val, mask):
+    def def_global_vars(self):
+        def hook():
+            return textwrap.indent(self.global_vars.getvalue(), "").strip()
+        assert "<GLOBAL_VARS>" not in self.render_hooks
+        self.render_hooks["<GLOBAL_VARS>"] = hook
+        return "<GLOBAL_VARS>"
+
+    def store_output(self):
 
         def hook():
-            # more stuff might have been added since the codegen_body above
             self.codegen_body()
-            return textwrap.indent(self.body.getvalue(), "    ").strip()
+            return textwrap.indent(self.body.getvalue(), "      ").strip()  #TODO: First line is not indented
 
         assert "<STORE_OUTPUT>" not in self.render_hooks
         self.render_hooks["<STORE_OUTPUT>"] = hook
@@ -124,9 +139,6 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
 
     def render(self, template, kwargs):
         # self.render_hooks = {}
-        self.render_hooks["<DEF_KERNEL>"] = self.def_kernel
-        # self.render_hooks["<STORE_OUTPUT>"] = self.store_output
-        self.render_hooks = {}
         return PartialRender(
             template.render(**kwargs),
             self.render_hooks,
@@ -162,7 +174,7 @@ class MLIRTemplate(KernelTemplate):
     def generate(self, **kwargs) -> ChoiceCaller:
         kernel_name = f"mlir_{self.name}"
         with patch.object(V.graph, "get_dtype", self._fake_get_dtype(self.output_node)):
-            kernel  = MLIRTemplateKernel(kernel_name=kernel_name,
+            kernel  = MLIRTemplateKernel(kernel_name=kernel_name, input_nodes=self.input_nodes, call_size=self.layout.size,
                                          outer_func_name=self.function_name if hasattr(self, 'function_name') else None,
                                          outer_func_render=self.outer_func_render if hasattr(self, 'outer_func_render') else None,
                                          kernel_arg_attributes=self.get_arg_attributes() if hasattr(self, 'get_arg_attributes') else None)
@@ -186,6 +198,8 @@ class MLIRTemplate(KernelTemplate):
         ):
             kernel = MLIRTemplateKernel(
                 kernel_name=kernel_name,
+                input_nodes=self.input_nodes,
+                call_size=self.layout.size,
                 outer_func_name=self.function_name if hasattr(self, 'function_name') else None,
                 outer_func_render=functools.partial(
                     self.outer_func_render,

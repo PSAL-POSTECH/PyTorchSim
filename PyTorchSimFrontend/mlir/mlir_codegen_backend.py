@@ -290,6 +290,10 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
 
     def __init__(self):
         super().__init__(mlir_common.MLIRKernelArgs())
+
+        from PyTorchSimFrontend.mlir.mlir_template import MLIRTemplateKernel
+        self.is_template_kernel = isinstance(self, MLIRTemplateKernel)
+
         self.kernel_group = None
         self.call_ranges = None
         self.ranges = None
@@ -297,6 +301,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         self.reduction_depth = None
         self.reduction_prefix = IndentedBuffer()
         self.reduction_suffix = IndentedBuffer()
+        self.body = IndentedBuffer()
         self.global_vars = IndentedBuffer()
         self.global_vars_set = set()
         self.header = IndentedBuffer()
@@ -316,6 +321,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         self.affine_yield = {}
         self.welford_reduce_out = None
         self.reduce_iterator = {}
+        self.epilogue_info = {}
 
     def get_constant_vector(self, expr):
         constant_vector = [[int(expr.coeff(var)),None] for var in self.itervars]
@@ -348,6 +354,21 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
             for output_node in V.graph.graph_outputs:
                 if output_node.data.name == name:
                     return output_node
+
+    def split_and_set_ranges(self, lengths: List[List[sympy.Expr]]):
+        """
+        We may want to fuse `for i0 in s0*s1` into a tiled kernel with groups (s0, s1).
+
+        To do this we need to split up the iteration space of i0 into something like:
+            for i1 in s0:
+              for i2 in s1:
+                i0 = i1*s1 + i2
+                ....
+
+        This function matches and resplits lengths to the groups of
+        this kernel to enable tiled + non-tiled fusions.
+        """
+        return self.set_ranges(lengths[0], lengths[1], None)
 
     def get_dma_info(self, name, index, dtype, is_store):
         cv = self.get_constant_vector(index)
@@ -496,7 +517,24 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
             write_atomic(gem5_write_path, self.gem5_header.getvalue())
         return src_code
 
+    def load_epilogue(self, name: str, index: sympy.Expr):
+        index = self.rename_indexing(index)
+        var = self.args.input(name)
+        dtype = V.graph.get_dtype(name)
+        type_name = mlir_common.DTYPE_TO_MLIR[dtype]
+
+        buffer = "Y_buffer"
+        tile_size_per_lane = self.epilogue_info['tile_m'] * self.epilogue_info['tile_n'] // self.vector_lane
+        operation = "affine.vector_load" if tile_size_per_lane > 1 else "affine.load"
+        shape = f", vector<{tile_size_per_lane}x{type_name}>" if tile_size_per_lane > 1 else ""
+        line = f"{operation} %{buffer}[0, 0] : memref<{self.epilogue_info['tile_m']}x{self.epilogue_info['tile_n']}x{type_name}, 1>{shape}"
+        out = self.cse.generate(self.loads, line)
+        self.tile_info[out] = tile_size_per_lane, dtype
+        return out
+
     def load(self, name: str, index: sympy.Expr):
+        if self.is_template_kernel:
+            return self.load_epilogue(name, index)
         index = self.rename_indexing(index)
         indices, index = self.parse_indices(index)
         prefix = "" if index.is_number else "%"
@@ -531,7 +569,20 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         self.tile_info[out] = tile_size_per_lane, dtype
         return out
 
+    def store_epilogue(self, name: str, index: sympy.Expr, value, *args, **kwargs):
+        # var = self.args.output(name)
+        dtype = V.graph.get_dtype(name)
+        type_name = mlir_common.DTYPE_TO_MLIR[dtype]
+        buffer = "Y_buffer"
+        tile_size_per_lane = self.epilogue_info['tile_m'] * self.epilogue_info['tile_n'] // self.vector_lane
+        operation = "affine.vector_store" if tile_size_per_lane > 1 else "affine.store"
+        shape = f", vector<{tile_size_per_lane}x{type_name}>" if tile_size_per_lane > 1 else ""
+        line = f"{operation} %{value}, %{buffer}[0, 0] : memref<{self.epilogue_info['tile_m']}x{self.epilogue_info['tile_n']}x{type_name}, 1>{shape}"
+        self.cse.generate(self.stores, line, assignment = False)
+
     def store(self, name: str, index: sympy.Expr, value, *args, **kwargs):
+        if self.is_template_kernel:
+            return self.store_epilogue(name, index, value, args, kwargs)
         index = self.rename_indexing(index)
         indices, index = self.parse_indices(index)
         prefix = "" if index.is_number else "%"
@@ -689,6 +740,22 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         # Change row, col
         code = f"affine.dma_start %{buffer}[0, 0], %{var}[{prefix}{indices}], %{name}_tag[0], %c{dmaType}, %c{mm_stride}, %c{chunk} : memref<{tile_row}x{tile_col}x{type_name}, 1>, memref<{self.buffer_types[name][1]}x{type_name}>, memref<1xi32>"
         self.cse.generate(self.reductions_suffix, code, assignment = False)
+
+    def codegen_body(self):
+        if not (
+            self.loads
+            or self.stores
+            or self.compute
+        ):
+            return
+        # self.body.splice(self.global_vars)
+        self.body.splice(self.loads)
+        self.body.splice(self.compute)
+        self.body.splice(self.stores)
+        self.global_vars.clear()
+        self.loads.clear()
+        self.compute.clear()
+        self.stores.clear()
 
     def codegen_init(self):
         code = IndentedBuffer()
@@ -918,19 +985,19 @@ class MLIRScheduling(BaseScheduling):
         return self.can_fuse_horizontal(node1, node2) and not node1.is_reduction()
 
     def can_fuse_horizontal(self, node1, node2):
-        # _, (vars1, reduce1) = node1.group
-        # _, (vars2, reduce2) = node2.group
-        # if vars1 == vars2 and reduce1 == reduce2:
-        #     return True
-        # #TODO: Temporary solution determining the fusion condition similar to CPP/OpenMP
-        # total_v1 = math.prod(vars1) if len(vars1) else 0
-        # total_v2 = math.prod(vars2) if len(vars2) else 0
-        # total_r1 = math.prod(reduce1) if len(reduce1) else 0
-        # total_r2 = math.prod(reduce2) if len(reduce2) else 0
-        # if reduce1 == () \
-        #     and total_v1 == (total_v2 + total_r2) \
-        #     and node1.node.layout.size == node2.node.layout.size:
-        #     return True
+        _, (vars1, reduce1) = node1.group
+        _, (vars2, reduce2) = node2.group
+        if vars1 == vars2 and reduce1 == reduce2:
+            return True
+        #TODO: Temporary solution determining the fusion condition similar to CPP/OpenMP
+        v1_total = math.prod(vars1) if len(vars1) else 0
+        v2_total = math.prod(vars2) if len(vars2) else 0
+        r1_total = math.prod(reduce1) if len(reduce1) else 0
+        r2_total = math.prod(reduce2) if len(reduce2) else 0
+        if reduce1 == () \
+            and v1_total == (v2_total + r2_total) \
+            and node1.node.layout.size == node2.node.layout.size:
+            return True
         return False
 
     def group_fn(self, sizes):
@@ -990,11 +1057,12 @@ class MLIRScheduling(BaseScheduling):
         return kernel_name
 
     def codegen_src_code(self, kernel, render, template_node, epilogue_nodes):
-        for node in [template_node, *epilogue_nodes]:
-                node.mark_run()
-        partial_code = render()
-        for node in epilogue_nodes:
-            node.codegen(kernel.split_and_set_ranges(node.get_ranges()))
+        with kernel:
+            for node in [template_node, *epilogue_nodes]:
+                    node.mark_run()
+            partial_code = render()
+            for node in epilogue_nodes:
+                node.codegen(kernel.split_and_set_ranges(node.get_ranges()))
         with V.set_kernel_handler(kernel):
             src_code = (
                 partial_code
@@ -1009,6 +1077,13 @@ class MLIRScheduling(BaseScheduling):
         template_buffer = template_node.node
 
         kernel, render, codegen_header = template_buffer.make_kernel_render(template_buffer, epilogue_nodes=epilogue_nodes)
+
+        X = template_buffer.inputs[0]
+        W = template_buffer.inputs[1]
+        kernel.epilogue_info["tile_m"] = min(kernel.vector_lane, X.get_size()[0])
+        kernel.epilogue_info["tile_n"] = min(kernel.vector_lane, W.get_size()[1])
+        kernel.epilogue_info["tile_k"] = min(kernel.vector_lane, X.get_size()[1])
+
         src_code = self.codegen_src_code(kernel, render, template_node, epilogue_nodes)
         wrapper = V.graph.wrapper_code
         if src_code in wrapper.src_to_kernel: # [CONV] check inner function is already defined

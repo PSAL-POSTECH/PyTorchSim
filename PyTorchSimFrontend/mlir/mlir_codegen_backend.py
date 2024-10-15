@@ -570,7 +570,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         return out
 
     def store_epilogue(self, name: str, index: sympy.Expr, value, *args, **kwargs):
-        # var = self.args.output(name)
+        var = self.args.output(name)
         dtype = V.graph.get_dtype(name)
         type_name = mlir_common.DTYPE_TO_MLIR[dtype]
         buffer = "Y_buffer"
@@ -995,8 +995,8 @@ class MLIRScheduling(BaseScheduling):
         r1_total = math.prod(reduce1) if len(reduce1) else 0
         r2_total = math.prod(reduce2) if len(reduce2) else 0
         if reduce1 == () \
-            and v1_total == (v2_total + r2_total) \
-            and node1.node.layout.size == node2.node.layout.size:
+            and v1_total == (v2_total + r2_total):
+            # and node1.node.layout.size == node2.node.layout.size:     #FIXME: Need to check layout too?
             return True
         return False
 
@@ -1098,6 +1098,7 @@ class MLIRScheduling(BaseScheduling):
             kernel_name = self.define_kernel(src_code, kernel.kernel_name, kernel.vector_lane, kernel.spad_info)
             self.define_function(kernel)
         kernel.call_kernel(kernel_name)
+        V.graph.removed_buffers |= kernel.removed_buffers
         _, args, _, _ = kernel.args.mlir_argdefs()
         args = ", ".join(args)
         if (bool(os.getenv(BackendSimulator.BACKENDSIM_EAGER_MODE, False))):

@@ -32,7 +32,6 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         self.kernel_name = kernel_name
         self.input_nodes = input_nodes
         self.call_size = call_size
-        self.template_buf = None
         self.named_nodes = {}
         self.loop_info = {}
         self.load_desc = {}
@@ -51,8 +50,6 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         arg_attributes = self.kernel_arg_attributes
         if arg_attributes is None:
             _, _, arg_attributes, _ = self.args.mlir_argdefs()
-        if self.template_buf is not None:
-            arg_attributes = [attribute for attribute in arg_attributes if attribute[0] != self.template_buf.name]
         wrapper.add_import_once('\nprint(f\'Wrapper Codegen Path = {__file__}\')')
         wrapper.add_import_once(f'\nfrom extension_codecache import CustomAsyncCompile')
         wrapper.add_import_once(f'\ncustom_async_compile = CustomAsyncCompile()')
@@ -65,8 +62,6 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
     def call_kernel(self, kernel_name):
         wrapper = V.graph.wrapper_code
         _, call_args, _, _ = self.args.mlir_argdefs()
-        if self.template_buf is not None:
-            call_args.remove(self.template_buf.name)
        # generate the code to call this
         wrapper.generate_kernel_call(
             kernel_name if self.outer_func_name is None else self.outer_func_name,
@@ -102,6 +97,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
             if node is not None:
                 self.named_nodes[name] = node
                 self.args.output_buffers[node.get_name()] = name
+                self.store_buffer_names.add(node.get_name())    #TODO: Is this enough not calling store() in mlir_common.py?
                 extra_node[node.get_name()] = node
 
         arg_defs, *_ = self.args.mlir_argdefs(extra_node=extra_node)
@@ -207,13 +203,7 @@ class MLIRTemplate(KernelTemplate):
                 ) if hasattr(self, 'outer_func_render') else None,
                 kernel_arg_attributes=self.get_arg_attributes() if hasattr(self, 'get_arg_attributes') else None
             )
-            # render = functools.partial(
-            #     self.render,
-            #     kernel=kernel,
-            #     template_buffer_node=template_node,
-            #     epilogue_nodes=epilogue_nodes,
-            #     **kwargs,  # includes "op" argument in case of CUTLASSGemmTemplate
-            # )
+
             kwargs = {
                 'kernel': kernel,
                 'template_buffer_node': template_node,

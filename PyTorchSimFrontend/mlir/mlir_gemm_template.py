@@ -80,9 +80,8 @@ class MLIRGemmTemplate(MLIRTemplate):
                **kwargs):
         if template_buffer_node is not None:
             self.output_node = template_buffer_node
-        if epilogue_nodes is not None and len(epilogue_nodes) > 0:
-            kernel.template_buf = self.output_node
-            self.output_node = cast(Buffer, epilogue_nodes[-1])
+        # if epilogue_nodes is not None and len(epilogue_nodes) > 0:
+        #     self.output_node = cast(Buffer, epilogue_nodes[-1]) #FIXME: Temperary solution
 
         X, W = self.input_nodes[0], self.input_nodes[1]
         Y = self.output_node

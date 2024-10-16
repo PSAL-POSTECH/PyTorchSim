@@ -53,13 +53,11 @@ func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[X, W, Bias], outputs=[Y]
                 outs(%Y_buffer : memref<{{ TILE_M }}x{{ TILE_N }}x{{ DATA_STYPE }}, 1>)
       } { accumulation_loop=true }
 {{kernel.store_output()}}
-      affine.dma_start %Y_buffer[0, 0], %Y[%index2], %tag[0], %c_mvout, %N, %c_set : memref<{{ TILE_M }}x{{ TILE_N }}xf32, 1>, memref<{{ M * N }}xf32>, memref<1xi32>
     } { outer_loop=true }
   } { outer_loop=true }
   return
 }
 """
-
 class MLIRGemmTemplate(MLIRTemplate):
     def __init__(self, input_nodes, layout, input_reorder=None):
         super().__init__("kernel", input_nodes, layout, input_reorder)
@@ -95,7 +93,7 @@ class MLIRGemmTemplate(MLIRTemplate):
         W_transposed = self.is_transposed(W)
         X_transposed = self.is_transposed(X)
 
-        options = dict(
+        kernel.render_options = dict(
             KERNEL_NAME=self.name,
             kernel=kernel,
             M=X.get_size()[0],
@@ -116,7 +114,7 @@ class MLIRGemmTemplate(MLIRTemplate):
             epilogue_nodes = epilogue_nodes,
             input_reorder = self.input_reorder
         )
-        code = self._template_from_string(GEMM_TEMPLATE).render(**options)
+        code = self._template_from_string(GEMM_TEMPLATE).render(**kernel.render_options)
 
         self.header = f"float X_spad[{TILE_M * TILE_K // kernel.vector_lane}] __attribute__ ((section(\".spad\")));\n"
         self.header += f"float W_spad[{TILE_K * TILE_N // kernel.vector_lane}] __attribute__ ((section(\".spad\")));\n"
@@ -125,16 +123,17 @@ class MLIRGemmTemplate(MLIRTemplate):
         self.gem5_header += f"float W_spad[{TILE_K * TILE_N}] __attribute__ ((section(\".spad\")));\n"
         self.gem5_header += f"float Y_spad[{TILE_M * TILE_N}] __attribute__ ((section(\".spad\")));\n"
 
-        kernel.add_loop_info([options["M"], options["N"], options["K"]], [options["TILE_M"], options["TILE_N"], options["TILE_K"]])
+        kernel.add_loop_info([kernel.render_options["M"], kernel.render_options["N"], kernel.render_options["K"]], [kernel.render_options["TILE_M"], kernel.render_options["TILE_N"], kernel.render_options["TILE_K"]])
+
         return code
 
-    def codegen_header(self, code):
+    def codegen_header(self, code, extra_headers):
         write_path = extension_codecache.get_write_path(code)
         if not os.path.exists(write_path):
             os.makedirs(write_path)
         spike_write_path = os.path.join(write_path, "global_var.h")
         gem5_write_path = os.path.join(write_path, "gem5_global_var.h")
         if not os.path.exists(spike_write_path):
-            write_atomic(spike_write_path, self.header)
+            write_atomic(spike_write_path, self.header+extra_headers[0])
         if not os.path.exists(gem5_write_path):
-            write_atomic(gem5_write_path, self.gem5_header)
+            write_atomic(gem5_write_path, self.gem5_header+extra_headers[1])

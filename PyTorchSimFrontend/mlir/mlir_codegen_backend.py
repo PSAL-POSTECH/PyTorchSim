@@ -321,7 +321,6 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         self.affine_yield = {}
         self.welford_reduce_out = None
         self.reduce_iterator = {}
-        self.epilogue_info = {}
 
     def get_constant_vector(self, expr):
         constant_vector = [[int(expr.coeff(var)),None] for var in self.itervars]
@@ -356,18 +355,6 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
                     return output_node
 
     def split_and_set_ranges(self, lengths: List[List[sympy.Expr]]):
-        """
-        We may want to fuse `for i0 in s0*s1` into a tiled kernel with groups (s0, s1).
-
-        To do this we need to split up the iteration space of i0 into something like:
-            for i1 in s0:
-              for i2 in s1:
-                i0 = i1*s1 + i2
-                ....
-
-        This function matches and resplits lengths to the groups of
-        this kernel to enable tiled + non-tiled fusions.
-        """
         return self.set_ranges(lengths[0], lengths[1], None)
 
     def get_dma_info(self, name, index, dtype, is_store):
@@ -523,11 +510,15 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         dtype = V.graph.get_dtype(name)
         type_name = mlir_common.DTYPE_TO_MLIR[dtype]
 
-        buffer = "Y_buffer"
-        tile_size_per_lane = self.epilogue_info['tile_m'] * self.epilogue_info['tile_n'] // self.vector_lane
+        if name in self.buffer_names:
+            buffer = self.buffer_names[name]
+        else:
+            assert(0)
+
+        tile_size_per_lane = self.render_options['TILE_M'] * self.render_options['TILE_N'] // self.vector_lane
         operation = "affine.vector_load" if tile_size_per_lane > 1 else "affine.load"
         shape = f", vector<{tile_size_per_lane}x{type_name}>" if tile_size_per_lane > 1 else ""
-        line = f"{operation} %{buffer}[0, 0] : memref<{self.epilogue_info['tile_m']}x{self.epilogue_info['tile_n']}x{type_name}, 1>{shape}"
+        line = f"{operation} %{buffer}[0, 0] : memref<{self.render_options['TILE_M']}x{self.render_options['TILE_N']}x{type_name}, 1>{shape}"
         out = self.cse.generate(self.loads, line)
         self.tile_info[out] = tile_size_per_lane, dtype
         return out
@@ -570,15 +561,28 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         return out
 
     def store_epilogue(self, name: str, index: sympy.Expr, value, *args, **kwargs):
+        indices, index = self.parse_indices(index)
+        prefix = "" if index.is_number else "%"
         var = self.args.output(name)
         dtype = V.graph.get_dtype(name)
         type_name = mlir_common.DTYPE_TO_MLIR[dtype]
-        buffer = "Y_buffer"
-        tile_size_per_lane = self.epilogue_info['tile_m'] * self.epilogue_info['tile_n'] // self.vector_lane
+
+        if name in self.buffer_names:
+            buffer = self.buffer_names[name]
+        else:
+            dram_tile_shape = f"{self.render_options['TILE_M']}x{self.render_options['TILE_N']}"
+            buffer, indices = self.get_scratchpad_buffer(dtype, name, self.render_options['TILE_M'], self.render_options['TILE_N'], dram_tile_shape, self.stores, indices)
+            self.buffer_names[name] = buffer
+
+        tile_size_per_lane = self.render_options['TILE_M'] * self.render_options['TILE_N'] // self.vector_lane
         operation = "affine.vector_store" if tile_size_per_lane > 1 else "affine.store"
         shape = f", vector<{tile_size_per_lane}x{type_name}>" if tile_size_per_lane > 1 else ""
-        line = f"{operation} %{value}, %{buffer}[0, 0] : memref<{self.epilogue_info['tile_m']}x{self.epilogue_info['tile_n']}x{type_name}, 1>{shape}"
+        line = f"{operation} %{value}, %{buffer}[0, 0] : memref<{self.render_options['TILE_M']}x{self.render_options['TILE_N']}x{type_name}, 1>{shape}"
         self.cse.generate(self.stores, line, assignment = False)
+
+        self.tags.add(f"{name}_tag")
+        code = f"affine.dma_start %{buffer}[0, 0], %{var}[%index2], %tag[0], %c_mvout, %N, %c_set : memref<{self.render_options['TILE_M']}x{self.render_options['TILE_N']}x{type_name}, 1>, memref<{self.render_options['M'] * self.render_options['N']}x{type_name}>, memref<1xi32>" #FIXME: Using constant index and tag
+        self.cse.generate(self.stores, code, assignment = False)
 
     def store(self, name: str, index: sympy.Expr, value, *args, **kwargs):
         if self.is_template_kernel:
@@ -742,17 +746,21 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         self.cse.generate(self.reductions_suffix, code, assignment = False)
 
     def codegen_body(self):
-        if not (
-            self.loads
-            or self.stores
-            or self.compute
-        ):
-            return
-        # self.body.splice(self.global_vars)
+        # if not (
+        #     self.loads
+        #     or self.stores
+        #     or self.compute
+        # ):
+        #     return
+        def template_store(options):
+            line = f"affine.dma_start %Y_buffer[0, 0], %Y[%index2], %tag[0], %c_mvout, %N, %c_set : memref<{options['TILE_M']}x{options['TILE_N']}xf32, 1>, memref<{options['M'] * options['N']}xf32>, memref<1xi32>" #FIXME: Using constant index and tag
+            self.cse.generate(self.stores, line, assignment = False)
+
         self.body.splice(self.loads)
         self.body.splice(self.compute)
+        if len(self.stores._lines) == 0:
+            template_store(self.render_options)
         self.body.splice(self.stores)
-        self.global_vars.clear()
         self.loads.clear()
         self.compute.clear()
         self.stores.clear()
@@ -902,9 +910,14 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
     def get_scratchpad_buffer(self, dtype, name, tile_row, tile_col, dram_tile_shape, code_buffer, indices):
         c_type = mlir_common.DTYPE_TO_C[dtype]
         mlir_type = mlir_common.DTYPE_TO_MLIR[dtype]
-        if dtype == torch.bool:
-            mapping = self.map_cse.generate(self.global_vars, f"affine_map<({indices}) -> ({indices} floordiv 8)>")
+        if dtype == torch.bool and not self.is_template_kernel:     #FIXME: epilogue ReLU does not need this
+            if self.is_template_kernel:
+                mapping = f"template_{indices} "
+                self.map_cse.generate(self.global_vars, f"#{mapping} = affine_map<({indices}) -> ({indices} floordiv 8)>", assignment=False)
+            else:
+                mapping = self.map_cse.generate(self.global_vars, f"affine_map<({indices}) -> ({indices} floordiv 8)>")
             indices = self.cse.generate(self.loads, f"affine.apply #{mapping}(%{indices})") # FIXME. Only loads?
+
         if name not in self.global_vars_set:
             # Add definition to header
             self.header.writeline(f"{c_type} {name}_spad[{tile_row * tile_col // self.vector_lane}] __attribute__ ((section(\".spad\")));")
@@ -1069,6 +1082,7 @@ class MLIRScheduling(BaseScheduling):
                 if isinstance(partial_code, str)
                 else partial_code.finalize()
             )
+            src_code = kernel.add_extra_global_vars(src_code)
         return src_code
 
     def codegen_template(self, template_node, epilogue_nodes):
@@ -1078,12 +1092,6 @@ class MLIRScheduling(BaseScheduling):
 
         kernel, render, codegen_header = template_buffer.make_kernel_render(template_buffer, epilogue_nodes=epilogue_nodes)
 
-        X = template_buffer.inputs[0]
-        W = template_buffer.inputs[1]
-        kernel.epilogue_info["tile_m"] = min(kernel.vector_lane, X.get_size()[0])
-        kernel.epilogue_info["tile_n"] = min(kernel.vector_lane, W.get_size()[1])
-        kernel.epilogue_info["tile_k"] = min(kernel.vector_lane, X.get_size()[1])
-
         src_code = self.codegen_src_code(kernel, render, template_node, epilogue_nodes)
         wrapper = V.graph.wrapper_code
         if src_code in wrapper.src_to_kernel: # [CONV] check inner function is already defined
@@ -1092,7 +1100,7 @@ class MLIRScheduling(BaseScheduling):
             src_code = self.codegen_src_code(kernel, render, template_node, epilogue_nodes)
 
         with V.set_kernel_handler(kernel):
-            codegen_header(src_code)
+            codegen_header(src_code, (kernel.header.getvalue(), kernel.gem5_header.getvalue()))
             node_schedule = [template_node, *epilogue_nodes]
             kernel.meta_kernel()
             kernel_name = self.define_kernel(src_code, kernel.kernel_name, kernel.vector_lane, kernel.spad_info)

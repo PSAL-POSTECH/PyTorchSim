@@ -1,6 +1,7 @@
 import functools
 import itertools
 import textwrap
+import re
 from typing import List, Optional
 from unittest.mock import patch
 
@@ -40,6 +41,8 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         self.outer_func_render = outer_func_render
         self.kernel_arg_attributes = kernel_arg_attributes
         self.render_hooks = dict()
+        self.buffer_names = dict()
+        self.render_options = dict()
 
     def add_loop_info(self, mat_size, tile_size):
         for idx, (loop_size, stride) in enumerate(zip(mat_size, tile_size)):
@@ -99,22 +102,27 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
                 self.args.output_buffers[node.get_name()] = name
                 self.store_buffer_names.add(node.get_name())    #TODO: Is this enough not calling store() in mlir_common.py?
                 extra_node[node.get_name()] = node
-
-        arg_defs, *_ = self.args.mlir_argdefs(extra_node=extra_node)
+                self.buffer_names[node.name] = 'Y_buffer'   #TODO: Buffer name fixed
 
         def hook():
+            arg_defs, *_ = self.args.mlir_argdefs(extra_node=extra_node)
             return f"({', '.join(arg_defs)})"
 
         assert "<DEF_KERNEL>" not in self.render_hooks
         self.render_hooks["<DEF_KERNEL>"] = hook
         return "<DEF_KERNEL>"
 
-    def def_global_vars(self):
+    def output_name(self):
+        # Cannot know the output name from the template, so we need to hook it
         def hook():
-            return textwrap.indent(self.global_vars.getvalue(), "").strip()
-        assert "<GLOBAL_VARS>" not in self.render_hooks
-        self.render_hooks["<GLOBAL_VARS>"] = hook
-        return "<GLOBAL_VARS>"
+            arg_defs, *_ = self.args.mlir_argdefs()
+            output = arg_defs[3]    #FIXME: Constant index used
+            pattern = r"%(\w+):"
+            output = re.search(pattern, output).group(1)
+            return output
+        assert "<OUPUT>" not in self.render_hooks
+        self.render_hooks["<OUPUT>"] = hook
+        return "<OUPUT>"
 
     def store_output(self):
 
@@ -132,6 +140,16 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
             return self.outer_func_render(input_args=call_args)
         else:
             return None, None
+
+    def def_global_vars(self):
+        return "<GLOBAL_VARS>"
+
+    def replace_global_vars(self):
+        return textwrap.indent(self.global_vars.getvalue(), "").strip()
+
+    def add_extra_global_vars(self, code):
+        key = "<GLOBAL_VARS>"
+        return code.replace(key, self.replace_global_vars())
 
     def render(self, template, kwargs):
         # self.render_hooks = {}

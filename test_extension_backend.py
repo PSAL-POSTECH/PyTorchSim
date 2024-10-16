@@ -160,6 +160,22 @@ class MLP(nn.Module):
         # x = self.softmax(x)
         return x
 
+class Matmul_ActivationFn(nn.Module):
+    def __init__(self, input_size, output_size, activation_fn):
+        super(Matmul_ActivationFn, self).__init__()
+        self.linear1 = nn.Linear(input_size, output_size)
+        if activation_fn == "relu":
+            self.activation_fn = nn.ReLU()
+        elif activation_fn == "sigmoid":
+            self.activation_fn = nn.Sigmoid()
+        else:
+            NotImplementedError("Activation function not implemented")
+
+    def forward(self, x):
+        x = self.linear1(x)
+        x = self.activation_fn(x)
+        return x
+
 class CNN(nn.Module):
     def __init__(self):
         super(CNN, self).__init__()
@@ -759,7 +775,7 @@ def test_resnet(device):
     res = opt_fn(x1)
     print("ResNet18 Simulation Done")
 
-def test_matmul_fused(device):
+def test_matmul_scalar(device):
     def matmul_fused(a, b, c):
         return torch.matmul(a, b) * c
     torch.manual_seed(0)
@@ -776,16 +792,34 @@ def test_matmul_fused(device):
     y = matmul_fused(x2, w2, c)
     test_result("Matmul Forward", res, y)
 
+def test_matmul_activation(device, batch_size=16, input_size=32, output_size=8, activation_fn="relu"):
+    torch.manual_seed(0)
+    input = torch.randn(batch_size, input_size)
+    if device:
+        x1 = copy.deepcopy(input).to(device=device)
+    x2 = copy.deepcopy(input).to("cpu")
+    model = Matmul_ActivationFn(input_size, output_size, activation_fn)
+    if device:
+        model.to(device=device)
+        opt_fn = torch.compile()(model)
+        y = opt_fn(x1)
+    cpu_model = copy.deepcopy(model).to("cpu")
+    cpu_y = cpu_model(x2)
+    if device:
+        test_result(f"Matmul_ActivationFn {activation_fn}", y, cpu_y)
+    else:
+        print("CPU output > ", cpu_y)
+
 if __name__ == "__main__":
     #from torch._dynamo.test_case import run_tests
     #from torch.testing._internal.inductor_utils import HAS_CPU
     #if HAS_CPU and not IS_MACOS:
     #    run_tests(needs="filelock")
+    # torch.set_printoptions(threshold=float('inf'), linewidth=600)
 
     from Scheduler.scheduler import ExecutionEngine
     module = ExecutionEngine.setup_device()
     device = module.custom_device()
-    # torch.set_printoptions(threshold=float('inf'), linewidth=600)
     test_vectoradd(device, (47, 10))
     test_reduce_sum(device, (29, 47), 1, keepdim=True)
     test_reduce_sum(device, (16, 64), 0, keepdim=True)
@@ -809,5 +843,6 @@ if __name__ == "__main__":
     test_LayerNorm(device, (64, 128))
     test_conv2d(device)
 
-    # # Fusion Test
-    test_matmul_fused(device)
+    # Fusion Test
+    test_matmul_scalar(device)
+    test_matmul_activation(device, batch_size=32, input_size=128, output_size=64, activation_fn="sigmoid")

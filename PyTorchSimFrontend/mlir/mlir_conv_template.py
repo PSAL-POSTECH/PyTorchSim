@@ -273,14 +273,14 @@ class MLIRConvTemplate(MLIRTemplate):
 
         return arg_attributes
 
-    def codegen_header(self, code):
+    def codegen_header(self, code, extra_headers):
         write_path = extension_codecache.get_write_path(code)
         if not os.path.exists(write_path):
             os.makedirs(write_path)
         spike_write_path = os.path.join(write_path, "global_var.h")
         gem5_write_path = os.path.join(write_path, "gem5_global_var.h")
         if not os.path.exists(spike_write_path):
-            write_atomic(spike_write_path, self.header)
+            write_atomic(spike_write_path, self.header+extra_headers[0])
         if not os.path.exists(gem5_write_path):
-            write_atomic(gem5_write_path, self.gem5_header)
+            write_atomic(gem5_write_path, self.gem5_header+extra_headers[1])
         self.hash_value = get_hash(code.strip())

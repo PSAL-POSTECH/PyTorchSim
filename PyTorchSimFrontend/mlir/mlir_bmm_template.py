@@ -127,10 +127,10 @@ class MLIRBMMTemplate(MLIRTemplate):
 
         return code
 
-    def codegen_header(self, source):
-        write_path = extension_codecache.get_write_path(source)
+    def codegen_header(self, code, extra_headers):
+        write_path = extension_codecache.get_write_path(code)
         if not os.path.exists(write_path):
             os.makedirs(write_path)
         write_path = os.path.join(write_path, "global_var.h")
         if not os.path.exists(write_path):
-            write_atomic(write_path, self.header)
+            write_atomic(write_path, self.header+extra_header[0])

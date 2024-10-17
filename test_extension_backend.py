@@ -176,6 +176,22 @@ class Matmul_ActivationFn(nn.Module):
         x = self.activation_fn(x)
         return x
 
+class Matmul_Residual_ActivationFn(nn.Module):
+    def __init__(self, input_size, output_size, activation_fn):
+        super(Matmul_Residual_ActivationFn, self).__init__()
+        self.linear1 = nn.Linear(input_size, output_size)
+        if activation_fn == "relu":
+            self.activation_fn = nn.ReLU()
+        elif activation_fn == "sigmoid":
+            self.activation_fn = nn.Sigmoid()
+        else:
+            NotImplementedError("Activation function not implemented")
+
+    def forward(self, x, residual):
+        x = self.linear1(x) + residual
+        x = self.activation_fn(x)
+        return x
+
 class CNN(nn.Module):
     def __init__(self):
         super(CNN, self).__init__()
@@ -810,6 +826,45 @@ def test_matmul_activation(device, batch_size=16, input_size=32, output_size=8, 
     else:
         print("CPU output > ", cpu_y)
 
+def test_addmm_residual(device):
+    def addmm_residual(a, b, c, d):
+        return torch.addmm(a, b, c) + d
+    torch.manual_seed(0)
+    input = torch.randn(128, 64)
+    weight = torch.randn(64, 32)
+    bias = torch.randn(128, 32)
+    residual = torch.randn(128, 32)
+    x1 = input.to(device=device)
+    w1 = weight.to(device=device)
+    b1 = bias.to(device=device)
+    r1 = residual.to(device=device)
+    x2 = input.to("cpu")
+    w2 = weight.to("cpu")
+    b2 = bias.to("cpu")
+    r2 = residual.to("cpu")
+    opt_fn = torch.compile()(addmm_residual)
+    res = opt_fn(b1, x1, w1, r1)
+    y = addmm_residual(b2, x2, w2, r2)
+    test_result("Addmm + Residual Fusion Forward", res, y)
+
+def test_addmm(device):
+    def custom_matmul(bias, a, b):
+        return torch.addmm(bias, a, b)
+    torch.manual_seed(0)
+    input = torch.randn(128, 64)
+    weight = torch.randn(64, 32)
+    bias = torch.randn(32)
+    x1 = input.to(device=device)
+    w1 = weight.to(device=device)
+    b1 = bias.to(device=device)
+    x2 = input.to("cpu")
+    w2 = weight.to("cpu")
+    b2 = bias.to("cpu")
+    opt_fn = torch.compile()(custom_matmul)
+    res = opt_fn(b1, x1, w1)
+    y = custom_matmul(b2, x2, w2)
+    test_result("Matmul Forward", res, y)
+
 if __name__ == "__main__":
     #from torch._dynamo.test_case import run_tests
     #from torch.testing._internal.inductor_utils import HAS_CPU
@@ -833,16 +888,16 @@ if __name__ == "__main__":
     test_avgpool(device)
     test_softmax(device, (64, 128), dim=1)
     test_BatchNorm(device)
+    test_LayerNorm(device, (64, 128))
+    test_conv2d(device)
     test_matmul(device)
+    test_BMM(device)
     test_CNN(device)
     test_DecoderBlock(device)
     test_resnet(device)
     test_mlp(device)
 
-    test_BMM(device)
-    test_LayerNorm(device, (64, 128))
-    test_conv2d(device)
-
-    # Fusion Test
+    # # Fusion Test
     test_matmul_scalar(device)
-    test_matmul_activation(device, batch_size=32, input_size=128, output_size=64, activation_fn="sigmoid")
+    test_matmul_activation(device, batch_size=32, input_size=32, output_size=32, activation_fn="sigmoid")
+    test_addmm_residual(device)

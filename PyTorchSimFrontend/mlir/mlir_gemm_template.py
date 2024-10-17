@@ -41,9 +41,7 @@ func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[X, W, Bias], outputs=[Y]
     affine.for %t_n = 0 to {{ N }} step {{ TILE_N }} {
       %index2 = affine.apply #map2(%t_m, %t_n){% if Bias %}
       affine.dma_start %Bias[{% if Bias_rank == 2 %}%index2{% else %}%t_n{% endif %}], %Y_buffer[0, 0], %tag[0], %c_mvin3, %{% if Bias_rank == 2 %}N{% else %}c0{% endif %}, %c_set : memref<{% if Bias_rank == 2 %}{{ M * N }}{% else %}{{ N }}{% endif %}xf32>, memref<{{ TILE_M }}x{{ TILE_N }}xf32, 1>, memref<1xi32>{% else %}
-      affine.for %i = 0 to {{ TILE_M }} {
-        affine.vector_store %v0, %Y_buffer[%i, 0] : memref<{{ TILE_M }}x{{ TILE_N }}xf32, 1>, vector<{{ TILE_N }}xf32>
-      }{% endif %}
+      affine.vector_store %v0, %Y_buffer[0, 0] : memref<{{ TILE_M }}x{{ TILE_N }}xf32, 1>, vector<{{ TILE_N }}xf32>{% endif %}
       affine.for %t_k = 0 to {{ K }} step {{ TILE_K }} {
         %index0 = affine.apply #map0(%t_m, %t_k)
         %index1 = affine.apply #map1(%t_k, %t_n)

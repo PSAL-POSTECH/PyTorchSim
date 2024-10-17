@@ -354,9 +354,6 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
                 if output_node.data.name == name:
                     return output_node
 
-    def split_and_set_ranges(self, lengths: List[List[sympy.Expr]]):
-        return self.set_ranges(lengths[0], lengths[1], None)
-
     def get_dma_info(self, name, index, dtype, is_store):
         cv = self.get_constant_vector(index)
         cv2 = self.get_constant_vector2(index)
@@ -513,7 +510,11 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         if name in self.buffer_names:
             buffer = self.buffer_names[name]
         else:
-            assert(0)
+            dram_tile_shape = f"{self.render_options['TILE_M']}x{self.render_options['TILE_N']}"
+            buffer, indices = self.get_scratchpad_buffer(dtype, name, self.render_options['TILE_M'], self.render_options['TILE_N'], dram_tile_shape, self.loads, index)
+            self.buffer_names[name] = buffer
+            line = f"affine.dma_start %{var}[%index2], %{buffer}[0, 0], %tag[0], %c_mvin3, %N, %c_set : memref<{self.buffer_types[name][1]}x{type_name}>, memref<{dram_tile_shape}x{type_name}, 1>, memref<1xi32>"
+            self.cse.generate(self.loads, line, assignment = False)
 
         tile_size_per_lane = self.render_options['TILE_M'] * self.render_options['TILE_N'] // self.vector_lane
         operation = "affine.vector_load" if tile_size_per_lane > 1 else "affine.load"
@@ -983,16 +984,13 @@ class MLIRScheduling(BaseScheduling):
     target_kernel = MLIRKernel
     def __init__(self, scheduler):
         self.scheduler = scheduler
-        self.get_kernel_group()
+        self.kernel_group = MLIRWrapperKenrelGroup()
         self._ready_to_flush = False
         self.outer_function = set()
         config.inplace_buffers = False # FIXME. inout kernel makes trouble.. So disabled it!
 
     def _set_flush_status(self, status: bool):
         self._ready_to_flush = status
-
-    def get_kernel_group(self):
-        self.kernel_group = MLIRWrapperKenrelGroup()
 
     def can_fuse_vertical(self, node1, node2):
         return self.can_fuse_horizontal(node1, node2) and not node1.is_reduction()
@@ -1044,7 +1042,6 @@ class MLIRScheduling(BaseScheduling):
 
     def flush(self):
         self.kernel_group.codegen_define_and_call(V.graph.wrapper_code)
-        self.get_kernel_group()
         self._set_flush_status(False)
 
     def define_function(self, kernel):
@@ -1075,7 +1072,8 @@ class MLIRScheduling(BaseScheduling):
                     node.mark_run()
             partial_code = render()
             for node in epilogue_nodes:
-                node.codegen(kernel.split_and_set_ranges(node.get_ranges()))
+                ranges = node.get_ranges()
+                node.codegen(kernel.set_ranges(ranges[0], ranges[1], None))
         with V.set_kernel_handler(kernel):
             src_code = (
                 partial_code
@@ -1087,13 +1085,13 @@ class MLIRScheduling(BaseScheduling):
 
     def codegen_template(self, template_node, epilogue_nodes):
         _, (numel, rnumel) = template_node.group
-
         template_buffer = template_node.node
-
         kernel, render, codegen_header = template_buffer.make_kernel_render(template_buffer, epilogue_nodes=epilogue_nodes)
+        _, _, _, kernel.buffer_types = kernel.args.mlir_argdefs()
 
         src_code = self.codegen_src_code(kernel, render, template_node, epilogue_nodes)
         wrapper = V.graph.wrapper_code
+
         if src_code in wrapper.src_to_kernel: # [CONV] check inner function is already defined
             kernel_name = wrapper.src_to_kernel[src_code]
             kernel, render = template_buffer.make_kernel_render(template_buffer, epilogue_nodes=epilogue_nodes, kernel_name=kernel_name) # update kernel name
@@ -1101,10 +1099,11 @@ class MLIRScheduling(BaseScheduling):
 
         with V.set_kernel_handler(kernel):
             codegen_header(src_code, (kernel.header.getvalue(), kernel.gem5_header.getvalue()))
-            node_schedule = [template_node, *epilogue_nodes]
+            # node_schedule = [template_node, *epilogue_nodes]
             kernel.meta_kernel()
             kernel_name = self.define_kernel(src_code, kernel.kernel_name, kernel.vector_lane, kernel.spad_info)
             self.define_function(kernel)
+
         kernel.call_kernel(kernel_name)
         V.graph.removed_buffers |= kernel.removed_buffers
         _, args, _, _ = kernel.args.mlir_argdefs()

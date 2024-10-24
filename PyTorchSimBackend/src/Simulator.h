@@ -42,6 +42,7 @@ class Simulator {
   uint32_t _n_cores;
   uint32_t _n_memories;
   uint32_t _memory_req_size;
+  uint32_t _tile_id;
 
   // Components
   std::vector<std::unique_ptr<Core>> _cores;

@@ -14,6 +14,7 @@ Simulator::Simulator(SimulationConfig config)
   _core_time = 0;
   _dram_time = 0;
   _icnt_time = 0;
+  _tile_id = 0;
   _n_cores = config.num_cores;
   _n_memories = config.dram_channels;
   _memory_req_size = config.dram_req_size;
@@ -77,10 +78,11 @@ void Simulator::core_cycle() {
     }
 
     // Issue new tile to core
-    const std::shared_ptr<Tile> tile = get_partition_scheduler(core_id)->peek_tile(core_id);
+    const std::shared_ptr<Tile> tile = get_partition_scheduler(core_id)->peek_tile(core_id, _tile_id);
     if (tile->get_status() != Tile::Status::EMPTY && _cores[core_id]->can_issue(tile))  {
       if (tile->get_status() == Tile::Status::INITIALIZED) {
-        _cores[core_id]->issue(std::move(get_partition_scheduler(core_id)->get_tile(core_id)));
+        _cores[core_id]->issue(std::move(get_partition_scheduler(core_id)->get_tile(core_id, _tile_id)));
+        _tile_id = (_tile_id + 1) % 2; // double buffer
       } else {
         spdlog::error("[Simulator] issued tile is not valid status...!");
         exit(EXIT_FAILURE);

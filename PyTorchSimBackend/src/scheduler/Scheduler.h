@@ -11,11 +11,12 @@ class Scheduler {
   void finish_tile(std::shared_ptr<Tile> tile) { tile->get_ownwer()->finish_tile(tile); }
 
   /* For other schedulers */
-  virtual std::shared_ptr<Tile> get_tile(int core_id=0);
-  virtual const std::shared_ptr<Tile> peek_tile(int core_id=0);
+  virtual std::shared_ptr<Tile> get_tile(int core_id=0, int tile_id=0);
+  virtual const std::shared_ptr<Tile> peek_tile(int core_id=0, int tile_id=0);
   virtual bool empty();
   virtual bool empty(int core_id);
   virtual void refresh_status();
+  virtual bool check_double_buffer() { return _tile_graph.at(0)->get_subgraph_size() == 1; }
 
  protected:
   int _id;

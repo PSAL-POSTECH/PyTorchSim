@@ -29,11 +29,12 @@ class TileGraph {
  public:
   TileGraph(std::string name) : _name(name), _subgraph_vec(), _cpu_graph_map() {}
   void append_subgraph(std::shared_ptr<TileSubGraph> subgraph);
-  bool empty(int core_id) { return _vec_index==_subgraph_vec.size() && _cpu_graph_map[core_id] == nullptr; }
+  bool empty(int core_id) { return _vec_index==_subgraph_vec.size() && _cpu_graph_map[core_id][0] == nullptr && _cpu_graph_map[core_id][1] == nullptr; }
   bool is_finished();
-  const std::shared_ptr<Tile> peek_tile(int core_id);
-  std::shared_ptr<Tile> get_tile(int core_id);
-  void allocate_subgraph(int core_id);
+  const std::shared_ptr<Tile> peek_tile(int core_id, int tile_id);
+  std::shared_ptr<Tile> get_tile(int core_id, int tile_id);
+  uint32_t get_subgraph_size() { return _subgraph_vec.size(); }
+  void allocate_subgraph(int core_id, int tile_id);
   void push_range(std::string loop_idx, std::tuple<int, int, int> range) {
     _loop_index_list.push_back(loop_idx);
     _ranges.push_back(range);
@@ -102,7 +103,7 @@ class TileGraph {
   std::vector<std::string> _loop_index_list;
   std::vector<std::tuple<int, int, int>> _ranges;
   std::vector<std::shared_ptr<TileSubGraph>> _subgraph_vec;
-  std::map<int, std::shared_ptr<TileSubGraph>> _cpu_graph_map;
+  std::map<int, std::map<int, std::shared_ptr<TileSubGraph>>> _cpu_graph_map;
   cycle_type _arrival_time;
   static std::shared_ptr<Tile> null_tile;
 };

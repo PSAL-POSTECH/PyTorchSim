@@ -11,22 +11,18 @@ void Scheduler::schedule_graph(std::unique_ptr<TileGraph> tile_graph) {
   refresh_status();
 }
 
-const std::shared_ptr<Tile> Scheduler::peek_tile(int core_id, int tile_id) {
+const std::shared_ptr<Tile> Scheduler::peek_tile(int core_id, int slot_id) {
   if (_tile_graph.empty() || _tile_graph.at(0)->get_arrival_time() > *_core_cycle)
     return std::make_unique<Tile>(Tile(Tile::Status::EMPTY));
-  if (check_double_buffer())
-    tile_id = 0;
-  return _tile_graph.at(0)->peek_tile(core_id, tile_id);
+  return _tile_graph.at(0)->peek_tile(core_id, slot_id);
 }
 
-std::shared_ptr<Tile> Scheduler::get_tile(int core_id, int tile_id) {
+std::shared_ptr<Tile> Scheduler::get_tile(int core_id, int slot_id) {
   std::shared_ptr<Tile> tile = std::make_unique<Tile>(Tile(Tile::Status::EMPTY));
   if (empty(core_id)) {
     return tile;
   } else {
-    if (check_double_buffer())
-      tile_id = 0;
-    tile = std::move(_tile_graph.at(0)->get_tile(core_id, tile_id));
+    tile = std::move(_tile_graph.at(0)->get_tile(core_id, slot_id));
   }
   refresh_status();
   return tile;

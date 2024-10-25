@@ -42,7 +42,8 @@ class Simulator {
   uint32_t _n_cores;
   uint32_t _n_memories;
   uint32_t _memory_req_size;
-  uint32_t _tile_id;
+  uint32_t _slot_id;    // Double buffer slot index
+  uint32_t _max_slot;   // Max number of slot
 
   // Components
   std::vector<std::unique_ptr<Core>> _cores;

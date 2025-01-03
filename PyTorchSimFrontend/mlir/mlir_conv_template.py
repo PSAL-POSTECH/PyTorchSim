@@ -174,7 +174,7 @@ class MLIRConvTemplate(MLIRTemplate):
         M = self.gemm_input_shape[2] * self.gemm_input_shape[3]
         N = self.gemm_weight_shape[0]
         K = self.gemm_weight_shape[1]
-        TILE_M, TILE_N, TILE_K = kernel.gemmini_gemm_mapping(M, N, K)
+        TILE_M, TILE_N, TILE_K = kernel.gemm_combination_mapping(M, N, K)
         kernel.tile_size = [TILE_M, TILE_N, TILE_K]
         kernel.loop_size = [M, N, K]
 

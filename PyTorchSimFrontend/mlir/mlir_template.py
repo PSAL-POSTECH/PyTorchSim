@@ -106,6 +106,31 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
 
         return inner_I, inner_J, inner_K
 
+    def gemm_combination_mapping(self, M, N, K):
+        spad_size = self.spad_info["spad_size"] * self.vector_lane
+        max_spad_size = spad_size // 2 # double buffer
+        M_padded = ((M + self.vector_lane - 1) // self.vector_lane) * self.vector_lane
+        N_padded = ((N + self.vector_lane - 1) // self.vector_lane) * self.vector_lane
+        K_padded = ((K + self.vector_lane - 1) // self.vector_lane) * self.vector_lane
+
+        max_used_spad_size = 0
+        mapping = (self.vector_lane, self.vector_lane, self.vector_lane)
+        for tile_M in range(self.vector_lane, M_padded + 1, self.vector_lane):
+            for tile_N in range(self.vector_lane, N_padded + 1, self.vector_lane):
+                for tile_K in range(self.vector_lane, K_padded + 1, self.vector_lane):
+                    used_spad_size = (tile_M * tile_K + tile_K * tile_N + tile_M * tile_N) * self.precision
+                    if used_spad_size < max_spad_size and max_used_spad_size < used_spad_size:
+                        max_used_spad_size = used_spad_size
+                        mapping = (tile_M, tile_N, tile_K)
+
+        Outer_M = math.ceil(M_padded / mapping[0])
+        Outer_N = math.ceil(N_padded / mapping[1])
+        Outer_K = math.ceil(K_padded / mapping[2])
+
+        # split mapping equally to avoid unnecessary padding
+        mapping = (M_padded // Outer_M, N_padded // Outer_N, K_padded // Outer_K)
+        return mapping
+
     def meta_kernel(self):
         wrapper = V.graph.wrapper_code
         arg_attributes = self.kernel_arg_attributes

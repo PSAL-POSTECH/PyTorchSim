@@ -60,7 +60,7 @@ CONV2D_FUNC_TEMPLATE = r"""
 def {{ FUNC_NAME }}({{ INPUT }}, {{ WEIGHT }}{% if BIAS %}, {{ BIAS }}{% endif %}, {{ OUT }}):
     {{ INPUT }}_cpu = {{ INPUT }}.cpu()
     {{ WEIGHT }}_cpu = {{ WEIGHT }}.cpu(){% if BIAS %}
-    {{ BIAS }}_cpu = {{ BIAS }}.cpu(){% endif %} #FIXME: BIAS is not used in the current implementation
+    {{ BIAS }}_cpu = {{ BIAS }}.cpu(){% endif %}
     {{ OUT }}_cpu = {{ OUT }}.cpu()
 
     # Torch support NCHW, so we need to transpose for now
@@ -111,7 +111,8 @@ def {{ FUNC_NAME }}({{ INPUT }}, {{ WEIGHT }}{% if BIAS %}, {{ BIAS }}{% endif %
             {% endif %}
 
     {{ OUT }}_cpu = {{ OUT }}_cpu.reshape(output_shape)
-    {{ OUT }}_cpu = {{ OUT }}_cpu.permute(0, 3, 1, 2)
+    {{ OUT }}_cpu = {{ OUT }}_cpu.permute(0, 3, 1, 2){% if BIAS %}
+    {{ OUT }}_cpu += {{ BIAS }}_cpu.reshape(-1, 1, 1) #TODO: BIAS should be added in the kernel{% endif %}
     {{ OUT }}.copy_({{ OUT }}_cpu)
 """
 

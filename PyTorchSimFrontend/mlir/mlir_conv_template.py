@@ -242,9 +242,9 @@ class MLIRConvTemplate(MLIRTemplate):
         gemm_h = int((input_shape[2] + 2*self.padding[0] - (weight_shape[2]-1) - 1) / self.stride[0]) + 1
         gemm_w = int((input_shape[3] + 2*self.padding[1] - (weight_shape[3]-1) - 1) / self.stride[1]) + 1
 
-        gemm_input_shape = [input_shape[0],input_shape[1],gemm_h, gemm_w]
-        gemm_weight_shape = [weight_shape[0],weight_shape[1],1,1]
-        gemm_output_shape = [gemm_input_shape[2]*gemm_input_shape[3], gemm_weight_shape[0]] # Consider Batch size 1
+        gemm_input_shape = [input_shape[0], input_shape[1], gemm_h, gemm_w]
+        gemm_weight_shape = [weight_shape[0], weight_shape[1], 1, 1]
+        gemm_output_shape = [input_shape[0], gemm_input_shape[2], gemm_input_shape[3], gemm_weight_shape[0]] # Consider Batch size 1
 
         arg_attributes.append([self.gemm_args[0], [MLIRKernelArgs.MLIR_ARGS_IN, self.input_nodes[0].layout.dtype, math.prod(gemm_input_shape)]])
         arg_attributes.append([self.gemm_args[1], [MLIRKernelArgs.MLIR_ARGS_IN, self.input_nodes[1].layout.dtype, math.prod(gemm_weight_shape)]])

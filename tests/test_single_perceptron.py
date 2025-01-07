@@ -41,13 +41,14 @@ def test_single_perceptron(device):
     b2.requires_grad = True
     opt_mlp = torch.compile(dynamic=False)(perceptron)
     opt_w = torch.compile(dynamic=False)(weight_update)
-    opt_loss = torch.compile(dynamic=False)(torch.nn.MSELoss())
+    loss_fn = torch.nn.MSELoss()
+    opt_loss = torch.compile(dynamic=False)(loss_fn)
     lr = torch.tensor(5e-2).to(device=device) # learning rate
     y = opt_mlp(w1, x1, b1)
     loss = opt_loss(y, y1)
     loss.backward()
     cpu_y = perceptron(x2, w2, b2)
-    cpu_loss = torch.nn.MSELoss()(cpu_y, y2)
+    cpu_loss = loss_fn(cpu_y, y2)
     cpu_loss.backward()
     test_result("Perceptron", y, cpu_y)
     test_result("Loss", loss, cpu_loss)

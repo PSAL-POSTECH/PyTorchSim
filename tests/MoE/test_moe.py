@@ -453,15 +453,15 @@ def test_moe(device):
     total_cpu_loss.backward()
     print("MoE Backward Done!")
 
-    print("MoE Weight Bias print")
-    for i in range(num_experts):
-        print(f"\nExpert {i}")
-        print(f"FC1 Weight: {model.experts[i].fc1.weight.cpu()}")
-        print(f"FC1 Bias: {model.experts[i].fc1.bias.cpu()}")
-        print("\n")
-        print(f"FC2 Weight: {model.experts[i].fc2.weight.cpu()}")
-        print(f"FC2 Bias: {model.experts[i].fc2.bias.cpu()}")
-        print("\n")
+    # print("MoE Weight Bias print")
+    # for i in range(num_experts):
+    #     print(f"\nExpert {i}")
+    #     print(f"FC1 Weight: {model.experts[i].fc1.weight.cpu()}")
+    #     print(f"FC1 Bias: {model.experts[i].fc1.bias.cpu()}")
+    #     print("\n")
+    #     print(f"FC2 Weight: {model.experts[i].fc2.weight.cpu()}")
+    #     print(f"FC2 Bias: {model.experts[i].fc2.bias.cpu()}")
+    #     print("\n")
 
     print("MoE Weight Bias Grad")
     for i in range(num_experts):

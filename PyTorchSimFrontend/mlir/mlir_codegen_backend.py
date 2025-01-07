@@ -777,10 +777,10 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
             shape = f"vector<{self.tile_desc.get_tile_size()}x{type_name}>"
             reduced_shape = type_name
             init = self.cse.generate(self.reduction_prefix, f"arith.constant {reduction_init(reduction_type, dtype)} : {type_name}")
-            if len(self.ranges) == 1:
+            if len(self.ranges) == 1: # 1-D vector to scalar
                 axis = "0"
                 acc_var = init
-                shape = f"vector<{self.tile_desc.get_tile_size_per_lane()}x{type_name}>"
+                shape = f"vector<{self.tile_desc.get_tile_size()}x{type_name}>" # use single vector lane
             elif len(self.ranges) == 2:
                 vec_len = self.tile_desc.get_rows_per_lane()
                 flattened_size = f"vector<{self.tile_desc.get_tile_size_per_lane()}x{type_name}>"

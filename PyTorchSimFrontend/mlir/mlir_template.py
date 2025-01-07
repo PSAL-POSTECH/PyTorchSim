@@ -120,23 +120,22 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         M_padded = ((M + self.vector_lane - 1) // self.vector_lane) * self.vector_lane
         N_padded = ((N + self.vector_lane - 1) // self.vector_lane) * self.vector_lane
         K_padded = ((K + self.vector_lane - 1) // self.vector_lane) * self.vector_lane
-
+        I, J, K = (M_padded / self.vector_lane, N_padded / self.vector_lane, K_padded / self.vector_lane)
         max_used_spad_size = 0
-        mapping = (self.vector_lane, self.vector_lane, self.vector_lane)
-        for tile_M in range(self.vector_lane, M_padded + 1, self.vector_lane):
-            for tile_N in range(self.vector_lane, N_padded + 1, self.vector_lane):
-                for tile_K in range(self.vector_lane, K_padded + 1, self.vector_lane):
-                    used_spad_size = (tile_M * tile_K + tile_K * tile_N + tile_M * tile_N) * self.precision
+        mapping = ()
+        tile_M = 1
+        while tile_M <= I:
+            tile_N = 1
+            while tile_N <= J:
+                tile_K = 1
+                while tile_K <= K:
+                    used_spad_size = ((tile_M * tile_K + tile_K * tile_N + tile_M * tile_N) * (self.vector_lane ** 2)) * self.precision
                     if used_spad_size < max_spad_size and max_used_spad_size < used_spad_size:
                         max_used_spad_size = used_spad_size
-                        mapping = (tile_M, tile_N, tile_K)
-
-        Outer_M = math.ceil(M_padded / mapping[0])
-        Outer_N = math.ceil(N_padded / mapping[1])
-        Outer_K = math.ceil(K_padded / mapping[2])
-
-        # split mapping equally to avoid unnecessary padding
-        mapping = (M_padded // Outer_M, N_padded // Outer_N, K_padded // Outer_K)
+                        mapping = (tile_M * self.vector_lane, tile_N * self.vector_lane, tile_K * self.vector_lane)
+                    tile_K *= 2
+                tile_N *= 2
+            tile_M *= 2
         return mapping
 
     def meta_kernel(self):

@@ -17,7 +17,7 @@ def test_conv2d(device, batch_size=1, in_channels=8, out_channels=16, input_size
     def custom_conv2d(a, b, bias):
         i_c = a.shape[1]
         o_c = b.shape[0]
-        conv2d = torch.nn.Conv2d(i_c, o_c, b.shape[-1], stride=stride, padding=padding, dilation=1)
+        conv2d = torch.nn.Conv2d(i_c, o_c, b.shape[-1], stride=stride, padding=padding, dilation=1, bias=False)
         conv2d.weight = torch.nn.Parameter(b)
         conv2d.bias = torch.nn.Parameter(bias)
         return conv2d(a)

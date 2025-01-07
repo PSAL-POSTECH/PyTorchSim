@@ -13,7 +13,7 @@ from collections import OrderedDict
 import torch
 from torch._inductor import dependencies, config
 from torch._inductor.codegen import cpp, wrapper, common
-from torch._inductor.scheduler import BaseScheduling
+from torch._inductor.scheduler import BaseScheduling, FusedSchedulerNode
 from torch._inductor.virtualized import V, _ops as ops
 from torch._inductor.codecache import write_atomic, write
 from Simulator.simulator import BackendSimulator
@@ -555,7 +555,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
             dram_tile_shape = f"{self.render_options['TILE_M']}x{self.render_options['TILE_N']}"
             buffer, indices = self.get_scratchpad_buffer(dtype, name, self.render_options['TILE_M'], self.render_options['TILE_N'], dram_tile_shape, self.loads, index)
             self.buffer_names[name] = buffer
-            line = f"affine.dma_start %{var}[%index2], %{buffer}[%c0, %c0], %tag[0], %c{mvin3}, %N, %c_set : memref<{self.buffer_types[name][1]}x{type_name}>, memref<{dram_tile_shape}x{type_name}, 1>, memref<1xi32>"
+            line = f"affine.dma_start %{var}[%index2], %{buffer}[%e_c0, %e_c0], %tag[0], %e_c{mvin3}, %N, %c_set : memref<{self.buffer_types[name][1]}x{type_name}>, memref<{dram_tile_shape}x{type_name}, 1>, memref<1xi32>"
             self.cse.generate(self.loads, line, assignment = False)
 
         tile_size_per_lane = self.render_options['TILE_M'] * self.render_options['TILE_N'] // self.vector_lane
@@ -636,7 +636,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
 
         self.tags.add(f"{name}_tag")
         self.consts.add(0)
-        code = f"affine.dma_start %{buffer}[%c0, %c0], %{var}[%index2], %tag[0], %c_mvout, %N, %c{chunk} : memref<{self.render_options['TILE_M']}x{self.render_options['TILE_N']}x{type_name}, 1>, memref<{self.render_options['M'] * self.render_options['N']}x{type_name}>, memref<1xi32>" #FIXME: Using constant index and tag
+        code = f"affine.dma_start %{buffer}[%e_c0, %e_c0], %{var}[%index2], %tag[0], %c_mvout, %N, %e_c{chunk} : memref<{self.render_options['TILE_M']}x{self.render_options['TILE_N']}x{type_name}, 1>, memref<{self.render_options['M'] * self.render_options['N']}x{type_name}>, memref<1xi32>" #FIXME: Using constant index and tag
         self.cse.generate(self.stores, code, assignment = False)
 
     def store(self, name: str, index: sympy.Expr, value, *args, **kwargs):
@@ -830,7 +830,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
                    f": memref<{options['TILE_M']}x{options['TILE_N']}xf32, 1>,"\
                    f"memref<{options['M'] * options['N']}xf32>, memref<1xi32>" #FIXME: Using constant index
             self.cse.generate(self.stores, line, assignment = False)
-        self.body.splice(self.codegen_init())
+        self.body.splice(self.codegen_init('e_'))
         self.body.splice(self.loads)
         self.body.splice(self.compute)
         if len(self.stores._lines) == 0:
@@ -840,14 +840,14 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         self.compute.clear()
         self.stores.clear()
 
-    def codegen_init(self):
+    def codegen_init(self, prefix=""):
         code = IndentedBuffer()
         tags = sorted(self.tags)
         consts = sorted(self.consts)
         for tag in tags:
-            code.writeline(f"%{tag} = memref.alloc() : memref<1xi32>")
+            code.writeline(f"%{prefix}{tag} = memref.alloc() : memref<1xi32>")
         for const in consts:
-            code.writeline(f"%c{const} = arith.constant {const} : index")
+            code.writeline(f"%{prefix}c{const} = arith.constant {const} : index")
         return code
 
     def codegen_loops(self):
@@ -930,7 +930,9 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         return code
 
     def adjust_tile_size(self):
+        # Fixed tile size for template kernel
         if self.is_template_kernel:
+            self.tile_desc.tile_layout = MLIRTile.TILE_COL_WISE
             self.tile_desc.n_row = self.render_options['TILE_M']
             self.tile_desc.n_col = self.render_options['TILE_N']
             return
@@ -1091,16 +1093,24 @@ class MLIRScheduling(BaseScheduling):
         self._ready_to_flush = status
 
     def can_fuse_vertical(self, node1, node2):
-        return False
         return self.can_fuse_horizontal(node1, node2) and not node1.is_reduction()
 
     def can_fuse_horizontal(self, node1, node2):
-        return False
         _, (vars1, reduce1) = node1.group
         _, (vars2, reduce2) = node2.group
+
+        if node1.is_reduction() or node2.is_reduction():
+            return False
+        if not isinstance(node1, FusedSchedulerNode) and not isinstance(node2, FusedSchedulerNode):
+            if node1.node.layout.dtype != node2.node.layout.dtype:
+                return False
+            if  not node1.is_template() and (node1._sizes[0] != node2._sizes[0]):
+                return False
         if vars1 == vars2 and reduce1 == reduce2:
             return True
-        #TODO: Temporary solution determining the fusion condition similar to CPP/OpenMP
+        if reduce1 == () and vars1 == vars2 + reduce2:
+            return True
+        #TODO: Temporary solution determining the fusion condition (supposed to be done by group_fn)
         v1_total = math.prod(vars1) if len(vars1) else 0
         v2_total = math.prod(vars2) if len(vars2) else 0
         r1_total = math.prod(reduce1) if len(reduce1) else 0

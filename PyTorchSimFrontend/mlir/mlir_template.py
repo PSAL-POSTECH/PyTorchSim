@@ -6,13 +6,8 @@ import math
 from typing import List, Optional
 from unittest.mock import patch
 
-from torch._inductor.codegen.common import KernelTemplate
-from torch._inductor.codegen.common import ChoiceCaller
-from torch._inductor.codegen.common import Kernel
-from torch._inductor.codegen.common import OpOverrides
-from torch._inductor.ir import Buffer
-from torch._inductor.ir import IRNode
-from torch._inductor.ir import TemplateBuffer
+from torch._inductor.codegen.common import Kernel, KernelTemplate, ChoiceCaller, OpOverrides
+from torch._inductor.ir import Buffer, IRNode, TemplateBuffer
 from torch._inductor.select_algorithm import PartialRender
 from torch._inductor.codegen.cuda.cuda_kernel import CUDATemplateCaller
 from torch._inductor.autotune_process import TensorMeta

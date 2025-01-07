@@ -815,7 +815,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         code = f"affine.dma_start %{buffer}[%c0, %c0], %{var}[{prefix}{indices}], %{name}_tag[0], %c{dmaType}, %c{mm_stride}, %c{chunk} : memref<{tile_row}x{tile_col}x{type_name}, 1>, memref<{self.buffer_types[name][1]}x{type_name}>, memref<1xi32>"
         self.cse.generate(self.reductions_suffix, code, assignment = False)
 
-    def codegen_body(self, subtile):
+    def codegen_body(self):
         # if not (
         #     self.loads
         #     or self.stores
@@ -835,10 +835,6 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         self.body.splice(self.compute)
         if len(self.stores._lines) == 0:
             template_store(self.render_options)
-        if subtile:
-            for i in range(len(self.stores._lines)):
-                if "affine.dma_start" in self.stores._lines[i]:
-                    self.stores._lines[i] += f" {{ subtile_size=[{self.vector_lane}, {self.vector_lane}], async=1 }}"
         self.body.splice(self.stores)
         self.loads.clear()
         self.compute.clear()

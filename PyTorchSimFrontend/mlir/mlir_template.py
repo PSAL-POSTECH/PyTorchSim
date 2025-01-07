@@ -207,9 +207,9 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         self.render_hooks["<OUPUT>"] = hook
         return "<OUPUT>"
 
-    def store_output(self, subtile=False):
+    def store_output(self):
         def hook():
-            self.codegen_body(subtile=subtile)
+            self.codegen_body()
             return textwrap.indent(self.body.getvalue(), "      ").strip()  #TODO: First line is not indented
 
         assert "<STORE_OUTPUT>" not in self.render_hooks

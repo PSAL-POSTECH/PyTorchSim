@@ -638,6 +638,35 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         # Adjust time size when it is vector
         self.adjust_tile_size()
         return ret
+    def get_constant_vector2(self, expr):
+        # Case 0. symbol ex) index 0
+        # Case 1. inner product form ex) 16 * index0 + 1 * index1
+        # Case 2. Complicated form ex) 16 * index0 + 8 * (index//4) + (index % 4)
+        constant_vector = []
+        if expr.is_symbol:
+            constant_vector.append(tuple([1, expr]))
+            return constant_vector
+
+        for arg in expr.args:
+            if arg.is_symbol:
+                constant_vector.append(tuple([1,arg]))
+                continue
+            if len(arg.args) == 0: #TODO: check this
+                continue
+            if arg.args[0].is_number:
+                constant_vector.append(arg.args)
+            else:
+                constant_vector.append([1, arg])
+
+        return constant_vector
+
+    def find_node_by_name(self, name):
+        if name in V.graph.graph_inputs:
+            return V.graph.graph_inputs[name]
+        else:
+            for output_node in V.graph.graph_outputs:
+                if output_node.data.name == name:
+                    return output_node
 
     def parse_indices(self, expr):
         if len(expr.args) == 0:
@@ -999,6 +1028,9 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
             current_tile.tile_per_lane_layout = mlir_common.MLIRTile.TILE_PER_LANE_COL_WISE # Actually it is not needed in vector case
             chunk_size = current_tile.get_chunk_size()
             mm_stride = current_tile.n_col
+            if self.is_scalar(name): # scalar to vector broadcasting
+                mm_stride = 0
+                current_tile.n_row, current_tile.n_col = current_tile.n_col, current_tile.n_row
         # Case 2. Tile is 1-D vector type with reduction
         elif len(cv) == 1 and len(cv) == self.reduction_depth + 1:
             # Use only one vectorlane to reduce a vector
@@ -1009,6 +1041,9 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
             current_tile.used_vector_lane = 1
             chunk_size = current_tile.get_chunk_size()
             mm_stride = 0 # don't care
+            tile_size_per_lane = current_tile.get_tile_size_per_lane()
+            if self.is_scalar(name): # scalar to vector broadcasting
+                current_tile.n_row, current_tile.n_col = current_tile.n_col, current_tile.n_row
         # Case 3. Tile is 2-D tile
         elif len(cv) == 2:
             is_reduction = self.reduction_depth == 1
@@ -1094,7 +1129,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
 
         # Case 1. vector kernel
         if len(self.itervars) == 1:
-            self.tile_desc.n_col = self.tile_desc.get_tile_size()
+            self.tile_desc.n_col = self.tile_desc.get_tile_size() if self.tile_desc.get_tile_size() < self.ranges[0] else self.ranges[0] # effective tile size
             self.tile_desc.n_row = 1
         elif len(self.itervars) == 0:
             self.tile_desc.n_col = 1

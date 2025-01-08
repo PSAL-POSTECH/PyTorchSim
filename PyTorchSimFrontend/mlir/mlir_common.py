@@ -369,6 +369,9 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
                 if output_node.data.name == name:
                     return output_node
 
+    def is_scalar(self, name):
+        return self.buffer_types[name][1] == 1
+
     def roundup_vectorlane(self, size, amp=1):
         return ((size + self.vector_lane - 1) // self.vector_lane) * self.vector_lane * amp
 

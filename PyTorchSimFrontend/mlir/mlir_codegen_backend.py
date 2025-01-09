@@ -1129,7 +1129,11 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
 
         # Case 1. vector kernel
         if len(self.itervars) == 1:
-            self.tile_desc.n_col = self.tile_desc.get_tile_size() if self.tile_desc.get_tile_size() < self.ranges[0] else self.ranges[0] # effective tile size
+            tile_size = self.tile_desc.get_tile_size()
+            if tile_size < self.ranges[0]:
+                tile_size = self.ranges[0]
+                min_tile_size_unit = self.vector_lane * self.vlen # VCIX widening is not implemented
+                self.tile_desc.n_col = (tile_size + min_tile_size_unit - 1) // min_tile_size_unit
             self.tile_desc.n_row = 1
         elif len(self.itervars) == 0:
             self.tile_desc.n_col = 1

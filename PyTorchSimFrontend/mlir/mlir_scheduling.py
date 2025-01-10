@@ -3,7 +3,7 @@ from PyTorchSimFrontend import extension_config
 from PyTorchSimFrontend.mlir.mlir_codegen_backend import MLIRKernel
 
 from torch._inductor import config
-from torch._inductor.scheduler import BaseScheduling
+from torch._inductor.scheduler import BaseScheduling, FusedSchedulerNode
 from torch._inductor.utils import IndentedBuffer
 from torch._inductor.virtualized import V
 
@@ -24,15 +24,30 @@ class MLIRScheduling(BaseScheduling):
         self._ready_to_flush = status
 
     def can_fuse_vertical(self, node1, node2):
-        return False
         return self.can_fuse_horizontal(node1, node2) and not node1.is_reduction()
 
     def can_fuse_horizontal(self, node1, node2):
-        return False
         _, (vars1, reduce1) = node1.group
         _, (vars2, reduce2) = node2.group
+
+        # Reduction is currently not supported
+        if node1.is_reduction() or node2.is_reduction():
+            return False
+
+        if not isinstance(node1, FusedSchedulerNode) and not isinstance(node2, FusedSchedulerNode):
+            # Different layout is not supported
+            if node1.node.layout.dtype != node2.node.layout.dtype:
+                return False
+
+            # Different size is not supported for non-template node
+            if  not node1.is_template() and (node1._sizes[0] != node2._sizes[0]):
+                return False
+
         if vars1 == vars2 and reduce1 == reduce2:
             return True
+        if reduce1 == () and vars1 == vars2 + reduce2:
+            return True
+
         #TODO: Temporary solution determining the fusion condition similar to CPP/OpenMP
         v1_total = math.prod(vars1) if len(vars1) else 0
         v2_total = math.prod(vars2) if len(vars2) else 0
@@ -40,8 +55,8 @@ class MLIRScheduling(BaseScheduling):
         r2_total = math.prod(reduce2) if len(reduce2) else 0
         if reduce1 == () \
             and v1_total == (v2_total + r2_total):
-            # and node1.node.layout.size == node2.node.layout.size:     #FIXME: Need to check layout too?
             return True
+
         return False
 
     def group_fn(self, sizes):

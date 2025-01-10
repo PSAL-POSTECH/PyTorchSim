@@ -12,6 +12,7 @@ from typing import Dict
 from collections import OrderedDict
 import torch
 from torch._inductor.codegen import cpp, wrapper, common
+from torch._inductor.scheduler import BaseScheduling
 from torch._inductor.virtualized import V, _ops as ops
 from torch._inductor.codecache import write_atomic, write
 from torch._inductor.utils import (
@@ -903,7 +904,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
                    f": memref<{options['TILE_M']}x{options['TILE_N']}xf32, 1>,"\
                    f"memref<{options['M'] * options['N']}xf32>, memref<1xi32>" #FIXME: Using constant index
             self.cse.generate(self.stores, line, assignment = False)
-        self.body.splice(self.codegen_init())
+        self.body.splice(self.codegen_init('e_'))
         self.body.splice(self.loads)
         self.body.splice(self.compute)
         if len(self.stores._lines) == 0:
@@ -916,14 +917,14 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
     def codegen_global_init(self):
         return self.global_vars
 
-    def codegen_init(self):
+    def codegen_init(self, prefix=""):
         code = IndentedBuffer()
         tags = sorted(self.tags)
         consts = sorted(self.consts)
         for tag in tags:
-            code.writeline(f"%{tag} = memref.alloc() : memref<1xi32>")
+            code.writeline(f"%{prefix}{tag} = memref.alloc() : memref<1xi32>")
         for const in consts:
-            code.writeline(f"%c{const} = arith.constant {const} : index")
+            code.writeline(f"%{prefix}c{const} = arith.constant {const} : index")
         return code
 
     def codegen_loops(self):
@@ -1140,17 +1141,14 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         if len(self.itervars) >= 3 and self.reduction_depth < len(self.itervars):
             raise NotImplementedError()
 
-    def get_scratchpad_buffer(self, dtype, name, tile_row, tile_col, dram_tile_shape, code_buffer, indices, raw_index):
+    def get_scratchpad_buffer(self, dtype, name, tile_row, tile_col, dram_tile_shape, code_buffer, indices, raw_index, is_template=False):
         c_type = mlir_common.DTYPE_TO_C[dtype]
         mlir_type = mlir_common.DTYPE_TO_MLIR[dtype]
         # Make sure each lane's buffer has at least two element
         tile_size = max(self.roundup_vectorlane(tile_row * tile_col), self.vector_lane * 2)
-        if dtype == torch.bool and not self.is_template_kernel:     #FIXME: epilogue ReLU does not need this
-            if self.is_template_kernel:
-                mapping = f"template_{indices} "
-                self.map_cse.generate(self.global_vars, f"#{mapping} = affine_map<({indices}) -> ({indices} floordiv 8)>", assignment=False)
-            else:
-                mapping = self.map_cse.generate(self.global_vars, f"affine_map<({indices}) -> ({indices} floordiv 8)>")
+
+        if dtype == torch.bool and not is_template:
+            mapping = self.map_cse.generate(self.global_vars, f"affine_map<({indices}) -> ({indices} floordiv 8)>")
             indices = self.cse.generate(self.loads, f"affine.apply #{mapping}(%{indices})") # FIXME. Only loads?
 
         if name not in self.global_vars_dict:

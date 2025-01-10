@@ -50,5 +50,6 @@ if __name__ == "__main__":
 
     # # Fusion Test
     test_matmul_scalar(device)
+    test_matmul_activation(device, batch_size=32, input_size=32, output_size=32, activation_fn="relu")
     test_matmul_activation(device, batch_size=32, input_size=32, output_size=32, activation_fn="sigmoid")
     test_addmm_residual(device)

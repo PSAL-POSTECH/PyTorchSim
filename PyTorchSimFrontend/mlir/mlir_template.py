@@ -261,13 +261,11 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         if name in self.buffer_names:
             buffer = self.buffer_names[name]
         else:
-            # dram_mlir_shape = mlir_common.MLIRKernelArgs.get_mlir_shape(self.buffer_types[name])
             mvin3 = 14
             self.consts.add(mvin3)
             dram_tile_shape = f"{self.render_options['TILE_M']}x{self.render_options['TILE_N']}"
             buffer, indices = self.get_scratchpad_buffer(dtype, name, self.render_options['TILE_M'], self.render_options['TILE_N'], dram_tile_shape, self.loads, indices, index)
             self.buffer_names[name] = buffer
-            # line = f"affine.dma_start %{var}[%index2], %{buffer}[%e_c0, %e_c0], %tag[0], %e_c{mvin3}, %N, %c_set : {dram_mlir_shape}, memref<{dram_tile_shape}x{type_name}, 1>, memref<1xi32>"
             line = f"affine.dma_start %{var}[%index2], %{buffer}[%e_c0, %e_c0], %tag[0], %e_c{mvin3}, %N, %c_set : memref<{self.buffer_types[name][1]}x{type_name}>, memref<{dram_tile_shape}x{type_name}, 1>, memref<1xi32>"
             self.cse.generate(self.loads, line, assignment = False)
 

@@ -712,7 +712,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         # Define scratch pad buffer
         sram_var, index_var = self.get_scratchpad_buffer(dtype, name, self.tile_desc.n_row, self.tile_desc.n_col, tile_shape, self.loads, index_var, index)
         # MVIN Encoding
-        code = self.get_dma_code("MVIN", stride, chunk, mlir_dtype, dram_var, index_var, sram_var, f"{name}_tag", self.buffer_types[name][1], tile_shape)
+        code = self.get_dma_code("MVIN", stride, chunk, mlir_dtype, dram_var, index_var, sram_var, f"{name}_tag", self.buffer_types[name][1], tile_shape, padding)
         self.cse.generate(self.loads, code, assignment = False) # FIXME: assignment = False does not support caching
 
         # Generate vector load instruction
@@ -1073,7 +1073,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         chunk = chunk_size << 1 | (current_tile.tile_per_lane_layout == mlir_common.MLIRTile.TILE_PER_LANE_COL_WISE)
         return mm_stride, chunk, [current_tile.n_row, current_tile.n_col], tile_size_per_lane
 
-    def get_dma_code(self, dma_type_name, stride, chunk, mlir_dtype, dram_var, index_var, sram_var, tag_name, dram_shape, tile_shape):
+    def get_dma_code(self, dma_type_name, stride, chunk, mlir_dtype, dram_var, index_var, sram_var, tag_name, dram_shape, tile_shape, padding_type=None):
         dma_key = (stride, chunk, mlir_dtype)
         if dma_type_name == "MVIN" and dma_key in self.dma_read_cache:
             dma_type, mm_stride, chunk = self.dma_read_cache[dma_key]
@@ -1108,7 +1108,11 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         else:
             src_operand, dst_operand = sram_operand, dram_operand
             src_shape, dst_shape = sram_shape, dram_shape
-        return f"affine.dma_start {src_operand}, {dst_operand}, {tag_var}, {dma_attribute} : {src_shape}, {dst_shape}, {tag_shape}"
+
+        code = f"affine.dma_start {src_operand}, {dst_operand}, {tag_var}, {dma_attribute} : {src_shape}, {dst_shape}, {tag_shape}"
+        if padding_type is not None:
+            code = code + f" {{padding = {padding_type}}}"
+        return code
 
     def adjust_tile_size(self):
         if self.read_writes is not None:

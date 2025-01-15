@@ -638,35 +638,15 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         # Adjust time size when it is vector
         self.adjust_tile_size()
         return ret
-    def get_constant_vector2(self, expr):
-        # Case 0. symbol ex) index 0
-        # Case 1. inner product form ex) 16 * index0 + 1 * index1
-        # Case 2. Complicated form ex) 16 * index0 + 8 * (index//4) + (index % 4)
-        constant_vector = []
-        if expr.is_symbol:
-            constant_vector.append(tuple([1, expr]))
-            return constant_vector
 
-        for arg in expr.args:
-            if arg.is_symbol:
-                constant_vector.append(tuple([1,arg]))
-                continue
-            if len(arg.args) == 0: #TODO: check this
-                continue
-            if arg.args[0].is_number:
-                constant_vector.append(arg.args)
-            else:
-                constant_vector.append([1, arg])
-
-        return constant_vector
-
-    def find_node_by_name(self, name):
-        if name in V.graph.graph_inputs:
-            return V.graph.graph_inputs[name]
-        else:
-            for output_node in V.graph.graph_outputs:
-                if output_node.data.name == name:
-                    return output_node
+    # padding type 0: zero-padding 1: negative-padding(-inf) ...
+    def get_padding_type(self):
+        ops = self.current_node.node.origins
+        if self.current_node.is_reduction():
+            for op in ops:
+                if "exp" in op.name: # exponential reduciton case
+                    return 1
+        return 0
 
     def parse_indices(self, expr):
         if len(expr.args) == 0:
@@ -699,6 +679,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
     def load(self, name: str, index: sympy.Expr):
         index = self.rename_indexing(index)
         indices = self.parse_indices(index)
+        padding = self.get_padding_type()
         prefix = self.newvar_prefix
         if index.is_number:
             prefix = prefix + "c"
@@ -725,7 +706,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
             self.dma_cache[dma_key] = dmaType, stride, chunk
         self.tags.add(f"{name}_tag")
         self.consts.add(0)
-        code = f"affine.dma_start %{var}[{prefix}{indices}], %{buffer}[%c0, %c0], %{name}_tag[0], %c{dmaType}, %c{stride}, %c{chunk} : memref<{self.buffer_types[name][1]}x{type_name}>, memref<{dram_tile_shape}x{type_name}, 1>, memref<1xi32>"
+        code = f"affine.dma_start %{var}[{prefix}{indices}], %{buffer}[%c0, %c0], %{name}_tag[0], %c{dmaType}, %c{stride}, %c{chunk} : memref<{self.buffer_types[name][1]}x{type_name}>, memref<{dram_tile_shape}x{type_name}, 1>, memref<1xi32> {{padding = {padding}}}"
         self.cse.generate(self.loads, code, assignment = False) # FIXME: assignment = False does not support caching
 
         operation = "affine.vector_load" if tile_size_per_lane > 1 else "affine.load"
@@ -1129,11 +1110,9 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
 
         # Case 1. vector kernel
         if len(self.itervars) == 1:
-            tile_size = self.tile_desc.get_tile_size()
-            if tile_size < self.ranges[0]:
-                tile_size = self.ranges[0]
-                min_tile_size_unit = self.vector_lane * self.vlen # VCIX widening is not implemented
-                self.tile_desc.n_col = (tile_size + min_tile_size_unit - 1) // min_tile_size_unit
+            tile_size = self.tile_desc.get_tile_size() if self.tile_desc.get_tile_size() < self.ranges[0] else self.ranges[0]
+            min_tile_size_unit = self.vector_lane * self.vlen # TODO: VCIX widening is not implemented
+            self.tile_desc.n_col = math.ceil(tile_size / min_tile_size_unit) * min_tile_size_unit # padding
             self.tile_desc.n_row = 1
         elif len(self.itervars) == 0:
             self.tile_desc.n_col = 1

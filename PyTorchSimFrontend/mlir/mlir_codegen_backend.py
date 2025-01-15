@@ -641,6 +641,10 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         self.tags = dict()
         self.dma_cache = {}
         self.dma_counter = 1
+        self.dma_read_cache = {}
+        self.dma_write_cache = {}
+        self.dma_read_counter = 1
+        self.dma_write_counter = 1
         self.affine_yield = {}
         self.welford_reduce_out = None
         self.reduce_iterator = {}
@@ -1094,6 +1098,43 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         #assert(not (dtype==torch.bool and chunk_size < 8))
         chunk = chunk_size << 1 | (current_tile.tile_per_lane_layout == mlir_common.MLIRTile.TILE_PER_LANE_COL_WISE)
         return mm_stride, chunk, [current_tile.n_row, current_tile.n_col], tile_size_per_lane
+
+    def get_dma_code(self, dma_type_name, stride, chunk, mlir_dtype, dram_var, index_var, sram_var, tag_name, dram_shape, tile_shape):
+        dma_key = (stride, chunk, mlir_dtype)
+        if dma_type_name == "MVIN" and dma_key in self.dma_read_cache:
+            dma_type, mm_stride, chunk = self.dma_read_cache[dma_key]
+        elif dma_type_name == "MVOUT" and dma_key in self.dma_write_cache:
+            dma_type, mm_stride, chunk = self.dma_read_cache[dma_key]
+        else:
+            mm_stride = self.get_const_cse(stride)
+            chunk = self.get_const_cse(chunk)
+            if dma_type_name == "MVIN":
+                dma_type = self.get_const_cse(DMA_TYPE[f"{dma_type_name}{self.dma_read_counter}"])
+                self.dma_read_counter += 1
+                self.dma_read_cache[dma_key] = [dma_type, mm_stride, chunk]
+            else:
+                dma_type = self.get_const_cse(DMA_TYPE[f"{dma_type_name}{self.dma_write_counter}"])
+                # self.dma_write_counter += 1 Is it okay?
+                self.dma_write_cache[dma_key] = [dma_type, mm_stride, chunk]
+        tag = self.get_tag_cse(tag_name)
+        zero_cse = self.get_const_cse(0)
+
+        # Prepare opearnds and attributes
+        dram_operand = f"%{dram_var}[%{index_var}]"
+        sram_operand = f"%{sram_var}[%{zero_cse}, %{zero_cse}]"
+        tag_var = f"%{tag}[0]"
+        dma_attribute = f"%{dma_type}, %{mm_stride}, %{chunk}"
+        dram_shape = f"memref<{dram_shape}x{mlir_dtype}>"
+        sram_shape = f"memref<{tile_shape}x{mlir_dtype}, 1>"
+        tag_shape = "memref<1xi32>"
+
+        if dma_type_name == "MVIN":
+            src_operand, dst_operand = dram_operand, sram_operand
+            src_shape, dst_shape = dram_shape, sram_shape
+        else:
+            src_operand, dst_operand = sram_operand, dram_operand
+            src_shape, dst_shape = sram_shape, dram_shape
+        return f"affine.dma_start {src_operand}, {dst_operand}, {tag_var}, {dma_attribute} : {src_shape}, {dst_shape}, {tag_shape}"
 
     def adjust_tile_size(self):
         if self.read_writes is not None:

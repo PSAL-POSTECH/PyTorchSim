@@ -30,12 +30,15 @@ class MLIRScheduling(BaseScheduling):
         _, (vars1, reduce1) = node1.group
         _, (vars2, reduce2) = node2.group
 
-        # Convolution is currently not supported
-        if node1.node.origin_node.target._name == 'aten::convolution' or node2.node.origin_node.target._name == 'aten::convolution':
-            return False
-
         # Reduction is currently not supported
         if node1.is_reduction() or node2.is_reduction():
+            return False
+
+        # Convolution is currently not supported
+        if not isinstance(node1, FusedSchedulerNode) and node1.node.origin_node is not None and node1.node.origin_node.target._name == 'aten::convolution':
+            return False
+
+        if not isinstance(node2, FusedSchedulerNode) and node2.node.origin_node is not None and node2.node.origin_node.target._name == 'aten::convolution':
             return False
 
         if not isinstance(node1, FusedSchedulerNode) and not isinstance(node2, FusedSchedulerNode):

@@ -272,7 +272,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         return
 
     def load_epilogue(self, name: str, index: sympy.Expr):
-        index_var = self.parse_indices(index)
+        #index_var = self.parse_indices(index)
         index_var = "index2"
         index = self.rename_indexing(index)
         dram_var = self.args.input(name)
@@ -303,7 +303,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         return out
 
     def store_epilogue(self, name: str, index: sympy.Expr, value, *args, **kwargs):
-        index_var = self.parse_indices(index)
+        #index_var = self.parse_indices(index)
         index_var = "index2"
         dram_var = self.args.output(name)
         dtype = V.graph.get_dtype(name)

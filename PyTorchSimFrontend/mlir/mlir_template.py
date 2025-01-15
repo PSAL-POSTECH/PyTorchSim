@@ -272,63 +272,68 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         return
 
     def load_epilogue(self, name: str, index: sympy.Expr):
-        indices = self.parse_indices(index)
+        index_var = self.parse_indices(index)
+        index_var = "index2"
         index = self.rename_indexing(index)
-        var = self.args.input(name)
+        dram_var = self.args.input(name)
         dtype = V.graph.get_dtype(name)
-        type_name = mlir_common.DTYPE_TO_MLIR[dtype]
+        mlir_dtype = mlir_common.DTYPE_TO_MLIR[dtype]
+        if name not in self.buffer_names:
+            # Allocate sram buffer
+            tile_shape = f"{self.render_options['TILE_M']}x{self.render_options['TILE_N']}"
+            sram_var, index_var = self.get_scratchpad_buffer(dtype, name, self.render_options['TILE_M'], self.render_options['TILE_N'], tile_shape, self.loads, index_var, index)
+            self.buffer_names[name] = sram_var
 
-        if name in self.buffer_names:
-            buffer = self.buffer_names[name]
-        else:
-            mvin3 = 14
-            mvin3 = self.get_const_cse(mvin3)
-            zero_cse = self.get_const_cse(0)
-            dram_tile_shape = f"{self.render_options['TILE_M']}x{self.render_options['TILE_N']}"
-            buffer, indices = self.get_scratchpad_buffer(dtype, name, self.render_options['TILE_M'], self.render_options['TILE_N'], dram_tile_shape, self.loads, indices, index)
-            self.buffer_names[name] = buffer
-            line = f"affine.dma_start %{var}[%index2], %{buffer}[%{zero_cse}, %{zero_cse}], %tag[0], %{mvin3}, %N, %c_set : memref<{self.buffer_types[name][1]}x{type_name}>, memref<{dram_tile_shape}x{type_name}, 1>, memref<1xi32>"
-            self.cse.generate(self.loads, line, assignment = False)
+            # Generate DMA instruction
+            stride = self.render_options['N']   # FIXME. Is it okay?
+            chunk = 2                           # FIXME. Is it okay?
+            index_var = "index2"                # FIXME. Is it okay?
+            code = self.get_dma_code("MVIN", stride, chunk, mlir_dtype, dram_var, index_var, sram_var, f"{name}_tag", self.buffer_types[name][1], tile_shape)
+            self.cse.generate(self.loads, code, assignment = False)
 
-        zero_cse = self.get_const_cse(0)
+        # Load vector from sram
+        sram_var = self.buffer_names[name]
         tile_size_per_lane = self.render_options['TILE_M'] * self.render_options['TILE_N'] // self.vector_lane
         operation = "affine.vector_load" if tile_size_per_lane > 1 else "affine.load"
-        shape = f", vector<{tile_size_per_lane}x{type_name}>" if tile_size_per_lane > 1 else ""
-        line = f"{operation} %{buffer}[%{zero_cse}, %{zero_cse}] : memref<{self.render_options['TILE_M']}x{self.render_options['TILE_N']}x{type_name}, 1>{shape}"
+        shape = f", vector<{tile_size_per_lane}x{mlir_dtype}>" if tile_size_per_lane > 1 else ""
+        zero_var = self.get_const_cse(0)
+        line = f"{operation} %{sram_var}[%{zero_var}, %{zero_var}] : memref<{self.render_options['TILE_M']}x{self.render_options['TILE_N']}x{mlir_dtype}, 1>{shape}"
         out = self.cse.generate(self.loads, line)
-        var_info = [tile_size_per_lane, mlir_common.DTYPE_TO_MLIR[dtype]]
-        self.register_var_info(out, var_info)
+        self.register_var_info(out, [tile_size_per_lane, mlir_dtype])
         return out
 
     def store_epilogue(self, name: str, index: sympy.Expr, value, *args, **kwargs):
-        indices = self.parse_indices(index)
-        var = self.args.output(name)
+        index_var = self.parse_indices(index)
+        index_var = "index2"
+        dram_var = self.args.output(name)
         dtype = V.graph.get_dtype(name)
-        type_name = mlir_common.DTYPE_TO_MLIR[dtype]
+        mlir_dtype = mlir_common.DTYPE_TO_MLIR[dtype]
 
         chunk_size = 1  # Fixed for template kernel
         chunk = chunk_size << 1 | (self.tile_desc.tile_per_lane_layout == MLIRTile.TILE_PER_LANE_COL_WISE)
-        chunk = self.get_const_cse(chunk)
 
-        if name in self.buffer_names:
-            buffer = self.buffer_names[name]
-        else:
+        if name not in self.buffer_names:
             dram_tile_shape = f"{self.render_options['TILE_M']}x{self.render_options['TILE_N']}"
-            buffer, indices = self.get_scratchpad_buffer(dtype, name, self.render_options['TILE_M'], self.render_options['TILE_N'], dram_tile_shape, self.stores, indices, index)
-            self.buffer_names[name] = buffer
+            sram_var, index_var = self.get_scratchpad_buffer(dtype, name, self.render_options['TILE_M'], self.render_options['TILE_N'], dram_tile_shape, self.stores, index_var, index)
+            self.buffer_names[name] = sram_var
+        sram_var = self.buffer_names[name]
 
-        zero_var = self.get_const_cse(0)
         tile_size_per_lane = self.render_options['TILE_M'] * self.render_options['TILE_N'] // self.vector_lane
         operation = "affine.vector_store" if tile_size_per_lane > 1 else "affine.store"
-        shape = f", vector<{tile_size_per_lane}x{type_name}>" if tile_size_per_lane > 1 else ""
-        line = f"{operation} %{value}, %{buffer}[%{zero_var}, %{zero_var}] : memref<{self.render_options['TILE_M']}x{self.render_options['TILE_N']}x{type_name}, 1>{shape}"
+        shape = f", vector<{tile_size_per_lane}x{mlir_dtype}>" if tile_size_per_lane > 1 else ""
+        zero_var = self.get_const_cse(0)
+        line = f"{operation} %{value}, %{sram_var}[%{zero_var}, %{zero_var}] : memref<{self.render_options['TILE_M']}x{self.render_options['TILE_N']}x{mlir_dtype}, 1>{shape}"
         self.cse.generate(self.stores, line, assignment = False)
-        tag_var = self.get_tag_cse(f"{name}_tag")
-        code = f"affine.dma_start %{buffer}[%{zero_var}, %{zero_var}], %{var}[%index2], %{tag_var}[0], %c_mvout, %N, %{chunk} : memref<{self.render_options['TILE_M']}x{self.render_options['TILE_N']}x{type_name}, 1>, memref<{self.render_options['M'] * self.render_options['N']}x{type_name}>, memref<1xi32>" #FIXME: Using constant index and tag
+
+        stride = self.render_options['N']   # FIXME. Is it okay?
+        index_var = "index2"                # FIXME. Is it okay?
+        dram_shape = f"{self.render_options['M'] * self.render_options['N']}"
+        tile_shape = f"{self.render_options['TILE_M']}x{self.render_options['TILE_N']}"
+        code = self.get_dma_code("MVOUT", stride, chunk, mlir_dtype, dram_var, index_var, sram_var, f"{name}_tag", dram_shape, tile_shape)
         self.cse.generate(self.stores, code, assignment = False)
 
-    def get_scratchpad_buffer(self, dtype, name, tile_row, tile_col, dram_tile_shape, code_buffer, indices, raw_index):
-        return super().get_scratchpad_buffer(dtype, name, tile_row, tile_col, dram_tile_shape, code_buffer, indices, raw_index, True)
+    def get_scratchpad_buffer(self, dtype, name, tile_row, tile_col, dram_tile_shape, code_buffer, index_var, raw_index):
+        return super().get_scratchpad_buffer(dtype, name, tile_row, tile_col, dram_tile_shape, code_buffer, index_var, raw_index, True)
 
 class MLIRTemplateCaller(CUDATemplateCaller):
     def __str__(self):

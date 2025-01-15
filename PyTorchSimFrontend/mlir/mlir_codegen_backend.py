@@ -639,8 +639,6 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         self.map_cse = common.CSE("#", self.suffix, name_prefix="map")
         self.consts = dict()
         self.tags = dict()
-        self.dma_cache = {}
-        self.dma_counter = 1
         self.dma_read_cache = {}
         self.dma_write_cache = {}
         self.dma_read_counter = 1
@@ -703,72 +701,52 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
 
     def load(self, name: str, index: sympy.Expr):
         index = self.rename_indexing(index)
-        indices = self.parse_indices(index)
         padding = self.get_padding_type()
-        prefix = self.newvar_prefix
-        var = self.args.input(name)
+        index_var = self.parse_indices(index)
+        dram_var = self.args.input(name)
         dtype = V.graph.get_dtype(name)
-        type_name = mlir_common.DTYPE_TO_MLIR[dtype]
+        mlir_dtype = mlir_common.DTYPE_TO_MLIR[dtype]
         stride, chunk, tile_shape, tile_size_per_lane = self.get_dma_info(name, index, dtype)
-        dram_tile_shape = f"{tile_shape[0]}x{tile_shape[1]}"
+        tile_shape = f"{tile_shape[0]}x{tile_shape[1]}"
 
         # Define scratch pad buffer
-        buffer, indices = self.get_scratchpad_buffer(dtype, name, self.tile_desc.n_row, self.tile_desc.n_col, dram_tile_shape, self.loads, indices, index)
+        sram_var, index_var = self.get_scratchpad_buffer(dtype, name, self.tile_desc.n_row, self.tile_desc.n_col, tile_shape, self.loads, index_var, index)
         # MVIN Encoding
-        dma_key = (stride, chunk, dtype)
-        if dma_key in self.dma_cache:
-            dmaType, stride, chunk = self.dma_cache[dma_key]
-        else:
-            assert(self.dma_counter < 4)
-            dmaType = DMA_TYPE[f"MVIN{self.dma_counter}"]
-            self.dma_counter += 1
-            dmaType = self.get_const_cse(dmaType)
-            stride = self.get_const_cse(stride)
-            chunk = self.get_const_cse(chunk)
-            self.dma_cache[dma_key] = dmaType, stride, chunk
-        tag_var = self.get_tag_cse(f"{name}_tag")
-        zero_var = self.get_const_cse(0)
-        code = f"affine.dma_start %{var}[{prefix}{indices}], %{buffer}[%{zero_var}, %{zero_var}], %{tag_var}[0], %{dmaType}, %{stride}, %{chunk} : memref<{self.buffer_types[name][1]}x{type_name}>, memref<{dram_tile_shape}x{type_name}, 1>, memref<1xi32> {{padding = {padding}}}"
+        code = self.get_dma_code("MVIN", stride, chunk, mlir_dtype, dram_var, index_var, sram_var, f"{name}_tag", self.buffer_types[name][1], tile_shape)
         self.cse.generate(self.loads, code, assignment = False) # FIXME: assignment = False does not support caching
 
+        # Generate vector load instruction
         operation = "affine.vector_load" if tile_size_per_lane > 1 else "affine.load"
-        shape = f", vector<{tile_size_per_lane}x{type_name}>" if tile_size_per_lane > 1 else ""
-        line = f"{operation} %{buffer}[0, 0] : memref<{dram_tile_shape}x{type_name}, 1>{shape}"
+        shape = f", vector<{tile_size_per_lane}x{mlir_dtype}>" if tile_size_per_lane > 1 else ""
+        line = f"{operation} %{sram_var}[0, 0] : memref<{tile_shape}x{mlir_dtype}, 1>{shape}"
         out = self.cse.generate(self.loads, line)
-        var_info = [tile_size_per_lane, mlir_common.DTYPE_TO_MLIR[dtype]]
-        self.register_var_info(out, var_info)
+        self.register_var_info(out, [tile_size_per_lane, mlir_dtype])
         return out
 
     def store(self, name: str, index: sympy.Expr, value, *args, **kwargs):
         index = self.rename_indexing(index)
-        indices = self.parse_indices(index)
-        prefix = self.newvar_prefix
-        var = self.args.output(name)
+        index_var = self.parse_indices(index)
+        dram_var = self.args.output(name)
         dtype = V.graph.get_dtype(name)
-        type_name = mlir_common.DTYPE_TO_MLIR[dtype]
+        mlir_dtype = mlir_common.DTYPE_TO_MLIR[dtype]
         stride, chunk, tile_shape, tile_size_per_lane = self.get_dma_info(name, index, dtype)
-        dram_tile_shape = f"{tile_shape[0]}x{tile_shape[1]}"
+        tile_shape = f"{tile_shape[0]}x{tile_shape[1]}"
 
         # Define scratch pad buffer
-        buffer, indices = self.get_scratchpad_buffer(dtype, name, self.tile_desc.n_row, self.tile_desc.n_col, dram_tile_shape, self.stores, indices, index)
+        sram_var, index_var = self.get_scratchpad_buffer(dtype, name, self.tile_desc.n_row, self.tile_desc.n_col, tile_shape, self.stores, index_var, index)
 
-        # MVOUT Encoding
-        dmaType = 3 # MVIN 2, MVIN2 1, MVIN3 14, MVOUT 3
-        dmaType = self.get_const_cse(dmaType)
-        stride = self.get_const_cse(stride)
-        chunk = self.get_const_cse(chunk)
-
+        # Generate vector store instruction
         store_size, operand_type = self.var_info[value]
         operation = "affine.vector_store" if tile_size_per_lane > 1 and store_size > 1 else "affine.store"
-        shape = f", vector<{tile_size_per_lane}x{type_name}>" if tile_size_per_lane > 1 and store_size > 1 else ""
-        if type_name != operand_type:
-            value = ops.custom_cast(value, type_name, var_info=self.var_info)
+        shape = f", vector<{tile_size_per_lane}x{mlir_dtype}>" if tile_size_per_lane > 1 and store_size > 1 else ""
+        if mlir_dtype != operand_type:
+            value = ops.to_dtype(value, mlir_dtype, var_info=self.var_info)
 
-        line = f"{operation} %{value}, %{buffer}[0, 0] : memref<{dram_tile_shape}x{type_name}, 1>{shape}"
+        line = f"{operation} %{value}, %{sram_var}[0, 0] : memref<{tile_shape}x{mlir_dtype}, 1>{shape}"
         self.cse.generate(self.stores, line, assignment = False)
-        tag_var = self.get_tag_cse(f"{name}_tag")
-        zero_var = self.get_const_cse(0)
-        code = f"affine.dma_start %{buffer}[%{zero_var}, %{zero_var}], %{var}[{prefix}{indices}], %{tag_var}[0], %{dmaType}, %{stride}, %{chunk} : memref<{dram_tile_shape}x{type_name}, 1>, memref<{self.buffer_types[name][1]}x{type_name}>, memref<1xi32>"
+
+        # Generate DMA instruction
+        code = self.get_dma_code("MVOUT", stride, chunk, mlir_dtype, dram_var, index_var, sram_var, f"{name}_tag", self.buffer_types[name][1], tile_shape)
         self.cse.generate(self.stores, code, assignment = False)
 
     def reduction(self, dtype, src_dtype, reduction_type, value):
@@ -846,24 +824,25 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         return acc
 
     def store_reduction(self, name, index, value):
-        var = self.args.output(name)
+        dram_var = self.args.output(name)
         dtype = V.graph.get_dtype(name)
-        type_name = mlir_common.DTYPE_TO_MLIR[dtype]
+        mlir_dtype = mlir_common.DTYPE_TO_MLIR[dtype]
         index = self.rename_indexing(index)
-        indices = self.parse_indices(index)
+        index_var = self.parse_indices(index)
+
         # Tile is always reuduced in inner loop
         tile_col = self.tile_desc.n_row
         tile_row = 1
         dram_tile_shape = f"{tile_row}x{tile_col}"
-        buffer, indices = self.get_scratchpad_buffer(dtype, name, tile_row, tile_col, dram_tile_shape, self.reductions_suffix, indices, index)
+        sram_var, index_var = self.get_scratchpad_buffer(dtype, name, tile_row, tile_col, dram_tile_shape, self.reductions_suffix, index_var, index)
         if self.welford_reduce_out is not None:
             # raise NotImplementedError()
             sum, sqr_sum, _ = self.welford_reduce_out
-            shape = f"vector<{self.tile_desc.get_rows_per_lane()}x{type_name}>" if self.buffer_types[name][1] > 1 else type_name
+            shape = f"vector<{self.tile_desc.get_rows_per_lane()}x{mlir_dtype}>" if self.buffer_types[name][1] > 1 else mlir_dtype
             # mean
             divider = self.cse.generate(self.reductions_suffix, f"arith.constant {float(self.ranges[self.reduction_depth])} : f32")
             if self.buffer_types[name][1] > 1:
-                divider_vec = self.cse.generate(self.reductions_suffix, f"vector.broadcast %{divider} : f32 to vector<{self.var_info[sum][0]}x{type_name}>")
+                divider_vec = self.cse.generate(self.reductions_suffix, f"vector.broadcast %{divider} : f32 to vector<{self.var_info[sum][0]}x{mlir_dtype}>")
             else:
                 divider_vec = f"f{self.buffer_types[name][1]}"
             mean = self.cse.generate(self.reductions_suffix, f"arith.divf %{sum}, %{divider_vec} : {shape}")
@@ -889,25 +868,20 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         if self.tile_desc.get_rows_per_lane() == 1:
             shape = ""
         else:
-            shape = f"vector<{self.tile_desc.get_rows_per_lane()}x{type_name}>"
+            shape = f"vector<{self.tile_desc.get_rows_per_lane()}x{mlir_dtype}>"
             shape = f", {shape}" if self.buffer_types[name][1] > 1 else ""
-        line = f"{operation} %{value}, %{buffer}[0, 0] : memref<{tile_row}x{tile_col}x{type_name}, 1>{shape}"
+        line = f"{operation} %{value}, %{sram_var}[0, 0] : memref<{tile_row}x{tile_col}x{mlir_dtype}, 1>{shape}"
         self.cse.generate(self.reductions_suffix, line, assignment = False)
 
         # MVOUT Encoding
-        dmaType = 3 # MVIN 2, MVIN2 1, MVIN3 14, MVOUT 3
         mm_stride = tile_col
         is_col_major = mlir_common.MLIRTile.TILE_PER_LANE_ROW_WISE
         chunk_size = self.tile_desc.get_rows_per_lane()
         chunk = chunk_size << 1 | (is_col_major == mlir_common.MLIRTile.TILE_PER_LANE_COL_WISE)
-        dmaType = self.get_const_cse(dmaType)
-        mm_stride = self.get_const_cse(mm_stride)
-        chunk = self.get_const_cse(chunk)
 
+        # Generate DMA instruction
         # Change row, col
-        tag_var = self.get_tag_cse(f"{name}_tag")
-        zero_var = self.get_const_cse(0)
-        code = f"affine.dma_start %{buffer}[%{zero_var}, %{zero_var}], %{var}[%{indices}], %{tag_var}[0], %{dmaType}, %{mm_stride}, %{chunk} : memref<{tile_row}x{tile_col}x{type_name}, 1>, memref<{self.buffer_types[name][1]}x{type_name}>, memref<1xi32>"
+        code = self.get_dma_code("MVOUT", mm_stride, chunk, mlir_dtype, dram_var, index_var, sram_var, f"{name}_tag", self.buffer_types[name][1], f"{tile_row}x{tile_col}")
         self.cse.generate(self.reductions_suffix, code, assignment = False)
 
     def codegen_body(self):

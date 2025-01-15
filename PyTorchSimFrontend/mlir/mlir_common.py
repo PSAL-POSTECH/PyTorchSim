@@ -277,9 +277,6 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
     def codegen_loops(self):
         raise NotImplementedError()
 
-    def codegen_init(self):
-        raise NotImplementedError()
-
     def call_kernel(self, kernel_name):
         wrapper = V.graph.wrapper_code
         _, call_args, _, _ = self.kernel_group.args.mlir_argdefs()
@@ -322,7 +319,6 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
             for old, new in self.kernel_group.args.aliases():
                 code.writeline(f"auto {old} = {new};")
             # Loop body part
-            code.splice(self.codegen_init())
             code.splice(self.codegen_loops())
         return code
 

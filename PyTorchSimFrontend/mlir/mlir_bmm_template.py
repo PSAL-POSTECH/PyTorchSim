@@ -35,6 +35,7 @@ func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[X, W, Bias], outputs=[Y]
   %Y_buffer = memref.get_global @Y_spad : memref<{{ TILE_M }}x{{ TILE_N }}xf32, 1>
   %tag = memref.alloc() : memref<1xi32>
   %v0 = arith.constant dense<0.0> : vector<{{ TILE_M * TILE_N // kernel.vector_lane }}xf32>
+  {{- kernel.def_local_vars() }}
 
   affine.for %b=0 to {{ B }} {
     affine.for %t_m = 0 to {{ M }} step {{ TILE_M }} {

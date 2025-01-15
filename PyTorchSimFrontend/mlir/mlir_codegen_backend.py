@@ -620,6 +620,8 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
 
     def __init__(self):
         super().__init__(mlir_common.MLIRKernelArgs())
+        self.const_buffer = IndentedBuffer()
+        self.alloc_buffer = IndentedBuffer()
         self.reduction_prefix = IndentedBuffer()
         self.reduction_suffix = IndentedBuffer()
         self.body = IndentedBuffer()
@@ -632,16 +634,17 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         self.iterator_cse = common.CSE(self.newvar_prefix, self.suffix, name_prefix="iter")
         self.init_cse = common.CSE(self.newvar_prefix, self.suffix, name_prefix="init")
         self.init_vec_cse = common.CSE(self.newvar_prefix, self.suffix, name_prefix="init_vec")
+        self.const_cse = common.CSE(self.newvar_prefix, self.suffix, name_prefix="const")
+        self.alloc_cse = common.CSE(self.newvar_prefix, self.suffix, name_prefix="alloc")
         self.map_cse = common.CSE("#", self.suffix, name_prefix="map")
-        self.consts = set()
-        self.tags = set()
+        self.consts = dict()
+        self.tags = dict()
         self.dma_cache = {}
         self.dma_counter = 1
         self.affine_yield = {}
         self.welford_reduce_out = None
         self.reduce_iterator = {}
         self.is_template_kernel = False
-
     def set_ranges(self, lengths, reduction_lengths, read_writes):
         ret = super().set_ranges(lengths, reduction_lengths, read_writes)
 
@@ -658,7 +661,12 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
                     return 1
         return 0
 
-    def parse_indices(self, expr):
+    def parse_indices(self, expr) -> common.CSEVariable:
+        # Constant case
+        if expr.is_number:
+            return self.get_const_cse(int(expr))
+
+        # Identity case
         if len(expr.args) == 0:
             return expr
 
@@ -670,9 +678,11 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
             indices[index] = None
         indices = list(indices.keys())
 
-        args = ", ".join(map(str, indices))
+        # Extract // pattern
         if "//" in expr_str:
             expr_str = expr_str.replace("//", " floordiv ")
+
+        # Extract modular pattern
         pattern = r"ModularIndexing\((.*?)\)"
         matches = re.search(pattern, expr_str)
         if matches:
@@ -681,6 +691,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
             replace_str = f"({args_list[0]} floordiv {args_list[1]}) mod {args_list[2]}"
             expr_str = re.sub(r"ModularIndexing\([^)]*\)", replace_str, expr_str)
 
+        args = ", ".join(map(str, indices))
         map_var = self.map_cse.generate(self.global_vars, f"affine_map<({args}) -> ({expr_str})>")
         args = ", ".join([f"%{i}" for i in indices])
         index = self.cse.generate(self.loads, f"affine.apply #{map_var}({args})")
@@ -691,9 +702,6 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         indices = self.parse_indices(index)
         padding = self.get_padding_type()
         prefix = self.newvar_prefix
-        if index.is_number:
-            prefix = prefix + "c"
-            self.consts.add(int(index))
         var = self.args.input(name)
         dtype = V.graph.get_dtype(name)
         type_name = mlir_common.DTYPE_TO_MLIR[dtype]
@@ -710,13 +718,13 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
             assert(self.dma_counter < 4)
             dmaType = DMA_TYPE[f"MVIN{self.dma_counter}"]
             self.dma_counter += 1
-            self.consts.add(dmaType)
-            self.consts.add(stride)
-            self.consts.add(chunk)
+            dmaType = self.get_const_cse(dmaType)
+            stride = self.get_const_cse(stride)
+            chunk = self.get_const_cse(chunk)
             self.dma_cache[dma_key] = dmaType, stride, chunk
-        self.tags.add(f"{name}_tag")
-        self.consts.add(0)
-        code = f"affine.dma_start %{var}[{prefix}{indices}], %{buffer}[%c0, %c0], %{name}_tag[0], %c{dmaType}, %c{stride}, %c{chunk} : memref<{self.buffer_types[name][1]}x{type_name}>, memref<{dram_tile_shape}x{type_name}, 1>, memref<1xi32> {{padding = {padding}}}"
+        tag_var = self.get_tag_cse(f"{name}_tag")
+        zero_var = self.get_const_cse(0)
+        code = f"affine.dma_start %{var}[{prefix}{indices}], %{buffer}[%{zero_var}, %{zero_var}], %{tag_var}[0], %{dmaType}, %{stride}, %{chunk} : memref<{self.buffer_types[name][1]}x{type_name}>, memref<{dram_tile_shape}x{type_name}, 1>, memref<1xi32> {{padding = {padding}}}"
         self.cse.generate(self.loads, code, assignment = False) # FIXME: assignment = False does not support caching
 
         operation = "affine.vector_load" if tile_size_per_lane > 1 else "affine.load"
@@ -731,9 +739,6 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         index = self.rename_indexing(index)
         indices = self.parse_indices(index)
         prefix = self.newvar_prefix
-        if index.is_number:
-            prefix = prefix + "c"
-            self.consts.add(int(index))
         var = self.args.output(name)
         dtype = V.graph.get_dtype(name)
         type_name = mlir_common.DTYPE_TO_MLIR[dtype]
@@ -745,9 +750,9 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
 
         # MVOUT Encoding
         dmaType = 3 # MVIN 2, MVIN2 1, MVIN3 14, MVOUT 3
-        self.consts.add(dmaType)
-        self.consts.add(stride)
-        self.consts.add(chunk)
+        dmaType = self.get_const_cse(dmaType)
+        stride = self.get_const_cse(stride)
+        chunk = self.get_const_cse(chunk)
 
         store_size, operand_type = self.var_info[value]
         operation = "affine.vector_store" if tile_size_per_lane > 1 and store_size > 1 else "affine.store"
@@ -757,9 +762,9 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
 
         line = f"{operation} %{value}, %{buffer}[0, 0] : memref<{dram_tile_shape}x{type_name}, 1>{shape}"
         self.cse.generate(self.stores, line, assignment = False)
-        self.consts.add(0)
-        self.tags.add(f"{name}_tag")
-        code = f"affine.dma_start %{buffer}[%c0, %c0], %{var}[{prefix}{indices}], %{name}_tag[0], %c{dmaType}, %c{stride}, %c{chunk} : memref<{dram_tile_shape}x{type_name}, 1>, memref<{self.buffer_types[name][1]}x{type_name}>, memref<1xi32>"
+        tag_var = self.get_tag_cse(f"{name}_tag")
+        zero_var = self.get_const_cse(0)
+        code = f"affine.dma_start %{buffer}[%{zero_var}, %{zero_var}], %{var}[{prefix}{indices}], %{tag_var}[0], %{dmaType}, %{stride}, %{chunk} : memref<{dram_tile_shape}x{type_name}, 1>, memref<{self.buffer_types[name][1]}x{type_name}>, memref<1xi32>"
         self.cse.generate(self.stores, code, assignment = False)
 
     def reduction(self, dtype, src_dtype, reduction_type, value):
@@ -842,10 +847,6 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         type_name = mlir_common.DTYPE_TO_MLIR[dtype]
         index = self.rename_indexing(index)
         indices = self.parse_indices(index)
-        prefix = self.newvar_prefix
-        if index.is_number:
-            prefix = prefix + "c"
-            self.consts.add(int(index))
         # Tile is always reuduced in inner loop
         tile_col = self.tile_desc.n_row
         tile_row = 1
@@ -895,25 +896,25 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         is_col_major = mlir_common.MLIRTile.TILE_PER_LANE_ROW_WISE
         chunk_size = self.tile_desc.get_rows_per_lane()
         chunk = chunk_size << 1 | (is_col_major == mlir_common.MLIRTile.TILE_PER_LANE_COL_WISE)
-        self.consts.add(dmaType)
-        self.consts.add(mm_stride)
-        self.consts.add(chunk)
-        self.tags.add(f"{name}_tag")
+        dmaType = self.get_const_cse(dmaType)
+        mm_stride = self.get_const_cse(mm_stride)
+        chunk = self.get_const_cse(chunk)
+
         # Change row, col
-        self.consts.add(0)
-        code = f"affine.dma_start %{buffer}[%c0, %c0], %{var}[{prefix}{indices}], %{name}_tag[0], %c{dmaType}, %c{mm_stride}, %c{chunk} : memref<{tile_row}x{tile_col}x{type_name}, 1>, memref<{self.buffer_types[name][1]}x{type_name}>, memref<1xi32>"
+        tag_var = self.get_tag_cse(f"{name}_tag")
+        zero_var = self.get_const_cse(0)
+        code = f"affine.dma_start %{buffer}[%{zero_var}, %{zero_var}], %{var}[%{indices}], %{tag_var}[0], %{dmaType}, %{mm_stride}, %{chunk} : memref<{tile_row}x{tile_col}x{type_name}, 1>, memref<{self.buffer_types[name][1]}x{type_name}>, memref<1xi32>"
         self.cse.generate(self.reductions_suffix, code, assignment = False)
 
     def codegen_body(self):
         def template_store(options):
             subtile_size = [self.vector_lane, self.vector_lane]
             async_flag = 1
-            self.consts.add(0)
-            line = f"affine.dma_start %Y_buffer[%c0, %c0], %Y[%index2], %tag[0], %c_mvout, %N, %c_set"\
+            zero_var = self.get_const_cse(0)
+            line = f"affine.dma_start %Y_buffer[%{zero_var}, %{zero_var}], %Y[%index2], %tag[0], %c_mvout, %N, %c_set"\
                    f": memref<{options['TILE_M']}x{options['TILE_N']}xf32, 1>,"\
                    f"memref<{options['M'] * options['N']}xf32>, memref<1xi32>" #FIXME: Using constant index
             self.cse.generate(self.stores, line, assignment = False)
-        self.body.splice(self.codegen_init('e_'))
         self.body.splice(self.loads)
         self.body.splice(self.compute)
         if len(self.stores._lines) == 0:
@@ -925,16 +926,6 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
 
     def codegen_global_init(self):
         return self.global_vars
-
-    def codegen_init(self, prefix=""):
-        code = IndentedBuffer()
-        tags = sorted(self.tags)
-        consts = sorted(self.consts)
-        for tag in tags:
-            code.writeline(f"%{prefix}{tag} = memref.alloc() : memref<1xi32>")
-        for const in consts:
-            code.writeline(f"%{prefix}c{const} = arith.constant {const} : index")
-        return code
 
     def codegen_loops(self):
         code = mlir_common.ParallelLoopBuffer()
@@ -952,6 +943,9 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
             vars = ', '.join([f"%{name}" for name, _ in self.affine_yield.items()])
             reduced_shapes = ', '.join([f"{shape}" for _, shape in self.affine_yield.items()])
             self.stores.writeline(f"affine.yield {vars} : {reduced_shapes}")
+
+        code.splice(self.const_buffer)
+        code.splice(self.alloc_buffer)
         with contextlib.ExitStack() as stack:
             for loop in loops.loops:
                 loop_lines = loop.lines()
@@ -978,7 +972,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
     def codegen_nodes(self, nodes, kernel_name):
         src_code = super().codegen_nodes(nodes, kernel_name)
 
-        # Create extra header for simulatoors
+        # Create extra headers for simulators
         write_path = extension_codecache.get_write_path(src_code)
         if not os.path.exists(write_path):
             os.makedirs(write_path)
@@ -1174,6 +1168,16 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
             new_name = f"{name}_{self.global_vars_dict[name].index(str(raw_index))}"
         buffer = self.cse.generate(code_buffer, f"memref.get_global @{new_name}_spad : memref<{dram_tile_shape}x{mlir_type}, 1>")
         return buffer, indices
+
+    def get_const_cse(self, value) -> common.CSEVariable:
+        if value not in self.consts:
+            self.consts[value] = self.const_cse.generate(self.const_buffer, f"arith.constant {value} : index")
+        return self.consts[value]
+
+    def get_tag_cse(self, value, shape="memref<1xi32>"):
+        if value not in self.tags:
+            self.tags[value] = self.alloc_cse.generate(self.alloc_buffer, f"memref.alloc() : {shape}")
+        return self.tags[value]
 
 @dataclasses.dataclass
 class LoopLevel:

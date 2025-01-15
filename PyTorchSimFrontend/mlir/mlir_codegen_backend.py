@@ -226,11 +226,20 @@ class ExtensionOverrides(common.OpOverrides):
             raise NotImplementedError("floating point to integer conversion")
         if dst_mlir_dtype[0] == "f" and src_mlir_dtype[0] == "i":
             raise NotImplementedError("integer to floating point conversion")
-        else:
+        if dst_mlir_dtype[0] == "i":
             if dst_bits > src_bits:
-                return f"arith.extui %{operand} : {src_shape} to {shape}"
+                return f"arith.extui %{operand} : {src_shape} to {shape}", [tile_size, dst_mlir_dtype]
             elif dst_bits < src_bits:
-                return f"arith.trunc %{operand} : {src_shape} to {shape}"
+                return f"arith.trunc %{operand} : {src_shape} to {shape}", [tile_size, dst_mlir_dtype]
+            return f"arith.maximumi %{operand}, %{operand} : {shape}", [tile_size, dst_mlir_dtype]
+        elif dst_mlir_dtype[0] == "f":
+            if dst_bits > src_bits:
+                return f"arith.extf %{operand} : {src_shape} to {shape}", [tile_size, dst_mlir_dtype]
+            elif dst_bits < src_bits:
+                return f"arith.trunf %{operand} : {src_shape} to {shape}", [tile_size, dst_mlir_dtype]
+            return f"arith.maximumf %{operand}, %{operand} : {shape}", [tile_size, dst_mlir_dtype]
+        else:
+            raise NotImplementedError("Unsupported type for to_dtype ops")
 
     @staticmethod
     def constant(value, src_type, *args, var_info=None):
@@ -602,7 +611,7 @@ DMA_TYPE = {
     "MVIN1": 2,
     "MVIN2": 1,
     "MVIN3": 14,
-    "MVOUT": 3,
+    "MVOUT1": 3,
 }
 
 class MLIRKernel(mlir_common.BaseMLIRKernel):

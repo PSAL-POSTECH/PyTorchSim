@@ -1,5 +1,6 @@
 import os
 import math
+from sympy import divisors, Range
 from typing import List, Optional, cast
 
 from PyTorchSimFrontend.mlir.mlir_common import MLIRKernelArgs
@@ -14,15 +15,49 @@ from torch._inductor.codecache import get_hash
 from PyTorchSimFrontend import extension_config
 
 GEMM_TEMPLATE = r"""
+%map1 = affine_map<(d0, d1, d2, d3) -> ()>
+memref.global @X_spad : memref<{{ TILE_M }}x{{ TILE_K }}xf32, 1>
+memref.global @W_spad : memref<{{ TILE_K }}x{{ TILE_N }}xf32, 1>
+memref.global @Y_spad : memref<{{ TILE_M }}x{{ TILE_N }}xf32, 1>
+
 func.func @{{ KERNEL_NAME }}({{ KERNEL_DEF }}) {
+  %c_mvin = arith.constant 2 : index
+  %c_mvin2 = arith.constant 1 : index
+  %c_mvin3 = arith.constant 14 : index
+  %c_mvout = arith.constant 3 : index
+  %c_set = arith.constant 2 : index
+  %c0 = arith.constant 0 : index
+
+  // 1x1 convolution loop
+  affine.for %k_h = 0 to {{ K_H }} {
+    affine.for %k_w = 0 to {{ K_W }} {
+      // 1x1 convolution tiling loop
+        affine.for %tile_m = 0 to {{ M * N }} step {{ TILE_M }} {
+          affine.for %tile_n = 0 to {{ O_C }} step {{ TILE_N }} {
+            %index2 = affine.apply #map1(%k_h, %k_w, %tile_m, %tile_n)
+            affine.for %tile_k = 0 to {{ I_C }} step {{ TILE_K }} {
+            
+            }
+          }
+        }
+      }
+  } { outer_loop=true }
   return
 }
 """
 
-
 CONV2D_FUNC_TEMPLATE = r"""
 def {{ FUNC_NAME }}({{ INPUT }}, {{ WEIGHT }}, {{ OUT }}):
-    {{ KERNEL_NAME }}({{ INPUT }}, {{ WEIGHT }}, {{ OUT }})
+    # Tanspose tensors
+    t_{{ INPUT }} = {{ INPUT }}.permute(0, 2, 3, 1)
+    t_{{ WEIGHT }} = {{ WEIGHT }}.permute(0, 2, 3, 1)
+    t_{{ OUT }} = {{ OUT }}.permute(0, 2, 3, 1)
+
+    {{ KERNEL_NAME }}(t_{{ INPUT }}, t_{{ WEIGHT }}, t_{{ OUT }})
+
+    # Transpose back
+    {{ OUT }} = t_{{ OUT }}.permute(0, 3, 1, 2)
+
     print("Print OUTPUT ")
     print("out > ")
     print({{ OUT }}.shape)
@@ -79,6 +114,20 @@ class MLIRConvTemplate(MLIRTemplate):
         output_size = flatten(Y.layout.size)
         return f"%X: memref<{input_size}xf32>, %W: memref<{weight_size}xf32>, %Y: memref<{output_size}xf32>"
 
+    def get_tile_option(self):
+        I_C, H, W = self.input_nodes[0].layout.size[1], self.input_nodes[0].layout.size[2], self.input_nodes[0].layout.size[3]
+        O_C = self.input_nodes[1].layout.size[0]
+        
+        tile_k_options = divisors(I_C)
+        tile_n_options = divisors(O_C)
+
+        H_divisors = divisors(H)
+        H_multiples = list(Range(H, H * W, H))
+        tile_m_options = sorted(set(H_divisors) | set(H_multiples))
+        
+        return tile_m_options, tile_n_options, tile_k_options
+        
+
     def render(self,
                kernel: MLIRTemplateKernel,
                template_buffer_node = None,
@@ -97,23 +146,47 @@ class MLIRConvTemplate(MLIRTemplate):
         M = self.gemm_input_shape[2] * self.gemm_input_shape[3]
         N = self.gemm_weight_shape[0]
         K = self.gemm_weight_shape[1]
-        TILE_M, TILE_N, TILE_K = kernel.gemm_combination_mapping(M, N, K)
+        # TILE_M, TILE_N, TILE_K = kernel.gemm_combination_mapping(M, N, K)
+        # kernel.tile_size = [TILE_M, TILE_N, TILE_K]
+        # kernel.loop_size = [M, N, K]
+
+        tile_m_options, tile_n_options, tile_k_options = self.get_tile_option()
+        print("tile_m_options: ", tile_m_options)
+        print("tile_n_options: ", tile_n_options)
+        print("tile_k_options: ", tile_k_options)
+
+        TILE_M = tile_m_options[3]
+        TILE_N = tile_n_options[3]
+        TILE_K = tile_k_options[3]
+
         kernel.tile_size = [TILE_M, TILE_N, TILE_K]
         kernel.loop_size = [M, N, K]
 
-        W_transposed = self.is_transposed(W)
-        X_transposed = self.is_transposed(X)
+        # W_transposed = self.is_transposed(W)
+        # X_transposed = self.is_transposed(X)
 
         options = dict(
             KERNEL_NAME=self.name,
             KERNEL_DEF=self.def_kernel(),
             kernel=kernel,
+            I_C=X.layout.size[1],
+            I_H=X.layout.size[2],
+            I_W=X.layout.size[3],
+            O_C=W.layout.size[0],
+            K_H=W.layout.size[2],
+            K_W=W.layout.size[3],
             M=M,
             N=N,
             K=K,
             TILE_M=TILE_M,
             TILE_N=TILE_N,
             TILE_K=TILE_K,
+            PADDING_H=self.padding[0],
+            PADDING_W=self.padding[1],
+            STRIDE_H=self.stride[0],
+            STRIDE_W=self.stride[1],
+            DILATION_H=self.dilation[0],
+            DILATION_W=self.dilation[1],
             DATA_STYPE="f32",
             DATA_SIZE=4,
         )
@@ -138,12 +211,6 @@ class MLIRConvTemplate(MLIRTemplate):
             INPUT=input_args[0],
             WEIGHT=input_args[1],
             OUT=input_args[3] if len(input_args) == 4 else input_args[2],
-            PADDING_H=self.padding[0],
-            PADDING_W=self.padding[1],
-            STRIDE_H=self.stride[0],
-            STRIDE_W=self.stride[1],
-            DILATION_H=self.dilation[0],
-            DILATION_W=self.dilation[1],
             VALIDATION_MODE=extension_config.CONFIG_TORCHSIM_VALIDATION_MODE,
             BACKENDSIM_EAGER_MODE=extension_config.CONFIG_BACKENDSIM_EAGER_MODE,
             HASH_VALUE=self.hash_value

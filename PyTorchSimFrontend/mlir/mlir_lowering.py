@@ -9,7 +9,6 @@ from torch._inductor.ir import TensorBox
 from PyTorchSimFrontend.mlir.mlir_gemm_template import MLIRGemmTemplate
 from PyTorchSimFrontend.mlir.mlir_bmm_template import MLIRBMMTemplate
 from PyTorchSimFrontend.mlir.mlir_conv_template import MLIRConvTemplate
-from PyTorchSimFrontend.mlir.mlir_new_conv_template import MLIRConvTemplate
 from PyTorchSimFrontend.mlir.mlir_maxpool_template import MLIRMaxPoolTemplate
 
 aten = torch.ops.aten

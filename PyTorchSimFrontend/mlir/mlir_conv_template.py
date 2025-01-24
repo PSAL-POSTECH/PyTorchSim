@@ -1,5 +1,6 @@
 import os
 import math
+from sympy import divisors, Range
 from typing import List, Optional, cast
 
 from PyTorchSimFrontend.mlir.mlir_common import MLIRKernelArgs
@@ -13,110 +14,146 @@ import PyTorchSimFrontend.extension_codecache as extension_codecache
 from torch._inductor.codecache import get_hash
 from PyTorchSimFrontend import extension_config
 
+
+# %tmp_i_h = arith.muli %o_h, %stride_h : index
+# %index_i_h = arith.addi %tmp_i_h, %k_h : index
+# %tmp_i_w = arith.muli %o_w, %stride_w : index
+# %index_i_w = arith.addi %tmp_i_w, %k_w : index
+# %tmp_k = arith.muli %k_h, %K_W : index
+# %index_k_hw = arith.addi %tmp_k, %k_w : index
+
 GEMM_TEMPLATE = r"""
-#map0 = affine_map<(d0, d1) -> (d0 * {{ K }} + d1)>
-#map1 = affine_map<(d0, d1) -> (d0 * {{ N }} + d1)>
-memref.global @X_spad : memref<{{ TILE_M }}x{{ TILE_K }}xf32, 1>
-memref.global @W_spad : memref<{{ TILE_K }}x{{ TILE_N }}xf32, 1>
-memref.global @B_spad : memref<{{ TILE_M }}x{{ TILE_N }}xf32, 1>
-memref.global @Y_spad : memref<{{ TILE_M }}x{{ TILE_N }}xf32, 1>
+// Conv2D kernel
+// BATCH = {{ BATCH }}
+// I_C = {{ I_C }}
+// I_H = {{ I_H }}
+// I_W = {{ I_W }}
+// O_C = {{ O_C }}
+// K_H = {{ K_H }}
+// K_W = {{ K_W }}
+// O_H = {{ O_H }}
+// O_W = {{ O_W }}
+// TILE_M = {{ TILE_M }}
+// TILE_N = {{ TILE_N }}
+// TILE_K = {{ TILE_K }}
+// TILE_M_PADDING = {{ TILE_M_PADDING }}
+// TILE_N_PADDING = {{ TILE_N_PADDING }}
+// TILE_K_PADDING = {{ TILE_K_PADDING }}
+// PADDING_H = {{ PADDING_H }}
+// PADDING_W = {{ PADDING_W }}
+// STRIDE_H = {{ STRIDE_H }}
+// STRIDE_W = {{ STRIDE_W }}
+// DILATION_H = {{ DILATION_H }}
+// DILATION_W = {{ DILATION_W }}
+// DATA_STYPE = {{ DATA_STYPE }}
+// DATA_SIZE = {{ DATA_SIZE }}
+
+#map0 = affine_map<(d0, d1, d2, d3) -> (d0 * {{ O_W * BATCH * O_C }} + d1 * {{ BATCH * O_C }} + d2 * {{ O_C }} + d3)> // output (O_H, O_W, BATCH, O_C)
+#map1 = affine_map<(d0, d1, d2, d3) -> (d0 * {{ I_W * BATCH * I_C }} + d1 * {{ BATCH * I_C }} + d2 * {{ I_C }} + d3)> // input (I_H, I_W, BATCH, I_C)
+#map2 = affine_map<(d0, d1, d2) -> (d0 * {{ I_C * O_C }} + d1 * {{ O_C }} + d2)> // weight (K_H * K_W, I_C, O_C)
+#map_I_H = affine_map<(d0, d1) -> (d0 * {{ STRIDE_H }} + d1)>
+#map_I_W = affine_map<(d0, d1) -> (d0 * {{ STRIDE_W }} + d1)>
+#map_K_HW = affine_map<(d0, d1) -> (d0 * {{ K_W }} + d1)>
+
+memref.global @X_spad : memref<{{TILE_M_PADDING }}x{{ TILE_K_PADDING }}xf32, 1>
+memref.global @W_spad : memref<{{ TILE_K_PADDING }}x{{ TILE_N_PADDING }}xf32, 1>
+memref.global @Y_spad : memref<{{ TILE_M_PADDING }}x{{ TILE_N_PADDING }}xf32, 1>
 
 func.func @{{ KERNEL_NAME }}({{ KERNEL_DEF }}) {
   %c_mvin = arith.constant 2 : index
   %c_mvin2 = arith.constant 1 : index
   %c_mvin3 = arith.constant 14 : index
   %c_mvout = arith.constant 3 : index
-  %c_set = arith.constant 2 : index
-  %c0 = arith.constant 0 : index
-
-  %N = arith.constant {{ N }} : index
-  %K = arith.constant {{ K }} : index
-  %X_buffer = memref.get_global @X_spad : memref<{{ TILE_M }}x{{ TILE_K }}xf32, 1>
-  %W_buffer = memref.get_global @W_spad : memref<{{ TILE_K }}x{{ TILE_N }}xf32, 1>
-  %Y_buffer = memref.get_global @Y_spad : memref<{{ TILE_M }}x{{ TILE_N }}xf32, 1>
+  %vstride = arith.constant 1 : index
+  %input_axis = arith.constant 3 : index
+  %weight_axis = arith.constant 2 : index
+  %X_buffer = memref.get_global @X_spad : memref<{{ TILE_M_PADDING }}x{{ TILE_K_PADDING }}xf32, 1>
+  %W_buffer = memref.get_global @W_spad : memref<{{ TILE_K_PADDING }}x{{ TILE_N_PADDING }}xf32, 1>
+  %Y_buffer = memref.get_global @Y_spad : memref<{{ TILE_M_PADDING }}x{{ TILE_N_PADDING }}xf32, 1>
   %tag = memref.alloc() : memref<1xi32>
-  {{- kernel.def_local_vars() }}
+  %v0 = arith.constant dense<0.0> : vector<{{ TILE_N_PADDING }}xf32>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c2 = arith.constant 2 : index
+  %K_W = arith.constant {{ K_W }} : index
+  %stride_h = arith.constant {{ STRIDE_H }} : index
+  %stride_w = arith.constant {{ STRIDE_W }} : index
 
-  affine.for %t_m = 0 to {{ M }} step {{ TILE_M }} {
-    affine.for %t_n = 0 to {{ N }} step {{ TILE_N }} {
-        %index2 = affine.apply #map1(%t_m, %t_n)
-        affine.dma_start %B[%index2], %Y_buffer[%c0, %c0], %tag[0], %c_mvin3, %N, %c_set : memref<{{ M * N }}xf32>, memref<{{ TILE_M }}x{{ TILE_N }}xf32, 1>, memref<1xi32> { subtile_size=[{{ kernel.vector_lane }}, {{ kernel.vector_lane }}], async=1 }
-        affine.for %t_k = 0 to {{ K }} step {{ TILE_K }} {
-            %index0 = affine.apply #map0(%t_m, %t_k)
-            %index1 = affine.apply #map1(%t_k, %t_n)
-            affine.dma_start %X[%index0], %X_buffer[%c0, %c0], %tag[0], %c_mvin, %K, %c_set : memref<{{ M * K }}xf32>, memref<{{ TILE_M }}x{{ TILE_K }}xf32, 1>, memref<1xi32> { subtile_size=[{{ kernel.vector_lane }}, {{ TILE_K }}], async=1 }
-            affine.dma_start %W[%index1], %W_buffer[%c0, %c0], %tag[0], %c_mvin2, %N, %c_set : memref<{{ K * N }}xf32>, memref<{{ TILE_K }}x{{ TILE_N }}xf32, 1>, memref<1xi32> { subtile_size=[{{ TILE_K }}, {{ kernel.vector_lane }}], async=1 }
-            linalg.matmul ins(%X_buffer, %W_buffer : memref<{{ TILE_M }}x{{ TILE_K }}x{{ DATA_STYPE }}, 1>, memref<{{ TILE_K }}x{{ TILE_N }}x{{ DATA_STYPE }}, 1>)
-                    outs(%Y_buffer : memref<{{ TILE_M }}x{{ TILE_N }}x{{ DATA_STYPE }}, 1>)
-        } { accumulation_loop=true }
-        affine.dma_start %Y_buffer[%c0, %c0], %Y[%index2], %tag[0], %c_mvout, %N, %c_set : memref<{{ TILE_M }}x{{ TILE_N }}xf32, 1>, memref<{{ M * N }}xf32>, memref<1xi32>  { async=1 }
+  // 1x1 convolution loop
+  affine.for %k_h = 0 to {{ K_H }} {
+    affine.for %k_w = 0 to {{ K_W }} {
+      // 1x1 convolution tiling loop
+      affine.for %o_h = 0 to {{ O_H }} {
+        affine.for %o_w = 0 to {{ O_W }} {
+          affine.for %tile_m = 0 to {{ BATCH }} step {{ TILE_M_PADDING }} {
+            affine.for %tile_n = 0 to {{ O_C }} step {{ TILE_N_PADDING }} {
+              // Init output matrix
+              %index0 = affine.apply #map0(%o_h, %o_w, %tile_m, %tile_n)
+              %cond_h = arith.cmpi eq, %k_h, %c0 : index
+              %cond_w = arith.cmpi eq, %k_w, %c0 : index
+              %cond_hw = arith.andi %cond_h, %cond_w : i1
+              scf.if %cond_hw {
+                {%- if BIAS %}
+                memref.dma_start %Bias[%tile_n], %Y_buffer[%c0, %c0], %c_mvin, %tag[%c0], %c0, %vstride
+                    : memref<{{ O_C }}xf32>, memref<{{ TILE_M_PADDING }}x{{ TILE_N_PADDING }}xf32, 1>, memref<1xi32> { async=1, sram_stride=[1, {{ TILE_M_PADDING }}]}
+                {%- else %}
+                affine.vector_store %v0, %Y_buffer[%c0, %c0] : memref<{{ TILE_M_PADDING }}x{{ TILE_N_PADDING }}xf32, 1>, vector<{{ TILE_N_PADDING }}xf32>
+                {%- endif %}
+              } else {
+                memref.dma_start %Y[%index0], %Y_buffer[%c0, %c0], %c_mvin, %tag[%c0], %input_axis, %vstride
+                    : memref<{{ BATCH * O_C * O_H * O_W }}xf32>, memref<{{ TILE_M_PADDING }}x{{ TILE_N_PADDING }}xf32, 1>, memref<1xi32> { padding=0, sram_stride=[1, {{ TILE_M_PADDING }}]}
+              }
+              affine.for %tile_k = 0 to {{ I_C }} step {{ TILE_K_PADDING }} {
+                %index_i_h = affine.apply #map_I_H(%o_h, %k_h)
+                %index_i_w = affine.apply #map_I_W(%o_w, %k_w)
+                %index1 = affine.apply #map1(%index_i_h, %index_i_w, %tile_m, %tile_k) // input index
+                %index_k_hw = affine.apply #map_K_HW(%k_h, %k_w)
+                %index2 = affine.apply #map2(%index_k_hw, %tile_k, %tile_n) // weight index
+                // Load input matrix
+                memref.dma_start %X[%index1], %X_buffer[%c0, %c0], %c_mvin, %tag[%c0], %input_axis, %vstride
+                    : memref<{{ BATCH * I_C * I_H * I_W }}xf32>, memref<{{ TILE_M_PADDING }}x{{ TILE_K_PADDING }}xf32, 1>, memref<1xi32> { subtile_size=[{{ kernel.vector_lane }}, {{ TILE_K_PADDING }}], async=1, sram_stride=[1, {{ TILE_M_PADDING }}]}
+                // Load kernel matrix
+                memref.dma_start %W[%index2], %W_buffer[%c0, %c0], %c_mvin, %tag[%c0], %weight_axis, %vstride
+                    : memref<{{ O_C * I_C * K_H * K_W }}xf32>, memref<{{ TILE_K_PADDING }}x{{ TILE_N_PADDING }}xf32, 1>, memref<1xi32> { subtile_size=[{{ TILE_K_PADDING }}, {{ kernel.vector_lane }}], async=1, sram_stride=[1, 1]}
+                // matmul
+                linalg.matmul ins(%X_buffer, %W_buffer : memref<{{ TILE_M_PADDING }}x{{ TILE_K_PADDING }}xf32, 1>, memref<{{ TILE_K_PADDING }}x{{ TILE_N_PADDING }}xf32, 1>)
+                      outs(%Y_buffer : memref<{{ TILE_M_PADDING }}x{{ TILE_N_PADDING }}xf32, 1>)
+              } { accumulation_loop=true }
+              // Store output matrix
+              memref.dma_start %Y_buffer[%c0, %c0], %Y[%index0], %c_mvout, %tag[%c0], %input_axis, %vstride
+                  : memref<{{ TILE_M_PADDING }}x{{ TILE_N_PADDING }}xf32, 1>, memref<{{ BATCH * O_C * O_H * O_W }}xf32>, memref<1xi32> {padding=0, sram_stride=[1, {{ TILE_M_PADDING }}]}
+            } { outer_loop=true }
+          } { outer_loop=true }
+        } { outer_loop=true }
+      } { outer_loop=true }
     } { outer_loop=true }
   } { outer_loop=true }
   return
 }
 """
 
-
 CONV2D_FUNC_TEMPLATE = r"""
-def {{ FUNC_NAME }}({{ INPUT }}, {{ WEIGHT }}{% if BIAS %}, {{ BIAS }}{% endif %}, {{ OUT }}):
-    {{ INPUT }}_cpu = {{ INPUT }}.cpu()
-    {{ WEIGHT }}_cpu = {{ WEIGHT }}.cpu(){% if BIAS %}
-    {{ BIAS }}_cpu = {{ BIAS }}.cpu(){% endif %}
-    {{ OUT }}_cpu = {{ OUT }}.cpu()
+def {{ FUNC_NAME }}({{ INPUT }}, {{ WEIGHT }}{% if BIAS %}, {{ BIAS }} {% endif %}, {{ OUT }}):
+    # Padding input
+    padded_shape = list({{ INPUT }}.shape)
+    padded_shape[2] += 2 * {{ PADDING_H }}
+    padded_shape[3] += 2 * {{ PADDING_W }}
+    {{ INPUT }}_padding = torch.zeros(padded_shape, device={{ INPUT }}.device)
+    {{ INPUT }}_padding[:, :, {{ PADDING_H }}:{{ INPUT }}.shape[2] + {{ PADDING_H }}, {{ PADDING_W }}:{{ INPUT }}.shape[3] + {{ PADDING_W }}] = {{ INPUT }}
 
-    # Torch support NCHW, so we need to transpose for now
-    {{ INPUT }}_cpu = {{ INPUT }}_cpu.permute(0, 2, 3, 1)
-    {{ WEIGHT }}_cpu = {{ WEIGHT }}_cpu.permute(0, 2, 3, 1)
-    {{ OUT }}_cpu = {{ OUT }}_cpu.permute(0, 2, 3, 1)
-    {{ OUT }}_cpu.zero_()
+    print(f"input_padding")
+    print({{ INPUT }}_padding.cpu())
 
-    input_shape = {{ INPUT }}_cpu.shape
-    weight_shape = {{ WEIGHT }}_cpu.shape
-    output_shape = {{ OUT }}_cpu.shape
-    {{ OUT }}_cpu = {{ OUT }}_cpu.reshape(-1, output_shape[3]).contiguous()
+    # Tanspose tensors
+    t_{{ INPUT }} = {{ INPUT }}_padding.permute(2, 3, 0, 1).contiguous() # (BATCH, I_C, I_H, I_W) -> (I_H, I_W, BATCH, I_C)
+    t_{{ WEIGHT }} = {{ WEIGHT }}.permute(2, 3, 1, 0).contiguous() # (O_C, I_C, K_H, K_W) -> (K_H, K_W, I_C, O_C)
+    t_{{ OUT }} = {{ OUT }}.permute(2, 3, 0, 1).contiguous() # (BATCH, O_C, O_H, O_W) -> (O_H, O_W, BATCH, O_C)
 
-    input_pad_shape = (input_shape[0], input_shape[1]+2*{{ PADDING_H }}, input_shape[2]+2*{{ PADDING_W }}, input_shape[3])
-    input_pad = torch.zeros(input_pad_shape)
+    {{ KERNEL_NAME }}(t_{{ INPUT }}, t_{{ WEIGHT }}{% if BIAS %}, {{ BIAS }} {% endif %}, t_{{ OUT }})
 
-    if {{ PADDING_H }} != 0 and {{ PADDING_W }} != 0:
-        input_pad[:, {{ PADDING_H }}:-{{ PADDING_H }}, {{ PADDING_W }}:-{{ PADDING_W }}, :] = {{ INPUT }}_cpu
-    elif {{ PADDING_H }} != 0:
-        input_pad[:, {{ PADDING_H }}:-{{ PADDING_H }}, :, :] = {{ INPUT }}_cpu
-    elif {{ PADDING_W }} != 0:
-        input_pad[:,:, {{ PADDING_W }}:-{{ PADDING_W }}, :] = {{ INPUT }}_cpu
-    else:
-        input_pad = {{ INPUT }}_cpu
-
-    {% if VALIDATION_MODE %}
-    {% endif %}
-
-    for kh in range(weight_shape[1]):
-        for kw in range(weight_shape[2]):
-            input_tile = input_pad[:, kh:input_pad_shape[1]-(weight_shape[1]-1)+kh, kw:input_pad_shape[2]-(weight_shape[2]-1)+kw, :]
-            input_tile = input_tile[:,::{{ STRIDE_H }},::{{ STRIDE_W }}, :]
-            kernel_tile = {{ WEIGHT }}_cpu[:, kh, kw, :].t()
-            input_tile = input_tile.reshape(-1, input_pad_shape[3])
-
-            {% if VALIDATION_MODE %}
-            if kh == 0 and kw == 0:
-                {{ KERNEL_NAME }}(input_tile, kernel_tile, {{ OUT }}_cpu, {{ OUT }}_cpu, intermediate_op=0b01)
-            elif kh == weight_shape[1]-1 and kw == weight_shape[2]-1:
-                {{ KERNEL_NAME }}(input_tile, kernel_tile, {{ OUT }}_cpu, {{ OUT }}_cpu, intermediate_op=0b10)
-            else:
-                {{ KERNEL_NAME }}(input_tile, kernel_tile, {{ OUT }}_cpu, {{ OUT }}_cpu, intermediate_op=0b11)
-            {% else %}
-            {{ KERNEL_NAME }}(input_tile, kernel_tile, {{ OUT }}_cpu, {{ OUT }}_cpu)  # input, weight, bias, out
-            {% endif %}
-            {% if BACKENDSIM_EAGER_MODE %}
-            yield ({{KERNEL_NAME}}, (input_tile, kernel_tile, {{ OUT }}_cpu, {{ OUT }}_cpu))
-            {% endif %}
-
-    {{ OUT }}_cpu = {{ OUT }}_cpu.reshape(output_shape)
-    {{ OUT }}_cpu = {{ OUT }}_cpu.permute(0, 3, 1, 2){% if BIAS %}
-    {{ OUT }}_cpu += {{ BIAS }}_cpu.reshape(-1, 1, 1) #TODO: BIAS should be added in the kernel{% endif %}
-    {{ OUT }}.copy_({{ OUT }}_cpu)
+    # Transpose back
+    {{ OUT }}.copy_(t_{{ OUT }}.permute(2, 3, 0, 1).contiguous()) # (O_H, O_W, BATCH, O_C) -> (BATCH, O_C, O_H, O_W)
 """
-
 
 class MLIRConvTemplate(MLIRTemplate):
     def __init__(self, input_nodes, layout, input_reorder=None, **kwargs):
@@ -129,7 +166,7 @@ class MLIRConvTemplate(MLIRTemplate):
             + "_".join([str(i) for i in self.stride]) \
             + "_" + "_".join([str(i) for i in self.padding]) \
             + "_" + "_".join([str(i) for i in self.dilation])
-        self.gemm_args = ['input', 'weight', 'bias', 'output']
+        self.gemm_args = ['X', 'W', 'Bias', 'Y']
 
         self.calculate_gemm_shape()
 
@@ -142,6 +179,7 @@ class MLIRConvTemplate(MLIRTemplate):
                   raise NotImplementedError("If the stride is not equal to the original stride, it should have been transposed.")
         return False
 
+    # Is this function necessary? (Find output node instead)
     def calculate_gemm_shape(self):
         input_shape = self.input_nodes[0].get_size()
         weight_shape = self.input_nodes[1].get_size()
@@ -152,11 +190,43 @@ class MLIRConvTemplate(MLIRTemplate):
         self.gemm_weight_shape = [weight_shape[0],weight_shape[1],1,1]
         self.gemm_output_shape = [self.gemm_input_shape[2]*self.gemm_input_shape[3], self.gemm_weight_shape[0]] # Consider Batch size 1
 
+
+    # Can use math.multi ?
     def def_kernel(self) ->str:
-        input_size = self.gemm_input_shape[1]*self.gemm_input_shape[2]*self.gemm_input_shape[3]
-        weight_size = self.gemm_weight_shape[0]*self.gemm_weight_shape[1]
-        output_size = self.gemm_output_shape[0]*self.gemm_output_shape[1]
-        return f"%X: memref<{input_size}xf32>, %W: memref<{weight_size}xf32>, %B: memref<{output_size}xf32>, %Y: memref<{output_size}xf32>"
+        X, W = self.input_nodes[0], self.input_nodes[1]
+        if len(self.input_nodes) == 3:
+          Bias = self.input_nodes[2]
+        else:
+          Bias = None
+
+        Y = self.output_node
+
+        def flatten(shape):
+            r = 1
+            for i in shape:
+                r *= i
+            return r
+
+        input_size = flatten(X.layout.size)
+        weight_size = flatten(W.layout.size)
+        if Bias is not None:
+          bias_size = flatten(Bias.layout.size)
+        output_size = flatten(Y.layout.size)
+
+        if Bias is None:
+          return f"%{self.gemm_args[0]}: memref<{input_size}xf32>, %{self.gemm_args[1]}: memref<{weight_size}xf32>, %{self.gemm_args[3]}: memref<{output_size}xf32>"
+        else:
+          return f"%{self.gemm_args[0]}: memref<{input_size}xf32>, %{self.gemm_args[1]}: memref<{weight_size}xf32>, %{self.gemm_args[2]}: memref<{bias_size}xf32>, %{self.gemm_args[3]}: memref<{output_size}xf32>"
+
+    def get_tile_options(self):
+        BATCH, I_C = self.input_nodes[0].layout.size[0], self.input_nodes[0].layout.size[1]
+        O_C = self.input_nodes[1].layout.size[0]
+
+        tile_m_options = divisors(BATCH)
+        tile_n_options = divisors(O_C)
+        tile_k_options = divisors(I_C)
+
+        return tile_m_options, tile_n_options, tile_k_options
 
     def render(self,
                kernel: MLIRTemplateKernel,
@@ -173,41 +243,70 @@ class MLIRConvTemplate(MLIRTemplate):
         Y = self.output_node
         Bias = None if len(self.input_nodes) == 2 else self.input_nodes[2]
 
-        M = self.gemm_input_shape[2] * self.gemm_input_shape[3]
-        N = self.gemm_weight_shape[0]
-        K = self.gemm_weight_shape[1]
-        TILE_M, TILE_N, TILE_K = kernel.gemm_combination_mapping(M, N, K)
-        kernel.loop_size = [M, N, K]
+        O_H = self.gemm_input_shape[2]
+        O_W = self.gemm_input_shape[3]
 
-        W_transposed = self.is_transposed(W)
-        X_transposed = self.is_transposed(X)
+        tile_m_options, tile_n_options, tile_k_options = self.get_tile_options()
+
+        TILE_M = tile_m_options[0]
+        TILE_N = tile_n_options[0]
+        TILE_K = tile_k_options[0]
+
+        BATCH = X.layout.size[0]
+        I_C = X.layout.size[1]
+        O_C = W.layout.size[0]
+        K_H = W.layout.size[2]
+        K_W = W.layout.size[3]
+
+        TILE_M_PADDING= int((TILE_M + kernel.vector_lane - 1) // kernel.vector_lane * kernel.vector_lane)
+        TILE_N_PADDING= int((TILE_N + kernel.vector_lane - 1) // kernel.vector_lane * kernel.vector_lane)
+        TILE_K_PADDING= int((TILE_K + kernel.vector_lane - 1) // kernel.vector_lane * kernel.vector_lane)
+
+        kernel.tile_size = [TILE_M_PADDING, TILE_N_PADDING, TILE_K_PADDING]
+        kernel.loop_size = [K_H, K_W, O_H, O_W, BATCH, O_C, I_C]
+
+        # W_transposed = self.is_transposed(W)
+        # X_transposed = self.is_transposed(X)
 
         options = dict(
             KERNEL_NAME=self.name,
             KERNEL_DEF=self.def_kernel(),
             kernel=kernel,
-            M=M,
-            N=N,
-            K=K,
+            BATCH=X.layout.size[0],
+            I_C=X.layout.size[1],
+            I_H=X.layout.size[2],
+            I_W=X.layout.size[3],
+            O_C=W.layout.size[0],
+            K_H=W.layout.size[2],
+            K_W=W.layout.size[3],
+            O_H=O_H,
+            O_W=O_W,
             TILE_M=TILE_M,
             TILE_N=TILE_N,
             TILE_K=TILE_K,
+            TILE_M_PADDING=TILE_M_PADDING,
+            TILE_N_PADDING=TILE_N_PADDING,
+            TILE_K_PADDING=TILE_K_PADDING,
+            PADDING_H=self.padding[0],
+            PADDING_W=self.padding[1],
+            STRIDE_H=self.stride[0],
+            STRIDE_W=self.stride[1],
+            DILATION_H=self.dilation[0],
+            DILATION_W=self.dilation[1],
             DATA_STYPE="f32",
             DATA_SIZE=4,
+            BIAS=Bias
         )
         code = self._template_from_string(GEMM_TEMPLATE).render(**options)
 
-        self.header = f"float X_spad[{TILE_M * TILE_K // kernel.vector_lane}] __attribute__ ((section(\".spad\")));\n"
-        self.header += f"float W_spad[{TILE_K * TILE_N // kernel.vector_lane}] __attribute__ ((section(\".spad\")));\n"
-        self.header += f"float Y_spad[{TILE_M * TILE_N // kernel.vector_lane}] __attribute__ ((section(\".spad\")));\n"
-        self.gem5_header = f"float X_spad[{TILE_M * TILE_K}] __attribute__ ((section(\".spad\")));\n"
-        self.gem5_header += f"float W_spad[{TILE_K * TILE_N}] __attribute__ ((section(\".spad\")));\n"
-        self.gem5_header += f"float Y_spad[{TILE_M * TILE_N}] __attribute__ ((section(\".spad\")));\n"
-        if Bias is not None:
-            self.header += f"float B_spad[{TILE_M * TILE_N // kernel.vector_lane}] __attribute__ ((section(\".spad\")));\n"
-            self.gem5_header += f"float B_spad[{TILE_M * TILE_N}] __attribute__ ((section(\".spad\")));\n"
+        self.header = f"float X_spad[{TILE_M_PADDING * TILE_K_PADDING // kernel.vector_lane}] __attribute__ ((section(\".spad\")));\n"
+        self.header += f"float W_spad[{TILE_K_PADDING * TILE_N_PADDING // kernel.vector_lane}] __attribute__ ((section(\".spad\")));\n"
+        self.header += f"float Y_spad[{TILE_M_PADDING * TILE_N_PADDING // kernel.vector_lane}] __attribute__ ((section(\".spad\")));\n"
+        self.gem5_header = f"float X_spad[{TILE_M_PADDING * TILE_K_PADDING}] __attribute__ ((section(\".spad\")));\n"
+        self.gem5_header += f"float W_spad[{TILE_K_PADDING * TILE_N_PADDING}] __attribute__ ((section(\".spad\")));\n"
+        self.gem5_header += f"float Y_spad[{TILE_M_PADDING * TILE_N_PADDING}] __attribute__ ((section(\".spad\")));\n"
 
-        kernel.add_loop_info([options["M"], options["N"], options["K"]], [options["TILE_M"], options["TILE_N"], options["TILE_K"]])
+        kernel.add_loop_info([options["K_H"], options["K_W"], options["O_H"], options["O_W"], options["BATCH"], options["O_C"], options["I_C"]], [options["TILE_M_PADDING"], options["TILE_N_PADDING"], options["TILE_K_PADDING"]])
         kernel.def_kernel(inputs=[X, W, Bias], outputs=[Y], names_str="X, W, Bias, Y", input_reorder=self.input_reorder)
 
         return code
@@ -218,14 +317,10 @@ class MLIRConvTemplate(MLIRTemplate):
             FUNC_NAME=self.function_name,
             INPUT=input_args[0],
             WEIGHT=input_args[1],
-            BIAS=input_args[2] if len(input_args) == 4 else None,
+            BIAS=0 if len(input_args) == 3 else input_args[2],
             OUT=input_args[3] if len(input_args) == 4 else input_args[2],
             PADDING_H=self.padding[0],
             PADDING_W=self.padding[1],
-            STRIDE_H=self.stride[0],
-            STRIDE_W=self.stride[1],
-            DILATION_H=self.dilation[0],
-            DILATION_W=self.dilation[1],
             VALIDATION_MODE=extension_config.CONFIG_TORCHSIM_VALIDATION_MODE,
             BACKENDSIM_EAGER_MODE=extension_config.CONFIG_BACKENDSIM_EAGER_MODE,
             HASH_VALUE=self.hash_value
@@ -236,19 +331,34 @@ class MLIRConvTemplate(MLIRTemplate):
     def get_arg_attributes(self):
         arg_attributes = []
 
-        input_shape = self.input_nodes[0].get_size()
-        weight_shape = self.input_nodes[1].get_size()
-        gemm_h = int((input_shape[2] + 2*self.padding[0] - (weight_shape[2]-1) - 1) / self.stride[0]) + 1
-        gemm_w = int((input_shape[3] + 2*self.padding[1] - (weight_shape[3]-1) - 1) / self.stride[1]) + 1
+        X, W = self.input_nodes[0], self.input_nodes[1]
+        Y = self.output_node
+        Bias = None if len(self.input_nodes) == 2 else self.input_nodes[2]
 
-        gemm_input_shape = [input_shape[0],input_shape[1],gemm_h, gemm_w]
-        gemm_weight_shape = [weight_shape[0],weight_shape[1],1,1]
-        gemm_output_shape = [gemm_input_shape[2]*gemm_input_shape[3], gemm_weight_shape[0]] # Consider Batch size 1
+        X_shape = [X.get_size()[i] for i in (2, 3, 0, 1)]
+        W_shape = [W.get_size()[i] for i in (2, 3, 1, 0)]
+        Y_shape = [Y.get_size()[i] for i in (2, 3, 0, 1)]
 
-        arg_attributes.append([self.gemm_args[0], [MLIRKernelArgs.MLIR_ARGS_IN, self.input_nodes[0].layout.dtype, math.prod(gemm_input_shape)]])
-        arg_attributes.append([self.gemm_args[1], [MLIRKernelArgs.MLIR_ARGS_IN, self.input_nodes[1].layout.dtype, math.prod(gemm_weight_shape)]])
-        arg_attributes.append([self.gemm_args[2], [MLIRKernelArgs.MLIR_ARGS_IN, self.input_nodes[0].layout.dtype, math.prod(gemm_output_shape)]])
-        arg_attributes.append([self.gemm_args[3], [MLIRKernelArgs.MLIR_ARGS_OUT, self.input_nodes[0].layout.dtype, math.prod(gemm_output_shape)]])
+        if Bias is not None:
+          Bias_shape = [Bias.get_size()]
+
+        def compute_stride(shape):
+            stride = [1] * len(shape)
+            for i in range(len(shape)-2, -1, -1):
+                stride[i] = stride[i+1] * shape[i+1]
+            return stride
+
+        X_stride = compute_stride(X_shape)
+        W_stride = compute_stride(W_shape)
+        Y_stride = compute_stride(Y_shape)
+        if Bias is not None:
+          Bias_stride = compute_stride(Bias_shape)
+
+        arg_attributes.append([self.gemm_args[0], [MLIRKernelArgs.MLIR_ARGS_IN, X.layout.dtype, math.prod(X.get_size()), X_shape, X_stride]])
+        arg_attributes.append([self.gemm_args[1], [MLIRKernelArgs.MLIR_ARGS_IN, W.layout.dtype, math.prod(W.get_size()), W_shape, W_stride]])
+        if Bias is not None:
+          arg_attributes.append([self.gemm_args[2], [MLIRKernelArgs.MLIR_ARGS_IN, Bias.layout.dtype, math.prod(Bias.get_size()), Bias_shape, Bias_stride]])
+        arg_attributes.append([self.gemm_args[3], [MLIRKernelArgs.MLIR_ARGS_OUT, Y.layout.dtype, math.prod(Y.get_size()), Y_shape, Y_stride]])
 
         return arg_attributes
 

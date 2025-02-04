@@ -73,7 +73,7 @@ class MLIRScheduling(BaseScheduling):
         _, (group, reduction_group) = max(
             nodes, key=lambda x: int(x.is_reduction())
         ).group
-        ex_kernel = self.target_kernel()
+        ex_kernel = self.target_kernel(kernel_group=self.kernel_group)
         ex_kernel.kernel_group = self.kernel_group
 
         kernel_name = f"extension_kernel_{MLIRScheduling.count}"
@@ -154,8 +154,8 @@ class MLIRScheduling(BaseScheduling):
     def codegen_template(self, template_node, epilogue_nodes):
         _, (numel, rnumel) = template_node.group
         template_buffer = template_node.node
-        kernel, render, codegen_header = template_buffer.make_kernel_render(template_buffer, epilogue_nodes=epilogue_nodes)
-        _, _, _, kernel.buffer_types = kernel.args.mlir_argdefs()
+        kernel, render, codegen_header = template_buffer.make_kernel_render(template_buffer, epilogue_nodes=epilogue_nodes, kernel_group=self.kernel_group)
+        _, _, _, kernel.buffer_types = self.kernel_group.args.mlir_argdefs()
 
         src_code = self.codegen_src_code(kernel, render, template_node, epilogue_nodes)
         wrapper = V.graph.wrapper_code
@@ -167,7 +167,6 @@ class MLIRScheduling(BaseScheduling):
 
         with V.set_kernel_handler(kernel):
             codegen_header(src_code, (kernel.header.getvalue(), kernel.gem5_header.getvalue()))
-            # node_schedule = [template_node, *epilogue_nodes]
             kernel.meta_kernel()
             kernel_name = self.define_kernel(src_code, kernel.kernel_name, kernel.vector_lane, kernel.spad_info,
                                              kernel.tile_size, kernel.loop_size, origins={str(i) for i in template_node.node.origins})
@@ -175,7 +174,7 @@ class MLIRScheduling(BaseScheduling):
 
         kernel.call_kernel(kernel_name)
         V.graph.removed_buffers |= kernel.removed_buffers
-        _, args, _, _ = kernel.args.mlir_argdefs()
+        _, args, _, _ = self.kernel_group.args.mlir_argdefs()
         args = ", ".join(args)
         if (extension_config.CONFIG_BACKENDSIM_EAGER_MODE):
             target_kernel_name = kernel_name if kernel.outer_func_name is None else kernel.outer_func_name

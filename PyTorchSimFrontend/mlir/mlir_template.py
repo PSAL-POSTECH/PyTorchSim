@@ -27,10 +27,11 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
                  kernel_name,
                  input_nodes,
                  call_size,
+                 kernel_group = None,
                  outer_func_name=None,
                  outer_func_render=None,
                  kernel_arg_attributes=None) -> None:
-        super().__init__()
+        super().__init__(kernel_group if kernel_group is not None else mlir_common.MLIRWrapperKenrelGroup())
         self.kernel_name = kernel_name
         self.input_nodes = input_nodes
         self.call_size = call_size
@@ -292,7 +293,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
     def adjust_tile_size(self):
         # Fixed tile size for template kernel
         self.kernel_group.tile_desc.set_tile_size((self.render_options['TILE_M'], self.render_options['TILE_N']))
-        self.kernel_group.tile_desc.vlane_split_axis = 0 # FIXME: Fixed
+        self.kernel_group.tile_desc.vlane_split_axis = 1 # FIXME: Fixed
         self.kernel_group.tile_desc.vlane_stride = 1 # FIXME: Fixed
         return
 
@@ -310,7 +311,8 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
             # Allocate sram buffer
             dram_shape = mlir_common.MLIRKernelArgs.get_mlir_shape(self.buffer_types[name])
             tile_shape = self.kernel_group.tile_desc.get_mlir_shape(mlir_dtype)
-            tile_stride = self.kernel_group.tile_desc.get_tile_stride()
+            # tile_stride = self.kernel_group.tile_desc.get_tile_stride()
+            tile_stride = [1, self.render_options['TILE_M']] # FIXME: Fixed
             sram_var, index_var, sram_index_var = self.get_scratchpad_buffer(dtype, name, tile_numel_per_lane, tile_shape, self.loads, index_var, index)
             self.buffer_names[name] = sram_var
             code = self.get_dma_code("MVIN", vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
@@ -339,7 +341,8 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
 
         dram_shape = mlir_common.MLIRKernelArgs.get_mlir_shape(self.buffer_types[name])
         tile_shape = self.kernel_group.tile_desc.get_mlir_shape(mlir_dtype)
-        tile_stride = self.kernel_group.tile_desc.get_tile_stride()
+        # tile_stride = self.kernel_group.tile_desc.get_tile_stride()
+        tile_stride = [1, self.render_options['TILE_M']] # FIXME: Fixed
 
         if name not in self.buffer_names:
             sram_var, index_var, sram_index_var = self.get_scratchpad_buffer(dtype, name, tile_numel_per_lane, tile_shape, self.stores, index_var, index)
@@ -390,7 +393,7 @@ class MLIRTemplate(KernelTemplate):
     def generate(self, **kwargs) -> ChoiceCaller:
         kernel_name = f"mlir_{self.name}"
         with patch.object(V.graph, "get_dtype", self._fake_get_dtype(self.output_node)):
-            kernel  = MLIRTemplateKernel(kernel_name=kernel_name, input_nodes=self.input_nodes, call_size=self.layout.size,
+            kernel  = MLIRTemplateKernel(kernel_name=kernel_name, input_nodes=self.input_nodes, call_size=self.layout.size, kernel_group=None,
                                          outer_func_name=self.function_name if hasattr(self, 'function_name') else None,
                                          outer_func_render=self.outer_func_render if hasattr(self, 'outer_func_render') else None,
                                          kernel_arg_attributes=self.get_arg_attributes() if hasattr(self, 'get_arg_attributes') else None)
@@ -411,11 +414,13 @@ class MLIRTemplate(KernelTemplate):
             template_node: TemplateBuffer,
             epilogue_nodes: Optional[List[IRNode]] = None,
             kernel_name: str = kernel_hash_name,
+            kernel_group: Optional[mlir_common.MLIRWrapperKenrelGroup] = None
         ):
             kernel = MLIRTemplateKernel(
                 kernel_name=kernel_name,
                 input_nodes=self.input_nodes,
                 call_size=self.layout.size,
+                kernel_group=kernel_group,
                 outer_func_name=self.function_name if hasattr(self, 'function_name') else None,
                 outer_func_render=functools.partial(
                     self.outer_func_render,

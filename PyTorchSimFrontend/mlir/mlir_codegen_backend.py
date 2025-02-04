@@ -677,8 +677,8 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
     overrides = ExtensionOverrides
     newvar_prefix = "%"
 
-    def __init__(self):
-        super().__init__(mlir_common.MLIRKernelArgs())
+    def __init__(self, kernel_group):
+        super().__init__(kernel_group)
         self.const_buffer = IndentedBuffer()
         self.alloc_buffer = IndentedBuffer()
         self.reduction_prefix = IndentedBuffer()

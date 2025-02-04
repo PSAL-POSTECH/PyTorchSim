@@ -182,7 +182,7 @@ class MLIRMultiDimTile():
         for dim_size in self._tile_size:
             size *= dim_size
         return size
- 
+
     def get_numel_per_lane(self):
         tile_size_per_lane = self.get_tile_size_per_lane()
         size = 1
@@ -317,9 +317,9 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
     load_format = None
     store_format = None
 
-    def __init__(self, args=None):
-        super().__init__(args)
-        self.kernel_group : MLIRWrapperKenrelGroup = MLIRWrapperKenrelGroup()
+    def __init__(self, kernel_group):
+        super().__init__(kernel_group.args)
+        self.kernel_group = kernel_group
         # Kernel iteration range info
         self.call_ranges = None
         self.ranges = None

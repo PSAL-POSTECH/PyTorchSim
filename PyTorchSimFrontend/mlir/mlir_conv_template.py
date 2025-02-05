@@ -14,14 +14,6 @@ import PyTorchSimFrontend.extension_codecache as extension_codecache
 from torch._inductor.codecache import get_hash
 from PyTorchSimFrontend import extension_config
 
-
-# %tmp_i_h = arith.muli %o_h, %stride_h : index
-# %index_i_h = arith.addi %tmp_i_h, %k_h : index
-# %tmp_i_w = arith.muli %o_w, %stride_w : index
-# %index_i_w = arith.addi %tmp_i_w, %k_w : index
-# %tmp_k = arith.muli %k_h, %K_W : index
-# %index_k_hw = arith.addi %tmp_k, %k_w : index
-
 GEMM_TEMPLATE = r"""
 // Conv2D kernel
 // BATCH = {{ BATCH }}
@@ -49,7 +41,7 @@ GEMM_TEMPLATE = r"""
 // DATA_SIZE = {{ DATA_SIZE }}
 
 #map0 = affine_map<(d0, d1, d2, d3) -> (d0 * {{ O_W * BATCH * O_C }} + d1 * {{ BATCH * O_C }} + d2 * {{ O_C }} + d3)> // output (O_H, O_W, BATCH, O_C)
-#map1 = affine_map<(d0, d1, d2, d3) -> (d0 * {{ I_W * BATCH * I_C }} + d1 * {{ BATCH * I_C }} + d2 * {{ I_C }} + d3)> // input (I_H, I_W, BATCH, I_C)
+#map1 = affine_map<(d0, d1, d2, d3) -> (d0 * {{ (I_W + 2 * PADDING_W) * BATCH * I_C }} + d1 * {{ BATCH * I_C }} + d2 * {{ I_C }} + d3)> // input (I_H, I_W, BATCH, I_C)
 #map2 = affine_map<(d0, d1, d2) -> (d0 * {{ I_C * O_C }} + d1 * {{ O_C }} + d2)> // weight (K_H * K_W, I_C, O_C)
 #map_I_H = affine_map<(d0, d1) -> (d0 * {{ STRIDE_H }} + d1)>
 #map_I_W = affine_map<(d0, d1) -> (d0 * {{ STRIDE_W }} + d1)>
@@ -111,7 +103,7 @@ func.func @{{ KERNEL_NAME }}({{ KERNEL_DEF }}) {
                 %index2 = affine.apply #map2(%index_k_hw, %tile_k, %tile_n) // weight index
                 // Load input matrix
                 memref.dma_start %X[%index1], %X_buffer[%c0, %c0], %c_mvin, %tag[%c0], %input_axis, %vstride
-                    : memref<{{ BATCH * I_C * I_H * I_W }}xf32>, memref<{{ TILE_M_PADDING }}x{{ TILE_K_PADDING }}xf32, 1>, memref<1xi32> { subtile_size=[{{ kernel.vector_lane }}, {{ TILE_K_PADDING }}], async=1, sram_stride=[1, {{ TILE_M_PADDING }}]}
+                    : memref<{{ BATCH * I_C * (I_H + 2 * PADDING_H) * (I_W + 2 * PADDING_W) }}xf32>, memref<{{ TILE_M_PADDING }}x{{ TILE_K_PADDING }}xf32, 1>, memref<1xi32> { subtile_size=[{{ kernel.vector_lane }}, {{ TILE_K_PADDING }}], async=1, sram_stride=[1, {{ TILE_M_PADDING }}]}
                 // Load kernel matrix
                 memref.dma_start %W[%index2], %W_buffer[%c0, %c0], %c_mvin, %tag[%c0], %weight_axis, %vstride
                     : memref<{{ O_C * I_C * K_H * K_W }}xf32>, memref<{{ TILE_K_PADDING }}x{{ TILE_N_PADDING }}xf32, 1>, memref<1xi32> { subtile_size=[{{ TILE_K_PADDING }}, {{ kernel.vector_lane }}], async=1, sram_stride=[1, 1]}
@@ -141,9 +133,6 @@ def {{ FUNC_NAME }}({{ INPUT }}, {{ WEIGHT }}{% if BIAS %}, {{ BIAS }} {% endif 
     {{ INPUT }}_padding = torch.zeros(padded_shape, device={{ INPUT }}.device)
     {{ INPUT }}_padding[:, :, {{ PADDING_H }}:{{ INPUT }}.shape[2] + {{ PADDING_H }}, {{ PADDING_W }}:{{ INPUT }}.shape[3] + {{ PADDING_W }}] = {{ INPUT }}
 
-    print(f"input_padding")
-    print({{ INPUT }}_padding.cpu())
-
     # Tanspose tensors
     t_{{ INPUT }} = {{ INPUT }}_padding.permute(2, 3, 0, 1).contiguous() # (BATCH, I_C, I_H, I_W) -> (I_H, I_W, BATCH, I_C)
     t_{{ WEIGHT }} = {{ WEIGHT }}.permute(2, 3, 1, 0).contiguous() # (O_C, I_C, K_H, K_W) -> (K_H, K_W, I_C, O_C)
@@ -166,9 +155,7 @@ class MLIRConvTemplate(MLIRTemplate):
             + "_".join([str(i) for i in self.stride]) \
             + "_" + "_".join([str(i) for i in self.padding]) \
             + "_" + "_".join([str(i) for i in self.dilation])
-        self.gemm_args = ['X', 'W', 'Bias', 'Y']
-
-        self.calculate_gemm_shape()
+        self.kernel_args = ['X', 'W', 'Bias', 'Y']
 
     def is_transposed(self, node):
         if isinstance(node, ReinterpretView):
@@ -179,44 +166,28 @@ class MLIRConvTemplate(MLIRTemplate):
                   raise NotImplementedError("If the stride is not equal to the original stride, it should have been transposed.")
         return False
 
-    # Is this function necessary? (Find output node instead)
-    def calculate_gemm_shape(self):
-        input_shape = self.input_nodes[0].get_size()
-        weight_shape = self.input_nodes[1].get_size()
-        gemm_h = int((input_shape[2] + 2*self.padding[0] - (weight_shape[2]-1) - 1) / self.stride[0]) + 1
-        gemm_w = int((input_shape[3] + 2*self.padding[1] - (weight_shape[3]-1) - 1) / self.stride[1]) + 1
-
-        self.gemm_input_shape = [input_shape[0],input_shape[1],gemm_h, gemm_w]
-        self.gemm_weight_shape = [weight_shape[0],weight_shape[1],1,1]
-        self.gemm_output_shape = [self.gemm_input_shape[2]*self.gemm_input_shape[3], self.gemm_weight_shape[0]] # Consider Batch size 1
-
-
     # Can use math.multi ?
     def def_kernel(self) ->str:
         X, W = self.input_nodes[0], self.input_nodes[1]
+        Y = self.output_node
         if len(self.input_nodes) == 3:
           Bias = self.input_nodes[2]
         else:
           Bias = None
 
-        Y = self.output_node
-
-        def flatten(shape):
-            r = 1
-            for i in shape:
-                r *= i
-            return r
-
-        input_size = flatten(X.layout.size)
-        weight_size = flatten(W.layout.size)
+        input_padded = list(X.layout.size)
+        input_padded[2] += 2 * self.padding[0]
+        input_padded[3] += 2 * self.padding[1]
+        input_size = math.prod(input_padded)
+        weight_size = math.prod(W.layout.size)
         if Bias is not None:
-          bias_size = flatten(Bias.layout.size)
-        output_size = flatten(Y.layout.size)
+          bias_size = math.prod(Bias.layout.size)
+        output_size = math.prod(Y.layout.size)
 
         if Bias is None:
-          return f"%{self.gemm_args[0]}: memref<{input_size}xf32>, %{self.gemm_args[1]}: memref<{weight_size}xf32>, %{self.gemm_args[3]}: memref<{output_size}xf32>"
+          return f"%{self.kernel_args[0]}: memref<{input_size}xf32>, %{self.kernel_args[1]}: memref<{weight_size}xf32>, %{self.kernel_args[3]}: memref<{output_size}xf32>"
         else:
-          return f"%{self.gemm_args[0]}: memref<{input_size}xf32>, %{self.gemm_args[1]}: memref<{weight_size}xf32>, %{self.gemm_args[2]}: memref<{bias_size}xf32>, %{self.gemm_args[3]}: memref<{output_size}xf32>"
+          return f"%{self.kernel_args[0]}: memref<{input_size}xf32>, %{self.kernel_args[1]}: memref<{weight_size}xf32>, %{self.kernel_args[2]}: memref<{bias_size}xf32>, %{self.kernel_args[3]}: memref<{output_size}xf32>"
 
     def get_tile_options(self):
         BATCH, I_C = self.input_nodes[0].layout.size[0], self.input_nodes[0].layout.size[1]
@@ -243,8 +214,8 @@ class MLIRConvTemplate(MLIRTemplate):
         Y = self.output_node
         Bias = None if len(self.input_nodes) == 2 else self.input_nodes[2]
 
-        O_H = self.gemm_input_shape[2]
-        O_W = self.gemm_input_shape[3]
+        O_H = Y.layout.size[2]
+        O_W = Y.layout.size[3]
 
         tile_m_options, tile_n_options, tile_k_options = self.get_tile_options()
 
@@ -336,6 +307,8 @@ class MLIRConvTemplate(MLIRTemplate):
         Bias = None if len(self.input_nodes) == 2 else self.input_nodes[2]
 
         X_shape = [X.get_size()[i] for i in (2, 3, 0, 1)]
+        X_shape[0] += 2 * self.padding[0]
+        X_shape[1] += 2 * self.padding[1]
         W_shape = [W.get_size()[i] for i in (2, 3, 1, 0)]
         Y_shape = [Y.get_size()[i] for i in (2, 3, 0, 1)]
 
@@ -354,11 +327,11 @@ class MLIRConvTemplate(MLIRTemplate):
         if Bias is not None:
           Bias_stride = compute_stride(Bias_shape)
 
-        arg_attributes.append([self.gemm_args[0], [MLIRKernelArgs.MLIR_ARGS_IN, X.layout.dtype, math.prod(X.get_size()), X_shape, X_stride]])
-        arg_attributes.append([self.gemm_args[1], [MLIRKernelArgs.MLIR_ARGS_IN, W.layout.dtype, math.prod(W.get_size()), W_shape, W_stride]])
+        arg_attributes.append([self.kernel_args[0], [MLIRKernelArgs.MLIR_ARGS_IN, X.layout.dtype, math.prod(X_shape), X_shape, X_stride]])
+        arg_attributes.append([self.kernel_args[1], [MLIRKernelArgs.MLIR_ARGS_IN, W.layout.dtype, math.prod(W_shape), W_shape, W_stride]])
         if Bias is not None:
-          arg_attributes.append([self.gemm_args[2], [MLIRKernelArgs.MLIR_ARGS_IN, Bias.layout.dtype, math.prod(Bias.get_size()), Bias_shape, Bias_stride]])
-        arg_attributes.append([self.gemm_args[3], [MLIRKernelArgs.MLIR_ARGS_OUT, Y.layout.dtype, math.prod(Y.get_size()), Y_shape, Y_stride]])
+          arg_attributes.append([self.kernel_args[2], [MLIRKernelArgs.MLIR_ARGS_IN, Bias.layout.dtype, math.prod(Bias_shape), Bias_shape, Bias_stride]])
+        arg_attributes.append([self.kernel_args[3], [MLIRKernelArgs.MLIR_ARGS_OUT, Y.layout.dtype, math.prod(Y_shape), Y_shape, Y_stride]])
 
         return arg_attributes
 

@@ -303,7 +303,7 @@ class BaseMLIRHardwareInfo():
         self.vector_lane = 128
         self.spad_info = {
             "spad_vaddr" : 0xD0000000,
-            "spad_paddr" : 0xD0000000,
+            "spad_paddr" : 0x2000000000,
             "spad_size" : 128 << 10 # 128KB per Lane
         }
         self.precision = 4 # 32bit

@@ -703,6 +703,10 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         self.global_vars = IndentedBuffer()
         self.global_vars_dict = dict()
         self.header = IndentedBuffer()
+        self.header.writeline("#include <unistd.h>")
+        self.header.writeline("#include <stdlib.h>")
+        self.header.writeline("void* __wrap_malloc(size_t size) { return sbrk(size); }")
+        self.header.writeline("void __wrap_free(void *ptr) { return; }")
         self.gem5_header = IndentedBuffer()
         self.reduction_vars = {}
         self.reduction_cse = common.CSE(self.newvar_prefix, self.suffix, name_prefix="tmp_acc")

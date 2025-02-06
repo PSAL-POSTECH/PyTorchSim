@@ -102,13 +102,14 @@ class FunctionalSimulator():
         file_path_str = ' '.join(file_path)
 
         # Set hardware information
-        spad_option = f"--scratchpad-base-paddr={spad_info['spad_paddr']} " + \
+        spad_option = f"-m0x{0x80000000:x}:0x{100<<30:x},0x{spad_info['spad_paddr']:x}:0x{spad_info['spad_size']*vectorlane_size:x} " + \
+            f"--scratchpad-base-paddr={spad_info['spad_paddr']} " + \
             f"--scratchpad-base-vaddr={spad_info['spad_vaddr']} " + \
-            f"--scratchpad-size={spad_info['spad_size']}"
+            f"--scratchpad-size={spad_info['spad_size']} "
         vectorlane_option = f"--vectorlane-size={vectorlane_size}"
         kernel_address = f"--kernel-addr={kernel_start_addr}:{kernel_end_addr}"
         base_addr = f"--base-path={path}"
-        run = f'spike --isa rv64gcv --varch=vlen:256,elen:64 -m102400 {vectorlane_option} {spad_option} {kernel_address} {base_addr} /workspace/riscv-pk/build/pk {target_binary} {file_path_str}'
+        run = f'spike --isa rv64gcv --varch=vlen:256,elen:64 {vectorlane_option} {spad_option} {kernel_address} {base_addr} /workspace/riscv-pk/build/pk {target_binary} {file_path_str}'
 
         print("[SpikeSimulator] cmd> ", run)
         run_cmd = shlex.split(run)

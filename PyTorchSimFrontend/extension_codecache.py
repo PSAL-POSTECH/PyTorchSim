@@ -146,6 +146,8 @@ class MLIRCodeCache:
             link_option = ""
         # Generate LLVM kernel calller and binary for validation
         if extension_config.CONFIG_TORCHSIM_VALIDATION_MODE:
+            # Use custom malloc to avoid size error
+            new_link_option = link_option + " -Wl,--wrap=malloc -Wl,--wrap=free"
             cmds = mlir_compile_command(new_input_path, vectorlane_size, vlen=256)
             opt_cmd = shlex.split(cmds[0])
             translate_cmd = shlex.split(cmds[1])
@@ -163,7 +165,7 @@ class MLIRCodeCache:
                 val_llvm_caller = MLIRKernelCallerCodeGen(extension_config.CONFIG_TORCHSIM_VALIDATION_MODE, arg_attributes)
                 val_llvm_caller.generate_wrapper_file(write_path, validation_wrapper_name)
                 val_llvm_caller.compile_wih_kernel(write_path, key, validation_wrapper_name,
-                                                   validation_binary_name, link_option)
+                                                   validation_binary_name, new_link_option)
         # Launch tile graph generator
         gem5_sample_cmd = shlex.split(gem5_cmds[0])
         gem5_translate_cmd = shlex.split(gem5_cmds[1])

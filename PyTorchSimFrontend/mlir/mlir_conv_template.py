@@ -306,7 +306,7 @@ class MLIRConvTemplate(MLIRTemplate):
         Y_shape = [Y.get_size()[i] for i in (2, 3, 0, 1)]
 
         if Bias is not None:
-          Bias_shape = [Bias.get_size()]
+          Bias_shape = Bias.get_size()
 
         def compute_stride(shape):
             stride = [1] * len(shape)

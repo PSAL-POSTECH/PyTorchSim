@@ -17,6 +17,7 @@ struct SimulationConfig {
   uint32_t core_freq;
   uint32_t sram_size;
   uint32_t core_print_interval = 0;
+  uint32_t num_systolic_array_per_core = 1;
 
   /* DRAM config */
   DramType dram_type;

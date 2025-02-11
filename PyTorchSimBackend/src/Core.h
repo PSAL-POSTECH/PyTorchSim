@@ -4,6 +4,7 @@
 #include <memory>
 #include <vector>
 #include <fmt/core.h>
+#include <fmt/ranges.h>
 
 #include "Dram.h"
 #include "Tile.h"
@@ -19,6 +20,8 @@ class Core {
   void issue(std::shared_ptr<Tile> tile);
   std::shared_ptr<Tile> pop_finished_tile();
   void cycle();
+  void vu_cycle();
+  void sa_cycle();
   void compute_cycle();
   void dma_cycle();
   bool has_memory_request();
@@ -28,7 +31,7 @@ class Core {
   void print_stats();
   void print_current_stats();
   void finish_instruction(std::shared_ptr<Instruction>& inst);
-  cycle_type get_compute_cycles() { return _stat_tot_compute_cycle[SYSTOLIC_ARRAY]; }
+  std::queue<std::shared_ptr<Instruction>>& get_compute_pipeline(int compute_type);
   enum {
     VECTOR_UNIT,
     SYSTOLIC_ARRAY,
@@ -40,30 +43,37 @@ class Core {
   void update_stats();
 
   /* Core id & config file */
-  const uint32_t _id;   
+  const uint32_t _id;
   const SimulationConfig _config;
   size_t _sram_size;
   size_t _used_sram_size;
+  uint32_t _num_systolic_array_per_core;
+  uint32_t _systolic_array_rr = 0;
 
   /* TMA Unit */
   TMA _tma;
 
   /* cycle */
   cycle_type _core_cycle;
-  cycle_type _stat_tot_compute_cycle[NR_COMPUTE_UNIT] = {0, };
+  cycle_type _stat_tot_vu_compute_cycle = 0;
+  std::vector<cycle_type> _stat_tot_sa_compute_cycle;
   cycle_type _stat_tot_tma_cycle = 0;
   cycle_type _stat_tot_tma_idle_cycle = 0;
-  cycle_type _stat_tot_compute_idle_cycle[NR_COMPUTE_UNIT] = {0, };
+  cycle_type _stat_tot_vu_compute_idle_cycle = 0;
+  std::vector<cycle_type> _stat_tot_sa_compute_idle_cycle;
 
-  cycle_type _stat_compute_cycle[NR_COMPUTE_UNIT] = {0, };
+  cycle_type _stat_vu_compute_cycle = 0;
+  std::vector<cycle_type> _stat_sa_compute_cycle;
   cycle_type _stat_tma_cycle = 0;
   cycle_type _stat_tma_idle_cycle = 0;
-  cycle_type _stat_compute_idle_cycle[NR_COMPUTE_UNIT] = {0, };
+  cycle_type _stat_vu_compute_idle_cycle = 0;
+  std::vector<cycle_type> _stat_sa_compute_idle_cycle;
 
   std::vector<std::shared_ptr<Tile>> _tiles;
   std::queue<std::shared_ptr<Tile>> _finished_tiles;
 
-  std::vector<std::queue<std::shared_ptr<Instruction>>> _compute_pipeline;
+  std::queue<std::shared_ptr<Instruction>> _vu_compute_pipeline;
+  std::vector<std::queue<std::shared_ptr<Instruction>>> _sa_compute_pipeline;
   std::queue<std::shared_ptr<Instruction>> _ld_inst_queue;
   std::queue<std::shared_ptr<Instruction>> _st_inst_queue;
 

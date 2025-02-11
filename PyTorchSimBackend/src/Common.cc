@@ -21,7 +21,8 @@ SimulationConfig initialize_config(json config) {
   parsed_config.num_cores = config["num_cores"];
   parsed_config.core_freq = config["core_freq"];
   parsed_config.sram_size = config["sram_size"];
-  parsed_config.num_systolic_array_per_core = config["num_systolic_array_per_core"];
+  if (config.contains("num_systolic_array_per_core"))
+    parsed_config.num_systolic_array_per_core = config["num_systolic_array_per_core"];
   parsed_config.core_print_interval = get_config_value<uint32_t>(config, "core_print_interval");
 
   /* DRAM config */

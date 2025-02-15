@@ -4,8 +4,8 @@ Simulator::Simulator(SimulationConfig config)
     : _config(config), _core_cycles(0) {
   // Create dram object
   for (int i=0; i<config.num_cores;i++)
-    spdlog::info("[Config/Core] Core {}: {} MHz, Spad size: {} KB",
-      i, config.core_freq , config.sram_size);
+    spdlog::info("[Config/Core] Core {}: {} MHz, Spad size: {} KB, Systolic array per core: {}",
+      i, config.core_freq , config.sram_size, config.num_systolic_array_per_core);
   _core_period = 1000000 / (config.core_freq);
   _icnt_period = 1000000 / (config.icnt_freq);
   _dram_period = 1000000 / (config.dram_freq);

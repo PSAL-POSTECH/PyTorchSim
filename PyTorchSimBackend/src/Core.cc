@@ -276,6 +276,8 @@ void Core::cycle() {
             bool finished = _tma.get_tag_finish(inst->subgraph_id, key);
             if (finished) {
               finish_instruction(inst);
+              if (inst->is_async_dma())
+                _tma.increase_tag_used_cout(inst->subgraph_id, key);
             } else {
               _tma.register_tag_waiter(inst->subgraph_id, key, inst);
             }

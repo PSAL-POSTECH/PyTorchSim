@@ -10,7 +10,7 @@ from typing import List, Optional
 from unittest.mock import patch
 
 from torch._inductor.codegen.common import Kernel, KernelTemplate, ChoiceCaller, OpOverrides, CSE
-from torch._inductor.ir import Buffer, IRNode, TemplateBuffer, Pointwise
+from torch._inductor.ir import Buffer, IRNode, TemplateBuffer
 from torch._inductor.select_algorithm import PartialRender
 from torch._inductor.codegen.cuda.cuda_kernel import CUDATemplateCaller
 from torch._inductor.autotune_process import TensorMeta
@@ -281,7 +281,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
             vlane_stride = self.store_info["vlane_stride"]
             mlir_dtype = self.store_info["mlir_dtype"]
             dram_shape = self.store_info["dram_shape"]
-            tile_shape = self.store_info["tile_shape"]
+            tile_shape = f"memref<{'x'.join(str(s) for s in self.store_info['tile_size'])}x{mlir_dtype}, 1>"
             zero_cse = self.get_const_cse(0)
             sram_index_var = ",".join([f"%{zero_cse}"] * self.store_info["tile_nr_dim"])
             tile_stride = self.store_info['tile_stride']
@@ -510,7 +510,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         operation = "affine.vector_load" if tile_numel_per_lane > 1 else "affine.load"
         zero_var = self.get_const_cse(0)
         tile_indices = ",".join([f"%{zero_var}"] * self.store_info["tile_nr_dim"])
-        line = f"{operation} %{sram_var}[{tile_indices}] : {self.store_info['tile_shape']}{vshape}"
+        line = f"{operation} %{sram_var}[{tile_indices}] : memref<{'x'.join(str(s) for s in self.store_info['tile_size'])}x{mlir_dtype}, 1>{shape}"
         out = self.cse.generate(self.loads, line)
         self.register_var_info(out, [tile_numel_per_lane, mlir_dtype])
         return out

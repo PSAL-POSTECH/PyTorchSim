@@ -169,7 +169,7 @@ class MLIRKernelArgs(common.KernelArgs):
         return arg_defs, call_args, arg_attributes, buffer_types
 
 class MLIRMultiDimTile():
-    def __init__(self, tile_size, vector_lane, vlane_split_axis=None, vlane_stride=None):
+    def __init__(self, tile_size, vector_lane, vlane_split_axis=None, vlane_stride=None, dim_size=0):
         self._tile_size = list(tile_size)
         self.tile_axis_order = list(range(len(tile_size)))
 
@@ -177,6 +177,7 @@ class MLIRMultiDimTile():
         self.vector_lane = vector_lane
         self.vlane_split_axis = vlane_split_axis
         self.vlane_stride = vlane_stride
+        self.dim_size = dim_size
         self.implicit_dim_size = None
 
     def set_tile_size(self, tile_size, tile_axis_order=None):
@@ -222,8 +223,8 @@ class MLIRMultiDimTile():
     def get_tile_size_per_lane(self):
         tile_size_per_lane = list(self._tile_size)
         used_vlane = self.get_used_vlane()
-        tile_size_per_lane[self.vlane_split_axis] = \
-            self.div_round_up(tile_size_per_lane[self.vlane_split_axis], used_vlane)
+        tile_size_per_lane[-(self.dim_size - self.vlane_split_axis)] = \
+            self.div_round_up(tile_size_per_lane[-(self.dim_size - self.vlane_split_axis)], used_vlane)
         return tile_size_per_lane
 
     def get_nr_dim(self):
@@ -260,7 +261,7 @@ class MLIRMultiDimTile():
         """
         Return number of used vector lane
         """
-        return min(self.div_round_up(self._tile_size[self.vlane_split_axis], self.vlane_stride), self.vector_lane)
+        return min(self.div_round_up(self._tile_size[-(self.dim_size - self.vlane_split_axis)], self.vlane_stride), self.vector_lane)
 
     def get_vlane_stride(self):
         return self.vlane_stride
@@ -463,7 +464,8 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
         tile_desc = MLIRMultiDimTile(template_store_info['tile_size'],
             self.vector_lane,
             vlane_split_axis=template_store_info['vlane_split_axis'],
-            vlane_stride=template_store_info['vlane_stride'])
+            vlane_stride=template_store_info['vlane_stride'],
+            dim_size=template_store_info['output_dim_sz'])
         return tile_desc
 
     def codegen_nodes(self, nodes, kernel_name):

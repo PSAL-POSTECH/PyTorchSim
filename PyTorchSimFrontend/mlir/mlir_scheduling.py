@@ -148,7 +148,7 @@ class MLIRScheduling(BaseScheduling):
                 _, (group, reduction_group) = max(
                     epilogue_nodes, key=lambda x: int(x.is_reduction())
                 ).group
-                vars, reduction_vars = kernel.set_ranges(group, reduction_group)    # Do we need this?
+                vars, reduction_vars = kernel.set_ranges(group, reduction_group)
                 tile_desc = kernel.set_tile_size(kernel.store_info)
                 kernel.kernel_group.set_tile_info(tile_desc)
             # Flush created varaibles, since template fusion doen't share variable

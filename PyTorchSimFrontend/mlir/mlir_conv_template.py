@@ -739,14 +739,13 @@ class MLIRConvTemplate(MLIRTemplate):
             dram_var = "Y",
             index_var = "index0",
             tag_var = "tag",
+            output_dim_sz = len(Y.layout.size),
             vlane_split_axis = 3,
             vlane_stride = 1,
             mlir_dtype = kernel.render_options['DATA_STYPE'],
             tile_nr_dim = 4,
             dram_shape = f"memref<{BATCH * O_C * O_H * O_W}x{kernel.render_options['DATA_STYPE']}>",
-            tile_shape = f"memref<{TILE_O_H}x{TILE_O_W}x{TILE_M}x{TILE_N}x{kernel.render_options['DATA_STYPE']}, 1>" if conv_template in (CONV_TEMPLATE, MULTI_TILE_CONV_TEMPLATE)
-                          else f"memref<1x{TILE_O_H}x{TILE_M}x{TILE_N}x{kernel.render_options['DATA_STYPE']}, 1>",
-            tile_size = (TILE_O_H, TILE_O_W, TILE_M, TILE_N) if conv_template in (CONV_TEMPLATE, MULTI_TILE_CONV_TEMPLATE) else (1, TILE_O_H, TILE_M, TILE_N),
+            tile_size = [TILE_O_H, TILE_O_W, TILE_M, TILE_N] if conv_template in (CONV_TEMPLATE, MULTI_TILE_CONV_TEMPLATE) else [1, TILE_O_H, TILE_M, TILE_N],
             tile_stride = [TILE_O_W * TILE_M * TILE_N, TILE_M * TILE_N, 1, TILE_M]
         )
         code = self._template_from_string(conv_template).render(**kernel.render_options)

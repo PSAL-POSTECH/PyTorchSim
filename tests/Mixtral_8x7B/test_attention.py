@@ -69,6 +69,7 @@ def test_decode(device, prompt_length, nr_tokens):
 
         # Check output token
         test_result("Mistral", res, cpu_res)
+        print("Max diff > ", torch.max(torch.abs(res.cpu() - cpu_res)))
 
 def test_attention(device):
     args = ModelArgs()
@@ -87,15 +88,23 @@ def test_attention(device):
     prompt = prompt.to(device=device)
     cpu_input_pos = copy.deepcopy(input_pos)
     input_pos = input_pos.to(device=device)
+
+    freqs_cis = precompute_freqs_cis(args.block_size, args.dim // args.n_head, args.rope_base)[cpu_input_pos].to(dtype=torch.float32)
+    freqs_cis = freqs_cis.view(1, T, 1, -1)
+    cpu_freqs_cis = copy.deepcopy(freqs_cis)
+    freqs_cis = freqs_cis.to(device=device)
+
     mask = torch.tril(torch.ones(T, T, dtype=torch.bool))
     cpu_mask = copy.deepcopy(mask)
     mask = mask.to(device=device)
 
     cpu_model = copy.deepcopy(model).to("cpu")
     opt_fn = torch.compile(dynamic=False)(model)
-    res = opt_fn(prompt, None, mask, input_pos)
-    cpu_res = cpu_model(cpu_prompt, None, cpu_mask, cpu_input_pos)
+    res = opt_fn(prompt, freqs_cis, mask, input_pos)
+    cpu_res = cpu_model(cpu_prompt, cpu_freqs_cis, cpu_mask, cpu_input_pos)
+
     test_result("Attention", res, cpu_res)
+    print("Max diff > ", torch.max(torch.abs(res.cpu() - cpu_res)))
 
 def test_ffn(device):
     args = ModelArgs()
@@ -143,7 +152,7 @@ if __name__ == "__main__":
     from Scheduler.scheduler import ExecutionEngine
     module = ExecutionEngine.setup_device()
     device = module.custom_device()
-    test_decode(device, 33, 3)
-    #test_concat(device, size1=(1, 8, 32, 64), size2=(1,8,1,64), dim=2)
-    #test_attention(device)
-    #test_ffn(device)
+    test_decode(device, 32, 3)
+    # test_concat(device, size1=(1, 8, 32, 64), size2=(1,8,1,64), dim=2)
+    # test_attention(device)
+    # test_ffn(device)

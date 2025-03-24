@@ -3,16 +3,24 @@ from typing import List, Optional, cast
 
 from PyTorchSimFrontend.mlir.mlir_template import MLIRTemplate
 from PyTorchSimFrontend.mlir.mlir_template import MLIRTemplateKernel
-from torch._inductor.ir import Buffer
 from torch._inductor.ir import IRNode
-from torch._inductor.ir import ReinterpretView
 from torch._inductor.codecache import write_atomic
 import PyTorchSimFrontend.extension_codecache as extension_codecache
 from PyTorchSimFrontend import extension_config
 
 GEMM_TEMPLATE = r"""
-{% if X_transposed %}#map0 = affine_map<(d0, d1) -> (d1 * {{ M }} + d0)>{% else %}#map0 = affine_map<(d0, d1) -> (d0 * {{ K }} + d1)>{% endif %}
-{% if W_transposed %}#map1 = affine_map<(d0, d1) -> (d1 * {{ K }} + d0)>{% else %}#map1 = affine_map<(d0, d1) -> (d0 * {{ N }} + d1)>{% endif %}
+// GEMM kernel
+// M = {{ M }}
+// N = {{ N }}
+// K = {{ K }}
+// TILE_M = {{ TILE_M }}
+// TILE_N = {{ TILE_N }}
+// TILE_K = {{ TILE_K }}
+// SUB_TILE_M = {{ SUB_TILE_M }}
+// SUB_TILE_N = {{ SUB_TILE_N }}
+
+#map0 = affine_map<(d0, d1) -> (d0 * {{ X_stride[0] }} + d1 * {{ X_stride[1] }})>
+#map1 = affine_map<(d0, d1) -> (d0 * {{ W_stride[0] }} + d1 * {{ W_stride[1] }})>
 #map2 = affine_map<(d0, d1) -> (d0 * {{ N }} + d1)>
 memref.global @X_spad : memref<{{ TILE_M }}x{{ TILE_K }}xf32, 1>
 memref.global @W_spad : memref<{{ TILE_K }}x{{ TILE_N }}xf32, 1>
@@ -78,30 +86,6 @@ class MLIRGemmTemplate(MLIRTemplate):
     def __init__(self, input_nodes, layout, input_reorder=None):
         super().__init__("kernel", input_nodes, layout, input_reorder)
 
-    def is_transposed(self, node):
-        if isinstance(node, ReinterpretView):
-            unsqueezed_layout_stride = [s for s, size in zip(node.layout.stride, node.layout.size) if size > 1]
-            unsqueezed_data_stride = [s for s, size in zip(node.data.layout.stride, node.data.layout.size) if size > 1]
-
-            if 0 in node.layout.stride: # [MoE] Temporary solution
-                if node.layout.stride[1] == 0:
-                    return True
-            if len(node.layout.stride) == len(node.data.layout.stride):
-                if node.layout.stride[-2] == node.data.layout.stride[-1] and node.layout.stride[-1] == node.data.layout.stride[-2]:
-                    return True
-                else:
-                    raise NotImplementedError("If the stride is not equal to the original stride, it should have been transposed.")
-            elif len(node.layout.stride) < len(node.data.layout.stride):
-                # Squeezed case
-                if node.layout.stride == node.data.layout.stride[-len(node.layout.stride):]:
-                    return False
-                if len(unsqueezed_layout_stride) < len(unsqueezed_data_stride):
-                    if unsqueezed_layout_stride == unsqueezed_data_stride[-len(unsqueezed_layout_stride):]:
-                        return False
-                raise NotImplementedError("If the stride is not equal to the original stride, it should have been transposed.")
-
-        return False
-
     def render(self,
                kernel: MLIRTemplateKernel,
                template_buffer_node = None,
@@ -133,9 +117,6 @@ class MLIRGemmTemplate(MLIRTemplate):
         SUB_TILE_N = TILE_N if TILE_N < kernel.vector_lane else kernel.vector_lane
         SUB_TILE_K = TILE_K if TILE_K < kernel.vector_lane else kernel.vector_lane
 
-        W_transposed = self.is_transposed(W)
-        X_transposed = self.is_transposed(X)
-
         kernel.render_options = dict(
             KERNEL_NAME=self.name,
             kernel=kernel,
@@ -155,10 +136,9 @@ class MLIRGemmTemplate(MLIRTemplate):
             Y = Y,
             Bias = Bias,
             Bias_rank = len(Bias.data.get_size()) if Bias is not None else 0,
-            W_transposed = W_transposed,
-            X_transposed = X_transposed,
+            X_stride = X.layout.stride,
+            W_stride = W.layout.stride,
             Y_numel = M * N,
-            epilogue_nodes = epilogue_nodes,
             input_reorder = self.input_reorder
         )
 
@@ -169,16 +149,17 @@ class MLIRGemmTemplate(MLIRTemplate):
             dram_var = "Y",
             index_var = "index2",
             tag_var = "tag",
+            output_dim_sz = len(Y.layout.size),
             vlane_split_axis = 1,
             vlane_stride = 1,
             mlir_dtype = kernel.render_options['DATA_STYPE'],
             tile_nr_dim = 2,
             dram_shape = f"memref<{kernel.render_options['Y_numel']}x{kernel.render_options['DATA_STYPE']}>",
-            tile_shape = f"memref<{TILE_M}x{TILE_N}x{kernel.render_options['DATA_STYPE']}, 1>",
-            tile_size = (TILE_M, TILE_N),
+            tile_size = [TILE_M, TILE_N],
             tile_stride = [1, TILE_M]
         )
         code = self._template_from_string(template).render(**kernel.render_options)
+        kernel.add_loop_info([kernel.render_options["M"], kernel.render_options["N"], kernel.render_options["K"]], [kernel.render_options["TILE_M"], kernel.render_options["TILE_N"], kernel.render_options["TILE_K"]])
 
         self.header = f"float X_spad[{kernel.get_spad_size_per_lane(TILE_M, TILE_K)}] __attribute__ ((section(\".spad\")));\n"
         self.header += f"float W_spad[{kernel.get_spad_size_per_lane(TILE_K, TILE_N)}] __attribute__ ((section(\".spad\")));\n"
@@ -186,8 +167,6 @@ class MLIRGemmTemplate(MLIRTemplate):
         self.gem5_header = f"float X_spad[{TILE_M * TILE_K}] __attribute__ ((section(\".spad\")));\n"
         self.gem5_header += f"float W_spad[{TILE_K * TILE_N}] __attribute__ ((section(\".spad\")));\n"
         self.gem5_header += f"float Y_spad[{TILE_M * TILE_N}] __attribute__ ((section(\".spad\")));\n"
-
-        kernel.add_loop_info([kernel.render_options["M"], kernel.render_options["N"], kernel.render_options["K"]], [kernel.render_options["TILE_M"], kernel.render_options["TILE_N"], kernel.render_options["TILE_K"]])
 
         return code
 

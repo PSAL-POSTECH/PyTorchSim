@@ -431,6 +431,7 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
         vlane_stride = 8 # TODO: VCIX widening is not implemented
         vlane_split_axis = len(vars) - 1 # Set split_axis as a last normal loop not reduction loop
 
+        # FIXME: Naive tile size decrement
         def decrease_tile_size(tile_size):
             for i in range(len(tile_size)):
                 if tile_size[i] > 1:

@@ -32,7 +32,7 @@ class my_MultiheadAttention(torch.nn.Module):
     def forward(self, query, key, value):
         # 1) Do all the linear projections in batch from d_model => h x d_k
         query, key, value = [
-            lin(x).view(-1, self.h, self.d_k).transpose(0, 1).contiguous()
+            lin(x).view(-1, self.h, self.d_k).transpose(0, 1)
             for lin, x in zip(self.linears, (query, key, value))
         ]
 

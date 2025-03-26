@@ -510,7 +510,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         operation = "affine.vector_load" if tile_numel_per_lane > 1 else "affine.load"
         zero_var = self.get_const_cse(0)
         tile_indices = ",".join([f"%{zero_var}"] * self.store_info["tile_nr_dim"])
-        line = f"{operation} %{sram_var}[{tile_indices}] : memref<{'x'.join(str(s) for s in self.store_info['tile_size'])}x{mlir_dtype}, 1>{shape}"
+        line = f"{operation} %{sram_var}[{tile_indices}] : memref<{'x'.join(str(s) for s in self.store_info['tile_size'])}x{mlir_dtype}, 1>{vshape}"
         out = self.cse.generate(self.loads, line)
         self.register_var_info(out, [tile_numel_per_lane, mlir_dtype])
         return out

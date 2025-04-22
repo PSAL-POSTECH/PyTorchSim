@@ -433,25 +433,25 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
                 if sz != target_operand[3][dim]:
                     raise NotImplementedError("Not supporting type...")
 
+        vlane_split_axis = len(vars) - 1 # Set split_axis as a last normal loop not reduction loop
+        vlane_stride = 8
+
         # Dummy tile size
         tile_size = [1] * (len(vars) + len(reduction_vars))
         if len(tile_size) == 2:
-            tile_size[-1] = 1024
-            tile_size[-2] = 2048
+            tile_size[-1] = vlane_stride * self.vector_lane
+            tile_size[-2] = 2 * vlane_stride * self.vector_lane
         elif len(tile_size) == 0: # Scalar
             tile_size = [1]
             self.ranges = [1]
         elif len(tile_size) == 1:
-            tile_size[0] = 128*128*2
+            tile_size[0] = 2 * vlane_stride * self.vector_lane
         elif len(tile_size) == 3:
-            tile_size[-1] = 128
-            tile_size[-2] = 128
+            tile_size[-1] = self.vector_lane
+            tile_size[-2] = self.vector_lane
             tile_size[-3] = 2
         else:
             raise NotImplementedError("dummy tile size fail!")
-
-        vlane_split_axis = len(vars) - 1 # Set split_axis as a last normal loop not reduction loop
-        vlane_stride = 8
 
         # FIXME: Naive tile size decrement
         def decrease_tile_size(tile_size, vlane_split_axis):

@@ -104,8 +104,14 @@ class FunctionalSimulator():
             subprocess.check_call(run_cmd)
         except subprocess.CalledProcessError as e:
             print("[SpikeSimulator] Command failed with exit code", e.returncode)
-            print("[SpikeSimulator] Error output:", e.output)
-            assert(0)
+            error_msg = ""
+            if e.returncode == 200:
+                error_msg = "INVALID_SPAD_ACCESS"
+            elif e.returncode == 201:
+                error_msg = "STACK_OVERFLOW"
+            else:
+                error_msg = "UNKNOWN_ERROR"
+            raise RuntimeError(f"{error_msg}")
 
         for (arg_name, arg_attribute), arg, path in zip(arg_attributes, args, file_path):
             if LLVMKernelArgs.is_llvm_arg_out(arg_attribute[0]):

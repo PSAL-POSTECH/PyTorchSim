@@ -45,6 +45,10 @@ CONFIG_GEM5_PATH = os.environ.get('GEM5_PATH', default="/workspace/gem5/build/RI
 CONFIG_GEM5_SCRIPT_PATH = os.environ.get('GEM5_SCRIPT_PATH',
                                   default=f"{CONFIG_TORCHSIM_DIR}/gem5_script/script_systolic.py")
 
+# AUTOTUNE config
+CONFIG_AUTOTUNE = int(os.environ.get('AUTOTUNE', default=True))
+CONFIG_MAX_AUTOTUNE_TRY = int(os.environ.get('MAX_AUTOTUNE_TRY', default=10))
+
 # For block sparse
 CONFIG_BLOCK_SPARSE = int(os.environ.get('BLOCK_SPARSE', default=0))
 CONFIG_FORCE_TILE_M = int(os.environ.get("TORCHSIM_FORCE_TIME_M", default=sys.maxsize))

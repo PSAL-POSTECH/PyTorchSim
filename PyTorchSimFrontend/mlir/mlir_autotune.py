@@ -36,39 +36,23 @@ class MLIRBenchmarkRequest(BenchmarkRequest):
     def make_run_fn(
         self, *input_tensors: torch.Tensor, output_tensor: torch.Tensor
     ) -> Callable[[], None]:
-        self.DLL, self.hash_key, self.source_file = CUDACodeCache.load(
-            self.source_code, "so"
-        )
+        from PyTorchSimFrontend.extension_codecache import CustomAsyncCompile
+        custom_async_compile = CustomAsyncCompile()
+        run_method = custom_async_compile.mlir(
+            self.source_code, vectorlane_size=self.extra_args["vector_lane"],
+            loop_size=None, spad_info=self.extra_args["spad_info"],
+            vlen=self.extra_args["vlen"], arg_attributes=self.extra_args["arg_attributes"],
+            origins="Unknown")
 
         args = [
-            tensor.data_ptr()
+            tensor
             for tensor in list(input_tensors) + [output_tensor]
         ]
-
-        print(
-            "make_run_fn: self.kernel_name=%s, self.source_file=%s, self.hash_key=%s, args=%s, self.extra_args=%s",
-            self.kernel_name,
-            self.source_file,
-            self.hash_key,
-            args,
-            self.extra_args,
-        )
-
-        run_method = getattr(self.DLL, self.kernel_name)
-
-        # Retrieve workspace_size and initialize workspace.
-        run_method(
-            *args,  # input ptrs and output ptrs
-            *self.extra_args,
-        )
 
         # Generate partial function.
         return functools.partial(
             run_method,
             *args,
-            *self.extra_args,
-            None,  # null workspace size ptr
-            None,  # set workspace ptr, TODO: update it to a real ptr if workspace_size > 0
         )
 
     def __str__(self) -> str:

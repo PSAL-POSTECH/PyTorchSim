@@ -14,6 +14,7 @@ from torch._inductor.utils import (
 from torch.utils._sympy.functions import ModularIndexing
 import PyTorchSimFrontend.extension_codecache as extension_codecache
 
+from PyTorchSimFrontend import extension_config
 from . import mlir_common
 from .mlir_common import LoopLevel, LoopNest
 
@@ -770,6 +771,9 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         self.spad_buffer_dict = dict()
         self.base_vector_initialized = False
 
+    def reset(self):
+        self.__init__(self.kernel_group)
+
     # padding type 0: zero-padding 1: negative-padding(-inf) ...
     def get_padding_type(self):
         ops = self.current_node.node.origins
@@ -1254,19 +1258,40 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         return code
 
     def codegen_nodes(self, nodes, kernel_name):
-        src_code = super().codegen_nodes(nodes, kernel_name)
+        src_code = ""
 
-        # Create extra headers for simulators
-        write_path = extension_codecache.get_write_path(src_code)
-        if not os.path.exists(write_path):
-            os.makedirs(write_path)
-        spike_write_path = os.path.join(write_path, "global_var.h")
-        gem5_write_path = os.path.join(write_path, "gem5_global_var.h")
-        if not os.path.exists(spike_write_path):
-            spad_end_symbol = f"int spad_end[0] __attribute__ ((section(\".spad\"), aligned({self.spad_info['spad_size']*self.vector_lane})));"
-            write_atomic(spike_write_path, self.header.getvalue() + spad_end_symbol)
-        if not os.path.exists(gem5_write_path):
-            write_atomic(gem5_write_path, self.gem5_header.getvalue())
+        n_try = 0
+        while n_try < extension_config.CONFIG_MAX_AUTOTUNE_TRY:
+            src_code = super().codegen_nodes(nodes, kernel_name)
+
+            # Create extra headers for simulators
+            write_path = extension_codecache.get_write_path(src_code)
+            if not os.path.exists(write_path):
+                os.makedirs(write_path)
+            spike_write_path = os.path.join(write_path, "global_var.h")
+            gem5_write_path = os.path.join(write_path, "gem5_global_var.h")
+            if not os.path.exists(spike_write_path):
+                spad_end_symbol = f"int spad_end[0] __attribute__ ((section(\".spad\"), aligned({self.spad_info['spad_size']*self.vector_lane})));"
+                write_atomic(spike_write_path, self.header.getvalue() + spad_end_symbol)
+            if not os.path.exists(gem5_write_path):
+                write_atomic(gem5_write_path, self.gem5_header.getvalue())
+
+            if not extension_config.CONFIG_AUTOTUNE:
+                break
+
+            try:
+                bench_runner = self.run_bench(nodes, kernel_name, src_code)
+                bench_runner(validate=True)
+                print("Benchmark succeeded.")
+                break
+            except RuntimeError as e:
+                if str(e) == "STACK_OVERFLOW":
+                    n_try += 1
+                    print(f"Benchmark failed due to stack overflow with tile size: {self.kernel_group.tile_desc.get_tile_size()}")
+                    self.reset()
+                else:
+                    print(f"Benchmark failed with error: {str(e)}")
+                    # raise e
         return src_code
 
     def get_dma_info(self, name, index, broadcast=True, store_reduction=False, buffer=None): # Need more argument?

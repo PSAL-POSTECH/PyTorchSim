@@ -6,6 +6,8 @@ from collections import defaultdict
 from functools import reduce
 from operator import mul
 import torch
+from torch._dynamo.testing import rand_strided
+from torch._inductor.autotune_process import TensorMeta
 from torch._inductor.codegen import common
 from torch._inductor.codegen import cpp
 from torch._inductor.virtualized import V
@@ -30,6 +32,7 @@ from torch._inductor.utils import (
     unique,
 )
 from PyTorchSimFrontend import extension_config
+from PyTorchSimFrontend.mlir.mlir_autotune import MLIRBenchmarkRequest
 schedule_log = torch._logging.getArtifactLogger(__name__, "schedule")
 
 DTYPE_TO_MLIR = {
@@ -436,27 +439,15 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
         vlane_split_axis = len(vars) - 1 # Set split_axis as a last normal loop not reduction loop
         vlane_stride = 8
 
-        # Dummy tile size
-        tile_size = [1] * (len(vars) + len(reduction_vars))
-        if len(tile_size) == 2:
-            tile_size[-1] = vlane_stride * self.vector_lane
-            tile_size[-2] = 2 * vlane_stride * self.vector_lane
-        elif len(tile_size) == 0: # Scalar
-            tile_size = [1]
-            self.ranges = [1]
-        elif len(tile_size) == 1:
-            tile_size[0] = 2 * vlane_stride * self.vector_lane
-        elif len(tile_size) == 3:
-            tile_size[-1] = self.vector_lane
-            tile_size[-2] = self.vector_lane
-            tile_size[-3] = 2
-        else:
-            raise NotImplementedError("dummy tile size fail!")
-
-        # FIXME: Naive tile size decrement
+        # FIXME: Naive decrease tile size
         def decrease_tile_size(tile_size, vlane_split_axis):
             is_decreased = False
-            # Decrease tile size
+
+            # Decrease vlane_split_axis when it is too large
+            if tile_size[vlane_split_axis] > vlane_stride * self.vector_lane:
+                tile_size[vlane_split_axis] = int(tile_size[vlane_split_axis] // 2)
+                return tile_size
+
             for i in range(len(tile_size)):
                 if i == vlane_split_axis:
                     continue
@@ -464,10 +455,33 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
                     tile_size[i] = int(tile_size[i] // 2)
                     is_decreased = True
                     break
+
+            # Decrease vlane_split_axis at the end to maximize the vlane usage
             if not is_decreased:
                 if tile_size[vlane_split_axis] > 1:
                     tile_size[vlane_split_axis] = int(tile_size[vlane_split_axis] // 2)
             return tile_size
+
+        # Dummy tile size
+        if self.kernel_group.tile_desc:
+            tile_size = self.kernel_group.tile_desc.get_tile_size()
+            decrease_tile_size(tile_size, vlane_split_axis)
+        else:
+            tile_size = [1] * (len(vars) + len(reduction_vars))
+            if len(tile_size) == 2:
+                tile_size[-1] = vlane_stride * self.vector_lane
+                tile_size[-2] = 2 * vlane_stride * self.vector_lane
+            elif len(tile_size) == 0: # Scalar
+                tile_size = [1]
+                self.ranges = [1]
+            elif len(tile_size) == 1:
+                tile_size[0] = 2 * vlane_stride * self.vector_lane
+            elif len(tile_size) == 3:
+                tile_size[-1] = self.vector_lane
+                tile_size[-2] = self.vector_lane
+                tile_size[-3] = 2
+            else:
+                raise NotImplementedError("dummy tile size fail!")
 
         # FIXME: Not considering removed buffers
         n_buffer = sum(
@@ -554,6 +568,34 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
         src_code = self.codegen_kernel(kernel_name=kernel_name)
         self.meta_kernel()
         return src_code
+
+    def run_bench(self, nodes, kernel_name, src_code):
+        _, _, arg_attributes, _ = self.kernel_group.args.mlir_argdefs()
+        input_call_args = tuple(self.args.input_buffers.keys())
+        output_call_args = tuple(self.args.output_buffers.keys())
+        full_input_nodes = tuple([V.graph.get_buffer(k) for k in input_call_args])
+        full_output_nodes = tuple([V.graph.get_buffer(k) for k in output_call_args])
+
+        bmreq = MLIRBenchmarkRequest(
+            kernel_name=kernel_name,
+            input_tensor_meta=TensorMeta.from_irnodes(full_input_nodes),
+            output_tensor_meta=TensorMeta.from_irnodes(full_output_nodes),
+            extra_args={
+                "vector_lane" : self.vector_lane,
+                "spad_info": self.spad_info,
+                "vlen" : self.vlen,
+                "arg_attributes" : arg_attributes
+            },
+            source_code=src_code,
+        )
+        dummy_inputs = [rand_strided(meta.sizes,meta.strides,dtype=meta.dtype, extra_size=meta.offset).to(device=nodes[0].get_device()) for meta in bmreq.input_tensor_meta]
+        dummy_output = rand_strided(
+            bmreq.output_tensor_meta.sizes,
+            bmreq.output_tensor_meta.strides,
+            dtype=bmreq.output_tensor_meta.dtype,
+            extra_size=bmreq.output_tensor_meta.offset
+        ).to(device=nodes[0].get_device())
+        return bmreq.make_run_fn(*dummy_inputs, output_tensor=dummy_output)
 
     def codegen_kernel(self, kernel_name):
         arg_defs, _, _, _ = self.kernel_group.args.mlir_argdefs()

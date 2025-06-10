@@ -343,7 +343,7 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
         self.var_info = {} # MLIR variable info
         self.buffer_types : dict = None # format: dtype, numel, size, stride
         self.compute_idx = "compute_idx"
-        self.compute_body_loop = LoopLevel(self.compute_idx, 1)
+        self.compute_body_loop = LoopLevel(sympy.Symbol(self.compute_idx), sympy.Number(1))
 
     def set_ranges(self, lengths, reduction_lengths):
         if self.call_ranges:
@@ -481,7 +481,7 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
                 tile_size[-2] = 2 * vlane_stride * self.vector_lane
             elif len(tile_size) == 0: # Scalar
                 tile_size = [1]
-                self.ranges = [1]
+                self.ranges = [sympy.Number(1)]
             elif len(tile_size) == 1:
                 tile_size[0] = 2 * vlane_stride * self.vector_lane
             elif len(tile_size) == 3:
@@ -805,7 +805,7 @@ class LoopLevel:
     affine_yield: Dict[str, str] = dataclasses.field(default_factory=dict)
 
     def lines(self):
-        self.size = f"%{self.size}" if self.size.is_symbol else self.size
+        self.size = f"%{self.size}" if not isinstance(self.size, int) and self.size.is_symbol else self.size
         if len(self.reduction_vars):
             acc = ', '.join([f"%{acc.name}" for acc in self.reduction_vars.keys()])
             args = ', '.join([f"%{iter.name} = %{init.name}" for (_, iter, init, _) in self.reduction_vars.values()])

@@ -1331,7 +1331,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         reductions.mark_reduction(self.reduction_vars, self.affine_yield)
         # For non-loop code
         if (self.reduction_depth==0):
-            loops = LoopNest([LoopLevel("dummy", 1)])
+            loops = LoopNest([LoopLevel(sympy.Symbol("dummy"), sympy.Number(1))])
 
         if len(reductions.loops) > 1:
             NotImplementedError("Not support multiple reduction axis..")

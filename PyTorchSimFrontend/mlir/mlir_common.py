@@ -129,6 +129,10 @@ class MLIRKernelArgs(common.KernelArgs):
         return MLIRKernelArgs.MLIR_ARGS_INOUT & value
 
     @staticmethod
+    def is_mlir_arg_var(value):
+        return MLIRKernelArgs.MLIR_ARGS_VAR & value
+
+    @staticmethod
     def get_mlir_shape(info):
         tensor_type = DTYPE_TO_MLIR[info[0]]
         return f"memref<{info[1]}x{tensor_type}>"
@@ -137,27 +141,31 @@ class MLIRKernelArgs(common.KernelArgs):
         buffer_types = {}
         for x in V.graph.buffers:
             if not isinstance(x.layout, MultiOutputLayout): # FIXME: MultiOutputLayout should be handled
-                buffer_types[x.get_name()] = [x.get_dtype(), x.get_numel(), x.get_size(), x.get_stride()]
+                buffer_types[x.get_name()] = [x.get_dtype(), x.get_numel() if x.get_numel().is_number else "?"]
         for name, val in V.graph.graph_inputs.items():
             if isinstance(val, sympy.Expr):
-                buffer_types[name] = [get_sympy_Expr_dtype(val), 1, [1], [1]]
+                buffer_types[name] = [get_sympy_Expr_dtype(val), 1]
             else:
-                buffer_types[name] = [val.get_dtype(), val.get_numel(), val.get_size(), val.get_stride()]
+                buffer_types[name] = [val.get_dtype(), val.get_numel() if val.get_numel().is_number else "?"]
         buffer_types.update(
-            {name: [val.dtype, 1, [1], [1]] for name, val in V.graph.constants.items()}
+            {name: [val.dtype, 1] for name, val in V.graph.constants.items()}
         )
         buffer_types.update(
-            {name: [val.get_dtype(), val.get_numel(), val.get_size(), val.get_stride()] for name, val in extra_node.items()}
+            {str(sym): ["index", 1] for sym, name in self.sizevars.items()}
+        )
+        buffer_types.update(
+            {name: [val.get_dtype(), val.get_numel() if val.get_numel().is_number else "?",
+                    val.get_size(), val.get_stride()] for name, val in extra_node.items()}
         )
 
         call_args = []
         arg_defs = []
         arg_attributes = []
         def set_info(outer, inner, arg_type):
-            mlir_shape = self.get_mlir_shape(buffer_types[outer])
+            mlir_shape = self.get_mlir_shape(buffer_types[outer]) if arg_type != self.MLIR_ARGS_VAR else buffer_types[outer][0]
             arg_defs.append(f"%{inner}: {mlir_shape}")
             call_args.append(outer)
-            arg_attributes.append([outer] + [[arg_type] + buffer_types[outer]])
+            arg_attributes.append([str(outer)] + [[arg_type] + buffer_types[outer]])
 
         for inplaced in unique(self.inplace_buffers.values()):
             if self._buffer_is_marked_removed(inplaced):
@@ -174,7 +182,7 @@ class MLIRKernelArgs(common.KernelArgs):
                 continue
             set_info(outer, inner, self.MLIR_ARGS_OUT)
         for outer, inner in self.sizevars.items():
-            set_info(outer, inner, self.MLIR_ARGS_VAR)
+            set_info(str(outer), inner, self.MLIR_ARGS_VAR)
         return arg_defs, call_args, arg_attributes, buffer_types
 
 class MLIRMultiDimTile():
@@ -495,6 +503,8 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
             # Adjust tile size to avoid too much paddings
             for i in range(1, len(tile_size)+1):
                 target_range = self.ranges[-i]
+                if target_range.is_symbol:
+                    continue
                 if implicit_ranges:
                     target_range = implicit_dim_size[len(tile_size)-i][-1]
 
@@ -795,6 +805,7 @@ class LoopLevel:
     affine_yield: Dict[str, str] = dataclasses.field(default_factory=dict)
 
     def lines(self):
+        self.size = f"%{self.size}" if self.size.is_symbol else self.size
         if len(self.reduction_vars):
             acc = ', '.join([f"%{acc.name}" for acc in self.reduction_vars.keys()])
             args = ', '.join([f"%{iter.name} = %{init.name}" for (_, iter, init, _) in self.reduction_vars.values()])

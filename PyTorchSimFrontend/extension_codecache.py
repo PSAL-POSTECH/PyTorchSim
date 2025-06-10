@@ -3,6 +3,7 @@ import re
 import shlex
 import subprocess
 
+import torch
 from torch._inductor.codecache import AsyncCompile, get_lock_dir, get_hash, write
 from AsmParser.tog_generator import tog_generator
 from AsmParser.riscv_parser import riscv_parser
@@ -26,7 +27,10 @@ def dump_metadata(args, arg_attributes, path):
 
     with open(meta_path, "a") as file:
         for (arg_name, arg_attribute), arg in zip(arg_attributes, args):
-            file.write(f'{arg_name}=({arg_attribute[0]}, {arg.dtype}, {arg.shape})\n')
+            if not isinstance(arg, torch.Tensor):
+                file.write(f'{arg_name}=({arg_attribute[0]}, {arg_attribute[1]}, {arg_attributes[2]})\n')
+            else:
+                file.write(f'{arg_name}=({arg_attribute[0]}, {arg.dtype}, {arg.shape})\n')
     return
 
 def parse_stack_sizes(file_path):
@@ -231,13 +235,10 @@ class MLIRCodeCache:
         cycle_llvm_caller = MLIRKernelCallerCodeGen(False, arg_attributes, cycle_sim=True)
         cycle_llvm_caller.generate_wrapper_file(write_path, cycle_wrapper_name)
         cycle_llvm_caller.compile_wih_kernel(write_path, key + "_sample", cycle_wrapper_name, cycle_binary_name, link_option)
-        array_size = []
-        for (arg_name, arg_attribute) in arg_attributes:
-            array_size.append(str(arg_attribute[2]))
 
         # Run cyclesim
         cyclesim = CycleSimulator()
-        cycle_list = cyclesim.compile_and_simulate(os.path.join(write_path, cycle_binary_name), " ".join(array_size), vectorlane_size)
+        cycle_list = cyclesim.compile_and_simulate(os.path.join(write_path, cycle_binary_name), arg_attributes, vectorlane_size)
 
         # Create TOG
         w_offset, x_offset = vectorlane_size, vectorlane_size
@@ -370,7 +371,7 @@ class CustomAsyncCompile(AsyncCompile):
             backend_path = os.path.join(extension_config.CONFIG_TORCHSIM_DIR, "PyTorchSimBackend")
             backsim = BackendSimulator(backend_path, extension_config.CONFIG_TORCHSIM_BACKEND_CONFIG)
             backsim.vectorlane_size = vectorlane_size
-            attribute_path = backsim.create_attribute_file(attribute_path, args, loop_size=loop_size)
+            attribute_path = backsim.create_attribute_file(attribute_path, args, arg_attributes=arg_attributes, loop_size=loop_size)
             result_path = backsim.simulation(onnx_path, attribute_path)
             result = BackendSimulator.get_result_from_file(result_path)
             return result

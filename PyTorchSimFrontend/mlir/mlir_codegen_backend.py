@@ -946,11 +946,13 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
                 indices.append(str(new_arg))
 
         # Extract index var
+        vars = ", ".join([f"{var}" for var in expr.free_symbols if "ks" in str(var)])
         expr_str = str(expr)
         args = ", ".join(map(str, indices))
-        map_var = self.map_cse.generate(self.global_vars, f"affine_map<({args})[] -> ({expr_str})>")
+        map_var = self.map_cse.generate(self.global_vars, f"affine_map<({args})[{vars}] -> ({expr_str})>")
         args = ", ".join([f"%{i}" for i in indices])
-        index = self.apply_cse.generate(buffer, f"affine.apply #{map_var}({args})[]")
+        var_args = ", ".join([f"%{var}" for var in expr.free_symbols if "ks" in str(var)])
+        index = self.apply_cse.generate(buffer, f"affine.apply #{map_var}({args})[{var_args}]")
         return index
 
     def load(self, name: str, index: sympy.Expr):
@@ -1329,7 +1331,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         reductions.mark_reduction(self.reduction_vars, self.affine_yield)
         # For non-loop code
         if (self.reduction_depth==0):
-            loops = LoopNest([LoopLevel("dummy", 1)])
+            loops = LoopNest([LoopLevel(sympy.Symbol("dummy"), sympy.Number(1))])
 
         if len(reductions.loops) > 1:
             NotImplementedError("Not support multiple reduction axis..")

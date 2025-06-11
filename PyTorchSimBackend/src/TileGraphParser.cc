@@ -560,10 +560,12 @@ std::vector<std::shared_ptr<Tile>> TileLoopNode::get_tiles_from_iter(TileGraphPa
       tile_vec.back()->append_instuction(inst);
     } else if (tile_node->get_type() == TileType::LOOP_INDEX_NODE) {
       std::shared_ptr<TileLoopNode> loop_node = std::static_pointer_cast<TileLoopNode>(tile_node);
-      uint64_t start = loop_node->get_start();
-      uint64_t stride = loop_node->get_stride();
-      uint64_t end = loop_node->get_end();
-
+      int64_t start = loop_node->get_start();
+      int64_t stride = loop_node->get_stride();
+      int64_t end = loop_node->get_end();
+      if (end < 0) {
+        end = tog_parser->get_symbol_size(end);
+      }
       /* Create tile before enter nested loop */
       for (const auto& pair: link_map) {
         std::shared_ptr<TileNode> node = pair.first;
@@ -744,6 +746,14 @@ TileGraphParser::TileGraphParser(std::string onnx_path, std::string attribute_pa
       spdlog::info("[TOGParser/Attribute] Address Attribute key: {} address: 0x{:x}", it.key(), value);
     }
   }
+  if (_attribute_json.contains("symbol_info")) {
+    auto symbol_info = _attribute_json["symbol_info"];
+    for (auto it = symbol_info.begin(); it != symbol_info.end(); ++it) {
+      uint64_t value = it.value();
+      _symbol_info[std::stoi(it.key())] = value;
+      spdlog::info("[TOGParser/Attribute] Symbol dim: {} size : 0x{:x}", it.key(), value);
+    }
+  }
   if (_attribute_json.contains("address_numa_stride")) {
     auto address_numa_stride = _attribute_json["address_numa_stride"];
     for (auto it = address_numa_stride.begin(); it != address_numa_stride.end(); ++it) {
@@ -796,9 +806,12 @@ TileGraphParser::TileGraphParser(std::string onnx_path, std::string attribute_pa
 
       /* Register loop info to parser */
       std::string loop_idx = tile_node->get_idx_name();
-      uint64_t start = tile_node->get_start();
-      uint64_t end = tile_node->get_end();
-      uint64_t step = tile_node->get_stride();
+      int64_t start = tile_node->get_start();
+      int64_t end = tile_node->get_end();
+      int64_t step = tile_node->get_stride();
+      if (end < 0) {
+        end = get_symbol_size(end);
+      }
       _loop_size_map[loop_idx] = std::tuple<int, int, LoopType>(end - start, step, tile_node->get_loop_type());
     } else if (type == TileType::LOOP_END_NODE) {
       std::shared_ptr<TileLoopEndNode> tile_node = std::make_shared<TileLoopEndNode>(node_proto);
@@ -859,9 +872,12 @@ TileGraphParser::TileGraphParser(std::string onnx_path, std::string attribute_pa
       break;
     last_outer_idx = i;
     std::string loop_idx = outer_loop->get_idx_name();
-    uint64_t start = outer_loop->get_start();
-    uint64_t end = outer_loop->get_end();
-    uint64_t stride = outer_loop->get_stride();
+    int64_t start = outer_loop->get_start();
+    int64_t end = outer_loop->get_end();
+    int64_t stride = outer_loop->get_stride();
+    if (end < 0) {
+      end = get_symbol_size(end);
+    }
     _tile_graph->push_range(loop_idx, {start, end, stride});
     spdlog::trace("[TOGParser] <Push Loop> loop_idx: {}, start: {}, end: {}, stride: {}", loop_idx, start, end, stride);
   }

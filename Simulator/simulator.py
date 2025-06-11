@@ -62,8 +62,10 @@ class FunctionalSimulator():
         array_size = []
         file_path = []
         for (arg_name, arg_attribute), arg in zip(arg_attributes, args):
-            size = arg_attribute[2] if arg_attribute[1] != torch.bool else (arg_attribute[2] + 7) // 8
-            array_size.append(size)
+            if not isinstance(arg, torch.Tensor) and arg_attribute[1] == 'index':
+                arg = torch.tensor([arg], dtype=torch.int64)
+
+            array_size.append(arg.nbytes)
             if LLVMKernelArgs.is_llvm_arg_in(arg_attribute[0]):
                 index = self.write_arg(arg, load_path, arg_name)
                 file_path.append(os.path.join(load_path, arg_name, f'{index}.raw'))
@@ -71,7 +73,9 @@ class FunctionalSimulator():
                 path = os.path.join(dump_path, arg_name)
                 os.makedirs(path, exist_ok=True)
                 file_path.append(os.path.join(path, f'{self.get_biggest_filename(path)}.raw'))
-
+            elif LLVMKernelArgs.is_llvm_arg_var(arg_attribute[0]):
+                index = self.write_arg(arg, load_path, arg_name)
+                file_path.append(os.path.join(load_path, arg_name, f'{index}.raw'))
         return array_size, file_path
 
     def run_spike(self, args, arg_attributes, runtime_path, binary, vectorlane_size=4, spad_info=None, cleanup=False):
@@ -87,8 +91,10 @@ class FunctionalSimulator():
         kernel_start_addr = subprocess.run(kernel_start, shell=True, stdout=subprocess.PIPE).stdout.strip().decode('utf-8')
         kernel_end_addr = subprocess.run(kernel_end, shell=True, stdout=subprocess.PIPE).stdout.strip().decode('utf-8')
 
-        _, file_path = self.dump_args(args, arg_attributes, load_path, dump_path)
-        file_path_str = ' '.join(file_path)
+        array_size, file_path = self.dump_args(args, arg_attributes, load_path, dump_path)
+        file_path_str = ''
+        for path, sz in zip(file_path, array_size):
+            file_path_str = f"{file_path_str} {path} {sz}"
 
         # Set hardware information
         spad_option = f"-m0x{0x80000000:x}:0x{100<<30:x},0x{spad_info['spad_paddr']:x}:0x{spad_info['spad_size']*vectorlane_size:x} " + \
@@ -146,7 +152,7 @@ class CycleSimulator():
     def __init__(self) -> None:
         pass
 
-    def compile_and_simulate(self, target_binary, array_size, vectorlane_size):
+    def compile_and_simulate(self, target_binary, arg_attr, vectorlane_size):
         def show_progress():
             i = 0
             while not finished:
@@ -156,8 +162,13 @@ class CycleSimulator():
                 time.sleep(1)
             print("")
 
+        options = ""
+        for val in arg_attr:
+            options = f"{options} {val[0]} {val[1][2]}"
+
         dir_path = os.path.join(os.path.dirname(target_binary), "m5out")
-        gem5_cmd = [extension_config.CONFIG_GEM5_PATH, "-d", dir_path, extension_config.CONFIG_GEM5_SCRIPT_PATH, "-c", target_binary, "--vlane", str(vectorlane_size)]
+        gem5_cmd = [extension_config.CONFIG_GEM5_PATH, "-d", dir_path, extension_config.CONFIG_GEM5_SCRIPT_PATH, "-c", target_binary, "--vlane", str(vectorlane_size), "-o", options ]
+
         try:
             # Create progress thread
             is_dryrun = int(os.environ.get('BACKENDSIM_DRYRUN', default=False))
@@ -328,17 +339,28 @@ class BackendSimulator():
         if buf_name in cls.ALLOC_POOL:
             del cls.ALLOC_POOL[buf_name]
 
-    def create_attribute_file(self, attribute_path, inputs, **kwargs):
+    def create_attribute_file(self, attribute_path, inputs, arg_attributes=[], **kwargs):
         address_info = {}
         sram_buffer = {}
         json_content = {}
+        symbol_info = {}
         os.makedirs(attribute_path, exist_ok=True)
         index = str(len(os.listdir(attribute_path)))
         attribute_path = os.path.join(attribute_path, index)
 
         for idx, tensor in enumerate(inputs):
+            if not isinstance(tensor, torch.Tensor):
+                continue
             address_info[f"arg{idx}"] = tensor.data_ptr()
         json_content["address_info"] = address_info
+
+        for idx, (value, (_, arg_attribute)) in enumerate(zip(inputs, arg_attributes)):
+            if (not isinstance(value, torch.Tensor)) and arg_attribute[1] == "index":
+                # We encode symbol dim like this.
+                # -1 - arg_pos
+                # MLIR set step size like this and Backendsim will decode this value.
+                symbol_info[-1-idx] = value
+        json_content["symbol_info"] = symbol_info
 
         for buf_name, range in self.ALLOC_POOL.items():
             sram_buffer[buf_name] = range

@@ -127,7 +127,7 @@ class TileGraphParser {
     return _addr_name_map[addr_name];
   }
   int get_addr_name_id(const std::string& addr_name) { return _addr_name_map[addr_name]; }
-
+  int get_symbol_size(int val) { return _symbol_info.find(val) != _symbol_info.end() ?_symbol_info[val] : val; }
  private:
   void register_tile(std::shared_ptr<TileNode> tile_node);
   void _tile_generate() {}
@@ -146,6 +146,7 @@ class TileGraphParser {
   std::vector<std::shared_ptr<TileNode>> _tile_vec;
   std::unique_ptr<TileGraph> _tile_graph;
   std::map<std::string, addr_type> _arg_to_address;
+  std::map<int, uint64_t> _symbol_info;
   std::map<std::string, std::vector<uint32_t>> _arg_numa_stride;
   std::vector<Interval<unsigned long long, int>> _cache_plan;
   std::map<std::string, std::tuple<int, int, LoopType>> _loop_size_map;
@@ -217,16 +218,16 @@ class TileLoopNode : public TileNode {
   void add_body(std::shared_ptr<TileNode> body) { _body_node.push_back(body); }
   std::vector<std::shared_ptr<Tile>> get_tiles_from_iter(TileGraphParser*, std::map<std::string, int>&);
   std::string get_idx_name() { return _tile_index_name; }
-  uint64_t get_start() { return _start; }
-  uint64_t get_stride() { return _stride; }
-  uint64_t get_end() { return _end; }
+  int64_t get_start() { return _start; }
+  int64_t get_stride() { return _stride; }
+  int64_t get_end() { return _end; }
   LoopType get_loop_type() { return _loop_type; }
   void print_node() override;
  private:
   std::string _tile_index_name;
-  uint64_t _stride;
-  uint64_t _start;
-  uint64_t _end;
+  int64_t _stride;
+  int64_t _start;
+  int64_t _end;
   LoopType _loop_type;
   std::vector<std::shared_ptr<TileNode>> _body_node;
 };

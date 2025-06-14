@@ -350,7 +350,8 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
             if len(self.stores._lines) == 0:
                 template_store()
             compute_body.splice(self.stores)
-        self.body.splice(compute_body)
+        if (compute_body.getvalue()):
+            self.body.splice(compute_body)
         self.body.splice(self.dma_stores)
         self.body.splice(self.reduction_epilogue_suffix)
 
@@ -358,6 +359,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         self.loads.clear()
         self.compute.clear()
         self.stores.clear()
+        self.reduction_body_loop = None
 
     def def_kernel(
         self,

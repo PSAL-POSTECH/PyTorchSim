@@ -306,6 +306,9 @@ class MLIRWrapperKenrelGroup(cpp.KernelGroup):
     def set_tile_info(self, tile_desc : MLIRMultiDimTile):
         self.tile_desc = tile_desc
 
+    def set_prologue_tile_info(self, tile_desc : MLIRMultiDimTile):
+        self.prologue_tile_desc = tile_desc
+
 class BaseMLIRHardwareInfo():
     def __init__(self):
         # Default HW setting

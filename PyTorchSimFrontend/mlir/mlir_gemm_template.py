@@ -64,10 +64,15 @@ func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[X, W, Bias], outputs=[Y]
       affine.for %t_k = 0 to {{ K }} step {{ TILE_K }} {
         %index0 = affine.apply #map0(%t_m, %t_k)
         %index1 = affine.apply #map1(%t_k, %t_n)
+        {% if prologue_nodes -%}
+        // prologue nodes
+        {{kernel.prepare_input(indent_size=8)}}
+        {%- else -%}
         memref.dma_start %X[%index0], %X_buffer[%c0, %c0], %c_mvin, %tag1[%c0], %axis, %vstride
            : memref<{{ M * K }}xf32>, memref<{{ TILE_M }}x{{ TILE_K }}xf32, 1>, memref<1xi32> { subtile_size=[{{ SUB_TILE_M }}, {{ SUB_TILE_K }}], async=1, sram_stride=[1, {{ TILE_M }}]}
         memref.dma_start %W[%index1], %W_buffer[%c0, %c0], %c_mvin2, %tag2[%c0], %axis, %vstride
            : memref<{{ K * N }}xf32>, memref<{{ TILE_K }}x{{ TILE_N }}xf32, 1>, memref<1xi32> { subtile_size=[{{ SUB_TILE_K }}, {{ SUB_TILE_N }}], async=1, sram_stride=[1, {{ TILE_K }}]}
+        {%- endif %}
         linalg.matmul ins(%X_buffer, %W_buffer : memref<{{ TILE_M }}x{{ TILE_K }}x{{ DATA_STYPE }}, 1>, memref<{{ TILE_K }}x{{ TILE_N }}x{{ DATA_STYPE }}, 1>)
                 outs(%Y_buffer : memref<{{ TILE_M }}x{{ TILE_N }}x{{ DATA_STYPE }}, 1>)
       } { accumulation_loop=true }
@@ -160,6 +165,7 @@ class MLIRGemmTemplate(MLIRTemplate):
                kernel: MLIRTemplateKernel,
                template_buffer_node = None,
                epilogue_nodes: Optional[List[IRNode]] = None,
+               prologue_nodes: Optional[List[IRNode]] = None,
                **kwargs):
         if template_buffer_node is not None:
             self.output_node = template_buffer_node
@@ -228,10 +234,33 @@ class MLIRGemmTemplate(MLIRTemplate):
             W_map = W_map,
             Y_numel = M * N,
             epilogue_nodes = epilogue_nodes,
+            prologue_nodes = prologue_nodes,
             input_reorder = self.input_reorder
         )
-
-        kernel.store_info = dict(
+        kernel.prologue_info = dict (
+            input_sram_var = "X_buffer",
+            input_dram_var = "X",
+            input_index_var = "index0",
+            input_tag_var = "tag1",
+            input_numel = M * K,
+            input_tile_size = (TILE_M, TILE_K),
+            input_sram_stride = [1, TILE_M],
+            vector_sram_stride = [TILE_M, 1],
+            input_subtile_size = (SUB_TILE_M, SUB_TILE_K),
+            weight_sram_var = "W_buffer",
+            weight_dram_var = "W",
+            weight_index_var = "index1",
+            weight_tag_var = "tag2",
+            weight_numel = K * N,
+            weight_tile_size = (TILE_K, TILE_N),
+            weight_sram_stride = [1, TILE_K],
+            weight_subtile_size = (SUB_TILE_K, SUB_TILE_N),
+            tile_size = (TILE_M, TILE_K),
+            vlane_split_axis = 1,
+            vlane_stride = 1,
+            is_bmm = False,
+        )
+        kernel.epilogue_info = dict(
             output_node = self.output_node.name,
             dependent_buf = [],
             sram_var = "Y_buffer",

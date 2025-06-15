@@ -845,7 +845,6 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         self.reduction_prefix = IndentedBuffer()
         self.reduction_suffix = IndentedBuffer()
         self.applys = IndentedBuffer()
-        self.body = IndentedBuffer()
         self.dma_loads = IndentedBuffer()
         self.dma_stores = IndentedBuffer()
         self.indexed_buffer = IndentedBuffer()

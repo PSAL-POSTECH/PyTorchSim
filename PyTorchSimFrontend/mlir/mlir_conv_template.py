@@ -736,7 +736,7 @@ class MLIRConvTemplate(MLIRTemplate):
             input_reorder=self.input_reorder
         )
 
-        kernel.store_info = dict(
+        kernel.epilogue_info = dict(
             output_node = self.output_node.name,
             dependent_buf = [],
             sram_var = "output_buffer",

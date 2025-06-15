@@ -39,6 +39,19 @@ class MLIRScheduling(BaseScheduling):
                 # We can't fuse dim=-1
                 possible = int(sympify(stride).coeff(target_symbol)) != 1
                 return size_match and possible
+
+            # # For prologue fusion case
+            # if not node1.is_template() and node2.is_template():
+            #     # Return false if node2 is Convolution template
+            #     if node2.get_nodes()[0].node.origin_node is not None and hasattr(node2.get_nodes()[0].node.origin_node.target, "_name") and node2.get_nodes()[0].node.origin_node.target._name == 'aten::convolution':
+            #         return False
+            #     if node1.is_reduction():
+            #         return False
+            #     if len(node1.read_writes.writes) != 1:
+            #         return False
+            #     if list(node1.read_writes.writes)[0].name in [dep.name for dep in node2.read_writes.reads]:
+            #         return True
+
         return self.scheduler.can_fuse_origin(node1, node2)
 
     def _set_flush_status(self, status: bool):
@@ -165,13 +178,31 @@ class MLIRScheduling(BaseScheduling):
             wrapper.define_kernel(kernel_name, codecache_def.getvalue(), cuda=False)
         return kernel_name
 
-    def codegen_template_code(self, kernel, render, template_node, epilogue_nodes):
+    def codegen_template_code(self, kernel, render, template_node, prologue_nodes, epilogue_nodes):
         with kernel:
-            for node in [template_node, *epilogue_nodes]:
+            for node in [template_node, *prologue_nodes, *epilogue_nodes]:
                 node.mark_run()
             partial_code = render()
-            tile_desc = kernel.set_tile_size(kernel.store_info)
+            tile_desc = kernel.set_tile_size(kernel.epilogue_info)
             kernel.kernel_group.set_tile_info(tile_desc)
+            if prologue_nodes:
+                _, (group, reduction_group) = max(
+                    prologue_nodes, key=lambda x: int(x.is_reduction())
+                ).group
+                vars, reduction_vars = kernel.set_ranges(group, reduction_group)
+            # Flush created varaibles, since template fusion doen't share variable
+            kernel.cse.cache.clear()
+            kernel.prologue_buffer_group.set_buffers()
+            kernel.load = kernel.load_prologue
+            kernel.store = kernel.store_prologue
+            template_input_bufs = [buf.name for buf in list(template_node.read_writes.reads)]
+            for node in prologue_nodes:
+                buf_name = list(node.read_writes.writes)[0].name
+                idx = template_input_bufs.index(buf_name)
+                kernel.prologue_info['arg_mapping'][buf_name] = kernel.prologue_info['input_sram_var']
+                kernel.prologue_info['apply_buf'].append(idx)   # FIXME: This cannot distinguish between input and weight buffers
+                node.codegen((vars, reduction_vars))
+
             if epilogue_nodes:
                 _, (group, reduction_group) = max(
                     epilogue_nodes, key=lambda x: int(x.is_reduction())
@@ -179,9 +210,12 @@ class MLIRScheduling(BaseScheduling):
                 vars, reduction_vars = kernel.set_ranges(group, reduction_group)
             # Flush created varaibles, since template fusion doen't share variable
             kernel.cse.cache.clear()
+            kernel.epilogue_buffer_group.set_buffers()
+            kernel.load = kernel.load_epilogue
+            kernel.store = kernel.store_epilogue
             for node in epilogue_nodes:
                 if template_node.node.name in [dep[0] for dep in list(node.read_writes.reads)]:
-                    kernel.store_info['dependent_buf'].append(node.node.name)
+                    kernel.epilogue_info['dependent_buf'].append(node.node.name)
                 node.codegen((vars, reduction_vars))
         with V.set_kernel_handler(kernel):
             src_code = (
@@ -192,18 +226,28 @@ class MLIRScheduling(BaseScheduling):
         return src_code
 
     def codegen_template(self, template_node, epilogue_nodes):
+        prologue_nodes = []
+        if not template_node.is_template():
+            epilogue_nodes = [template_node] + epilogue_nodes
+            for i, node in enumerate(epilogue_nodes):
+                if node.is_template():
+                    template_node = node
+                    prologue_nodes = epilogue_nodes[:i]
+                    epilogue_nodes = epilogue_nodes[i+1:]
+                    break
+
         _, (numel, rnumel) = template_node.group
         template_buffer = template_node.node
-        kernel, render, codegen_header = template_buffer.make_kernel_render(template_buffer, epilogue_nodes=epilogue_nodes, kernel_group=self.kernel_group)
+        kernel, render, codegen_header = template_buffer.make_kernel_render(template_buffer, prologue_nodes=prologue_nodes, epilogue_nodes=epilogue_nodes, kernel_group=self.kernel_group)
         _, _, _, kernel.buffer_types = self.kernel_group.args.mlir_argdefs()
 
-        src_code = self.codegen_template_code(kernel, render, template_node, epilogue_nodes)
+        src_code = self.codegen_template_code(kernel, render, template_node, prologue_nodes, epilogue_nodes)
         wrapper = V.graph.wrapper_code
 
         if src_code in wrapper.src_to_kernel: # [CONV] check inner function is already defined
             kernel_name = wrapper.src_to_kernel[src_code]
-            kernel, render, codegen_header = template_buffer.make_kernel_render(template_buffer, epilogue_nodes=epilogue_nodes, kernel_name=kernel_name) # update kernel name
-            src_code = self.codegen_template_code(kernel, render, template_node, epilogue_nodes)
+            kernel, render, codegen_header = template_buffer.make_kernel_render(template_buffer, prologue_nodes=prologue_nodes, epilogue_nodes=epilogue_nodes, kernel_name=kernel_name) # update kernel name
+            src_code = self.codegen_template_code(kernel, render, template_node, prologue_nodes, epilogue_nodes)
 
         with V.set_kernel_handler(kernel):
             spad_end_symbol = f"int spad_end[0] __attribute__ ((section(\".spad\")));\n"

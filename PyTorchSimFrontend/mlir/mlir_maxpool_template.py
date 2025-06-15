@@ -75,7 +75,7 @@ class MLIRMaxPoolTemplate(MLIRTemplate):
             out_tile=out_tile,
             DATA_STYPE="f32",
         )
-        kernel.store_info = dict(
+        kernel.epilogue_info = dict(
             output_node = self.output_node.name,
             dependent_buf = [],
             sram_var = "Y_buffer",

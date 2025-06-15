@@ -64,10 +64,7 @@ func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[X, W, Bias], outputs=[Y]
       affine.for %t_k = 0 to {{ K }} step {{ TILE_K }} {
         %index0 = affine.apply #map0(%t_m, %t_k)
         %index1 = affine.apply #map1(%t_k, %t_n)
-        memref.dma_start %X[%index0], %X_buffer[%c0, %c0], %c_mvin, %tag1[%c0], %axis, %vstride
-           : memref<{{ M * K }}xf32>, memref<{{ TILE_M }}x{{ TILE_K }}xf32, 1>, memref<1xi32> { subtile_size=[{{ SUB_TILE_M }}, {{ SUB_TILE_K }}], async=1, sram_stride=[1, {{ TILE_M }}]}
-        memref.dma_start %W[%index1], %W_buffer[%c0, %c0], %c_mvin2, %tag2[%c0], %axis, %vstride
-           : memref<{{ K * N }}xf32>, memref<{{ TILE_K }}x{{ TILE_N }}xf32, 1>, memref<1xi32> { subtile_size=[{{ SUB_TILE_K }}, {{ SUB_TILE_N }}], async=1, sram_stride=[1, {{ TILE_K }}]}
+        {{kernel.prepare_input(indent_size=8)}}
         linalg.matmul ins(%X_buffer, %W_buffer : memref<{{ TILE_M }}x{{ TILE_K }}x{{ DATA_STYPE }}, 1>, memref<{{ TILE_K }}x{{ TILE_N }}x{{ DATA_STYPE }}, 1>)
                 outs(%Y_buffer : memref<{{ TILE_M }}x{{ TILE_N }}x{{ DATA_STYPE }}, 1>)
       } { accumulation_loop=true }
@@ -230,8 +227,27 @@ class MLIRGemmTemplate(MLIRTemplate):
             epilogue_nodes = epilogue_nodes,
             input_reorder = self.input_reorder
         )
-
-        kernel.store_info = dict(
+        kernel.prologue_info = dict (
+            input_sram_var = "X_buffer",
+            input_dram_var = "X",
+            input_index_var = "index0",
+            input_tag_var = "tag0",
+            input_size = (M, K),
+            input_tile_size = (TILE_M, TILE_K),
+            input_tile_stride = [1, TILE_M],
+            input_subtile_size = (SUB_TILE_M, SUB_TILE_K),
+            weight_sram_var = "W_buffer",
+            weight_dram_var = "W",
+            weight_index_var = "index1",
+            weight_tag_var = "tag1",
+            weight_size = (K, N),
+            weight_tile_size = (TILE_K, TILE_N),
+            weight_tile_stride = [1, TILE_K],
+            weight_subtile_size = (SUB_TILE_K, SUB_TILE_N),
+            arg_mapping = {},
+            apply_buf = []
+        )
+        kernel.epilogue_info = dict(
             output_node = self.output_node.name,
             dependent_buf = [],
             sram_var = "Y_buffer",

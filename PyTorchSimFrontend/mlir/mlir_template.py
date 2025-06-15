@@ -25,6 +25,30 @@ from PyTorchSimFrontend.mlir.mlir_scheduling import SchedulerNode
 
 from . import mlir_common
 
+class IndentedBufferGroup:
+    def __init__(self, kernel: 'MLIRTemplateKernel'):
+        self.kernel = kernel
+        self.body = IndentedBuffer()
+        self.loads = IndentedBuffer()
+        self.compute = IndentedBuffer()
+        self.stores = IndentedBuffer()
+        self.applys = IndentedBuffer()
+        self.dma_loads = IndentedBuffer()
+        self.dma_stores = IndentedBuffer()
+        self.spad_buffer = IndentedBuffer()
+
+    def set_buffers(self):
+        self.kernel.loads = self.loads
+        self.kernel.compute = self.compute
+        self.kernel.stores = self.stores
+        self.kernel.dma_loads = self.dma_loads
+        self.kernel.dma_stores = self.dma_stores
+        self.kernel.spad_buffer = self.spad_buffer
+
+    @contextlib.contextmanager
+    def as_local(self):
+        yield self
+
 class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
     def __init__(self,
                  kernel_name,
@@ -54,6 +78,9 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         self.map_cse = CSE("#", self.suffix, name_prefix="template_map")
         self.const_cse = CSE(self.newvar_prefix, self.suffix, name_prefix="template_const")
         self.alloc_cse = CSE(self.newvar_prefix, self.suffix, name_prefix="template_alloc")
+        self.prologue_buffer_group = IndentedBufferGroup(self)
+        self.epilogue_buffer_group = IndentedBufferGroup(self)
+        self.global_vars = IndentedBuffer()
         self.reduction_epilogue_suffix = IndentedBuffer()
         self.reduction_fusion = False
         self.reduction_idx = None
@@ -321,27 +348,48 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
             kernel_name if self.outer_func_name is None else self.outer_func_name + f"_{len(call_args)}",
             call_args, cuda=False)
 
-    def codegen_body(self):
+    def codegen_prologue_body(self):
+        with self.prologue_buffer_group.as_local() as buf:
+            buf.body.splice(buf.spad_buffer)
+            buf.body.splice(buf.applys)
+            buf.body.splice(buf.dma_loads)
+
+            if (buf.loads.getvalue() != '' or buf.compute.getvalue() != '' or buf.stores.getvalue() != ''):
+                buf.body.writelines(self.compute_body_loop.lines())
+                compute_body = mlir_common.ParallelLoopBuffer()
+                with contextlib.ExitStack() as stack:
+                    stack.enter_context(compute_body.indent(attribute="{inner_loop=false}"))
+                    compute_body.splice(buf.loads)
+                    compute_body.splice(buf.compute)
+                    compute_body.splice(buf.stores)
+                buf.body.splice(compute_body)
+
+        # Clear buffers
+        self.loads.clear()
+        self.compute.clear()
+        self.stores.clear()
+
+    def codegen_epilogue_body(self):
         def template_store():
             zero_cse = self.get_const_cse(0)
-            sram_var = self.store_info["sram_var"]
-            dram_var = self.store_info["dram_var"]
-            index_var = self.store_info["index_var"]
-            tag_var = self.store_info["tag_var"]
-            mlir_dtype = self.store_info["mlir_dtype"]
-            dram_shape = self.store_info["dram_shape"]
+            sram_var = self.epilogue_info["sram_var"]
+            dram_var = self.epilogue_info["dram_var"]
+            index_var = self.epilogue_info["index_var"]
+            tag_var = self.epilogue_info["tag_var"]
+            mlir_dtype = self.epilogue_info["mlir_dtype"]
+            dram_shape = self.epilogue_info["dram_shape"]
             vlane_split_axis = self.kernel_group.tile_desc.vlane_split_axis
             vlane_stride = self.kernel_group.tile_desc.get_vlane_stride()
-            tile_stride = self.store_info["tile_stride"]
+            tile_stride = self.epilogue_info["tile_stride"]
             tile_shape = self.kernel_group.tile_desc.get_mlir_shape(mlir_dtype)
             sram_index_var = ",".join([f"%{zero_cse}"] *  self.kernel_group.tile_desc.get_nr_dim())
             code = self.get_dma_code("MVOUT", vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
                                  tag_var, dram_shape, tile_shape, tile_stride)
             self.cse.generate(self.dma_stores, code, assignment = False)
-        self.body.splice(self.spad_buffer)
-        self.body.splice(self.applys)
-        self.body.splice(self.dma_loads)
-        self.body.writelines(self.compute_body_loop.lines())
+        self.epilogue_buffer_group.body.splice(self.spad_buffer)
+        self.epilogue_buffer_group.body.splice(self.applys)
+        self.epilogue_buffer_group.body.splice(self.dma_loads)
+        self.epilogue_buffer_group.body.writelines(self.compute_body_loop.lines())
         compute_body = mlir_common.ParallelLoopBuffer()
         with contextlib.ExitStack() as stack:
             stack.enter_context(compute_body.indent(attribute="{inner_loop=false}",suffix=self.compute_body_loop.epilogue_line()))
@@ -349,11 +397,11 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
             compute_body.splice(self.compute)
             if len(self.stores._lines) == 0:
                 template_store()
-            compute_body.splice(self.stores)
+            compute_body.splice(self.epilogue_buffer_group.stores)
         if (compute_body.getvalue()):
-            self.body.splice(compute_body)
-        self.body.splice(self.dma_stores)
-        self.body.splice(self.reduction_epilogue_suffix)
+            self.epilogue_buffer_group.body.splice(compute_body)
+        self.epilogue_buffer_group.body.splice(self.dma_stores)
+        self.epilogue_buffer_group.body.splice(self.reduction_epilogue_suffix)
 
         # Clear buffers
         self.loads.clear()
@@ -396,7 +444,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
                     extra_node[node.get_name()] = node.node
                 else:
                     extra_node[node.get_name()] = node
-                self.buffer_names[node.get_name()] = self.store_info['sram_var']
+                self.buffer_names[node.get_name()] = self.epilogue_info['sram_var']
 
         def hook():
             arg_defs, *_ = self.kernel_group.args.mlir_argdefs(extra_node=extra_node)
@@ -441,7 +489,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
                 self.kernel_group.args.output_buffers[node.get_name()] = name
                 self.store_buffer_names.add(node.get_name())    #TODO: Is this enough not calling store() in mlir_common.py?
                 self.extra_node[node.get_name()] = node
-                self.buffer_names[node.get_name()] = self.store_info['sram_var']   #TODO: Buffer name fixed
+                self.buffer_names[node.get_name()] = self.epilogue_info['sram_var']   #TODO: Buffer name fixed
 
         def kernel_hook():
             arg_defs, *_ = self.kernel_group.args.mlir_argdefs(extra_node=self.extra_node)
@@ -469,6 +517,22 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
     def get_conv_outputs(self):
         return {k: v for k, v in self.kernel_group.args.output_buffers.items() if v != 'REMOVED'}
 
+    def prepare_input(self, indent_size: int = 0):
+        def hook():
+            self.codegen_prologue_body()
+            code = self.prologue_buffer_group.body.getvalue()
+            # FIXME: This cannot distinguish between input and weight buffers
+            if 0 not in self.prologue_info['apply_buf']:
+                code += f"memref.dma_start %X[%index0], %X_buffer[%c0, %c0], %c_mvin, %tag1[%c0], %axis, %vstride: memref<{self.prologue_info['input_size'][0] * self.prologue_info['input_size'][1]}xf32>, memref<{self.prologue_info['input_tile_size'][0]}x{self.prologue_info['input_tile_size'][1]}xf32, 1>, memref<1xi32> {{ subtile_size=[{self.prologue_info['input_subtile_size'][0]}, {self.prologue_info['input_subtile_size'][1]}], async=1, sram_stride=[1, {self.prologue_info['input_tile_size'][0]}] }}\n"
+            if 1 not in self.prologue_info['apply_buf']:
+                code += f"memref.dma_start %W[%index1], %W_buffer[%c0, %c0], %c_mvin2, %tag2[%c0], %axis, %vstride: memref<{ self.prologue_info['weight_size'][0]*self.prologue_info['weight_size'][1] }xf32>, memref<{self.prologue_info['weight_tile_size'][0]}x{self.prologue_info['weight_tile_size'][1]}xf32, 1>, memref<1xi32> {{ subtile_size=[{self.prologue_info['weight_subtile_size'][0]}, {self.prologue_info['weight_subtile_size'][1]}], async=1, sram_stride=[1, {self.prologue_info['weight_tile_size'][0]}] }}\n"
+            code = textwrap.indent(code, " "*indent_size).strip()
+            return code
+
+        assert "<PREPARE_INPUT>" not in self.render_hooks
+        self.render_hooks["<PREPARE_INPUT>"] = hook
+        return "<PREPARE_INPUT>"
+
     def output_name(self):
         # Cannot know the output name from the template, so we need to hook it
         def hook():
@@ -483,8 +547,8 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
 
     def store_output(self, indent_size: int = 0):
         def hook():
-            self.codegen_body()
-            return textwrap.indent(self.body.getvalue(), " "*indent_size).strip()
+            self.codegen_epilogue_body()
+            return textwrap.indent(self.epilogue_buffer_group.body.getvalue(), " "*indent_size).strip()
 
         assert "<STORE_OUTPUT>" not in self.render_hooks
         self.render_hooks["<STORE_OUTPUT>"] = hook
@@ -571,11 +635,11 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         size = tile_m * ((tile_n + self.vector_lane - 1) // self.vector_lane)
         return max(size, 2) # vector load/store
 
-    def load_epilogue(self, name: str, index: sympy.Expr):
+    def load_prologue(self, name: str, index: sympy.Expr):
         load_dim = []
         if not isinstance(V.graph, NullHandler) and name in V.graph.graph_inputs:
             load_dim = V.graph.graph_inputs[name].layout.size
-        index_var = self.store_info['index_var'] if len(load_dim) != 1 else 'tile_n'
+        index_var = self.prologue_info['input_index_var'] if len(load_dim) != 1 else 'tile_n'
         index = self.rename_indexing(index)
         dram_var = self.kernel_group.args.input(name)
         dtype = V.graph.get_dtype(name)
@@ -584,7 +648,93 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         vlane_stride = self.kernel_group.tile_desc.vlane_stride if len(load_dim) != 1 else 1    # FIXME: Fixed stride for 1d load dim
         tile_numel_per_lane = self.kernel_group.tile_desc.get_numel_per_lane()
         tile_shape = self.kernel_group.tile_desc.get_mlir_shape(mlir_dtype)
-        tile_stride = self.store_info['tile_stride']
+        tile_stride = self.prologue_info['input_tile_stride']
+
+        # Compute vector unit size
+        vshape = self.kernel_group.tile_desc.get_mlir_vshape(mlir_dtype)
+        compute_vec_size = self.kernel_group.tile_desc.get_compute_vec_size()
+
+        if name not in self.buffer_names:
+            # Allocate sram buffer
+            dram_shape = mlir_common.MLIRKernelArgs.get_mlir_shape(self.buffer_types[name])
+            sram_var, index_var, sram_index_var = self.get_scratchpad_buffer(dtype, name, tile_numel_per_lane, tile_shape, index_var, index)
+            self.buffer_names[name] = sram_var
+            code = self.get_dma_code("MVIN", vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
+                                     f"{name}_tag", dram_shape, tile_shape, tile_stride)
+            self.cse.generate(self.dma_loads, code, assignment = False)
+
+        # Load vector from sram
+        sram_var = self.buffer_names[name]
+        zero_var = self.get_const_cse(0)
+        if self.reduction_body_loop is None:
+            compute_index_var = ",".join([f"%{zero_var}"] * (self.kernel_group.tile_desc.get_nr_dim()-1) + [f"%{self.compute_idx}"])
+        else:
+            reduce_size = self.reduction_body_loop.size
+            compute_index_var = ",".join([f"%{zero_var}"] * (self.kernel_group.tile_desc.get_nr_dim()-2) + [f"%{self.reduction_idx}"] + [f"%{self.compute_idx}"])
+            vshape = f"vector<{reduce_size}x{compute_vec_size//reduce_size}x{mlir_dtype}>"
+
+        if compute_vec_size > 1:
+            pad = self.const_cse.generate(self.const_buffer, f"arith.constant 0.0 : {mlir_dtype}")
+            operation = "vector.transfer_read"
+            line = f"{operation} %{sram_var}[{compute_index_var}], %{pad} : {tile_shape}, {vshape}"
+        else:
+            operation = "affine.load"
+            line = f"{operation} %{sram_var}[{compute_index_var}] : {tile_shape}"
+
+        out = self.cse.generate(self.loads, line)
+        if self.reduction_body_loop is not None:
+            new_vshape = self.kernel_group.tile_desc.get_mlir_vshape(mlir_dtype)
+            out = self.cse.generate(self.loads, f"vector.shape_cast %{out} : {vshape} to {new_vshape}")
+        self.register_var_info(out, [compute_vec_size, mlir_dtype])
+        return out
+
+    def store_prologue(self, name: str, index: sympy.Expr, value, *args, **kwargs):
+        index_var = self.epilogue_info['index_var']
+        dram_var = self.kernel_group.args.output(name)
+        dtype = V.graph.get_dtype(name)
+        mlir_dtype = mlir_common.DTYPE_TO_MLIR[dtype]
+        vlane_split_axis = self.kernel_group.tile_desc.vlane_split_axis
+        vlane_stride = self.kernel_group.tile_desc.vlane_stride
+        tile_numel_per_lane = self.kernel_group.tile_desc.get_numel_per_lane()
+
+        dram_shape = mlir_common.MLIRKernelArgs.get_mlir_shape(self.buffer_types[name])
+        tile_shape = self.kernel_group.tile_desc.get_mlir_shape(mlir_dtype)
+        tile_stride = self.epilogue_info['tile_stride']
+
+        # Compute vector unit size
+        vshape = self.kernel_group.tile_desc.get_mlir_vshape(mlir_dtype)
+        compute_vec_size = self.kernel_group.tile_desc.get_compute_vec_size()
+
+        sram_var = self.prologue_info['arg_mapping'][name]
+        zero_var = self.get_const_cse(0)
+
+        _, operand_type = self.var_info[value]
+        if mlir_dtype != operand_type:
+            value = ops.to_dtype(value, mlir_dtype, var_info=self.var_info)
+        compute_index_var = ",".join([f"%{zero_var}"] * (self.kernel_group.tile_desc.get_nr_dim()-1) + [f"%{self.compute_idx}"])
+        # Generate vector load instruction
+        if compute_vec_size > 1:
+            operation = "affine.vector_store"
+            line = f"{operation} %{value}, %{sram_var}[{compute_index_var}] : {tile_shape}, {vshape}"
+        else:
+            operation = "affine.store"
+            line = f"{operation} %{value}, %{sram_var}[{compute_index_var}] : {tile_shape}"
+        self.stores.writeline(DeferredLine(name, line))
+
+    def load_epilogue(self, name: str, index: sympy.Expr):
+        load_dim = []
+        if not isinstance(V.graph, NullHandler) and name in V.graph.graph_inputs:
+            load_dim = V.graph.graph_inputs[name].layout.size
+        index_var = self.epilogue_info['index_var'] if len(load_dim) != 1 else 'tile_n'
+        index = self.rename_indexing(index)
+        dram_var = self.kernel_group.args.input(name)
+        dtype = V.graph.get_dtype(name)
+        mlir_dtype = mlir_common.DTYPE_TO_MLIR[dtype]
+        vlane_split_axis = self.kernel_group.tile_desc.vlane_split_axis if len(load_dim) != 1 else 0    # FIXME: Fixed split axis for 1d load dim
+        vlane_stride = self.kernel_group.tile_desc.vlane_stride if len(load_dim) != 1 else 1    # FIXME: Fixed stride for 1d load dim
+        tile_numel_per_lane = self.kernel_group.tile_desc.get_numel_per_lane()
+        tile_shape = self.kernel_group.tile_desc.get_mlir_shape(mlir_dtype)
+        tile_stride = self.epilogue_info['tile_stride']
 
         # Compute vector unit size
         vshape = self.kernel_group.tile_desc.get_mlir_vshape(mlir_dtype)
@@ -638,7 +788,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         return out
 
     def store_epilogue(self, name: str, index: sympy.Expr, value, *args, **kwargs):
-        index_var = self.store_info['index_var']
+        index_var = self.epilogue_info['index_var']
         dram_var = self.kernel_group.args.output(name)
         dtype = V.graph.get_dtype(name)
         mlir_dtype = mlir_common.DTYPE_TO_MLIR[dtype]
@@ -648,7 +798,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
 
         dram_shape = mlir_common.MLIRKernelArgs.get_mlir_shape(self.buffer_types[name])
         tile_shape = self.kernel_group.tile_desc.get_mlir_shape(mlir_dtype)
-        tile_stride = self.store_info['tile_stride']
+        tile_stride = self.epilogue_info['tile_stride']
 
         # Compute vector unit size
         vshape = self.kernel_group.tile_desc.get_mlir_vshape(mlir_dtype)
@@ -818,13 +968,13 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
     def get_scratchpad_buffer(self, dtype, name, tile_size_per_lane, dram_tile_shape, index_var, raw_index, buffer=None):
         return super().get_scratchpad_buffer(dtype, name, tile_size_per_lane, dram_tile_shape, index_var, raw_index, True, buffer=buffer)
 
-    def set_tile_size(self, template_store_info):
-        tile_desc = mlir_common.MLIRMultiDimTile(template_store_info['tile_size'],
+    def set_tile_size(self, template_epilogue_info):
+        tile_desc = mlir_common.MLIRMultiDimTile(template_epilogue_info['tile_size'],
             self.vector_lane,
-            vlane_split_axis=template_store_info['vlane_split_axis'],
-            vlane_stride=template_store_info['vlane_stride'])
+            vlane_split_axis=template_epilogue_info['vlane_split_axis'],
+            vlane_stride=template_epilogue_info['vlane_stride'])
 
-        if 'nr_rdim' in template_store_info and template_store_info['nr_rdim']==1:
+        if 'nr_rdim' in template_epilogue_info and template_epilogue_info['nr_rdim']==1:
             tile_desc.nr_rdim = 1
             numel_per_lane = tile_desc.get_numel_per_lane()
             reduction_axis_size = tile_desc.get_tile_size()[-2]
@@ -890,6 +1040,7 @@ class MLIRTemplate(KernelTemplate):
 
         def make_kernel_render(
             template_node: TemplateBuffer,
+            prologue_nodes: Optional[List[IRNode]] = None,
             epilogue_nodes: Optional[List[IRNode]] = None,
             kernel_name: str = kernel_hash_name,
             kernel_group: Optional[mlir_common.MLIRWrapperKenrelGroup] = None

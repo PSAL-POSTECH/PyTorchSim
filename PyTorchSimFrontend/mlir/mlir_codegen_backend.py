@@ -1385,21 +1385,26 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         initial_tile_size = self.kernel_group.tile_desc.get_tile_size()
         previous_ranges = self.ranges
         for vlane_stride in [2, 4, 8]:
-                os.environ['TORCHSIM_VECTOR_LANE_STRIDE'] = str(vlane_stride)
-                previous_tile_size = initial_tile_size
+            os.environ['TORCHSIM_VECTOR_LANE_STRIDE'] = str(vlane_stride)
+            previous_tile_size = initial_tile_size
+            increase_dim = 0 # increase the first dimension
+            while previous_tile_size[increase_dim] * 2 <= previous_ranges[increase_dim] and previous_tile_size[increase_dim] <= 2 ** 13:
                 incrase_dim = -1 # only increase the last dimension
                 while previous_tile_size[incrase_dim] * 2 <= previous_ranges[incrase_dim] and previous_tile_size[incrase_dim] <= 2 ** 13:
                     src_code = super().codegen_nodes(nodes, kernel_name)
-                    print(f"[Auto-tune] Trying tile size: {self.kernel_group.tile_desc.get_tile_size()}, vlane_stride: {vlane_stride}")
                     if self.stop_autotune:
                         print(f"[Auto-tune] Skipping autotuning due to enough tile size: {self.kernel_group.tile_desc.get_tile_size()}")
                         break
+                    print(f"[Auto-tune] Trying tile size: {self.kernel_group.tile_desc.get_tile_size()}, vlane_stride: {vlane_stride}")
                     previous_tile_size = self.kernel_group.tile_desc.get_tile_size()
                     self._prepare_simulator_headers(src_code)
                     bench_runner = self.run_bench(nodes, kernel_name, src_code)
                     choices.append((bench_runner, src_code, self.kernel_group))
                     self.reset(f"tile_size_{incrase_dim}")
-                self.reset("vlane_stride")
+                previous_tile_size[incrase_dim] = initial_tile_size[incrase_dim]
+                self.kernel_group.tile_desc.set_tile_size(previous_tile_size)
+                self.reset(f"tile_size_{increase_dim}")
+            self.reset("vlane_stride")
         return choices
 
     def autotune(self, nodes, kernel_name):
@@ -1433,6 +1438,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         with ThreadPoolExecutor(max_workers=5) as executor:
             results = list(executor.map(get_cycle, choices))
         max_idx = results.index(min(results))
+        print(f"[Auto-tune] Optimal tile size: {choices[max_idx][2].tile_desc.get_tile_size()}, vlane_stride: {choices[max_idx][2].tile_desc.vlane_stride}, cycles: {results[max_idx]}")
         optimal_src_code = choices[max_idx][1]
         return optimal_src_code
 

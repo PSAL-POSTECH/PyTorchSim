@@ -83,6 +83,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         self.global_vars = IndentedBuffer()
         self.reduction_epilogue_suffix = IndentedBuffer()
         self.reduction_fusion = False
+        self.reduction_body_loop = None
         self.reduction_idx = None
 
         # Overwrite ops
@@ -386,6 +387,12 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
             code = self.get_dma_code("MVOUT", vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
                                  tag_var, dram_shape, tile_shape, tile_stride)
             self.cse.generate(self.dma_stores, code, assignment = False)
+        # Do dma store first to overlap epilogue nodes
+        if self.reduction_fusion:
+            if len(self.stores._lines) == 0:
+                template_store()
+                self.epilogue_buffer_group.body.splice(self.dma_stores)
+                self.dma_stores.clear()
         self.epilogue_buffer_group.body.splice(self.spad_buffer)
         self.epilogue_buffer_group.body.splice(self.applys)
         self.epilogue_buffer_group.body.splice(self.dma_loads)
@@ -393,10 +400,18 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         compute_body = mlir_common.ParallelLoopBuffer()
         with contextlib.ExitStack() as stack:
             stack.enter_context(compute_body.indent(attribute="{inner_loop=false}",suffix=self.compute_body_loop.epilogue_line()))
-            compute_body.splice(self.loads)
-            compute_body.splice(self.compute)
-            if len(self.stores._lines) == 0:
-                template_store()
+            if self.reduction_fusion:
+                #if len(self.stores._lines) == 0:
+                #    template_store()
+                compute_body.writelines(self.reduction_body_loop.lines())
+                stack.enter_context(compute_body.indent(attribute="{inner_loop=false}"))
+                compute_body.splice(self.loads)
+                compute_body.splice(self.compute)
+            else:
+                compute_body.splice(self.loads)
+                compute_body.splice(self.compute)
+                if len(self.stores._lines) == 0:
+                    template_store()
             compute_body.splice(self.epilogue_buffer_group.stores)
         if (compute_body.getvalue()):
             self.epilogue_buffer_group.body.splice(compute_body)
@@ -783,30 +798,22 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
                 operation = "affine.load"
                 line = f"{operation} %{sram_var}[{compute_index_var}] : {tile_shape}"
             out = self.cse.generate(self.loads, line)
+            self.register_var_info(out, [compute_vec_size, mlir_dtype])
         else: # For reduction case
             reduce_size = self.reduction_nr_outer_loop
             vsize = compute_vec_size//reduce_size
             vshape = f"vector<{vsize}x{mlir_dtype}>"
-            flatten_tshape = f"vector<{compute_vec_size}x{mlir_dtype}>"
 
-            init = self.cse.generate(self.loads, f"arith.constant 0.0 : {mlir_dtype}")
-            init_vec = self.cse.generate(self.loads, f"vector.broadcast %{init} : {mlir_dtype} to {flatten_tshape}")
             if compute_vec_size > 1:
-                out_list = []
-                for i in range(reduce_size):
-                    offset = self.cse.generate(self.loads, f"affine.apply affine_map<(d0) -> (d0 + {i*(self.reduction_axis_size)})>(%{self.compute_idx})")
-                    compute_index_var = ",".join([f"%{zero_var}"] * (self.kernel_group.tile_desc.get_nr_dim()-1) + [f"%{offset}"])
-                    operation = "affine.vector_load"
-                    line = f"{operation} %{sram_var}[{compute_index_var}] : {tile_shape}, {vshape}"
-                    out = self.cse.generate(self.loads, line)
-                    out_list.append(out)
-                for idx, partial_out in enumerate(out_list):
-                    init_vec = self.cse.generate(self.loads, f"vector.insert_strided_slice %{partial_out}, %{init_vec} {{offsets=[{vsize*idx}],strides=[1]}} : {vshape} into {flatten_tshape}")
-                out = init_vec
+                offset = self.cse.generate(self.loads, f"affine.apply affine_map<(d0, d1) -> (d0 + d1*{(self.reduction_axis_size)})>(%{self.compute_idx}, %{self.reduction_loop_idx})")
+                compute_index_var = ",".join([f"%{zero_var}"] * (self.kernel_group.tile_desc.get_nr_dim()-1) + [f"%{offset}"])
+                operation = "affine.vector_load"
+                line = f"{operation} %{sram_var}[{compute_index_var}] : {tile_shape}, {vshape}"
+                out = self.cse.generate(self.loads, line)
             else:
                 line = f"{operation} %{sram_var}[{compute_index_var}] : {tile_shape}"
                 out = self.cse.generate(self.loads, line)
-        self.register_var_info(out, [compute_vec_size, mlir_dtype])
+            self.register_var_info(out, [self.compute_body_loop.step, mlir_dtype])
         return out
 
     def store_epilogue(self, name: str, index: sympy.Expr, value, *args, **kwargs):
@@ -859,91 +866,39 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         if argmax_or_argmin or is_welford_reduction(reduction_type):
             raise NotImplementedError() #TODO: argmin, argmax
 
-        # Prepare reduction loop
-        reduction_key = src_dtype, reduction_type, value
-        acc = self.reduction_cse.generate(
-            self.loads, f"reduction {reduction_key}", write=False
-        )
-        iterator = self.iterator_cse.generate(
-            self.loads, f"reduction {reduction_key}", write=False
-        )
-        init = self.init_cse.generate(
-            self.loads, f"reduction {reduction_key}", write=False
-        )
-        init_vec = self.init_vec_cse.generate(
-            self.loads, f"reduction {reduction_key}", write=False
-        )
+        # Reduction fusion codegen part
         type_name = mlir_common.DTYPE_TO_MLIR[dtype]
-        init = self.const_cse.generate(self.const_buffer, f"arith.constant {reduction_init(reduction_type, dtype)} : {type_name}")
-        vec_len = self.kernel_group.tile_desc.get_compute_vec_size()
-        reduced_shape = self.kernel_group.tile_desc.get_mlir_vshape(type_name)
+        vec_size = self.compute_body_loop.step
+        vshape = f"vector<{vec_size}x{type_name}>"
 
-        # Set accumulation var
-        if vec_len == 1: # 1-D vector to scalar
-            # Edge case for scalar
-            init_vec = init
-        else:
-            # Adjust shape and inital value
-            init_vec = self.const_cse.generate(self.const_buffer, f"vector.broadcast %{init} : {type_name} to {reduced_shape}")
-        acc_var = init_vec
+        tile_shape = f"memref<{self.reduction_body_loop.size * self.vector_lane}x{vec_size}x{type_name}, 1>"
+        name = f"{reduction_type}_buffer"
+        index = "dummy_index" # Not used
+        tile_numel_per_lane = self.compute_body_loop.step * self.reduction_body_loop.size
+        sram_var, index_var, sram_index_var = self.get_scratchpad_buffer(dtype, name, tile_numel_per_lane, tile_shape, None, index, self.const_buffer)
+        zero_var = self.get_const_cse(0)
 
-        # Reduction body prepare
-        body_acc = self.reduction_cse.generate(
-            self.compute, f"reduction {reduction_key}body_acc", write=False
-        )
-        body_iter_arg = self.iterator_cse.generate(
-            self.compute, f"reduction {reduction_key}body_iter_arg", write=False
-        )
-        self.register_var_info(body_iter_arg, [vec_len, type_name])
-
-        self.reduction_vars[acc] = (reduction_type, iterator, acc_var, reduced_shape)
-        self.affine_yield[body_acc] = reduced_shape
-        self.reduction_cse.reduction_cache[reduction_key] = acc
-        self.iterator_cse.reduction_cache[reduction_key] = iterator
-        self.init_cse.reduction_cache[reduction_key] = init_vec
+        # Load partial result
+        operation = "affine.vector_load"
+        compute_index_var = ",".join([f"%{self.reduction_loop_idx}"] + [f"%{zero_var}"])
+        line = f"{operation} %{sram_var}[{compute_index_var}] : {tile_shape}, {vshape}"
+        out = self.cse.generate(self.loads, line)
+        self.register_var_info(out, [self.compute_body_loop.step, type_name])
 
         # Reduction body codegen
-        result = reduction_partial_combine_vec(reduction_type, value, body_iter_arg)
-        self.compute_body_loop.reduction_vars[body_acc] = (reduction_type, body_iter_arg, iterator, reduced_shape)
-        self.compute_body_loop.affine_yield[result] = reduced_shape
+        result = reduction_partial_combine_vec(reduction_type, value, out)
 
-        # Final reduction
-        reduction_size = self.reduction_nr_outer_loop
-        if vec_len > reduction_size:
-            init = self.const_cse.generate(self.const_buffer, f"arith.constant {reduction_init(reduction_type, dtype)} : {type_name}")
-            if reduction_size == 1:
-                final_reduced_shape = f"{type_name}"
-                out = self.cse.generate(self.reductions_suffix, reduction_combine_vec(reduction_type, acc, init, axis=0, shape=reduced_shape, reduced_shape=final_reduced_shape))
-            else:
-                final_reduced_shape = f"vector<{reduction_size}x{type_name}>"
-                init_vec = self.cse.generate(self.reductions_suffix, f"vector.broadcast %{init} : {type_name} to {final_reduced_shape}")
-                new_vshape= f"vector<{reduction_size}x{vec_len//reduction_size}x{type_name}>"
-                partial_vshape= f"vector<{vec_len//reduction_size}x{type_name}>"
-                value = self.cse.generate(self.reductions_suffix, f"vector.shape_cast %{acc} : {reduced_shape} to {new_vshape}")
-                # FIXME. I want to use N-Rank multi-reduciton, but we can't use it. It lowerd to scalar operations now...
-                for i in range(reduction_size):
-                    partial_value = self.cse.generate(self.reductions_suffix, f"vector.extract %{value}[{i}] : {partial_vshape} from {new_vshape}")
-                    out = self.cse.generate(self.reductions_suffix, reduction_combine_vec(reduction_type, partial_value, init, axis=0, shape=partial_vshape, reduced_shape=type_name))
-                    init_vec = self.cse.generate(self.reductions_suffix, f"vector.insert %{out}, %{init_vec}[{i}] : {type_name} into {final_reduced_shape}")
-                out = init_vec
-            acc = out
-
-        # reigster reduction output
-        var_info = [reduction_size, mlir_common.DTYPE_TO_MLIR[dtype]]
-        self.register_var_info(acc, var_info)
-
-        # Specail handling for fusion
-        self.reduction_epilogue_suffix.writeline(f"affine.yield %{body_acc} : {self.affine_yield[body_acc]}")
-        return acc
+        # Store partial result
+        operation = "affine.vector_store"
+        line = f"{operation} %{result}, %{sram_var}[{compute_index_var}] : {tile_shape}, {vshape}"
+        self.compute.writeline(line) # Need to be placed after partial reduction
+        self.reduction_info = {sram_var : reduction_type}
+        return sram_var
 
     def store_reduction_epilogue(self, name, index, value):
-        index = self.reduction_idx
-        tmp_cse = self.cse
-        self.cse = self.reduction_cse
-
         dram_var = self.kernel_group.args.output(name)
         dtype = V.graph.get_dtype(name)
-        mlir_dtype = mlir_common.DTYPE_TO_MLIR[dtype]
+        type_name = mlir_common.DTYPE_TO_MLIR[dtype]
         index = self.rename_indexing(index)
 
         # Tile is always reuduced in inner loop
@@ -953,39 +908,62 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
 
         vlane_split_axis = self.kernel_group.tile_desc.vlane_split_axis - 1
         vlane_stride = self.kernel_group.tile_desc.vlane_stride
-        tile_numel_per_lane = vlane_stride * nr_outer_loop
+        tile_numel_per_lane = vlane_stride * nr_outer_loop * 2
 
         dram_shape = mlir_common.MLIRKernelArgs.get_mlir_shape(self.buffer_types[name])
-        tile_shape = f"memref<{self.kernel_group.tile_desc.get_tile_size()[1]}x{mlir_dtype}, 1>"
+        tile_shape = f"memref<{self.kernel_group.tile_desc.get_tile_size()[1]*2}x{type_name}, 1>"
         tile_stride = [1]
-        compute_vec_size = self.var_info[value][0]
-        if compute_vec_size == 1:
-            vshape = f"{mlir_dtype}"
-        else:
-            vshape = f"vector<{compute_vec_size}x{mlir_dtype}>"
         sram_var, index_var, sram_index_var = self.get_scratchpad_buffer(dtype, name, tile_numel_per_lane, tile_shape, index,
                                                                          index, buffer=self.const_buffer)
+        for i in range(self.reduction_body_loop.size):
+            vec_size = self.compute_body_loop.step
+            vshape = f"vector<{vec_size}x{type_name}>"
 
-        if self.welford_reduce_out is not None:
-            raise NotImplementedError()
+            partial_tile_shape = f"memref<{self.reduction_body_loop.size * self.vector_lane}x{vec_size}x{type_name}, 1>"
+            # Load partial result
+            init = self.const_cse.generate(self.const_buffer, f"arith.constant {reduction_init(self.reduction_info[value], dtype)} : {type_name}")
+            init_vec = self.const_cse.generate(self.const_buffer, f"vector.broadcast %{init} : {type_name} to {vshape}")
+            zero_var = self.const_cse.generate(self.const_buffer, f"arith.constant {0} : index")
+            index_var = self.const_cse.generate(self.const_buffer, f"arith.constant {i} : index")
+            compute_index_var = ",".join([f"%{index_var}"] + [f"%{zero_var}"])
 
-        # Select src type
-        if compute_vec_size == 1:
-            operation = "affine.store"
-            line = f"{operation} %{value}, %{sram_var}[{sram_index_var}] : {tile_shape}"
-        else:
-            operation =  "affine.vector_store"
-            line = f"{operation} %{value}, %{sram_var}[{sram_index_var}] : {tile_shape}, {vshape}"
-        self.reductions_suffix.writeline(DeferredLine(name, line))
+            operation = "affine.vector_load"
+            line = f"{operation} %{value}[{compute_index_var}] : {partial_tile_shape}, {vshape}"
+            out = self.cse.generate(self.reductions_suffix, line)
+            operation = "affine.vector_store"
+            line = f"{operation} %{init_vec}, %{value}[{compute_index_var}] : {partial_tile_shape}, {vshape}"
+            self.reductions_suffix.writeline(line)
+
+            # 2 step reduction
+            new_vec_size = 2
+            new_vshape = f"vector<{vec_size//new_vec_size}x{new_vec_size}x{type_name}>"
+            new_reduced_shape = f"vector<{new_vec_size}x{type_name}>"
+            out = self.cse.generate(self.reductions_suffix, f"vector.shape_cast %{out} : {vshape} to {new_vshape}")
+            init_vec = self.const_cse.generate(self.const_buffer, f"vector.broadcast %{init} : {type_name} to {new_reduced_shape}")
+            out = self.cse.generate(self.reductions_suffix, reduction_combine_vec(self.reduction_info[value], out, init_vec, axis=0, shape=new_vshape, reduced_shape=new_reduced_shape))
+            out2 = self.cse.generate(self.reductions_suffix, f"vector.shuffle %{out}, %{out} [1, 0] : {new_reduced_shape}, {new_reduced_shape}")
+
+            self.compute, self.reductions_suffix = self.reductions_suffix, self.compute
+            self.register_var_info(out, [new_vec_size, type_name])
+            self.register_var_info(out2, [new_vec_size, type_name])
+            out = reduction_partial_combine_vec(self.reduction_info[value], out, out2)
+            self.compute, self.reductions_suffix = self.reductions_suffix, self.compute
+
+            # Final reduction
+            #final_reduced_shape = type_name
+            #init = self.const_cse.generate(self.const_buffer, f"arith.constant {reduction_init(self.reduction_info[value], dtype)} : {type_name}")
+            #out = self.cse.generate(self.reductions_suffix, reduction_combine_vec(self.reduction_info[value], out, init, axis=0, shape=vshape, reduced_shape=final_reduced_shape))
+
+            operation = "affine.vector_store"
+            line = f"{operation} %{out}, %{sram_var}[%{index_var}] : {tile_shape}, {new_reduced_shape}"
+            self.reductions_suffix.writeline(DeferredLine(name, line))
 
         # MVOUT Encoding
         # Generate DMA instruction
-        code = self.get_dma_code("MVOUT", vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
-                                 f"{name}_tag", dram_shape, tile_shape, tile_stride)
+        index_var = "red_idx"
+        code = self.get_dma_code("MVOUT", vlane_split_axis, vlane_stride, type_name, dram_var, index_var, sram_var, sram_index_var,
+                                f"{name}_tag", dram_shape, tile_shape, tile_stride)
         self.reductions_suffix.writeline(DeferredLine(name, code))
-
-        # Restore origin cse
-        self.cse = tmp_cse
 
     def get_scratchpad_buffer(self, dtype, name, tile_size_per_lane, dram_tile_shape, index_var, raw_index, buffer=None):
         return super().get_scratchpad_buffer(dtype, name, tile_size_per_lane, dram_tile_shape, index_var, raw_index, True, buffer=buffer)
@@ -1001,14 +979,16 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
             numel_per_lane = tile_desc.get_numel_per_lane()
             reduction_axis_size = tile_desc.get_tile_size()[-2]
             nr_outer_loop = (numel_per_lane + reduction_axis_size-1) // reduction_axis_size
-            tile_desc.vec_size = nr_outer_loop * 2 # Why? Emprically selected, other option failed to functionality...
+            tile_desc.vec_size = nr_outer_loop * 32 # Why? Emprically selected, other option failed to functionality...
 
             self.reduction_fusion = True
             self.reduction_axis_size =  tile_desc.get_tile_size()[-2]
             self.reduction_nr_outer_loop = (numel_per_lane + reduction_axis_size-1) // reduction_axis_size
             self.reduction_idx = template_epilogue_info["reduction_idx"]
+            self.reduction_loop_idx = "reduce_loop_idx"
             self.compute_body_loop.size = reduction_axis_size
             self.compute_body_loop.step = tile_desc.get_compute_vec_size() // nr_outer_loop
+            self.reduction_body_loop = mlir_common.LoopLevel(self.reduction_loop_idx, nr_outer_loop)
         else:
             tile_desc.vec_size=64
             self.compute_body_loop.size = tile_desc.get_numel_per_lane()

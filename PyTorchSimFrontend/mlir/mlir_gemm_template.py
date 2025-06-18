@@ -191,7 +191,7 @@ class MLIRGemmTemplate(MLIRTemplate):
         if (M == 0) or (N == 0) or (K == 0):
             TILE_M, TILE_N, TILE_K = 1, 1, 1
             template = EMPTY_TEMPLATE
-        elif n_extra_node==1 and epilogue_nodes[0].is_reduction():
+        elif n_extra_node>=1 and epilogue_nodes[0].is_reduction():
             TILE_M, TILE_N, TILE_K = kernel.gemm_combination_mapping(M, N, K, n_extra_node, min_tile=True)
             template = GEMM_REDUCTION_TEMPLATE
             nr_rdim = 1

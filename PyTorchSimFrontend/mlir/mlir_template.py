@@ -81,10 +81,14 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         self.prologue_buffer_group = IndentedBufferGroup(self)
         self.epilogue_buffer_group = IndentedBufferGroup(self)
         self.global_vars = IndentedBuffer()
+        # Reduction data structure
         self.reduction_epilogue_suffix = IndentedBuffer()
         self.reduction_fusion = False
         self.reduction_body_loop = None
         self.reduction_idx = None
+        self.reduction_buffer_idx = 0
+        self.reduction_info = {}
+        self.reduction_epilogue_result = {}
 
         # Overwrite ops
         self.load = self.load_epilogue
@@ -863,8 +867,23 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
 
     def reduction_epilogue(self, dtype, src_dtype, reduction_type, value):
         argmax_or_argmin = reduction_type in {"argmax", "argmin"}
-        if argmax_or_argmin or is_welford_reduction(reduction_type):
+        if argmax_or_argmin:
             raise NotImplementedError() #TODO: argmin, argmax
+        if is_welford_reduction(reduction_type):
+            if reduction_type == "welford_combine":
+                raise NotImplementedError("welford_combine")
+            else:
+                assert reduction_type == "welford_reduce"
+                type_name = mlir_common.DTYPE_TO_MLIR[dtype]
+                reduction_key = src_dtype, reduction_type, value
+                sum = self.reduction_epilogue(dtype, src_dtype, "sum", value)
+                sqr_sum = self.reduction_epilogue(dtype, src_dtype, "sum", ops.mul(value, value))
+                self.welford_reduce_out = (sum, sqr_sum, None)
+                return sum, sqr_sum, None
+        # Check duplicated reductions
+        reduction_key = src_dtype, reduction_type, value
+        if reduction_key in self.reduction_epilogue_result:
+            return self.reduction_epilogue_result[reduction_key]
 
         # Reduction fusion codegen part
         type_name = mlir_common.DTYPE_TO_MLIR[dtype]
@@ -872,13 +891,15 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         vshape = f"vector<{vec_size}x{type_name}>"
 
         tile_shape = f"memref<{self.reduction_body_loop.size * self.vector_lane}x{vec_size}x{type_name}, 1>"
-        name = f"{reduction_type}_buffer"
+        name = f"{reduction_type}_buffer{self.reduction_buffer_idx}"
+        self.reduction_buffer_idx += 1
         index = "dummy_index" # Not used
         tile_numel_per_lane = self.compute_body_loop.step * self.reduction_body_loop.size
         sram_var, index_var, sram_index_var = self.get_scratchpad_buffer(dtype, name, tile_numel_per_lane, tile_shape, None, index, self.const_buffer)
-        zero_var = self.get_const_cse(0)
+        self.reduction_epilogue_result[reduction_key] = sram_var
 
         # Load partial result
+        zero_var = self.get_const_cse(0)
         operation = "affine.vector_load"
         compute_index_var = ",".join([f"%{self.reduction_loop_idx}"] + [f"%{zero_var}"])
         line = f"{operation} %{sram_var}[{compute_index_var}] : {tile_shape}, {vshape}"
@@ -892,7 +913,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         operation = "affine.vector_store"
         line = f"{operation} %{result}, %{sram_var}[{compute_index_var}] : {tile_shape}, {vshape}"
         self.compute.writeline(line) # Need to be placed after partial reduction
-        self.reduction_info = {sram_var : reduction_type}
+        self.reduction_info[sram_var] = reduction_type
         return sram_var
 
     def store_reduction_epilogue(self, name, index, value):
@@ -960,7 +981,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
 
         # MVOUT Encoding
         # Generate DMA instruction
-        index_var = "red_idx"
+        index_var = self.reduction_idx
         code = self.get_dma_code("MVOUT", vlane_split_axis, vlane_stride, type_name, dram_var, index_var, sram_var, sram_index_var,
                                 f"{name}_tag", dram_shape, tile_shape, tile_stride)
         self.reductions_suffix.writeline(DeferredLine(name, code))

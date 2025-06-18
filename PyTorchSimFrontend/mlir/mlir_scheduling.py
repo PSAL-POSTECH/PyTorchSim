@@ -31,13 +31,10 @@ class MLIRScheduling(BaseScheduling):
         if node1.get_device() == node2.get_device():
             from PyTorchSimFrontend.mlir.mlir_gemm_template import MLIRGemmTemplate
             from PyTorchSimFrontend.mlir.mlir_bmm_template import MLIRBMMTemplate
-            if (node1.is_template() and len(node1.get_nodes())==1 and \
-                (isinstance(node1.node.template, MLIRGemmTemplate) or isinstance(node1.node.template, MLIRBMMTemplate)) and \
+            if (node1.is_template() and (isinstance(node1.get_nodes()[0].node.template, MLIRGemmTemplate) or isinstance(node1.node.template, MLIRBMMTemplate)) and \
                 node2.is_reduction() and len(node2.get_nodes())==1):
                 # For matmul/bmm+reduction case
-                size_match = node1.node.get_size() == node2.node.get_size() + node2.node.get_reduction_size()
-                if len(node1.node.get_size()) == len(node2.node.get_size()):
-                    size_match = node1.node.get_size() == [dim for dim in node2.node.get_size() if dim!=1] + node2.node.get_reduction_size()
+                size_match = reduce(operator.mul, node1.get_nodes()[0].node.get_size(), 1) == reduce(operator.mul, node2.node.get_size(), 1) * reduce(operator.mul, node2.node.get_reduction_size(), 1)
                 stride = [i.strip()[:-1].split(",")[-1].strip() for i in str(node2.node).split("\n") if "r0" in i][1]
                 target_symbol = symbols("r0")
                 # We can't fuse dim=-1

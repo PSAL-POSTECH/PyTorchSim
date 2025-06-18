@@ -24,6 +24,7 @@ GEMM_TEMPLATE = r"""
 #map0 = affine_map<(d0, d1) -> ({{ X_map }})>
 #map1 = affine_map<(d0, d1) -> ({{ W_map }})>
 #map2 = affine_map<(d0, d1) -> (d0 * {{ N }} + d1)>
+#map3 = affine_map<(d0, d1) -> (d0 * {{ N }})>
 memref.global @X_spad : memref<{{ TILE_M }}x{{ TILE_K }}xf32, 1>
 memref.global @W_spad : memref<{{ TILE_K }}x{{ TILE_N }}xf32, 1>
 memref.global @Y_spad : memref<{{ TILE_M }}x{{ TILE_N }}xf32, 1>
@@ -50,14 +51,11 @@ func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[X, W, Bias], outputs=[Y]
   affine.for %t_m = 0 to {{ M }} step {{ TILE_M }} {
     affine.for %t_n = 0 to {{ N }} step {{ TILE_N }} {
       %index2 = affine.apply #map2(%t_m, %t_n)
+      %index3 = affine.apply #map2(%t_m, %t_n)
       {%- if Bias %}
-      memref.dma_start %Bias[
-        {%- if Bias_rank == 2 -%} %index2 {%- else -%} %t_n {%- endif -%}
-        ], %Y_buffer[%c0, %c0], %c_mvin3, %tag0[%c0], %
+      memref.dma_start %Bias[{{ Bias_idx }}], %Y_buffer[%c0, %c0], %c_mvin3, %tag0[%c0], %
         {%- if Bias_rank == 2 -%} axis {%- else -%} c0 {%- endif -%}
-        , %vstride : memref<
-        {%- if Bias_rank == 2 -%}  {{ M * N }} {%- else -%} {{ N }} {%- endif -%}
-        xf32>, memref<{{ TILE_M }}x{{ TILE_N }}xf32, 1>, memref<1xi32>  { subtile_size=[{{ SUB_TILE_M }}, {{ SUB_TILE_N }}], async=1, sram_stride=[1, {{ TILE_M }}] }
+        , %vstride : memref<{{ Bias.data.get_numel() }}xf32>, memref<{{ TILE_M }}x{{ TILE_N }}xf32, 1>, memref<1xi32>  { subtile_size=[{{ SUB_TILE_M }}, {{ SUB_TILE_N }}], async=1, sram_stride=[1, {{ TILE_M }}] }
       {%- else %}
       affine.vector_store %v0, %Y_buffer[0, 0] : memref<{{ TILE_M }}x{{ TILE_N }}xf32, 1>, vector<{{ kernel.get_spad_size_per_lane(TILE_M, TILE_N) }}xf32>
       {%- endif %}
@@ -102,6 +100,7 @@ GEMM_REDUCTION_TEMPLATE = r"""
 #map0 = affine_map<(d0, d1) -> ({{ X_map }})>
 #map1 = affine_map<(d0, d1) -> ({{ W_map }})>
 #map2 = affine_map<(d0, d1) -> (d0 * {{ N }} + d1)>
+#map3 = affine_map<(d0, d1) -> (d0 * {{ N }})>
 memref.global @X_spad : memref<{{ TILE_M }}x{{ TILE_K }}xf32, 1>
 memref.global @W_spad : memref<{{ TILE_K }}x{{ TILE_N }}xf32, 1>
 memref.global @Y_spad : memref<{{ TILE_M }}x{{ TILE_N }}xf32, 1>
@@ -128,14 +127,11 @@ func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[X, W, Bias], outputs=[Y]
   affine.for %t_n = 0 to {{ N }} step {{ TILE_N }} {
     {{kernel.reduction_acc()}} affine.for %t_m = 0 to {{ M }} step {{ TILE_M }} {{kernel.reduction_iter_arg()}} {
       %index2 = affine.apply #map2(%t_m, %t_n)
+      %index3 = affine.apply #map2(%t_m, %t_n)
       {%- if Bias %}
-      memref.dma_start %Bias[
-        {%- if Bias_rank == 2 -%} %index2 {%- else -%} %t_n {%- endif -%}
-        ], %Y_buffer[%c0, %c0], %c_mvin3, %tag0[%c0], %
+      memref.dma_start %Bias[{{ Bias_idx }}], %Y_buffer[%c0, %c0], %c_mvin3, %tag0[%c0], %
         {%- if Bias_rank == 2 -%} axis {%- else -%} c0 {%- endif -%}
-        , %vstride : memref<
-        {%- if Bias_rank == 2 -%}  {{ M * N }} {%- else -%} {{ N }} {%- endif -%}
-        xf32>, memref<{{ TILE_M }}x{{ TILE_N }}xf32, 1>, memref<1xi32>  { subtile_size=[{{ SUB_TILE_M }}, {{ SUB_TILE_N }}], async=1, sram_stride=[1, {{ TILE_M }}] }
+        , %vstride : memref<{{ Bias.data.get_numel() }}xf32>, memref<{{ TILE_M }}x{{ TILE_N }}xf32, 1>, memref<1xi32>  { subtile_size=[{{ SUB_TILE_M }}, {{ SUB_TILE_N }}], async=1, sram_stride=[1, {{ TILE_M }}] }
       {%- else %}
       affine.vector_store %v0, %Y_buffer[0, 0] : memref<{{ TILE_M }}x{{ TILE_N }}xf32, 1>, vector<{{ kernel.get_spad_size_per_lane(TILE_M, TILE_N) }}xf32>
       {%- endif %}
@@ -174,7 +170,6 @@ class MLIRGemmTemplate(MLIRTemplate):
 
         X, W = self.input_nodes[0], self.input_nodes[1]
         Y = self.output_node
-        Bias = None if len(self.input_nodes) == 2 else self.input_nodes[2]
 
         W_tensor =  empty_strided(W.layout.size, W.layout.stride)
         X_tensor =  empty_strided(X.layout.size, X.layout.stride)
@@ -211,6 +206,15 @@ class MLIRGemmTemplate(MLIRTemplate):
         TOG_latency = M if SUB_TILE_M > M else SUB_TILE_M
         kernel.loop_size =[TOG_latency, SUB_TILE_N, SUB_TILE_K]
 
+        # Extract Bias info
+        Bias = None if len(self.input_nodes) == 2 else self.input_nodes[2]
+        if Bias.data.get_numel() == M*N:
+          Bias_idx = "%index2"
+        elif Bias.data.get_numel() == M:
+          Bias_idx = "%index3"
+        else:
+          Bias_idx = "%t_n"
+
         kernel.render_options = dict(
             KERNEL_NAME=self.name,
             kernel=kernel,
@@ -229,6 +233,7 @@ class MLIRGemmTemplate(MLIRTemplate):
             W = W,
             Y = Y,
             Bias = Bias,
+            Bias_idx = Bias_idx,
             Bias_rank = len(Bias.data.get_size()) if Bias is not None else 0,
             X_map = X_map,
             W_map = W_map,

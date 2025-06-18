@@ -47,8 +47,7 @@ class my_MultiheadAttention(torch.nn.Module):
         x = torch.matmul(value.transpose(-1, -2), p_attn)
         # 3) "Concat" using a view and apply a final linear.
         x = (
-            x.contiguous()
-            .view(-1, self.h * self.d_k)
+            x.view(-1, self.h * self.d_k)
         )
         del query
         del key

@@ -47,9 +47,9 @@ class MLIRScheduling(BaseScheduling):
             # For prologue fusion case
             if not node1.is_template() and len(node1.get_nodes())==1 and node2.is_template():
                 # Return false if node2 is Convolution template
-                if node2.get_nodes()[0].node.origin_node.target._name == 'aten::mm' or \
-                    node2.get_nodes()[0].node.origin_node.target._name == 'aten::addmm':
-                    return False
+                # if node2.get_nodes()[0].node.origin_node.target._name == 'aten::mm' or \
+                #     node2.get_nodes()[0].node.origin_node.target._name == 'aten::addmm':
+                #     return False
                 if node2.get_nodes()[0].node.origin_node is not None and hasattr(node2.get_nodes()[0].node.origin_node.target, "_name") and node2.get_nodes()[0].node.origin_node.target._name == 'aten::convolution':
                     return False
                 if node1.is_reduction():

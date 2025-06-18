@@ -262,7 +262,7 @@ class MLIRBMMTemplate(MLIRTemplate):
         TILE_M, TILE_N, TILE_K = kernel.gemm_combination_mapping(M, N, K, n_extra_node=n_extra_node)
         TOG_latency = M if TILE_M > M else TILE_M
         kernel.loop_size = [TOG_latency, TILE_N, TILE_K]
-        TILE_K = TILE_K // 2 if prologue_nodes else TILE_K
+        TILE_K = TILE_K // 4 if prologue_nodes else TILE_K
         SUB_TILE_M = TILE_M if (TILE_M < kernel.vector_lane) or prologue_nodes else kernel.vector_lane
         SUB_TILE_N = TILE_N # if (TILE_N < kernel.vector_lane) or prologue_nodes else kernel.vector_lane
         SUB_TILE_K = TILE_K # if (TILE_K < kernel.vector_lane) or prologue_nodes else kernel.vector_lane
@@ -320,7 +320,7 @@ class MLIRBMMTemplate(MLIRTemplate):
             weight_tile_size = (TILE_K, TILE_N),
             weight_sram_stride = [1, TILE_K],
             weight_subtile_size = (SUB_TILE_K, SUB_TILE_N),
-            tile_size = (TILE_M, TILE_K),
+            tile_size = (TILE_K, TILE_N),
             vlane_split_axis = 1,
             vlane_stride = 1,
             is_bmm = True,

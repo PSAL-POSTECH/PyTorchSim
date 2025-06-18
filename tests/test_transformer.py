@@ -41,14 +41,12 @@ class my_MultiheadAttention(torch.nn.Module):
         ]
 
         # 2) Apply attention on all the projected vectors in batch.
-        scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(self.d_k)
-        p_attn = scores.softmax(dim=-1)
-        x = torch.matmul(p_attn, value)
+        scores = torch.matmul(key, query.transpose(-2, -1)) / math.sqrt(self.d_k)
+        p_attn = scores.softmax(dim=-2)
+        x = torch.matmul(value.transpose(-1, -2), p_attn)
         # 3) "Concat" using a view and apply a final linear.
         x = (
-            x.transpose(0, 1)
-            .contiguous()
-            .view(-1, self.h * self.d_k)
+            x.view(-1, self.h * self.d_k)
         )
         del query
         del key

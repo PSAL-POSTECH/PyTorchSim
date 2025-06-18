@@ -10,9 +10,9 @@ def run_attention(size, config):
     def attention(query, key, value):
         import math
         d_k = query.size(-1)
-        scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(d_k)
-        p_attn = scores.softmax(dim=-1)
-        return torch.matmul(p_attn, value)
+        scores = torch.matmul(key, query.transpose(-2, -1)) / math.sqrt(d_k)
+        p_attn = scores.softmax(dim=-2)
+        return torch.matmul(value.transpose(-1, -2), p_attn)
     from Scheduler.scheduler import Scheduler, SchedulerDNNModel, Request
     scheduler = Scheduler(num_request_queue=1, engine_select=Scheduler.FIFO_ENGINE, backend_config=config)
     device = scheduler.execution_engine.module.custom_device()

@@ -766,13 +766,13 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         load_dim = []
         if not isinstance(V.graph, NullHandler) and name in V.graph.graph_inputs:
             load_dim = V.graph.graph_inputs[name].layout.size
-        index_var = self.epilogue_info['index_var'] if len(load_dim) != 1 else 'tile_n'
+        index_var = self.epilogue_info['index_var'] if len(load_dim) <= 1 else 'tile_n'
         index = self.rename_indexing(index)
         dram_var = self.kernel_group.args.input(name)
         dtype = V.graph.get_dtype(name)
         mlir_dtype = mlir_common.DTYPE_TO_MLIR[dtype]
-        vlane_split_axis = self.kernel_group.tile_desc.vlane_split_axis if len(load_dim) != 1 else 0    # FIXME: Fixed split axis for 1d load dim
-        vlane_stride = self.kernel_group.tile_desc.vlane_stride if len(load_dim) != 1 else 1    # FIXME: Fixed stride for 1d load dim
+        vlane_split_axis = self.kernel_group.tile_desc.vlane_split_axis if len(load_dim) <= 1 else 0    # FIXME: Fixed split axis for 1d load dim
+        vlane_stride = self.kernel_group.tile_desc.vlane_stride if len(load_dim) <= 1 else 1    # FIXME: Fixed stride for 1d load dim
         tile_numel_per_lane = self.kernel_group.tile_desc.get_numel_per_lane()
         tile_shape = self.kernel_group.tile_desc.get_mlir_shape(mlir_dtype)
         tile_stride = self.epilogue_info['tile_stride']

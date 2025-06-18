@@ -208,12 +208,15 @@ class MLIRGemmTemplate(MLIRTemplate):
 
         # Extract Bias info
         Bias = None if len(self.input_nodes) == 2 else self.input_nodes[2]
-        if Bias.data.get_numel() == M*N:
-          Bias_idx = "%index2"
-        elif Bias.data.get_numel() == M:
-          Bias_idx = "%index3"
+        if Bias is not None:
+          if Bias.data.get_numel() == M*N:
+            Bias_idx = "%index2"
+          elif Bias.data.get_numel() == M:
+            Bias_idx = "%index3"
+          else:
+            Bias_idx = "%t_n"
         else:
-          Bias_idx = "%t_n"
+          Bias_idx = None
 
         kernel.render_options = dict(
             KERNEL_NAME=self.name,

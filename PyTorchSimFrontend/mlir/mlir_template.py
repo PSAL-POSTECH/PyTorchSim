@@ -687,8 +687,8 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
             # Broadcast pattern
             zero_index = self.const_cse.generate(self.const_buffer, "arith.constant 0 : index")
             if self.prologue_info['is_bmm']: # FIXME: hardcoded
-                idx = f"%b, %t_m, %{zero_index}"
-                map_var = self.map_cse.generate(self.global_vars, f"affine_map<(d0, d1, d2) -> (d0 * 512 + d1)>")
+                idx = f"%b, %t_k, %t_n"
+                map_var = self.map_cse.generate(self.global_vars, f"affine_map<(d0, d1, d2) -> (d0 * 512 + d2)>")
                 vlane_split_axis = 2
             else:
                 idx = f"%t_m, %{zero_index}"

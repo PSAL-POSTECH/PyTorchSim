@@ -55,11 +55,11 @@ def test_elem_fusion(device):
 
 def test_elem_bmm_fusion(device, batch_size=1, m=512, n=512, k=64):
     def bmm(a, b, c, d):
-        return torch.bmm((a - b)/c , d)
+        return torch.bmm(a , (d - b)/c)
     torch.manual_seed(0)
     a = torch.randn(batch_size, m, k).to(device=device)
-    b = torch.randn(batch_size, m, 1).to(device=device)
-    c = torch.randn(batch_size, m, 1) * 1000
+    b = torch.randn(batch_size, 1, n).to(device=device)
+    c = torch.randn(batch_size, 1, n) * 1000
     c = c.to(device=device)
     d = torch.randn(batch_size, k, n).to(device=device)
     opt_fn = torch.compile(dynamic=False)(bmm)
@@ -78,4 +78,4 @@ if __name__ == "__main__":
     device = module.custom_device()
     test_elem_broadcast_fusion(device)
     test_elem_fusion(device)
-    test_elem_bmm_fusion(device, batch_size=12, m=512, n=64, k=512)
+    test_elem_bmm_fusion(device, batch_size=12, m=64, n=512, k=512)

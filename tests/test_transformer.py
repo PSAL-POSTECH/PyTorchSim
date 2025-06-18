@@ -87,9 +87,9 @@ def test_Attention(device, head=16, seq=512, d_k=64):
     def attention(query, key, value):
         import math
         d_k = query.size(-1)
-        scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(d_k)
-        p_attn = scores.softmax(dim=-1)
-        return torch.matmul(p_attn, value), p_attn
+        scores = torch.matmul(key, query.transpose(-2, -1)) / math.sqrt(d_k)
+        p_attn = scores.softmax(dim=-2)
+        return torch.matmul(value.transpose(-1, -2), p_attn)
 
     torch.manual_seed(0)
     query = torch.randn(head, seq, d_k).to(device=device)
@@ -97,9 +97,9 @@ def test_Attention(device, head=16, seq=512, d_k=64):
     value = torch.randn(head, seq, d_k).to(device=device)
 
     opt_fn = torch.compile(dynamic=False)(attention)
-    res, p_attn = opt_fn(query, key, value)
+    res = opt_fn(query, key, value)
 
-    cpu_res, cpu_p_attn = attention(query.cpu(), key.cpu(), value.cpu())
+    cpu_res = attention(query.cpu(), key.cpu(), value.cpu())
     test_result("Attention Forward", res, cpu_res)
 
 def test_MHA(device, num_heads=12, embed_dim=768, input_seq=512):

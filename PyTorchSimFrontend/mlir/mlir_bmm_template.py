@@ -303,28 +303,35 @@ class MLIRBMMTemplate(MLIRTemplate):
             input_reorder = self.input_reorder
         )
 
-        kernel.prologue_info = dict (
-            input_sram_var = "X_buffer2D",
-            input_dram_var = "X",
-            input_index_var = "index0",
-            input_tag_var = "tag1",
-            input_numel = B * M * K,
-            input_tile_size = (TILE_M, TILE_K),
-            input_sram_stride = [1, TILE_M],
-            input_subtile_size = (SUB_TILE_M, SUB_TILE_K),
-            weight_sram_var = "W_buffer2D",
-            weight_dram_var = "W",
-            weight_index_var = "index1",
-            weight_tag_var = "tag2",
-            weight_numel = B * K * N,
-            weight_tile_size = (TILE_K, TILE_N),
-            weight_sram_stride = [1, TILE_K],
-            weight_subtile_size = (SUB_TILE_K, SUB_TILE_N),
-            tile_size = (TILE_K, TILE_N),
-            vlane_split_axis = 1,
-            vlane_stride = 1,
-            is_bmm = True,
-        )
+        if prologue_nodes:
+          # if Input fused:
+          #   tile_size = (TILE_M, TILE_K)
+          #   input_sram_stride = [1, TILE_M]
+          # elif Weight fused:
+          tile_size = (TILE_K, TILE_N)
+          input_sram_stride = [1, TILE_K]
+          kernel.prologue_info = dict (
+              input_sram_var = "X_buffer2D",
+              input_dram_var = "X",
+              input_index_var = "index0",
+              input_tag_var = "tag1",
+              input_numel = B * M * K,
+              input_tile_size = (TILE_M, TILE_K),
+              input_sram_stride = input_sram_stride,
+              input_subtile_size = (SUB_TILE_M, SUB_TILE_K),
+              weight_sram_var = "W_buffer2D",
+              weight_dram_var = "W",
+              weight_index_var = "index1",
+              weight_tag_var = "tag2",
+              weight_numel = B * K * N,
+              weight_tile_size = (TILE_K, TILE_N),
+              weight_sram_stride = [1, TILE_K],
+              weight_subtile_size = (SUB_TILE_K, SUB_TILE_N),
+              tile_size = tile_size,
+              vlane_split_axis = 1,
+              vlane_stride = 1,
+              is_bmm = True,
+          )
         kernel.epilogue_info = dict(
             output_node = self.output_node.name,
             dependent_buf = [],

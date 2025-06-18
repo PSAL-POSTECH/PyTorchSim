@@ -267,7 +267,8 @@ class MLIRBMMTemplate(MLIRTemplate):
         SUB_TILE_N = TILE_N # if (TILE_N < kernel.vector_lane) or prologue_nodes else kernel.vector_lane
         SUB_TILE_K = TILE_K # if (TILE_K < kernel.vector_lane) or prologue_nodes else kernel.vector_lane
 
-        if n_extra_node==1 and epilogue_nodes[0].is_reduction():
+        nr_reduction_nodes = [node for node in epilogue_nodes if node.is_reduction()] if epilogue_nodes is not None else []
+        if nr_reduction_nodes:
           template = BMM_REDUCTION_TEMPLATE
           nr_rdim = 1
         elif prologue_nodes:

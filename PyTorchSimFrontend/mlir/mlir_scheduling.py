@@ -28,33 +28,40 @@ class MLIRScheduling(BaseScheduling):
         self.max_fusion_size = 5
 
     def can_fuse_with_exceptions(self, node1: BaseSchedulerNode, node2: BaseSchedulerNode) -> bool:
-        if node1.get_device() == node2.get_device():
+        # Extract base template node
+        base_template_node1 = [node for node in node1.get_nodes() if node.is_template()]
+        base_template_node2 = [node for node in node2.get_nodes() if node.is_template()]
+        if node1.get_device() != node2.get_device():
+            return False
+
+        if len(base_template_node1) == 1 and len(base_template_node2) == 0:
             from PyTorchSimFrontend.mlir.mlir_gemm_template import MLIRGemmTemplate
             from PyTorchSimFrontend.mlir.mlir_bmm_template import MLIRBMMTemplate
-            if (node1.is_template() and (isinstance(node1.get_nodes()[0].node.template, MLIRGemmTemplate) or isinstance(node1.node.template, MLIRBMMTemplate)) and \
-                node2.is_reduction() and len(node2.get_nodes())==1):
+            if (isinstance(base_template_node1[0].node.template, MLIRGemmTemplate) or isinstance(base_template_node1[0].node.template, MLIRBMMTemplate)) and node2.is_reduction() and len(node2.get_nodes())==1:
                 # For matmul/bmm+reduction case
                 size_match = reduce(operator.mul, node1.get_nodes()[0].node.get_size(), 1) == reduce(operator.mul, node2.node.get_size(), 1) * reduce(operator.mul, node2.node.get_reduction_size(), 1)
                 stride = [i.strip()[:-1].split(",")[-1].strip() for i in str(node2.node).split("\n") if "r0" in i][1]
                 target_symbol = symbols("r0")
                 # We can't fuse dim=-1
-                possible = int(sympify(stride).coeff(target_symbol)) != 1
-                return size_match and possible
+                layout_possible = int(sympify(stride).coeff(target_symbol)) != 1
+                dependecy_check = base_template_node1[0].node.name in node2.node.get_read_names() and len(node2.node.get_read_names()) == 1
+                return size_match and layout_possible and dependecy_check
 
-            # For prologue fusion case
-            if not node1.is_template() and len(node1.get_nodes())==1 and node2.is_template():
-                # Return false if node2 is Convolution template
-                # if node2.get_nodes()[0].node.origin_node.target._name == 'aten::mm' or \
-                #     node2.get_nodes()[0].node.origin_node.target._name == 'aten::addmm':
-                #     return False
-                if node2.get_nodes()[0].node.origin_node is not None and hasattr(node2.get_nodes()[0].node.origin_node.target, "_name") and node2.get_nodes()[0].node.origin_node.target._name == 'aten::convolution':
-                    return False
-                if node1.is_reduction():
-                    return False
-                if len(node1.read_writes.writes) != 1:
-                    return False
-                if list(node1.read_writes.writes)[0].name in [dep.name for dep in node2.read_writes.reads]:
-                    return True
+        # For prologue fusion case
+        if len(base_template_node1) == 0 and len(node1.get_nodes())==1 and len(base_template_node2) == 1:
+            # Return false if node2 is Convolution template
+            # if node2.get_nodes()[0].node.origin_node.target._name == 'aten::mm' or \
+            #     node2.get_nodes()[0].node.origin_node.target._name == 'aten::addmm':
+            #     return False
+            target_node = base_template_node2[0].node
+            if target_node.origin_node is not None and hasattr(target_node.origin_node.target, "_name") and target_node.origin_node.target._name == 'aten::convolution':
+                return False
+            if node1.is_reduction():
+                return False
+            if len(node1.read_writes.writes) != 1:
+                return False
+            if list(node1.read_writes.writes)[0].name in [dep.name for dep in node2.read_writes.reads]:
+                return True
 
         return self.scheduler.can_fuse_origin(node1, node2)
 

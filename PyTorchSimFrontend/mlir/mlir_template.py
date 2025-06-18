@@ -932,7 +932,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         tile_numel_per_lane = vlane_stride * nr_outer_loop * 2
 
         dram_shape = mlir_common.MLIRKernelArgs.get_mlir_shape(self.buffer_types[name])
-        tile_shape = f"memref<{self.kernel_group.tile_desc.get_tile_size()[1]*2}x{type_name}, 1>"
+        tile_shape = f"memref<{self.kernel_group.tile_desc.get_tile_size()[1]}x{type_name}, 1>"
         tile_stride = [1]
         sram_var, index_var, sram_index_var = self.get_scratchpad_buffer(dtype, name, tile_numel_per_lane, tile_shape, index,
                                                                          index, buffer=self.const_buffer)

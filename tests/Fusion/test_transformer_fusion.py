@@ -60,7 +60,7 @@ class custom_MatmulLayerNorm(torch.nn.Module):
         self.bias = torch.nn.Parameter(torch.randn(output_size))    # (768)
         self.layer_norm = torch.nn.LayerNorm(output_size)   # 768
     def forward(self, x, residual):
-        out = torch.matmul(self.weight, x) + self.bias[:, None] # (1, 768, 512)
+        out = torch.matmul(self.weight, x.transpose(-1, -2)) + self.bias[:, None] # (1, 768, 512)
         return self.layer_norm(out.transpose(-1, -2))
 
 class DecoderBlock(torch.nn.Module):
@@ -71,8 +71,8 @@ class DecoderBlock(torch.nn.Module):
         self.ffn1 = torch.nn.Linear(embed_dim, embed_dim*4)
         self.act = torch.nn.ReLU()
         self.ffn2 = torch.nn.Linear(embed_dim*4, embed_dim)
-        self.matmulln1 = custom_MatmulLayerNorm(512, embed_dim)
-        self.matmulln2 = custom_MatmulLayerNorm(768, 512)
+        self.matmulln1 = custom_MatmulLayerNorm(embed_dim, embed_dim)
+        self.matmulln2 = custom_MatmulLayerNorm(embed_dim*4, embed_dim)
 
     def forward(self, x):
         result = self.multihead_attn(x, x, x)
@@ -80,8 +80,7 @@ class DecoderBlock(torch.nn.Module):
 
         ffn1_result = self.ffn1(result)
         act_result = self.act(ffn1_result)
-        ffn2_result = self.ffn2(act_result)
-        return self.matmulln2(ffn2_result, result)
+        return self.matmulln2(act_result, result)
 
 def test_DecoderBlock(device, head=12, embed_dim=768, input_seq=512):
     cpu_query = torch.randn(input_seq, embed_dim)

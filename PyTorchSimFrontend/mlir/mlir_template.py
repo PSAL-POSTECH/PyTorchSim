@@ -89,6 +89,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         self.reduction_buffer_idx = 0
         self.reduction_info = {}
         self.reduction_epilogue_result = {}
+        self.reduction_mean = []
 
         # Overwrite ops
         self.load = self.load_epilogue
@@ -973,6 +974,26 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
             #final_reduced_shape = type_name
             #init = self.const_cse.generate(self.const_buffer, f"arith.constant {reduction_init(self.reduction_info[value], dtype)} : {type_name}")
             #out = self.cse.generate(self.reductions_suffix, reduction_combine_vec(self.reduction_info[value], out, init, axis=0, shape=vshape, reduced_shape=final_reduced_shape))
+
+            if self.welford_reduce_out is not None:
+                # mean
+                divider = self.cse.generate(self.reductions_suffix, f"arith.constant {float(768)} : f32")
+                if self.buffer_types[name][1] > 1:
+                    divider_vec = self.cse.generate(self.reductions_suffix, f"vector.broadcast %{divider} : f32 to {new_reduced_shape}")
+                else:
+                    divider_vec = divider
+
+                if self.current_node.node.origin_node: # FIXME: This is a temporary solution
+                    # mean = E(X) / N
+                    self.reduction_mean.append(self.cse.generate(self.reductions_suffix, f"arith.divf %{out}, %{divider_vec} : {new_reduced_shape}"))
+                    out = self.reduction_mean[i]
+                else:
+                    # m2 = (E(X^2) - E(X)^2) * N
+                    sqr_mean = self.cse.generate(self.reductions_suffix, f"arith.divf %{out}, %{divider_vec} : {new_reduced_shape}")
+                    mean_sqr = self.cse.generate(self.reductions_suffix, f"arith.mulf %{self.reduction_mean[i]}, %{self.reduction_mean[i]} : {new_reduced_shape}")
+                    variance = self.cse.generate(self.reductions_suffix, f"arith.subf %{sqr_mean}, %{mean_sqr} : {new_reduced_shape}")
+                    m2 = self.cse.generate(self.reductions_suffix, f"arith.mulf %{variance}, %{divider_vec} : {new_reduced_shape}")
+                    out = m2
 
             operation = "affine.vector_store"
             line = f"{operation} %{out}, %{sram_var}[%{index_var}] : {tile_shape}, {new_reduced_shape}"

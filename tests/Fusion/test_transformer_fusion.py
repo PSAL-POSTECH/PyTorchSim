@@ -23,6 +23,54 @@ def clones(module, N):
     "Produce N identical layers."
     return torch.nn.ModuleList([copy.deepcopy(module) for _ in range(N)])
 
+class my_MultiheadAttention_origin(torch.nn.Module):
+    def __init__(self, h, d_model, dropout=0.1):
+        super(my_MultiheadAttention_origin, self).__init__()
+        assert d_model % h == 0
+        # We assume d_v always equals d_k
+        self.d_k = d_model // h
+        self.h = h
+        self.linears = clones(torch.nn.Linear(d_model, d_model), 4)
+        self.attn = None
+
+    def forward(self, query, key, value):
+        # 1) Do all the linear projections in batch from d_model => h x d_k
+        query, key, value = [
+            lin(x).view(-1, self.h, self.d_k).transpose(0, 1)
+            for lin, x in zip(self.linears, (query, key, value))
+        ]
+
+        # 2) Apply attention on all the projected vectors in batch.
+        scores = torch.matmul(key, query.transpose(-2, -1)) / math.sqrt(self.d_k)
+        p_attn = scores.softmax(dim=-2)
+        x = torch.matmul(value.transpose(-1, -2), p_attn)
+        # 3) "Concat" using a view and apply a final linear.
+        x = (
+            x.view(-1, self.h * self.d_k)
+        )
+        del query
+        del key
+        del value
+        return self.linears[-1](x)
+
+class DecoderBlock_origin(torch.nn.Module):
+    def __init__(self, embed_dim, num_heads):
+        super(DecoderBlock_origin, self).__init__()
+        self.multihead_attn = my_MultiheadAttention_origin(num_heads, embed_dim)
+        self.layer_norm = torch.nn.LayerNorm(embed_dim)
+        self.ffn1 = torch.nn.Linear(embed_dim, embed_dim*4)
+        self.act = torch.nn.ReLU()
+        self.ffn2 = torch.nn.Linear(embed_dim*4, embed_dim)
+
+    def forward(self, x):
+        result = self.multihead_attn(x, x, x).reshape(x.shape)
+        result = self.layer_norm(result+x)
+
+        ffn1_result = self.ffn1(result)
+        act_result = self.act(ffn1_result)
+        ffn2_result = self.ffn2(act_result)
+        return self.layer_norm(ffn2_result + result)
+
 class my_MultiheadAttention(torch.nn.Module):
     def __init__(self, h, d_model, dropout=0.1):
         super(my_MultiheadAttention, self).__init__()
@@ -61,7 +109,7 @@ class custom_MatmulLayerNorm(torch.nn.Module):
         self.layer_norm = torch.nn.LayerNorm(output_size)   # 768
     def forward(self, x, residual):
         out = torch.matmul(self.weight, x.transpose(-1, -2)) + self.bias[:, None] # (1, 768, 512)
-        return self.layer_norm(out.transpose(-1, -2))
+        return self.layer_norm(out.transpose(-1, -2) + residual)
 
 class DecoderBlock(torch.nn.Module):
     def __init__(self, embed_dim, num_heads):
@@ -126,6 +174,30 @@ def test_MHA(device, num_heads=12, embed_dim=768, input_seq=512):
 
     test_result("MHA Forward", res, cpu_res)
 
+def test_DecoderBlock_validation(head=12, embed_dim=768, input_seq=512):
+    bert_origin = DecoderBlock_origin(embed_dim, head)
+    bert = DecoderBlock(embed_dim, head)
+
+    bert.multihead_attn.linears[0].weight = bert_origin.multihead_attn.linears[0].weight
+    bert.multihead_attn.linears[0].bias = bert_origin.multihead_attn.linears[0].bias
+    bert.multihead_attn.linears[1].weight = bert_origin.multihead_attn.linears[1].weight
+    bert.multihead_attn.linears[1].bias = bert_origin.multihead_attn.linears[1].bias
+    bert.multihead_attn.linears[2].weight = bert_origin.multihead_attn.linears[2].weight
+    bert.multihead_attn.linears[2].bias = bert_origin.multihead_attn.linears[2].bias
+    bert.ffn1.weight = bert_origin.ffn1.weight
+    bert.ffn1.bias = bert_origin.ffn1.bias
+    bert.matmulln1.weight = torch.nn.Parameter(bert_origin.multihead_attn.linears[-1].weight)
+    bert.matmulln1.bias = torch.nn.Parameter(bert_origin.multihead_attn.linears[-1].bias)
+    bert.matmulln2.weight = torch.nn.Parameter(bert_origin.ffn2.weight)
+    bert.matmulln2.bias = torch.nn.Parameter(bert_origin.ffn2.bias)
+
+    origin_query = torch.randn(input_seq, embed_dim)
+    query = origin_query.clone()
+    origin_res = bert_origin(origin_query)
+    res = bert(query)
+
+    test_result("Decoder Block Validation", res, origin_res)
+
 if __name__ == "__main__":
     import os
     import sys
@@ -135,5 +207,6 @@ if __name__ == "__main__":
     module = ExecutionEngine.setup_device()
     device = module.custom_device()
     test_DecoderBlock(device)
+    # test_DecoderBlock_validation()
     # test_Attention(device, head=16, seq=512, d_k=64)
     # test_MHA(device, num_heads=12, embed_dim=768)

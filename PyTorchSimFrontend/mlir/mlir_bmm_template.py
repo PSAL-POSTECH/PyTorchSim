@@ -262,7 +262,7 @@ class MLIRBMMTemplate(MLIRTemplate):
         TILE_M, TILE_N, TILE_K = kernel.gemm_combination_mapping(M, N, K, n_extra_node=n_extra_node)
         TOG_latency = M if TILE_M > M else TILE_M
         kernel.loop_size = [TOG_latency, TILE_N, TILE_K]
-        TILE_K = TILE_K // 4 if prologue_nodes else TILE_K
+        TILE_K = TILE_K // 2 if prologue_nodes else TILE_K
         SUB_TILE_M = TILE_M if (TILE_M < kernel.vector_lane) or prologue_nodes else kernel.vector_lane
         SUB_TILE_N = TILE_N # if (TILE_N < kernel.vector_lane) or prologue_nodes else kernel.vector_lane
         SUB_TILE_K = TILE_K # if (TILE_K < kernel.vector_lane) or prologue_nodes else kernel.vector_lane

@@ -482,7 +482,7 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
                 tile_size[0] = 2 * vlane_stride * self.vector_lane
             elif len(tile_size) == 3:
                 tile_size[-1] = self.vector_lane
-                tile_size[-2] = 2 * self.vector_lane
+                tile_size[-2] = 4 * self.vector_lane
                 tile_size[-3] = 2
             else:
                 raise NotImplementedError("dummy tile size fail!")

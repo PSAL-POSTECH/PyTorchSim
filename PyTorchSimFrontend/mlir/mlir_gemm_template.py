@@ -12,7 +12,7 @@ import PyTorchSimFrontend.extension_codecache as extension_codecache
 from PyTorchSimFrontend import extension_config
 
 GEMM_TEMPLATE = r"""
-// GEMM kernel
+// GEMM {% if prologue_nodes -%}prologue fused{%- endif %} {% if epilogue_nodes -%}eilogue fused{%- endif %} kernel
 // M = {{ M }}
 // N = {{ N }}
 // K = {{ K }}
@@ -88,7 +88,7 @@ func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[X, W, Bias], outputs=[Y]
 """
 
 GEMM_REDUCTION_TEMPLATE = r"""
-// GEMM kernel
+// GEMM reduction kernel
 // M = {{ M }}
 // N = {{ N }}
 // K = {{ K }}
@@ -190,16 +190,17 @@ class MLIRGemmTemplate(MLIRTemplate):
           if self.output_node.name in n_extra_read:
             n_extra_read.remove(self.output_node.name)
 
+        n_prologue_node = len(prologue_nodes) if prologue_nodes is not None else 0
         nr_rdim = 0
         if (M == 0) or (N == 0) or (K == 0):
             TILE_M, TILE_N, TILE_K = 1, 1, 1
             template = EMPTY_TEMPLATE
         elif n_extra_node>=1 and epilogue_nodes[0].is_reduction():
-            TILE_M, TILE_N, TILE_K = kernel.gemm_combination_mapping(M, N, K, len(n_extra_read), min_tile=True)
+            TILE_M, TILE_N, TILE_K = kernel.gemm_combination_mapping(M, N, K, len(n_extra_read), n_prologue_node, min_tile=True)
             template = GEMM_REDUCTION_TEMPLATE
             nr_rdim = 1
         else:
-            TILE_M, TILE_N, TILE_K = kernel.gemm_combination_mapping(M, N, K, len(n_extra_read), min_tile=True)
+            TILE_M, TILE_N, TILE_K = kernel.gemm_combination_mapping(M, N, K, len(n_extra_read), n_prologue_node, min_tile=True)
             template = GEMM_TEMPLATE
         TILE_M = min(extension_config.CONFIG_FORCE_TILE_M, TILE_M)
         TILE_N = min(extension_config.CONFIG_FORCE_TILE_N, TILE_N)

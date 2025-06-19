@@ -155,7 +155,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
 
         return inner_I, inner_J, inner_K
 
-    def gemm_combination_mapping(self, M, N, K, n_extra_node=0, pad_k=True, min_tile=False):
+    def gemm_combination_mapping(self, M, N, K, n_extra_node=0, n_prologue_node=0, pad_k=True, min_tile=False):
         spad_size_per_lane = self.spad_info["spad_size"]
         spad_size = spad_size_per_lane * self.vector_lane
         max_spad_size = spad_size // 2 # double buffer
@@ -183,13 +183,14 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
                 tile_M = i * self.vector_lane if M > self.vector_lane else M_padded
                 for j in tile_N_range:
                     tile_N = j * self.vector_lane if N > self.vector_lane else N_padded
-                    used_spad_size = (tile_M * tile_K + tile_K * tile_N + tile_M * tile_N * (1 + n_extra_node)) * self.precision
+                    used_spad_size = (tile_M * tile_K * (1 + n_prologue_node) + tile_K * tile_N + tile_M * tile_N * (1 + n_extra_node)) * self.precision
                     weight_size_per_lane = self.get_spad_size_per_lane(tile_K, tile_N)
-                    input_size_per_lane = self.get_spad_size_per_lane(tile_M, tile_K)
+                    input_size_per_lane = self.get_spad_size_per_lane(tile_M * (1 + n_prologue_node), tile_K)
                     output_size_per_lane = self.get_spad_size_per_lane(tile_M * (1 + n_extra_node), tile_N)
                     used_spad_size_per_lane = (weight_size_per_lane + input_size_per_lane + output_size_per_lane) * self.precision
                     n_tile = math.ceil(M / tile_M) * math.ceil(N / tile_N)
-                    if used_spad_size < max_spad_size and max_used_spad_size < used_spad_size and used_spad_size_per_lane < max_spad_per_lane and maximize_i_j <= tile_M * tile_N and n_tile >= minimum_n_tile:
+                    check_spad_size = (used_spad_size < max_spad_size and max_used_spad_size < used_spad_size and used_spad_size_per_lane < max_spad_per_lane)
+                    if check_spad_size and maximize_i_j <= tile_M * tile_N and n_tile >= minimum_n_tile and tile_N // tile_M < 10:
                         max_used_spad_size = used_spad_size
                         maximize_i_j = tile_M * tile_N
                         mapping = (tile_M, tile_N, tile_K)

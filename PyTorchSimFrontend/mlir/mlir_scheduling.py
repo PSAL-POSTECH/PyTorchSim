@@ -212,10 +212,18 @@ class MLIRScheduling(BaseScheduling):
             for node in prologue_nodes:
                 # Reuse created spad
                 read_list = sorted(list(node.read_writes.reads))
-                if reduce(operator.mul, read_list[-1].size, 1) == template_node.node.get_numel():
-                    prologue_input_arg = read_list[-1].name
-                else:
-                    prologue_input_arg = read_list[0].name
+                candidate_found = False
+                # Why? There is a case that memdep.get_size() != data.get_size()
+                buf_dict = {}
+                buf_dict.update({val.get_name() : val for val in V.graph.graph_inputs.values()})
+                buf_dict.update({val.name : val for val in V.graph.buffers})
+                for candidate_read in read_list:
+                    if reduce(operator.mul, buf_dict[candidate_read.name].get_size(), 1) == node.node.get_numel():
+                        prologue_input_arg = candidate_read.name
+                        candidate_found = True
+                        break
+                assert(candidate_found)
+                assert(len(node.read_writes.writes)==1)
                 prologue_output_arg = list(node.read_writes.writes)[0].name
                 template_buf = self.kernel_group.args.input_buffers[prologue_output_arg]
                 if template_node.get_nodes()[0].node.origin_node.target._name == 'aten::bmm':

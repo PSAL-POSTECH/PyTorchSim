@@ -74,7 +74,7 @@ std::shared_ptr<std::set<addr_type>> Instruction::get_dram_address(addr_type dra
     tile_size.insert(tile_size.begin(), 1);
 
   while (_stride_list.size() < 4)
-    _stride_list.insert(_stride_list.begin(), 1);
+    _stride_list.insert(_stride_list.begin(), 0);
   if (_is_indirect_mode) {
     spdlog::trace("[Indirect Access] Indirect mode, dump_path: {}", _indirect_index_path);
     load_indirect_index(_indirect_index_path, indirect_index, tile_size);

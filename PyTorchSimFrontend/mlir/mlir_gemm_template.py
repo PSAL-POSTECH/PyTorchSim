@@ -182,16 +182,24 @@ class MLIRGemmTemplate(MLIRTemplate):
 
         M, N, K = X_tensor.size()[0], W_tensor.size()[1], X_tensor.size()[1]
         n_extra_node = len(epilogue_nodes) if epilogue_nodes is not None else 0
+        # Caculate extra reads
+        n_extra_read = set()
+        if epilogue_nodes is not None:
+          for enode in epilogue_nodes:
+            n_extra_read.update(enode.node.get_read_names())
+          if self.output_node.name in n_extra_read:
+            n_extra_read.remove(self.output_node.name)
+
         nr_rdim = 0
         if (M == 0) or (N == 0) or (K == 0):
             TILE_M, TILE_N, TILE_K = 1, 1, 1
             template = EMPTY_TEMPLATE
         elif n_extra_node>=1 and epilogue_nodes[0].is_reduction():
-            TILE_M, TILE_N, TILE_K = kernel.gemm_combination_mapping(M, N, K, n_extra_node, min_tile=True)
+            TILE_M, TILE_N, TILE_K = kernel.gemm_combination_mapping(M, N, K, len(n_extra_read), min_tile=True)
             template = GEMM_REDUCTION_TEMPLATE
             nr_rdim = 1
         else:
-            TILE_M, TILE_N, TILE_K = kernel.gemm_combination_mapping(M, N, K, n_extra_node, min_tile=True)
+            TILE_M, TILE_N, TILE_K = kernel.gemm_combination_mapping(M, N, K, len(n_extra_read), min_tile=True)
             template = GEMM_TEMPLATE
         TILE_M = min(extension_config.CONFIG_FORCE_TILE_M, TILE_M)
         TILE_N = min(extension_config.CONFIG_FORCE_TILE_N, TILE_N)

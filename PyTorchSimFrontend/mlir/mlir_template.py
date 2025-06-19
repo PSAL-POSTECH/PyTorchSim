@@ -766,7 +766,15 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
 
     def load_epilogue(self, name: str, index: sympy.Expr):
         is_1d_source = len(index.free_symbols) == 1
-        index_var = self.epilogue_info['index_var'] if not is_1d_source else 'tile_n'
+        is_transpose = False    # FIXME: Only works for 2d input
+        if len(index.args) == 2:
+            for expr in index.args:
+                if len(expr.args):
+                    if expr.args[1].name == "index0" and expr.args[0] > 1:
+                        is_transpose = True
+                        break
+        key = 't_index_var' if is_transpose else 'index_var'
+        index_var = self.epilogue_info[key] if not is_1d_source else 'tile_n'
         index = self.rename_indexing(index)
         dram_var = self.kernel_group.args.input(name)
         dtype = V.graph.get_dtype(name)

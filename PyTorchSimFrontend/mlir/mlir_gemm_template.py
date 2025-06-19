@@ -25,6 +25,7 @@ GEMM_TEMPLATE = r"""
 #map1 = affine_map<(d0, d1) -> ({{ W_map }})>
 #map2 = affine_map<(d0, d1) -> (d0 * {{ N }} + d1)>
 #map3 = affine_map<(d0, d1) -> (d0 * {{ N }})>
+#map4 = affine_map<(d0, d1) -> (d0 + d1 * {{ M }})>
 memref.global @X_spad : memref<{{ TILE_M }}x{{ TILE_K }}xf32, 1>
 memref.global @W_spad : memref<{{ TILE_K }}x{{ TILE_N }}xf32, 1>
 memref.global @Y_spad : memref<{{ TILE_M }}x{{ TILE_N }}xf32, 1>
@@ -52,6 +53,7 @@ func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[X, W, Bias], outputs=[Y]
     affine.for %t_n = 0 to {{ N }} step {{ TILE_N }} {
       %index2 = affine.apply #map2(%t_m, %t_n)
       %index3 = affine.apply #map2(%t_m, %t_n)
+      %index4 = affine.apply #map4(%t_m, %t_n)
       {%- if Bias %}
       memref.dma_start %Bias[{{ Bias_idx }}], %Y_buffer[%c0, %c0], %c_mvin3, %tag0[%c0], %
         {%- if Bias_rank == 2 -%} axis {%- else -%} c0 {%- endif -%}
@@ -101,6 +103,7 @@ GEMM_REDUCTION_TEMPLATE = r"""
 #map1 = affine_map<(d0, d1) -> ({{ W_map }})>
 #map2 = affine_map<(d0, d1) -> (d0 * {{ N }} + d1)>
 #map3 = affine_map<(d0, d1) -> (d0 * {{ N }})>
+#map4 = affine_map<(d0, d1) -> (d0 + d1 * {{ M }})>
 memref.global @X_spad : memref<{{ TILE_M }}x{{ TILE_K }}xf32, 1>
 memref.global @W_spad : memref<{{ TILE_K }}x{{ TILE_N }}xf32, 1>
 memref.global @Y_spad : memref<{{ TILE_M }}x{{ TILE_N }}xf32, 1>
@@ -128,6 +131,7 @@ func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[X, W, Bias], outputs=[Y]
     {{kernel.reduction_acc()}} affine.for %t_m = 0 to {{ M }} step {{ TILE_M }} {{kernel.reduction_iter_arg()}} {
       %index2 = affine.apply #map2(%t_m, %t_n)
       %index3 = affine.apply #map2(%t_m, %t_n)
+      %index4 = affine.apply #map4(%t_m, %t_n)
       {%- if Bias %}
       memref.dma_start %Bias[{{ Bias_idx }}], %Y_buffer[%c0, %c0], %c_mvin3, %tag0[%c0], %
         {%- if Bias_rank == 2 -%} axis {%- else -%} c0 {%- endif -%}
@@ -283,6 +287,7 @@ class MLIRGemmTemplate(MLIRTemplate):
             sram_var = "Y_buffer",
             dram_var = "Y",
             index_var = "index2",
+            t_index_var = "index4", # FIXME: for epilogue transposed input
             tag_var = "tag",
             vlane_split_axis = 1,
             vlane_stride = 1,

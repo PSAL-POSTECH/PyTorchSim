@@ -39,13 +39,15 @@ class MLIRScheduling(BaseScheduling):
             from PyTorchSimFrontend.mlir.mlir_bmm_template import MLIRBMMTemplate
             if (isinstance(base_template_node1[0].node.template, MLIRGemmTemplate) or isinstance(base_template_node1[0].node.template, MLIRBMMTemplate)) and node2.is_reduction() and len(node2.get_nodes())==1:
                 # For matmul/bmm+reduction case
-                size_match = reduce(operator.mul, node1.get_nodes()[0].node.get_size(), 1) == reduce(operator.mul, node2.node.get_size(), 1) * reduce(operator.mul, node2.node.get_reduction_size(), 1)
+                size_match = node1.get_nodes()[0].node.get_numel() == reduce(operator.mul, node2.node.get_size(), 1) * reduce(operator.mul, node2.node.get_reduction_size(), 1)
                 stride = [i.strip()[:-1].split(",")[-1].strip() for i in str(node2.node).split("\n") if "r0" in i][1]
                 target_symbol = symbols("r0")
                 # We can't fuse dim=-1
                 layout_possible = int(sympify(stride).coeff(target_symbol)) != 1
-                dependecy_check = base_template_node1[0].node.name in node2.node.get_read_names() and len(node2.node.get_read_names()) == 1
-                return size_match and layout_possible and dependecy_check
+                # Directed linked?
+                dependency_check = node2 in [node.node for node in base_template_node1[0].users]# and len(node2.read_writes.reads)==1
+                dependency_size = all([i.get_numel() == node1.get_nodes()[0].node.get_numel() for i in node2.read_writes.reads])
+                return size_match and layout_possible and dependency_check & dependency_size
 
         # For prologue fusion case
         if len(base_template_node1) == 0 and len(node1.get_nodes())==1 and len(base_template_node2) == 1:

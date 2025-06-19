@@ -90,6 +90,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         self.reduction_info = {}
         self.reduction_epilogue_result = {}
         self.reduction_mean = []
+        self.reuse_buffer_names = {}
 
         # Overwrite ops
         self.load = self.load_epilogue
@@ -797,9 +798,15 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
             code = self.get_dma_code("MVIN", vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
                                      f"{name}_tag", dram_shape, tile_shape, tile_stride)
             self.cse.generate(self.dma_loads, code, assignment = False)
+        elif name in self.reuse_buffer_names:
+            sram_var = self.reuse_buffer_names[name]
+            code = self.get_dma_code("MVIN", vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
+                                     f"{name}_tag", dram_shape, tile_shape, tile_stride)
+            self.cse.generate(self.dma_loads, code, assignment = False)
+        else:
+            sram_var = self.buffer_names[name]
 
         # Load vector from sram
-        sram_var = self.buffer_names[name]
         zero_var = self.get_const_cse(0)
         if not self.reduction_fusion:
             compute_index_var = ",".join([f"%{zero_var}"] * (self.kernel_group.tile_desc.get_nr_dim()-1) + [f"%{self.compute_idx}"])
@@ -1022,6 +1029,9 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
             self.vector_lane,
             vlane_split_axis=template_epilogue_info['vlane_split_axis'],
             vlane_stride=template_epilogue_info['vlane_stride'])
+
+        if "reuse_buffer_names" in template_epilogue_info:
+            self.reuse_buffer_names.update(template_epilogue_info["reuse_buffer_names"])
 
         if 'nr_rdim' in template_epilogue_info and template_epilogue_info['nr_rdim']==1:
             tile_desc.nr_rdim = 1

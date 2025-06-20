@@ -342,6 +342,7 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
         self.buffer_types : dict = None # format: dtype, numel, size, stride
         self.compute_idx = "compute_idx"
         self.compute_body_loop = LoopLevel(self.compute_idx, 1)
+        self.prologue_compute_body_loop = LoopLevel(self.compute_idx, 1)
         self.recodegen = reason # spad overflow, tile size, vlane stride
         self.stop_autotune = False
 

@@ -363,7 +363,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
             buf.body.splice(buf.dma_loads)
 
             if (buf.loads.getvalue() != '' or buf.compute.getvalue() != '' or buf.stores.getvalue() != ''):
-                buf.body.writelines(self.compute_body_loop.lines())
+                buf.body.writelines(self.prologue_compute_body_loop.lines())
                 compute_body = mlir_common.ParallelLoopBuffer()
                 with contextlib.ExitStack() as stack:
                     stack.enter_context(compute_body.indent(attribute="{inner_loop=false}"))
@@ -688,19 +688,20 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         load_dim = []
         if not isinstance(V.graph, NullHandler) and name in V.graph.graph_inputs:
             load_dim = V.graph.graph_inputs[name].layout.size
-        if self.kernel_group.prologue_tile_desc.get_numel() == self.buffer_types[name][1]:
+        if self.ranges == self.buffer_types[name][2]:
             index_var = self.prologue_info['input_index_var'] if len(load_dim) != 1 else 'tile_n'
+            vlane_split_axis = self.kernel_group.prologue_tile_desc.vlane_split_axis if len(load_dim) != 1 else 0    # FIXME: Fixed split axis for 1d load dim
         else:
             # Broadcast pattern
             zero_index = self.const_cse.generate(self.const_buffer, "arith.constant 0 : index")
             if self.prologue_info['is_bmm']: # FIXME: hardcoded
                 idx = f"%b, %t_k, %t_n"
                 map_var = self.map_cse.generate(self.global_vars, f"affine_map<(d0, d1, d2) -> (d0 * 512 + d2)>")
-                vlane_split_axis = 2
+                vlane_split_axis = 2 # 3D GEMM prologue should be loaded by axis 2
             else:
                 idx = f"%t_m, %{zero_index}"
                 map_var = self.map_cse.generate(self.global_vars, f"affine_map<(d0, d1) -> (d0)>")
-                vlane_split_axis = self.kernel_group.prologue_tile_desc.vlane_split_axis if len(load_dim) != 1 else 0    # FIXME: Fixed split axis for 1d load dim
+                vlane_split_axis = 1 # 2D GEMM prologue should be loaded by axis 1
             index_var = self.apply_cse.generate(self.dma_loads, f"affine.apply #{map_var}({idx})")
         index = self.rename_indexing(index)
         dram_var = self.kernel_group.args.input(name)
@@ -1024,7 +1025,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
     def get_scratchpad_buffer(self, dtype, name, tile_size_per_lane, dram_tile_shape, index_var, raw_index, buffer=None):
         return super().get_scratchpad_buffer(dtype, name, tile_size_per_lane, dram_tile_shape, index_var, raw_index, True, buffer=buffer)
 
-    def set_tile_size(self, template_epilogue_info):
+    def set_tile_size(self, template_epilogue_info, prologue=False):
         tile_desc = mlir_common.MLIRMultiDimTile(template_epilogue_info['tile_size'],
             self.vector_lane,
             vlane_split_axis=template_epilogue_info['vlane_split_axis'],
@@ -1050,8 +1051,12 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
             self.reduction_body_loop = mlir_common.LoopLevel(self.reduction_loop_idx, nr_outer_loop)
         else:
             tile_desc.vec_size=64
-            self.compute_body_loop.size = tile_desc.get_numel_per_lane()
-            self.compute_body_loop.step = tile_desc.get_compute_vec_size()
+            if prologue:
+                self.prologue_compute_body_loop.size = tile_desc.get_numel_per_lane()
+                self.prologue_compute_body_loop.step = tile_desc.get_compute_vec_size()
+            else:
+                self.compute_body_loop.size = tile_desc.get_numel_per_lane()
+                self.compute_body_loop.step = tile_desc.get_compute_vec_size()
         return tile_desc
 
 class MLIRTemplateCaller(CUDATemplateCaller):

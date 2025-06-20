@@ -200,10 +200,10 @@ class MLIRScheduling(BaseScheduling):
             kernel.kernel_group.set_tile_info(tile_desc)
             if prologue_nodes:
                 _, (group, reduction_group) = max(
-                    prologue_nodes, key=lambda x: int(x.is_reduction())
+                    [prologue_nodes[-1]], key=lambda x: int(x.is_reduction())
                 ).group
-                tile_desc = kernel.set_tile_size(kernel.prologue_info)
-                kernel.kernel_group.set_prologue_tile_info(tile_desc)
+                prologue_tile_desc = kernel.set_tile_size(kernel.prologue_info, prologue=True)
+                kernel.kernel_group.set_prologue_tile_info(prologue_tile_desc)
                 vars, reduction_vars = kernel.set_ranges(group, reduction_group)
             # Flush created varaibles, since template fusion doen't share variable
             kernel.cse.cache.clear()
@@ -217,10 +217,9 @@ class MLIRScheduling(BaseScheduling):
                 candidate_found = False
                 # Why? There is a case that memdep.get_size() != data.get_size()
                 buf_dict = {}
-                buf_dict.update({val.get_name() : val for val in V.graph.graph_inputs.values()})
                 buf_dict.update({val.name : val for val in V.graph.buffers})
                 for candidate_read in read_list:
-                    if reduce(operator.mul, buf_dict[candidate_read.name].get_size(), 1) == node.node.get_numel():
+                    if candidate_read.name in buf_dict and reduce(operator.mul, buf_dict[candidate_read.name].get_size(), 1) == node.node.get_numel():
                         prologue_input_arg = candidate_read.name
                         candidate_found = True
                         break

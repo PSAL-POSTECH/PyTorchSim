@@ -24,7 +24,7 @@ GEMM_TEMPLATE = r"""
 #map0 = affine_map<(d0, d1) -> ({{ X_map }})>
 #map1 = affine_map<(d0, d1) -> ({{ W_map }})>
 #map2 = affine_map<(d0, d1) -> (d0 * {{ N }} + d1)>
-#map3 = affine_map<(d0, d1) -> (d0 * {{ N }})>
+#map3 = affine_map<(d0, d1) -> (d0)>
 #map4 = affine_map<(d0, d1) -> (d0 + d1 * {{ M }})>
 memref.global @X_spad : memref<{{ TILE_M }}x{{ TILE_K }}xf32, 1>
 memref.global @W_spad : memref<{{ TILE_K }}x{{ TILE_N }}xf32, 1>
@@ -52,12 +52,10 @@ func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[X, W, Bias], outputs=[Y]
   affine.for %t_m = 0 to {{ M }} step {{ TILE_M }} {
     affine.for %t_n = 0 to {{ N }} step {{ TILE_N }} {
       %index2 = affine.apply #map2(%t_m, %t_n)
-      %index3 = affine.apply #map2(%t_m, %t_n)
+      %index3 = affine.apply #map3(%t_m, %c0)
       %index4 = affine.apply #map4(%t_m, %t_n)
       {%- if Bias %}
-      memref.dma_start %Bias[{{ Bias_idx }}], %Y_buffer[%c0, %c0], %c_mvin3, %tag0[%c0], %
-        {%- if Bias_rank == 2 -%} axis {%- else -%} c0 {%- endif -%}
-        , %vstride : memref<{{ Bias.data.get_numel() }}xf32>, memref<{{ TILE_M }}x{{ TILE_N }}xf32, 1>, memref<1xi32>  { subtile_size=[{{ SUB_TILE_M }}, {{ SUB_TILE_N }}], async=1, sram_stride=[1, {{ TILE_M }}] }
+      memref.dma_start %Bias[{{ Bias_idx }}], %Y_buffer[%c0, %c0], %c_mvin3, %tag0[%c0], {{ Bias_axis }}, %vstride : memref<{{ Bias.data.get_numel() }}xf32>, memref<{{ TILE_M }}x{{ TILE_N }}xf32, 1>, memref<1xi32>  { subtile_size=[{{ SUB_TILE_M }}, {{ SUB_TILE_N }}], async=1, sram_stride=[1, {{ TILE_M }}] }
       {%- else %}
       affine.vector_store %v0, %Y_buffer[0, 0] : memref<{{ TILE_M }}x{{ TILE_N }}xf32, 1>, vector<{{ kernel.get_spad_size_per_lane(TILE_M, TILE_N) }}xf32>
       {%- endif %}
@@ -102,7 +100,7 @@ GEMM_REDUCTION_TEMPLATE = r"""
 #map0 = affine_map<(d0, d1) -> ({{ X_map }})>
 #map1 = affine_map<(d0, d1) -> ({{ W_map }})>
 #map2 = affine_map<(d0, d1) -> (d0 * {{ N }} + d1)>
-#map3 = affine_map<(d0, d1) -> (d0 * {{ N }})>
+#map3 = affine_map<(d0, d1) -> (d0)>
 #map4 = affine_map<(d0, d1) -> (d0 + d1 * {{ M }})>
 memref.global @X_spad : memref<{{ TILE_M }}x{{ TILE_K }}xf32, 1>
 memref.global @W_spad : memref<{{ TILE_K }}x{{ TILE_N }}xf32, 1>
@@ -130,12 +128,10 @@ func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[X, W, Bias], outputs=[Y]
   affine.for %t_n = 0 to {{ N }} step {{ TILE_N }} {
     {{kernel.reduction_acc()}} affine.for %t_m = 0 to {{ M }} step {{ TILE_M }} {{kernel.reduction_iter_arg()}} {
       %index2 = affine.apply #map2(%t_m, %t_n)
-      %index3 = affine.apply #map2(%t_m, %t_n)
+      %index3 = affine.apply #map3(%t_m, %c0)
       %index4 = affine.apply #map4(%t_m, %t_n)
       {%- if Bias %}
-      memref.dma_start %Bias[{{ Bias_idx }}], %Y_buffer[%c0, %c0], %c_mvin3, %tag0[%c0], %
-        {%- if Bias_rank == 2 -%} axis {%- else -%} c0 {%- endif -%}
-        , %vstride : memref<{{ Bias.data.get_numel() }}xf32>, memref<{{ TILE_M }}x{{ TILE_N }}xf32, 1>, memref<1xi32>  { subtile_size=[{{ SUB_TILE_M }}, {{ SUB_TILE_N }}], async=1, sram_stride=[1, {{ TILE_M }}] }
+      memref.dma_start %Bias[{{ Bias_idx }}], %Y_buffer[%c0, %c0], %c_mvin3, %tag0[%c0], {{ Bias_axis }}, %vstride : memref<{{ Bias.data.get_numel() }}xf32>, memref<{{ TILE_M }}x{{ TILE_N }}xf32, 1>, memref<1xi32>  { subtile_size=[{{ SUB_TILE_M }}, {{ SUB_TILE_N }}], async=1, sram_stride=[1, {{ TILE_M }}] }
       {%- else %}
       affine.vector_store %v0, %Y_buffer[0, 0] : memref<{{ TILE_M }}x{{ TILE_N }}xf32, 1>, vector<{{ kernel.get_spad_size_per_lane(TILE_M, TILE_N) }}xf32>
       {%- endif %}
@@ -224,12 +220,16 @@ class MLIRGemmTemplate(MLIRTemplate):
         if Bias is not None:
           if Bias.data.get_numel() == M*N:
             Bias_idx = "%index2"
+            Bias_axis = "%axis"
           elif Bias.data.get_numel() == M:
             Bias_idx = "%index3"
+            Bias_axis = "%axis"
           else:
             Bias_idx = "%t_n"
+            Bias_axis = "%c0"
         else:
           Bias_idx = None
+          Bias_axis = None
 
         kernel.render_options = dict(
             KERNEL_NAME=self.name,
@@ -250,7 +250,7 @@ class MLIRGemmTemplate(MLIRTemplate):
             Y = Y,
             Bias = Bias,
             Bias_idx = Bias_idx,
-            Bias_rank = len(Bias.data.get_size()) if Bias is not None else 0,
+            Bias_axis = Bias_axis,
             X_map = X_map,
             W_map = W_map,
             Y_numel = M * N,

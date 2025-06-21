@@ -179,7 +179,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         tile_N_range = sympy.divisors(indexJ) if N > self.vector_lane else [1]
         tile_K_range = sympy.divisors(indexK) if K > self.vector_lane else [1]
         maximize_i_j = 1 # reuse weight
-        for k in tile_K_range:
+        for k in tile_K_range: # store tile candidates for manual mapping
             tile_K = k * self.vector_lane if K > self.vector_lane else K_padded
             for i in tile_M_range:
                 tile_M = i * self.vector_lane if M > self.vector_lane else M_padded
@@ -190,9 +190,33 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
                     input_size_per_lane = self.get_spad_size_per_lane(tile_M * (1 + n_prologue_node), tile_K)
                     output_size_per_lane = self.get_spad_size_per_lane(tile_M * (1 + n_extra_node), tile_N)
                     used_spad_size_per_lane = (weight_size_per_lane + input_size_per_lane + output_size_per_lane) * self.precision
-                    n_tile = math.ceil(M / tile_M) * math.ceil(N / tile_N)
-                    check_spad_size = (used_spad_size < max_spad_size and max_used_spad_size < used_spad_size and used_spad_size_per_lane < max_spad_per_lane)
-                    if check_spad_size and maximize_i_j <= tile_M * tile_N and n_tile >= minimum_n_tile and tile_N // tile_M < 10:
+                    check_spad_size = (used_spad_size < max_spad_size and used_spad_size_per_lane < max_spad_per_lane)
+                    if check_spad_size:
+                        file_path = f"/root/workspace/PyTorchSim/validation/gemm_candidates/gemm_{M}_{K}_{N}.txt"
+                        line_to_write = f"{tile_M} {tile_K} {tile_N}\n"
+                        try:
+                            with open(file_path, "r") as f:
+                                lines = f.readlines()
+                        except FileNotFoundError:
+                            lines = []
+                        if line_to_write not in lines:
+                            with open(file_path, "a") as f:
+                                f.write(line_to_write)
+
+        for k in tile_K_range: # heuristic search
+            tile_K = k * self.vector_lane if K > self.vector_lane else K_padded
+            for i in tile_M_range:
+                tile_M = i * self.vector_lane if M > self.vector_lane else M_padded
+                for j in tile_N_range:
+                    tile_N = j * self.vector_lane if N > self.vector_lane else N_padded
+                    used_spad_size = (tile_M * tile_K * (1 + n_prologue_node) + tile_K * tile_N + tile_M * tile_N * (1 + n_extra_node)) * self.precision
+                    weight_size_per_lane = self.get_spad_size_per_lane(tile_K, tile_N)
+                    input_size_per_lane = self.get_spad_size_per_lane(tile_M * (1 + n_prologue_node), tile_K)
+                    output_size_per_lane = self.get_spad_size_per_lane(tile_M * (1 + n_extra_node), tile_N)
+                    used_spad_size_per_lane = (weight_size_per_lane + input_size_per_lane + output_size_per_lane) * self.precision
+                    n_tile = math.ceil(N / tile_N)
+                    check_spad_size = (used_spad_size < max_spad_size and used_spad_size_per_lane < max_spad_per_lane)
+                    if check_spad_size and max_used_spad_size < used_spad_size and maximize_i_j <= tile_M * tile_N and n_tile >= minimum_n_tile and tile_N // tile_M < 10 and tile_N < 2048:
                         max_used_spad_size = used_spad_size
                         maximize_i_j = tile_M * tile_N
                         mapping = (tile_M, tile_N, tile_K)

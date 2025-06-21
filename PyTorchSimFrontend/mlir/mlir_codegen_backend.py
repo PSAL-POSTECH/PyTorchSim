@@ -1390,7 +1390,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         for vlane_stride in [2, 4, 8]:
             os.environ['TORCHSIM_VECTOR_LANE_STRIDE'] = str(vlane_stride)
             previous_tile_size = initial_tile_size
-            increase_dim = 0 # increase the first dimension
+            increase_dim = -2 # increase the first dimension
             while previous_tile_size[increase_dim] * 2 <= previous_ranges[increase_dim] and previous_tile_size[increase_dim] <= 2 ** 13 and prevent_infinite_loop < 10:
                 incrase_dim = -1 # only increase the last dimension
                 prevent_infinite_loop += 1

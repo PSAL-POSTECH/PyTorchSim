@@ -1,4 +1,5 @@
 import os
+import json
 from torch import empty_strided
 from typing import List, Optional, cast
 
@@ -192,20 +193,42 @@ class MLIRGemmTemplate(MLIRTemplate):
 
         n_prologue_node = len(prologue_nodes) if prologue_nodes is not None else 0
         nr_rdim = 0
-        if (M == 0) or (N == 0) or (K == 0):
+        # Determine tile size
+        # case 1: use cheat sheet
+        if extension_config.CONFIG_GEMM_CHEATSHEET_PATH is not None:
+            try:
+              with open(extension_config.CONFIG_GEMM_CHEATSHEET_PATH, "r") as f:
+                data = json.load(f)
+            except FileNotFoundError:
+                data = {}
+        gemm_shape = f"{M}_{K}_{N}"
+        if gemm_shape in data:
+            tile_info = data[gemm_shape]
+            TILE_M = tile_info["TILE_M"]
+            TILE_N = tile_info["TILE_N"]
+            TILE_K = tile_info["TILE_K"]
+        else: # case 2: use gemm_combination_mapping
+            min_tile = (n_extra_node + n_prologue_node) == 0
+            TILE_M, TILE_N, TILE_K = kernel.gemm_combination_mapping(M, N, K, max(len(n_extra_read)-2, 0), n_prologue_node, min_tile=min_tile)
+        # case 3: use manual tile size
+        if extension_config.CONFIG_MANUAL_TILE_SIZE:
+            TILE_M = extension_config.CONFIG_TILE_M
+            TILE_N = extension_config.CONFIG_TILE_N
+            TILE_K = extension_config.CONFIG_TILE_K
+
+        if (M == 0) or (N == 0) or (K == 0): # exception for MoE
             TILE_M, TILE_N, TILE_K = 1, 1, 1
             template = EMPTY_TEMPLATE
         elif n_extra_node>=1 and epilogue_nodes[0].is_reduction():
-            TILE_M, TILE_N, TILE_K = kernel.gemm_combination_mapping(M, N, K, len(n_extra_read), n_prologue_node, min_tile=True)
             template = GEMM_REDUCTION_TEMPLATE
             nr_rdim = 1
         else:
-            TILE_M, TILE_N, TILE_K = kernel.gemm_combination_mapping(M, N, K, len(n_extra_read), n_prologue_node, min_tile=True)
             template = GEMM_TEMPLATE
+
         TILE_M = min(extension_config.CONFIG_FORCE_TILE_M, TILE_M)
         TILE_N = min(extension_config.CONFIG_FORCE_TILE_N, TILE_N)
         TILE_K = min(extension_config.CONFIG_FORCE_TILE_K, TILE_K)
-        SUB_TILE_M = TILE_M if TILE_M < kernel.vector_lane else kernel.vector_lane
+        SUB_TILE_M = TILE_M if (TILE_M < kernel.vector_lane or n_prologue_node) else kernel.vector_lane
         if (TILE_M == M and TILE_N == N):
             SUB_TILE_N = TILE_N if TILE_N < kernel.vector_lane else kernel.vector_lane
         else: # Avoid Row Conflict of weights

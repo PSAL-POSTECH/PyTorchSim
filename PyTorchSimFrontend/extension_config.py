@@ -57,6 +57,14 @@ CONFIG_FORCE_TILE_M = int(os.environ.get("TORCHSIM_FORCE_TIME_M", default=sys.ma
 CONFIG_FORCE_TILE_N = int(os.environ.get("TORCHSIM_FORCE_TIME_N", default=sys.maxsize))
 CONFIG_FORCE_TILE_K = int(os.environ.get("TORCHSIM_FORCE_TIME_K", default=sys.maxsize))
 
+# For GEMM tile size
+CONFIG_MANUAL_TILE_SIZE = int(os.environ.get('TORCHSIM_MANUAL_TILE_SIZE', default=False))
+CONFIG_TILE_M = int(os.environ.get('TORCHSIM_TILE_M', default=CONFIG_VECTOR_LANE))
+CONFIG_TILE_N = int(os.environ.get('TORCHSIM_TILE_N', default=CONFIG_VECTOR_LANE))
+CONFIG_TILE_K = int(os.environ.get('TORCHSIM_TILE_K', default=CONFIG_VECTOR_LANE))
+CONFIG_GEMM_CHEATSHEET_PATH = os.environ.get('TORCHSIM_GEMM_CHEATSHEET_PATH',
+                                            default=f"{CONFIG_TORCHSIM_DIR}/validation/gemm_tpuv3_cheatsheet.json")
+
 # SRAM Buffer allocation plan
 def load_plan_from_module(module_path):
     if module_path is None:

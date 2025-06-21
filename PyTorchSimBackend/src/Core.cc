@@ -407,6 +407,7 @@ void Core::push_memory_response(mem_fetch* response) {
       assert(true || "Can't happend...!");
     }
   }
+  _stat_mem_response++;
   delete response;
 }
 
@@ -430,7 +431,8 @@ void Core::print_stats() {
   for (int i=0; i<_num_systolic_array_per_core; i++)
     spdlog::info("Core [{}] : Systolic array [{}] Utilization(%) {:.2f}, active cycle {}, idle cycle {}", _id, i, sa_utilization.at(i),
       _stat_tot_sa_compute_cycle.at(i), _stat_tot_sa_compute_idle_cycle.at(i));
-  spdlog::info("Core [{}] : TMA active cycle {} TMA idle cycle {}", _id, _stat_tot_tma_cycle, _stat_tot_tma_idle_cycle);
+  float dram_bw = _config.dram_req_size * _stat_tot_mem_response * _config.core_freq / (_core_cycle * 1000); // B/cycle
+  spdlog::info("Core [{}] : TMA active cycle {} TMA idle cycle {} DRAM BW {:.3f} GB/s ({})", _id, _stat_tot_tma_cycle, _stat_tot_tma_idle_cycle, dram_bw, _stat_tot_mem_response);
   spdlog::info("Core [{}] : Vector Unit Utilization(%) {:.2f}, active cycle {}, idle_cycle {}", _id,
     static_cast<float>(_stat_tot_vu_compute_cycle * 100) / _core_cycle, _stat_tot_vu_compute_cycle, _stat_tot_vu_compute_idle_cycle);
   spdlog::info("Core [{}] : Numa hit count : {}, Numa miss count : {}", _id, _stat_numa_hit, _stat_numa_miss);
@@ -441,6 +443,7 @@ void Core::print_current_stats() {
   std::vector<float> sa_utilization;
   for (int i=0; i<_num_systolic_array_per_core; i++)
     sa_utilization.push_back(static_cast<float>(_stat_sa_compute_cycle.at(i) * 100) / _config.core_print_interval);
+  float dram_bw = _config.dram_req_size * _stat_mem_response * _config.core_freq / (_config.core_print_interval * 1000); // B/cycle
   auto level = spdlog::level::info;
   if(_id != 0)
     level = spdlog::level::debug;
@@ -449,7 +452,7 @@ void Core::print_current_stats() {
   for (int i=0; i<_num_systolic_array_per_core; i++)
     spdlog::info("Core [{}] : Systolic array [{}] Utilization(%) {:.2f}, active cycle {}, idle cycle {}", _id, i, sa_utilization.at(i),
       _stat_sa_compute_cycle.at(i), _stat_sa_compute_idle_cycle.at(i));
-  spdlog::info("Core [{}] : TMA active cycle {} TMA idle cycle {}", _id, _stat_tma_cycle, _stat_tma_idle_cycle);
+  spdlog::info("Core [{}] : TMA active cycle {} TMA idle cycle {} DRAM BW {:.3f} GB/s ({})", _id, _stat_tma_cycle, _stat_tma_idle_cycle, dram_bw, _stat_mem_response);
   spdlog::info("Core [{}] : Vector Unit Utilization(%) {:.2f}, active cycle {}, idle_cycle {}", _id,
     static_cast<float>(_stat_vu_compute_cycle * 100) / _config.core_print_interval, _stat_vu_compute_cycle, _stat_vu_compute_idle_cycle);
   spdlog::info("Core [{}] : Total cycle {}", _id, _core_cycle);
@@ -467,9 +470,11 @@ void Core::update_stats() {
   _stat_tot_vu_compute_cycle += _stat_vu_compute_cycle;
   _stat_tot_tma_cycle += _stat_tma_cycle;
   _stat_tot_tma_idle_cycle += _stat_tma_idle_cycle;
+  _stat_tot_mem_response += +_stat_mem_response;
 
   _stat_vu_compute_cycle = 0;
   _stat_tma_cycle = 0;
   _stat_tma_idle_cycle = 0;
   _stat_vu_compute_idle_cycle = 0;
+  _stat_mem_response = 0;
 }

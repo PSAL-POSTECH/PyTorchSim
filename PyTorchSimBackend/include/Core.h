@@ -68,6 +68,7 @@ class Core {
   std::vector<cycle_type> _stat_tot_sa_compute_idle_cycle;
   std::vector<uint64_t> _stat_inst_count;
   std::vector<uint64_t> _stat_tot_skipped_inst;
+  uint64_t _stat_tot_mem_response = 0;
   uint64_t _stat_gemm_inst = 0;
   uint64_t _stat_skip_dma = 0;
   uint64_t _stat_numa_hit = 0;
@@ -79,6 +80,7 @@ class Core {
   cycle_type _stat_tma_idle_cycle = 0;
   cycle_type _stat_vu_compute_idle_cycle = 0;
   std::vector<cycle_type> _stat_sa_compute_idle_cycle;
+  uint64_t _stat_mem_response = 0;
 
   std::vector<std::shared_ptr<Tile>> _tiles;
   std::queue<std::shared_ptr<Tile>> _finished_tiles;

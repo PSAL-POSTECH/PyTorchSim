@@ -23,6 +23,7 @@ from PyTorchSimFrontend.mlir.mlir_common import BaseMLIRHardwareInfo
 from PyTorchSimFrontend.mlir.mlir_codegen_backend import MLIRKernel, reduction_init, reduction_partial_combine_vec, reduction_combine_vec, is_welford_reduction
 from PyTorchSimFrontend.mlir.mlir_scheduling import SchedulerNode
 
+from PyTorchSimFrontend.extension_config import CONFIG_TORCHSIM_DIR
 from . import mlir_common
 
 class IndentedBufferGroup:
@@ -191,7 +192,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
                     used_spad_size_per_lane = (weight_size_per_lane + input_size_per_lane + output_size_per_lane) * self.precision
                     check_spad_size = (used_spad_size < max_spad_size and used_spad_size_per_lane < max_spad_per_lane)
                     if check_spad_size:
-                        file_path = f"/root/workspace/PyTorchSim/validation/gemm_candidates/gemm_{M}_{K}_{N}.txt"
+                        file_path = f"{CONFIG_TORCHSIM_DIR}/validation/gemm_candidates/gemm_{M}_{K}_{N}.txt"
                         line_to_write = f"{tile_M} {tile_K} {tile_N}\n"
                         try:
                             with open(file_path, "r") as f:

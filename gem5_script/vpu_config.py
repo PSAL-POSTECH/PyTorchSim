@@ -160,9 +160,39 @@ class MinorCustomFUPool(MinorFUPool):
         MinorCustomMemFU(),
         MinorCustomMiscFU(),
 
+        # Scalar unit
+        MinorFPUnit(),
+        MinorCustomIntFU(),
+        MinorCustomIntFU(),
+        MinorCustomIntMulFU(),
+        MinorCustomIntDivFU(),
+        MinorCustomPredFU(),
+        MinorCustomMemFU(),
+        MinorCustomMiscFU(),
+
         # Matmul unit
         SystolicArray(), # 0
  
+        # Vector
+        MinorVecConfig(), # 1 for vector config
+        MinorVecConfig(),
+        MinorVecMisc(),
+        MinorVecMisc(),
+        MinorVecLdStore(),
+        MinorVecLdStore(),
+
+        # Vector ALU0
+        MinorVecAdder(), # 6
+        MinorVecMultiplier(), # 7
+        MinorVecDivider(), # 8
+        MinorVecReduce(),
+
+        # Vector ALU1
+        MinorVecAdder(), # 18 ~ 29
+        MinorVecMultiplier(),
+        MinorVecDivider(),
+        MinorVecReduce(),
+
         # Vector
         MinorVecConfig(), # 1 for vector config
         MinorVecConfig(),
@@ -188,17 +218,22 @@ class MinorCustomFUPool(MinorFUPool):
     ]
 
 class RiscvVPU(RiscvMinorCPU):
-    fetch2InputBufferSize = 2
-    decodeInputBufferSize = 1
-    decodeInputWidth = 1
-    executeInputWidth = 8
-    executeIssueLimit = 8
-    executeCommitLimit = 8
+    fetch1FetchLimit = 8
+    decodeInputWidth = 8
+    fetch1ToFetch2BackwardDelay = 0
+    fetch2InputBufferSize = 8
+    decodeInputBufferSize = 8
+    decodeInputWidth = 8
+    executeInputBufferSize = 128
+    executeInputWidth = 12
+    executeIssueLimit = 12
+    executeCommitLimit = 12
+
     # Memory
-    executeMemoryIssueLimit = 2
-    executeMemoryCommitLimit = 2
-    executeMaxAccessesInMemory = 2
-    executeLSQMaxStoreBufferStoresPerCycle = 2
+    executeMemoryIssueLimit = 8
+    executeMemoryCommitLimit = 8
+    executeMaxAccessesInMemory = 8
+    executeLSQMaxStoreBufferStoresPerCycle = 8
     executeLSQTransfersQueueSize = 8
     executeLSQStoreBufferSize = 8
 

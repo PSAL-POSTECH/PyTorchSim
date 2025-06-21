@@ -11,4 +11,5 @@ for size in "${sizes[@]}"; do
     export TORCHSIM_FORCE_TIME_N=$((size / 2))
     export TORCHSIM_DUMP_PATH=$(pwd)/chiplet_result/$size
     python3 chiplet_prep.py $size
+    #python3 chiplet_run.py $(pwd)/chiplet_result
 done

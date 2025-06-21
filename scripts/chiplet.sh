@@ -63,7 +63,7 @@ for CONFIG in "${CONFIG_LIST2[@]}"; do
     OUTPUT_FILE="$RESULTS_DIR/${CONFIG_NAME}_result.txt"
 
     # Run Simulator
-    echo "$SIMULATOR_PATH" --config "$CONFIG" --models_list "$MODELS_LIST" --attributes_list "$ATTRIBUTE_PATH/$ATTRIBUTE_NAME"
+    # echo "$SIMULATOR_PATH" --config "$CONFIG" --models_list "$MODELS_LIST" --attributes_list "$ATTRIBUTE_PATH/$ATTRIBUTE_NAME"
     "$SIMULATOR_PATH" --config "$CONFIG" --models_list "$MODELS_LIST" --log_level trace --attributes_list "$ATTRIBUTE_PATH/$ATTRIBUTE_NAME" > "$OUTPUT_FILE" &
     echo "[BackendSimulator] for $CONFIG stored to \"$(pwd)/$OUTPUT_FILE\""
 done

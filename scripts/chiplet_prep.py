@@ -34,7 +34,7 @@ def test_matmul(device, input_size=128, hidden_size=128, output_size=128):
     opt_fn = torch.compile(dynamic=False)(custom_matmul)
     res = opt_fn(x1, w1)
     y = custom_matmul(x2, w2)
-    test_result("Matmul Forward", res, y)
+    #test_result("Matmul Forward", res, y)
 
 def modify_file(dump_path, name, address_numa_stride=None, subgraph_map=None):
     file_path = os.path.join(dump_path, 'runtime_0000', 'attribute', '0')

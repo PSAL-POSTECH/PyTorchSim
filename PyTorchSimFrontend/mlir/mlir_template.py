@@ -162,8 +162,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         spad_size = spad_size_per_lane * self.vector_lane
         max_spad_size = spad_size // 2 # double buffer
         max_spad_per_lane = spad_size_per_lane // 2 # double buffer
-        force_double_buffer = 2 if n_extra_node > 0 else 1 # In fusion case, double buffer should be forced
-        minimum_n_tile = self.num_cores * force_double_buffer if min_tile else 1
+        minimum_n_tile = self.num_cores * 2 if min_tile else 1
         m_pad_factor = self.vector_lane if M > self.vector_lane else 8
         n_pad_factor = self.vector_lane if N > self.vector_lane else 8
         k_pad_factor = self.vector_lane if K > self.vector_lane else (8 if pad_k else 1)

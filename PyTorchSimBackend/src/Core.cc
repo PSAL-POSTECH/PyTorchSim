@@ -20,7 +20,7 @@ Core::Core(uint32_t id, SimulationConfig config)
 
 bool Core::can_issue(const std::shared_ptr<Tile>& op) {
   /* Check SRAM is enough to run tile */
-  return _tiles.size() < 2  && !op->is_stonne_tile();
+  return _tiles.size() < 4  && !op->is_stonne_tile();
 }
 
 void Core::issue(std::shared_ptr<Tile> op) {
@@ -33,6 +33,10 @@ void Core::issue(std::shared_ptr<Tile> op) {
       _id, _core_cycle, _sram_size-_used_sram_size, op->get_required_sram_size());
   }
   //_used_sram_size += op->get_required_sram_size();
+  for (const auto& inst : op->get_instructions()) {
+    if (inst->is_ready())
+      op->enqueue_ready(inst);
+  }
   _tiles.push_back(std::move(op));
 }
 
@@ -201,12 +205,12 @@ void Core::cycle() {
   bool issued = false;
 
   for (int i=0; i<_tiles.size() && !issued; i++) {
-    auto& instructions = _tiles[i]->get_instructions();
-    for (int j=0; j<instructions.size(); j++) {
-      auto& inst = instructions.at(j);
+    auto& instructions = _tiles[i]->get_ready_instructions();
+    for (auto it=instructions.begin(); it!=instructions.end();) {
+      auto& inst = *it;
       /* Skip instruction is not ready  */
-      if (!inst->is_ready())
-        continue;
+      //if (!inst->is_ready())
+      //  continue;
 
       switch (inst->get_opcode()) {
         case Opcode::MOVIN:
@@ -269,7 +273,6 @@ void Core::cycle() {
               inst->finish_instruction();
               static_cast<Tile*>(inst->get_owner())->inc_finished_inst();
               _stat_tot_skipped_inst.at(static_cast<size_t>(inst->get_opcode()))++;
-              auto it = instructions.begin() + j; // Position 2 is the third element
               instructions.erase(it);
             } else {
               spdlog::trace("[Core {}][SA {}][{}] {}-{} ISSUED, finsh at {}", _id, _systolic_array_rr, _core_cycle,
@@ -314,10 +317,10 @@ void Core::cycle() {
 
       if (issued) {
         _stat_inst_count.at(static_cast<size_t>(inst->get_opcode()))++;
-        auto it = instructions.begin() + j; // Position 2 is the third element
         instructions.erase(it);
         break;
       }
+      it++;
     }
   }
 

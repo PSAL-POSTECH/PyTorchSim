@@ -3,6 +3,7 @@
 #include <robin_hood.h>
 #include <spdlog/fmt/ranges.h>
 #include <spdlog/spdlog.h>
+#include <list>
 #include <numeric>
 
 #include <set>
@@ -18,7 +19,7 @@ typedef uint64_t cycle_type;
 
 std::string opcode_to_string(Opcode opcode);
 
-class Instruction {
+class Instruction : public std::enable_shared_from_this<Instruction> {
  public:
   Instruction(Opcode opcode, cycle_type compute_cycle, size_t num_parents, addr_type dram_addr,
               std::vector<size_t> tile_size, size_t precision, std::vector<int> &idx_list,
@@ -38,6 +39,9 @@ class Instruction {
   void dec_ready_counter() {
     assert(ready_counter!=0);
     ready_counter--;
+    if (!ready_counter && _owner_ready_queue_ref != nullptr) {
+      _owner_ready_queue_ref->push_back(shared_from_this());
+    }
   }
   size_t get_tile_numel() { return _tile_numel; }
   size_t get_precision() { return _precision; }
@@ -64,6 +68,7 @@ class Instruction {
   void set_free_sram_size(size_t sram_size) { _free_sram_size=sram_size; }
   void* get_owner() { return _owner; }
   void set_owner(void *owner) { _owner = owner;}
+  void set_owner_ready_queue(std::list<std::shared_ptr<Instruction>>* q) { _owner_ready_queue_ref = q; }
   void set_compute_type(int type) { _compute_type = type; }
   int get_compute_type() { return _compute_type; }
   void set_numa_id(int numa_id) { _numa_id = numa_id; }
@@ -90,7 +95,8 @@ class Instruction {
   bool finished=false;
   int subgraph_id;
  private:
-  void *_owner;
+  void *_owner = nullptr;
+  std::list<std::shared_ptr<Instruction>>* _owner_ready_queue_ref = nullptr;
   Opcode opcode;
   cycle_type compute_cycle;
   cycle_type overlapping_cycle;

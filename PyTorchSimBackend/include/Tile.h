@@ -3,11 +3,12 @@
 
 #include <memory>
 #include <deque>
+#include <list>
 #include "Instruction.h"
 
 class TileSubGraph;
 
-class Tile {
+class Tile : public std::enable_shared_from_this<Tile> {
  public:
   enum class Status {
     INITIALIZED,
@@ -33,6 +34,8 @@ class Tile {
   void finish_tile();
   bool is_ready() { return _ready_counter==0; }
   std::deque<std::shared_ptr<Instruction>>& get_instructions() { return _instructions; } 
+  void enqueue_ready(const std::shared_ptr<Instruction>& inst) { _ready_queue.push_back(inst); }
+  std::list<std::shared_ptr<Instruction>>& get_ready_instructions() { return _ready_queue; }
   void print();
   size_t nr_insts() { return _nr_insts; }
   size_t nr_finshed_insts() { return _nr_finished_insts; }
@@ -53,6 +56,7 @@ class Tile {
   size_t _nr_insts = 0;
   size_t _nr_finished_insts = 0;
   std::deque<std::shared_ptr<Instruction>> _instructions;
+  std::list<std::shared_ptr<Instruction>> _ready_queue;
   std::vector<std::shared_ptr<Tile>> _child_tiles;
   void *_custom_data=NULL;
   bool _stonne_tile=false;

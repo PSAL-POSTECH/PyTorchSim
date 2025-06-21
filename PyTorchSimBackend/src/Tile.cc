@@ -21,6 +21,7 @@ void Tile::append_instuction(std::shared_ptr<Instruction>& inst) {
   /* Move instructions */
   _nr_insts++;
   inst->set_owner(this);
+  inst->set_owner_ready_queue(&_ready_queue);
   _instructions.push_back(inst);
 }
 

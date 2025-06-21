@@ -550,7 +550,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
             tile_memref = f"memref<{tile_shape}xf32, 1>"
             tag_memref = f"memref<1xi32>"
             attrs = f"sram_stride=[1, {tile_size[0]}]"
-            async_flag = "true" if async_flag else "false"
+            async_flag = "false"
             if subtile_size:
                 subtile_shape = ", ".join([str(x) for x in subtile_size])
                 attrs = f"subtile_size=[{subtile_shape}], async={async_flag}, {attrs}"
@@ -567,9 +567,9 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
             if prologue_code.getvalue():
                 code.writeline(emit_dma_start(self.prologue_info["input_sram_var"], self.prologue_info["input_index_var"], self.prologue_info["input_tag_var"],
                                               self.prologue_info["input_numel"], self.prologue_info["input_tile_size"], subtile_size=self.prologue_info["input_subtile_size"], label="X"))
+                code.splice(prologue_code)
                 code.writeline(emit_dma_start(self.prologue_info["weight_sram_var"], self.prologue_info["weight_index_var"], self.prologue_info["weight_tag_var"],
                                               self.prologue_info["weight_numel"], self.prologue_info["weight_tile_size"], subtile_size=self.prologue_info["weight_subtile_size"], label="W"))
-                code.splice(prologue_code)
             else:
                 code.writeline(emit_dma_start(self.prologue_info["input_sram_var"], self.prologue_info["input_index_var"], self.prologue_info["input_tag_var"],
                                               self.prologue_info["input_numel"], self.prologue_info["input_tile_size"], self.prologue_info["input_subtile_size"], async_flag=True, label="X"))

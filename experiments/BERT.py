@@ -7,7 +7,8 @@ import datetime
 
 def run_BERT(size, input_seq, config):
     from Scheduler.scheduler import Scheduler, SchedulerDNNModel, Request
-    from tests.test_transformer import DecoderBlock
+    # from tests.test_transformer import DecoderBlock
+    from tests.Fusion.test_transformer_fusion import DecoderBlock
     scheduler = Scheduler(num_request_queue=1, engine_select=Scheduler.FIFO_ENGINE, backend_config=config)
     device = scheduler.execution_engine.module.custom_device()
 

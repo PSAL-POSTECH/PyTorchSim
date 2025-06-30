@@ -228,13 +228,27 @@ class MLIRGemmTemplate(MLIRTemplate):
         TILE_M = min(extension_config.CONFIG_FORCE_TILE_M, TILE_M)
         TILE_N = min(extension_config.CONFIG_FORCE_TILE_N, TILE_N)
         TILE_K = min(extension_config.CONFIG_FORCE_TILE_K, TILE_K)
-        SUB_TILE_M = TILE_M if (TILE_M < kernel.vector_lane or n_prologue_node) else kernel.vector_lane
-        if (TILE_M == M and TILE_N == N):
-            SUB_TILE_N = TILE_N if TILE_N < kernel.vector_lane else kernel.vector_lane
-        else: # Avoid Row Conflict of weights
+
+        # Calculate Sub Tile Size for fine-grained DMA
+        if extension_config.CONFIG_SUBTILE:
+            # Case 1: adjust selective fine-grained DMA (SFG-DMA)
+            SUB_TILE_M = TILE_M if (TILE_M < kernel.vector_lane or n_prologue_node) else kernel.vector_lane
+            if (TILE_M == M and TILE_N == N and TILE_N <= 512):
+                SUB_TILE_N = TILE_N if TILE_N < kernel.vector_lane else kernel.vector_lane
+            else: # Avoid Row Conflict of weights
+                SUB_TILE_N = TILE_N
+            SUB_TILE_K = TILE_K if TILE_K > 1024 else kernel.vector_lane
+            # Case 2: use manual sub tile size (FG-DMA)
+            if extension_config.CONFIG_MANUAL_SUBTILE_SIZE:
+                SUB_TILE_M = extension_config.CONFIG_SUBTILE_M
+                SUB_TILE_N = extension_config.CONFIG_SUBTILE_N
+                SUB_TILE_K = extension_config.CONFIG_SUBTILE_K
+        # Case 3: None Subtile
+        else:
+            SUB_TILE_M = TILE_M
             SUB_TILE_N = TILE_N
-        SUB_TILE_N = TILE_N if TILE_N > 512 else SUB_TILE_N # FIXME: hardcoded & 126 line has same feature
-        SUB_TILE_K = TILE_K
+            SUB_TILE_K = TILE_K
+
         TOG_latency = M if SUB_TILE_M > M else SUB_TILE_M
         kernel.loop_size =[TOG_latency, SUB_TILE_N, SUB_TILE_K]
 

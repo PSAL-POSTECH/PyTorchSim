@@ -64,6 +64,11 @@ CONFIG_TILE_N = int(os.environ.get('TORCHSIM_TILE_N', default=CONFIG_VECTOR_LANE
 CONFIG_TILE_K = int(os.environ.get('TORCHSIM_TILE_K', default=CONFIG_VECTOR_LANE))
 CONFIG_GEMM_CHEATSHEET_PATH = os.environ.get('TORCHSIM_GEMM_CHEATSHEET_PATH',
                                             default=f"{CONFIG_TORCHSIM_DIR}/validation/gemm_tpuv3_cheatsheet.json")
+CONFIG_SUBTILE = int(os.environ.get('TORCHSIM_SUBTILE', default=True))
+CONFIG_MANUAL_SUBTILE_SIZE = int(os.environ.get('TORCHSIM_MANUAL_SUBTILE_SIZE', default=False))
+CONFIG_SUBTILE_M = int(os.environ.get('TORCHSIM_SUBTILE_M', default=CONFIG_VECTOR_LANE))
+CONFIG_SUBTILE_N = int(os.environ.get('TORCHSIM_SUBTILE_N', default=CONFIG_VECTOR_LANE))
+CONFIG_SUBTILE_K = int(os.environ.get('TORCHSIM_SUBTILE_K', default=CONFIG_VECTOR_LANE))
 
 # SRAM Buffer allocation plan
 def load_plan_from_module(module_path):

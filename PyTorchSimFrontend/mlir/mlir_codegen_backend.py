@@ -1439,7 +1439,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
 
         if len(choices) == 0: # can't autotune
             return None
-        with ThreadPoolExecutor(max_workers=5) as executor:
+        with ThreadPoolExecutor(max_workers=1) as executor:
             results = list(executor.map(get_cycle, choices))
         max_idx = results.index(min(results))
         print(f"[Auto-tune] Optimal tile size: {choices[max_idx][2].tile_desc.get_tile_size()}, vlane_stride: {choices[max_idx][2].tile_desc.vlane_stride}, cycles: {results[max_idx]}")

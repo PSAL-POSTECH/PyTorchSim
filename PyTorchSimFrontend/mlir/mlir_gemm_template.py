@@ -237,7 +237,7 @@ class MLIRGemmTemplate(MLIRTemplate):
                 SUB_TILE_N = TILE_N if TILE_N < kernel.vector_lane else kernel.vector_lane
             else: # Avoid Row Conflict of weights
                 SUB_TILE_N = TILE_N
-            SUB_TILE_K = TILE_K if TILE_K > 1024 else kernel.vector_lane
+            SUB_TILE_K = TILE_K
             # Case 2: use manual sub tile size (FG-DMA)
             if extension_config.CONFIG_MANUAL_SUBTILE_SIZE:
                 SUB_TILE_M = extension_config.CONFIG_SUBTILE_M

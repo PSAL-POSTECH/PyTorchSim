@@ -15,7 +15,7 @@ from torch._inductor.utils import (
     is_welford_reduction,
     sympy_product
 )
-from torch.utils._sympy.functions import ModularIndexing
+from torch.utils._sympy.functions import ModularIndexing, FloorDiv
 import PyTorchSimFrontend.extension_codecache as extension_codecache
 
 from PyTorchSimFrontend import extension_config
@@ -260,10 +260,10 @@ class ExtensionOverrides(common.OpOverrides):
                 operand2 = ops.to_dtype(operand2, op_type1[1], var_info)
                 op_type2 = var_info[operand2]
             elif op_type1[1][0] == op_type2[1][0]:
-                if int(op_type1[1][1:]) > int(op_type2[1][1:]):
+                if mlir_common.MLIR_TO_BIT[op_type1[1]] > mlir_common.MLIR_TO_BIT[op_type2[1]]:
                    operand2 = ops.ext(operand2, op_type1[1])
                    op_type2 = var_info[operand2]
-                elif int(op_type1[1][1:]) < int(op_type2[1][1:]):
+                elif mlir_common.MLIR_TO_BIT[op_type1[1]] < mlir_common.MLIR_TO_BIT[op_type2[1]]:
                    operand1 = ops.ext(operand1, op_type2[1])
                    op_type1 = var_info[operand1]
             else:
@@ -348,17 +348,21 @@ class ExtensionOverrides(common.OpOverrides):
     @staticmethod
     def to_dtype(operand, dst_mlir_dtype, *args, var_info=None, **kwargs):
         src_mlir_dtype = var_info[operand][1]
+        if src_mlir_dtype == "index":
+            operand = ops.index_cast(operand, "i64", var_info=var_info)
+            src_mlir_dtype = var_info[operand][1]
+
         tile_size = var_info[operand][0]
         if isinstance(dst_mlir_dtype, torch.dtype):
             dst_mlir_dtype = mlir_common.DTYPE_TO_MLIR[dst_mlir_dtype]
-        dst_bits = int(dst_mlir_dtype[1:])
-        src_bits = int(src_mlir_dtype[1:])
+        dst_bits = mlir_common.MLIR_TO_BIT[dst_mlir_dtype]
+        src_bits = mlir_common.MLIR_TO_BIT[src_mlir_dtype]
         shape = f"vector<{tile_size}x{dst_mlir_dtype}>" if tile_size > 1 else dst_mlir_dtype
         src_shape = f"vector<{tile_size}x{src_mlir_dtype}>" if tile_size > 1 else src_mlir_dtype
         if dst_mlir_dtype[0] == "i" and src_mlir_dtype[0] == "f":
-            return f"arith.fptoui%{operand} : {src_shape} to {shape}", [tile_size, dst_mlir_dtype]
+            return f"arith.fptoui %{operand} : {src_shape} to {shape}", [tile_size, dst_mlir_dtype]
         if dst_mlir_dtype[0] == "f" and src_mlir_dtype[0] == "i":
-            return f"arith.uitofp%{operand} : {src_shape} to {shape}", [tile_size, dst_mlir_dtype]
+            return f"arith.uitofp %{operand} : {src_shape} to {shape}", [tile_size, dst_mlir_dtype]
         if dst_mlir_dtype[0] == "i":
             if dst_bits > src_bits:
                 return f"arith.extui %{operand} : {src_shape} to {shape}", [tile_size, dst_mlir_dtype]
@@ -955,6 +959,8 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         # Extract index var
         indirect_args = [f"%{i}" for i in indirect_dims]
         expr_str = str(expr)
+        if "//" in expr_str:
+            expr_str = expr_str.replace("//", " floordiv ")
         args = ", ".join(map(str, indices))
         map_var = self.map_cse.generate(self.global_vars, f"affine_map<({args})[{','.join(indirect_dims)}] -> ({expr_str})>")
         args = ", ".join([f"%{i}" for i in indices])
@@ -1063,6 +1069,9 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         vshape = self.kernel_group.tile_desc.get_mlir_vshape(mlir_dtype)
         compute_vec_size = self.kernel_group.tile_desc.get_compute_vec_size()
         require_store = True
+        if compute_vec_size < self.var_info[value][0]:
+            value = self.cse.generate(self.stores, f"vector.extract_strided_slice  %{value} {{offsets = [0], sizes = [{compute_vec_size}], strides = [1]}}: vector<{self.var_info[value][0]}x{self.var_info[value][1]}> to {vshape}")
+            self.register_var_info(value, [compute_vec_size, mlir_dtype])
 
         if str(value) in self.spad_buffer_dict:
             # Todo. If tile_size is not same (i.e., view operation), we can't apply peephole optimization easily
@@ -1680,6 +1689,40 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
             sorted_keys = sorted(dram_dict.keys())
             dram_stride = sum((dram_dict[key] for key in sorted_keys), [])
 
+        # Support floordiv pattern
+        # FIXME. How to integrate implicit dims and floordiv?
+        # This was introduced to support GroupNorm
+        if index.has(FloorDiv) and not index.has(ModularIndexing):
+            dim_divisor = [1] * len(local_dims)
+            for sub in sympy.preorder_traversal(index):
+                if isinstance(sub, FloorDiv):
+                    if not str(sub.args[0]).startswith("index"):
+                        continue
+                    dim_idx = int((str(sub.args[0])[5:]))
+                    if int(self.kernel_group.tile_desc.get_tile_size()[dim_idx] % sub.args[1]) != 0:
+                        # In this case, need to recompile
+                        original_size = self.kernel_group.tile_desc.get_tile_size()[dim_idx]
+                        divisor = sub.args[1]
+                        new_size = ((original_size + divisor - 1) // divisor) * divisor
+                        new_tile_sizes = list(self.kernel_group.tile_desc.get_tile_size())
+                        new_tile_sizes[dim_idx] = new_size
+                        self.kernel_group.tile_desc.set_tile_size(new_tile_sizes)
+
+                        # Send recompile signal
+                        self.reset("recompile")
+                        raise mlir_common.RecompileSignal(f"Tile size {self.kernel_group.tile_desc.get_tile_size()[dim_idx]} is not divisible by {sub.args[1]}")
+                    dim_divisor[dim_idx] = sub.args[1]
+
+            # Update dram_stride, just insert 0 next to target dim
+            offset = 0
+            for dim_idx, divisor in enumerate(dim_divisor):
+                if divisor == 1:
+                    continue
+                dram_stride.insert(dim_idx+offset+1, 0)
+                local_tile_desc.apply_divisor(dim_idx+offset, divisor, "pad")
+                local_tile_desc.apply_divisor(dim_idx+offset, divisor, "split")
+                offset = offset+1
+
         # FIXME. It will be nice to modify node instead of this exception handling...
         if len(self.itervars) == 1 and self.reduction_depth == 0:
             # In case of reduction loop only case, we will add dummy loop so shift it once
@@ -1810,7 +1853,11 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
 
         # Load indirect operands
         for target_dim in indirect_dims:
-            sram_var, _, tile_numel_per_lane, sram_index_var, tile_shape, vshape = self.spad_buffer_dict[target_dim]
+            if target_dim in self.spad_buffer_dict:
+                sram_var, _, tile_numel_per_lane, sram_index_var, tile_shape, vshape = self.spad_buffer_dict[target_dim]
+            else:
+                raise NotImplementedError("TODO.")
+
             mlir_dtype = vshape.split("x")[1][:-1]
             vshape = f"vector<{tile_numel_per_lane}x{mlir_dtype}>" # FIXME. Maybe require fine grain compute...
             if tile_numel_per_lane > 1:

@@ -61,6 +61,19 @@ DTYPE_TO_C = {
     torch.bfloat16: "bfloat16",
 }
 
+MLIR_TO_BIT = {
+    "i1": 1,
+    "i8": 8,
+    "i16": 16,
+    "i32": 32,
+    "i64": 64,
+    "f16": 16,
+    "f32": 32,
+    "f64": 64,
+    "bf16": 16,
+    "index": 64
+}
+
 DTYPE_LOWP_FP = [
     torch.bfloat16,
     torch.float16,
@@ -104,6 +117,14 @@ class ParallelLoopBuffer(IndentedBuffer):
                 self.writeline("} " + attribute)
 
         return ctx()
+
+class RecompileSignal(BaseException):
+    """
+    Exception raised when a recompilation of a kernel or code block is required.
+    """
+    def __init__(self, message="Recompilation requested."):
+        self.message = message
+        super().__init__(self.message)
 
 class MLIRKernelArgs(common.KernelArgs):
     MLIR_ARGS_IN = 0x01
@@ -310,7 +331,7 @@ class MLIRMultiDimTile():
         if self.vec_size is not None:
             return self.vec_size
         if self.nr_rdim:
-            assert self.nr_rdim==1
+            assert self.nr_rdim!=0
             val = self.get_numel_per_lane() // self._tile_size[-1]
             if self.get_numel_per_lane() >= val * 8:
                 return val*8
@@ -330,6 +351,44 @@ class MLIRMultiDimTile():
     @staticmethod
     def div_round_up(size, round_val):
         return (size + round_val - 1) // round_val
+
+    def apply_divisor(self, axis: int, divisor: int, mode: str = "split"):
+        # Apply divisor to tile size at given axis.
+        # This method based on axis order.
+        old_size = self._tile_size[axis]
+        if divisor == 1:
+            return
+        padded = self.div_round_up(old_size, divisor) * divisor
+        outer  = self.div_round_up(old_size, divisor)
+        inner  = divisor
+        if mode == "pad":
+            self._tile_size[axis] = padded
+            self.update_tile_stride()
+            return
+        elif mode == "split":
+            new_sizes = list(self._tile_size)
+            new_sizes[axis] = outer
+            new_sizes.insert(axis + 1, inner)
+            self._tile_size = new_sizes
+
+            # Update tile_axis_order
+            old_order_val = self.tile_axis_order[axis]
+            new_order = list(self.tile_axis_order)
+            new_order.insert(axis + 1, old_order_val + 0.1)
+            sorted_pairs = sorted(
+                zip(range(len(new_order)), new_order),
+                key=lambda x: x[1]
+            )
+            self.tile_axis_order = [idx for idx, _ in sorted_pairs]
+            self.update_tile_stride()
+
+            if self.vlane_split_axis == axis:
+                self.vlane_split_axis = axis
+            elif self.vlane_split_axis > axis:
+                self.vlane_split_axis += 1
+            return
+        else:
+            raise ValueError(f"Unknown mode: {mode}. Supported modes are 'pad' and 'split'.")
 
 class MLIRWrapperKenrelGroup(cpp.KernelGroup):
     def __init__(self):
@@ -538,6 +597,8 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
                 dim = int(self.recodegen.split("_")[-1])
                 tile_size = self.kernel_group.tile_desc.get_tile_size() # TODO:
                 tile_size[dim] = tile_size[dim] * 2
+            elif self.recodegen == "recompile":
+                return self.kernel_group.tile_desc
             else:
                 raise NotImplementedError(f"Unknown recodegen reason: {self.recodegen}")
 
@@ -608,26 +669,36 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
         return tile_desc
 
     def codegen_nodes(self, nodes, kernel_name):
-        _, (group, reduction_group) = max(
-            nodes, key=lambda x: int(x.is_reduction())
-        ).group
+        recompile_try = 0
+        max_retry_compile = 5
+        while True:
+            _, (group, reduction_group) = max(
+                nodes, key=lambda x: int(x.is_reduction())
+            ).group
 
-        # Set node range info
-        vars, reduction_vars = self.set_ranges(group, reduction_group)
-        tile_desc = self.compute_tile_size(nodes, vars, reduction_vars)
-        self.compute_body_loop.size = tile_desc.get_numel_per_lane()
-        self.compute_body_loop.step = tile_desc.get_compute_vec_size()
-        self.kernel_group.set_tile_info(tile_desc)
-
-        _, _, _, self.buffer_types = self.kernel_group.args.mlir_argdefs()
-        with self as kernel:
-            for node in nodes:
-                node.run(vars, reduction_vars)
-        V.graph.removed_buffers |= self.removed_buffers
-        # V.graph.inplaced_to_remove |= self.inplaced_to_remove
-        src_code = self.codegen_kernel(kernel_name=kernel_name)
-        self.meta_kernel()
-        return src_code
+            # Set node range info
+            vars, reduction_vars = self.set_ranges(group, reduction_group)
+            tile_desc = self.compute_tile_size(nodes, vars, reduction_vars)
+            self.compute_body_loop.size = tile_desc.get_numel_per_lane()
+            self.compute_body_loop.step = tile_desc.get_compute_vec_size()
+            self.kernel_group.set_tile_info(tile_desc)
+            try:
+                _, _, _, self.buffer_types = self.kernel_group.args.mlir_argdefs()
+                with self as kernel:
+                    for node in nodes:
+                        node.run(vars, reduction_vars)
+            except RecompileSignal as e:
+                recompile_try += 1
+                if recompile_try > max_retry_compile:
+                    raise RuntimeError("Failed to compile kernel after multiple attempts.")
+                # Retry compile nodes
+                #print(f"Try recompile({recompile_try}/{max_retry_compile}). Reason: {e}")
+                continue
+            V.graph.removed_buffers |= self.removed_buffers
+            # V.graph.inplaced_to_remove |= self.inplaced_to_remove
+            src_code = self.codegen_kernel(kernel_name=kernel_name)
+            self.meta_kernel()
+            return src_code
 
     def run_bench(self, nodes, kernel_name, src_code):
         _, _, arg_attributes, _ = self.kernel_group.args.mlir_argdefs()

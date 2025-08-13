@@ -46,8 +46,13 @@ class MLIRScheduling(BaseScheduling):
             if (isinstance(base_template_node1[0].node.template, MLIRGemmTemplate) or isinstance(base_template_node1[0].node.template, MLIRBMMTemplate)) and node2.is_reduction():
                 # For matmul/bmm+reduction case
                 size_match = node1.get_nodes()[0].node.get_numel() == reduce(operator.mul, node2.get_nodes()[0].node.get_size(), 1) * reduce(operator.mul, node2.get_nodes()[0].node.get_reduction_size(), 1)
-                stride = [i.strip()[:-1].split(",")[-1].strip() for i in str(node2.get_nodes()[0].node).split("\n") if "r0" in i][1]
                 target_symbol = symbols("r0")
+                try:
+                    stride = [i.strip()[:-1].split(",")[-1].strip() for i in str(node2.get_nodes()[0].node).split("\n") if "r0" in i][1]
+                    stride = int(sympify(stride).coeff(target_symbol))
+                except sympy.core.SympifyError:
+                    return False
+
                 # We can't fuse dim=-1
                 layout_possible = int(sympify(stride).coeff(target_symbol)) != 1
                 # Directed linked?

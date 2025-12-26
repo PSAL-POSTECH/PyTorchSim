@@ -1,5 +1,6 @@
 import os
 import sys
+import argparse
 
 import torch
 import torch.nn as nn
@@ -219,6 +220,11 @@ class my_opt_decoder(nn.Module):
 
 if __name__ == "__main__":
 
+    parser = argparse.ArgumentParser(description="")
+    parser.add_argument("--bsz", type=int, default=128, help="Batch size")
+    parser.add_argument("--seq_len", type=int, default=128, help="Input sequence length")
+    args = parser.parse_args()
+    
     sys.path.append(os.environ.get('TORCHSIM_DIR', default='/root/workspace/PyTorchSim'))
 
     from Scheduler.scheduler import PyTorchSimRunner
@@ -237,8 +243,10 @@ if __name__ == "__main__":
     layer_norm_elementwise_affine = True
     do_layer_norm_before = False
 
-    bsz = 16
-    seq_len = 16
+    bsz = args.bsz
+    seq_len = args.seq_len
+    
+    print(f"Batch size: {bsz}, Seq len: {seq_len}")
 
     config = LLM_Config(embed_dim = embed_dim,
                         hidden_size = hidden_size,

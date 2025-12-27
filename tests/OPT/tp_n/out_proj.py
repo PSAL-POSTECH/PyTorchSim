@@ -75,7 +75,7 @@ class my_opt_decoder(nn.Module):
         self.embed_tokens = nn.Embedding(self.config.vocab_size, self.config.word_embed_proj_dim, self.config.pad_token_id)
         self.embed_positions = OPTLearnedPositionalEmbedding(self.config.max_position_embeddings, config.hidden_size)
         self.project_in = nn.Linear(self.config.word_embed_proj_dim, self.config.hidden_size, bias=False)
-        
+
         # KV Cache
         self.register_buffer(
             "past_k",
@@ -227,7 +227,7 @@ if __name__ == "__main__":
     parser.add_argument("--seq_len", type=int, default=128, help="Input sequence length")
     parser.add_argument("--tp", type=int, default=1, help="Input sequence length")
     args = parser.parse_args()
-    
+
     sys.path.append(os.environ.get('TORCHSIM_DIR', default='/root/workspace/PyTorchSim'))
 
     from Scheduler.scheduler import PyTorchSimRunner
@@ -248,8 +248,8 @@ if __name__ == "__main__":
 
     bsz = args.bsz
     seq_len = args.seq_len
-    
-    print(f"Batch size: {bsz}, Seq len: {seq_len}")
+
+    print(f"Batch size: {bsz}, Seq len: {seq_len}, TP: {args.tp}")
 
     config = LLM_Config(embed_dim = embed_dim,
                         hidden_size = hidden_size,
@@ -279,12 +279,13 @@ if __name__ == "__main__":
         dtype=torch.float32
     )
     hidden_device = hidden.to(device)
-    
+
     # Residual
     residual = torch.randn(
         bsz, 1, config.hidden_size,
         dtype=torch.float32
     )
     residual_device = residual.to(device)
-    
-    opt_decoder(hidden_device, residual_device)
+
+    with torch.no_grad():
+        opt_decoder(hidden_device, residual_device)

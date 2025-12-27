@@ -73,7 +73,7 @@ class my_opt_decoder(nn.Module):
         self.embed_tokens = nn.Embedding(self.config.vocab_size, self.config.word_embed_proj_dim, self.config.pad_token_id)
         self.embed_positions = OPTLearnedPositionalEmbedding(self.config.max_position_embeddings, config.hidden_size)
         self.project_in = nn.Linear(self.config.word_embed_proj_dim, self.config.hidden_size, bias=False)
-        
+
         # KV Cache
         # self.past_k = torch.randn(bsz, num_heads, current_seq_len, self.head_dim)
         # self.past_v = torch.randn(bsz, num_heads, current_seq_len, self.head_dim)
@@ -218,12 +218,12 @@ class my_opt_decoder(nn.Module):
 
 
 if __name__ == "__main__":
-    
+
     parser = argparse.ArgumentParser(description="")
     parser.add_argument("--bsz", type=int, default=128, help="Batch size")
     parser.add_argument("--seq_len", type=int, default=128, help="Input sequence length")
     args = parser.parse_args()
-    
+
     sys.path.append(os.environ.get('TORCHSIM_DIR', default='/root/workspace/PyTorchSim'))
 
     from Scheduler.scheduler import PyTorchSimRunner
@@ -244,7 +244,7 @@ if __name__ == "__main__":
 
     bsz = args.bsz
     seq_len = args.seq_len
-    
+
     print(f"Batch size: {bsz}, Seq len: {seq_len}")
 
     config = LLM_Config(embed_dim = embed_dim,
@@ -269,14 +269,16 @@ if __name__ == "__main__":
         dtype=torch.float32
     )
     k = torch.randn(
-        bsz, config.num_heads, seq_len + 1, config.hidden_size // config.num_heads,
+        bsz, config.num_heads, 1, config.hidden_size // config.num_heads,
         dtype=torch.float32
     )
     v = torch.randn(
-        bsz, config.num_heads, seq_len + 1, config.hidden_size // config.num_heads,
+        bsz, config.num_heads, 1, config.hidden_size // config.num_heads,
         dtype=torch.float32
     )
     q_device = q.to(device)
     k_device = k.to(device)
     v_device = v.to(device)
-    opt_decoder(q_device, k_device, v_device)
+
+    with torch.no_grad():
+        opt_decoder(q_device, k_device, v_device)

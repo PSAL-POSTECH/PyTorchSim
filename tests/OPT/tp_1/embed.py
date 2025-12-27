@@ -75,8 +75,6 @@ class my_opt_decoder(nn.Module):
         self.project_in = nn.Linear(self.config.word_embed_proj_dim, self.config.hidden_size, bias=False)
         
         # KV Cache
-        # self.past_k = torch.randn(bsz, num_heads, current_seq_len, self.head_dim)
-        # self.past_v = torch.randn(bsz, num_heads, current_seq_len, self.head_dim)
         self.register_buffer(
             "past_k",
             torch.randn(bsz, num_heads, current_seq_len, self.head_dim)
@@ -112,7 +110,6 @@ class my_opt_decoder(nn.Module):
         bsz, seq_len, _ = inputs_embeds.size()
         attention_mask = (input_ids != self.config.pad_token_id).long()
         position_embeds = self.embed_positions(attention_mask=attention_mask)
-        print(f"input shape: {input_ids.shape}, embed shape: {inputs_embeds.shape}, position shape: {position_embeds.shape}")
         hidden_states = inputs_embeds + position_embeds
         return hidden_states
 
@@ -206,11 +203,8 @@ class my_opt_decoder(nn.Module):
         return logits
 
     def forward(self, x):
-        # hidden = self.embed(x)
-        # return hidden
-        
-        logits = self.lm_head(x, 1)
-        return logits
+        hidden = self.embed(x)
+        return hidden
 
 
 
@@ -266,10 +260,7 @@ if __name__ == "__main__":
     # hidden = opt_decoder.embed(input)
 
 
-    hidden = torch.randn(
-        bsz, 1, config.hidden_size,
-        dtype=torch.float32
-    )
-    hidden_device = hidden.to(device)
+    input = torch.randint(0, vocab_size, (bsz, 1))
+    input_device = input.to(device)
     with torch.no_grad():
-        opt_decoder((hidden_device, ))
+        opt_decoder(input_device)

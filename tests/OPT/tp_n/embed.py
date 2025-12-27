@@ -266,4 +266,6 @@ if __name__ == "__main__":
 
     input = torch.randint(0, vocab_size, (bsz, 1))
     input_device = input.to(device)
-    opt_decoder(input_device)
+    
+    with torch.no_grad():
+        opt_decoder(input_device)

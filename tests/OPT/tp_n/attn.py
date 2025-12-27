@@ -270,14 +270,16 @@ if __name__ == "__main__":
         dtype=torch.float32
     )
     k = torch.randn(
-        bsz, config.num_heads // config.tp, seq_len + 1, config.hidden_size // config.num_heads,
+        bsz, config.num_heads // config.tp, 1, config.hidden_size // config.num_heads,
         dtype=torch.float32
     )
     v = torch.randn(
-        bsz, config.num_heads // config.tp, seq_len + 1, config.hidden_size // config.num_heads,
+        bsz, config.num_heads // config.tp, 1, config.hidden_size // config.num_heads,
         dtype=torch.float32
     )
     q_device = q.to(device)
     k_device = k.to(device)
     v_device = v.to(device)
-    opt_decoder(q_device, k_device, v_device)
+    
+    with torch.no_grad():
+        opt_decoder(q_device, k_device, v_device)

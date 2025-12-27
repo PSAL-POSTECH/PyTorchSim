@@ -268,4 +268,5 @@ if __name__ == "__main__":
         dtype=torch.float32
     )
     hidden_device = hidden.to(device)
-    opt_decoder(hidden_device)
+    with torch.no_grad():
+        opt_decoder(hidden_device)

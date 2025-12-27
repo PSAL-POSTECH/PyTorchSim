@@ -324,7 +324,13 @@ class TileAdjustMixin():
                     return candidate
             return 1
 
-        candidate_tile_size = [_adjust_one(d, t) for d, t in zip(dim_sizes, self._tile_size)]
+        dim_sizes_cpy = list(dim_sizes)
+        axis, stride = self.vmap.vlane_split_axis, self.vmap.vlane_stride
+        remain = dim_sizes_cpy[axis] % stride
+        if remain:
+            dim_sizes_cpy[axis] += stride - remain
+
+        candidate_tile_size = [_adjust_one(d, t) for d, t in zip(dim_sizes_cpy, self._tile_size)]
         for i in range(len(candidate_tile_size)):
             self.tile_constraint[i].must_divide_dim = True
 

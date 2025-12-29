@@ -54,10 +54,11 @@ class OPTLearnedPositionalEmbedding(nn.Embedding):
         """`input_ids_shape` is expected to be [bsz x seqlen]."""
 
         if position_ids is None:
-            position_ids = torch.cumsum(attention_mask, dim=1)
-            position_ids = (position_ids * attention_mask - 1).long()
-            # cut positions if `past_key_values_length` is > 0
-            position_ids = position_ids[:, past_key_values_length:]
+            position_ids = torch.full(
+                (bsz, 1),
+                past_key_values_length,
+                dtype=torch.long,
+            )
 
         return super().forward(position_ids + self.offset)
 
@@ -73,7 +74,7 @@ class my_opt_decoder(nn.Module):
         self.embed_tokens = nn.Embedding(self.config.vocab_size, self.config.word_embed_proj_dim, self.config.pad_token_id)
         self.embed_positions = OPTLearnedPositionalEmbedding(self.config.max_position_embeddings, config.hidden_size)
         self.project_in = nn.Linear(self.config.word_embed_proj_dim, self.config.hidden_size, bias=False)
-        
+
         # KV Cache
         self.register_buffer(
             "past_k",
@@ -214,7 +215,7 @@ if __name__ == "__main__":
     parser.add_argument("--bsz", type=int, default=128, help="Batch size")
     parser.add_argument("--seq_len", type=int, default=128, help="Input sequence length")
     args = parser.parse_args()
-    
+
     sys.path.append(os.environ.get('TORCHSIM_DIR', default='/root/workspace/PyTorchSim'))
 
     from Scheduler.scheduler import PyTorchSimRunner
@@ -235,7 +236,7 @@ if __name__ == "__main__":
 
     bsz = args.bsz
     seq_len = args.seq_len
-    
+
     print(f"Batch size: {bsz}, Seq len: {seq_len}")
 
     config = LLM_Config(embed_dim = embed_dim,

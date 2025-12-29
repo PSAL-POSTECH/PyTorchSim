@@ -1276,7 +1276,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
 
         # Note: In case of indirect indexing, dimensions should be divisible by tile size
         if not self.kernel_group.tile_desc.is_dim_dividable(self.ranges):
-            new_tile_size = self.kernel_group.tile_desc.adjust_tile_to_divisible(self.ranges)
+            new_tile_size = self.kernel_group.tile_desc.adjust_tile_to_divisible(self.ranges, self.attempted_tile_sizes)
             self.kernel_group.tile_desc.set_tile_size(new_tile_size)
             self.reset("recompile")
             raise mlir_common.RecompileSignal(f"Indirect access (tile size {self.kernel_group.tile_desc.get_tile_size()} is not divisible by {self.ranges})")

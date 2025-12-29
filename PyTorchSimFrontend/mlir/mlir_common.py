@@ -313,16 +313,10 @@ class TileAdjustMixin():
 
         return all(d % t == 0 for d, t in zip(dim_sizes_cpy, self._tile_size))
 
-    def adjust_tile_to_divisible(self, dim_sizes: list[int]) -> list[int]:
+    def adjust_tile_to_divisible(self, dim_sizes: list[int], attempted_tile_sizes) -> list[int]:
         """Adjust current tile to be divisible by given dimensions."""
         if len(dim_sizes) != len(self._tile_size):
             raise ValueError("dim_sizes must match the tile size dimensions")
-
-        def _adjust_one(dim_size, tile_size):
-            for candidate in range(tile_size, 0, -1):
-                if dim_size % candidate == 0:
-                    return candidate
-            return 1
 
         dim_sizes_cpy = list(dim_sizes)
         axis, stride = self.vmap.vlane_split_axis, self.vmap.vlane_stride
@@ -330,11 +324,21 @@ class TileAdjustMixin():
         if remain:
             dim_sizes_cpy[axis] += stride - remain
 
-        candidate_tile_size = [_adjust_one(d, t) for d, t in zip(dim_sizes_cpy, self._tile_size)]
+        def _adjust_one(dim_size, tile_size, is_split_dim, skip_size=[]):
+            for candidate in range(tile_size, 0, -1):
+                if dim_size % candidate == 0:
+                    if is_split_dim:
+                        remain = candidate % stride
+                        candidate += (stride - remain) if remain else 0
+                    if candidate not in skip_size:
+                        return candidate
+            return 1
+
+        vlane_axis_skip_size = [dim[axis] for dim in attempted_tile_sizes]
+        candidate_tile_size = [_adjust_one(d, t, i==axis, vlane_axis_skip_size if i == axis else []) for i, (d, t) in enumerate(zip(dim_sizes_cpy, self._tile_size))]
         for i in range(len(candidate_tile_size)):
             self.tile_constraint[i].must_divide_dim = True
 
-        axis, stride = self.vmap.vlane_split_axis, self.vmap.vlane_stride
         remain = candidate_tile_size[axis] % stride
 
         if remain:
@@ -615,6 +619,9 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
         self.target_buffer_override = contextvars.ContextVar("Handler_compute_override", default=self.compute)
         self.target_cse_override = contextvars.ContextVar("Handler_cse_override", default=self.cse)
 
+        # Compile tile size manage
+        self.attempted_tile_sizes = set()
+
     def set_ranges(self, lengths, reduction_lengths):
         if self.call_ranges:
             assert self.call_ranges == tuple(lengths) + tuple(
@@ -767,6 +774,7 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
             # Set node range info
             vars, reduction_vars = self.set_ranges(group, reduction_group)
             tile_desc = self.compute_tile_size(nodes, vars, reduction_vars)
+            self.attempted_tile_sizes.add(tuple(tile_desc.get_tile_size()))
             self.compute_body_loop.size = tile_desc.get_numel_per_lane()
             self.compute_body_loop.step = tile_desc.get_compute_vec_size()
             try:

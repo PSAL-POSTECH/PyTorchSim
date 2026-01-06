@@ -628,11 +628,10 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
     def _index_expr(self, tile_desc, renamed_expression, index, base_vector_index):
         # In case of index expr, dimension size should be divisible by tile size
         if not self.kernel_group.tile_desc.is_dim_dividable(self.ranges):
-            new_tile_size = self.kernel_group.tile_desc.adjust_tile_to_divisible(self.ranges)
+            new_tile_size = self.kernel_group.tile_desc.adjust_tile_to_divisible(self.ranges, self.attempted_tile_sizes)
             self.kernel_group.tile_desc.set_tile_size(new_tile_size)
             self.reset("recompile")
             raise mlir_common.RecompileSignal(f"Index access (tile size {self.kernel_group.tile_desc.get_tile_size()} is not divisible by {self.ranges})")
-
         tile_size = tile_desc.get_tile_size_per_lane()
         compute_vec_size = tile_desc.get_compute_vec_size()
         strides = tile_desc.get_tile_stride_per_lane()
@@ -1277,7 +1276,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
 
         # Note: In case of indirect indexing, dimensions should be divisible by tile size
         if not self.kernel_group.tile_desc.is_dim_dividable(self.ranges):
-            new_tile_size = self.kernel_group.tile_desc.adjust_tile_to_divisible(self.ranges)
+            new_tile_size = self.kernel_group.tile_desc.adjust_tile_to_divisible(self.ranges, self.attempted_tile_sizes)
             self.kernel_group.tile_desc.set_tile_size(new_tile_size)
             self.reset("recompile")
             raise mlir_common.RecompileSignal(f"Indirect access (tile size {self.kernel_group.tile_desc.get_tile_size()} is not divisible by {self.ranges})")

@@ -31,7 +31,7 @@ if __name__ == "__main__":
     import os
     import sys
     base_dir = os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim')
-    config = os.environ.get('TORCHSIM_CONFIG', default=f'{base_dir}/configs/systolic_ws_128x128_c2_simple_noc_tpuv4.yml)
+    config = os.environ.get('TORCHSIM_CONFIG', default=f'{base_dir}/configs/systolic_ws_128x128_c2_simple_noc_tpuv4.yml')
     config_prefix = config.split('/')[-1].split('.')[0][9:] # extract config name from config path
     sys.path.append(base_dir)
     args = argparse.ArgumentParser()

@@ -27,7 +27,8 @@ def test_matmul(device, input_size=128, hidden_size=128, output_size=128):
     w1 = weight.to(device=device)
     x2 = input.to("cpu")
     w2 = weight.to("cpu")
-    opt_fn = torch.compile(dynamic=False)(custom_matmul)
+    opt_fn = torch.compile(dynamic=False)(custom_matmul) # dynamic = False -> 모든 tensor의 shape은 compile 시점에 고정
+    # -> loop 범위, 메모리 주소, 타일링 크기 전부 상수로 박기 -> loop unrolling 가능(스케줄링 단순화) -> 성능 상승
     res = opt_fn(x1, w1)
     y = custom_matmul(x2, w2)
     test_result("Matmul Forward", res, y)
@@ -52,7 +53,7 @@ def test_addmm(device, input_size=128, hidden_size=128, output_size=128, bias_ra
 
 def test_addmm2(device, input_size=128, hidden_size=128, output_size=128):
     def custom_matmul(bias, a, b):
-        return torch.matmul(a, b) #+ bias
+        return torch.matmul(a, b) #+ bias ?!
     torch.manual_seed(0)
     input = torch.randn(input_size, hidden_size)
     weight = torch.randn(hidden_size, output_size)

@@ -25,7 +25,8 @@ GEMM_TEMPLATE = r"""
 func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[X, W, Bias], outputs=[Y], names_str="X, W, Bias, Y", input_reorder=input_reorder)}} {
   {{ kernel.def_sram_buffer("X", X_tile_desc, indent_size=2) }}
   {{ kernel.def_sram_buffer("W", W_tile_desc, indent_size=2) }}
-  {{ kernel.def_sram_buffer("Y", Y_tile_desc, indent_size=2) }}
+  {{ kernel.def_sram_buffer("Y", Y_tile_
+  desc, indent_size=2) }}
   {% if not Bias %}
   %v0 = arith.constant dense<0.0> : vector<{{ kernel.get_spad_size_per_lane(TILE_M, TILE_N) }}xf32>{% endif %}
   {{ kernel.def_local_vars(indent_size=2) }}

@@ -35,7 +35,7 @@ def poisson_request_generator(lambda_requests, max_msec_time=None):
 
         yield current_time
 
-class Request:
+class Request: # model을 배치단위로 request 받고 처리
     """ Each request has model name, it's own id, and requested time. """
     request_id = 0
     QUEUED     = 1
@@ -54,7 +54,7 @@ class Request:
         self.id = self.allocate_id()
         self.request_queue_idx = request_queue_idx
 
-    def allocate_id(self):
+    def allocate_id(self): # id 할당
         allocated_id = Request.request_id
         Request.request_id += 1
         return allocated_id
@@ -67,7 +67,7 @@ class Request:
         self.state = self.FINISHED
         self.finish_time.append(finish_time)
 
-    def get_latency(self):
+    def get_latency(self): # 실행시간 구하기
         # Todo. Provide Toke-By-Token
         if self.state == self.FINISHED:
             turnaround_time = self.finish_time[-1] - self.arrival_time
@@ -86,7 +86,7 @@ class Request:
 
         return turnaround_time, response_time, tbt_time
 
-    def free_memory(self):
+    def free_memory(self): 
         """ Free memory resources that are allocated for handle this request """
         return
 
@@ -130,14 +130,14 @@ class SchedulerDNNModel:
     def get_shared_input(self):
         return self.batched_req[0].shared_input_tensor
 
-    def get_input(self):
+    def get_input(self): # batch tensor + shared tensor
         return self.get_batchable_input() + self.get_shared_input()
 
     def __str__(self):
         return f"DNN Model: {self.model_name}, Partion idx: {self.partition_idx} Req: {self.batched_req[0]}"
 
     @staticmethod
-    def register_model(model_name : str, compiled_model):
+    def register_model(model_name : str, compiled_model): # modelmap list에 model 등록
         SchedulerDNNModel.MODEL_MAP[model_name] = compiled_model
 
 class PyTorchSimRunner:

@@ -137,43 +137,67 @@ class RecompileSignal(BaseException):
         super().__init__(self.message)
 
 class MLIRKernelArgs(common.KernelArgs):
+    """MLIR 전용 커널 인자 헬퍼.
+
+    역할: 그래프의 버퍼/상수/사이즈 정보를 수집하여 MLIR 함수 시그니처에 맞춘
+    arg 정의와 호출 인자 목록을 생성합니다. 또한 인자 타입(in/out/inout/var)을
+    비트플래그로 관리합니다.
+    """
     MLIR_ARGS_IN = 0x01
     MLIR_ARGS_OUT = 0x02
     MLIR_ARGS_INOUT = 0x04
     MLIR_ARGS_VAR = 0x08
 
     def __init__(self, tile_row=None, tile_col=None):
+        # 부모 클래스 초기화 및 MLIR 전용 타일 정보 보관
         super().__init__()
         self.tile_row = tile_row
         self.tile_col = tile_col
 
     @staticmethod
     def is_mlir_arg_in(value):
+        """값이 '입력' 혹은 'inout' 타입인지 판별합니다.
+
+        왜 필요한가: 인자 분류는 코드 생성(읽기 전용/쓰기 포함)에 영향을 줍니다.
+        """
         return (MLIRKernelArgs.MLIR_ARGS_IN & value) | (MLIRKernelArgs.MLIR_ARGS_INOUT & value)
 
     @staticmethod
     def is_mlir_arg_out(value):
+        """값이 '출력' 혹은 'inout' 타입인지 판별합니다."""
         return (MLIRKernelArgs.MLIR_ARGS_OUT & value) | (MLIRKernelArgs.MLIR_ARGS_INOUT & value)
 
     @staticmethod
     def is_mlir_arg_inout(value):
+        """값이 'inout' 타입(입출력)인지 판별합니다."""
         return MLIRKernelArgs.MLIR_ARGS_INOUT & value
 
     @staticmethod
     def get_mlir_shape(info):
+        """dtype/numel 정보를 받아 MLIR memref shape 문자열을 생성합니다."""
         tensor_type = DTYPE_TO_MLIR[info[0]]
         return f"memref<{info[1]}x{tensor_type}>"
 
     def mlir_argdefs(self, extra_node=dict()):
+        """그래프의 버퍼/상수/추가 노드 정보를 수집하여
+        MLIR 인자 정의(arg_defs), 호출인자(call_args), 인자 속성(arg_attributes)
+        및 버퍼 메타 정보(buffer_types)를 반환합니다.
+
+        왜 필요한가: wrapper 코드와 MLIR 함수 선언을 일관되게 생성하기 위해
+        모든 인자 정보를 통합하여 제공해야 합니다.
+        """
         buffer_types = {}
+        # 그래프에 존재하는 버퍼들을 순회하여 메타 정보 수집
         for x in V.graph.buffers:
             if not isinstance(x.layout, MultiOutputLayout): # FIXME: MultiOutputLayout should be handled
                 buffer_types[x.get_name()] = [x.get_dtype(), x.get_numel(), x.get_size(), x.get_stride()]
+        # 그래프 입력(심볼릭 포함) 처리
         for name, val in V.graph.graph_inputs.items():
             if isinstance(val, sympy.Expr):
                 buffer_types[name] = [get_sympy_Expr_dtype(val), 1, [1], [1]]
             else:
                 buffer_types[name] = [val.get_dtype(), val.get_numel(), val.get_size(), val.get_stride()]
+        # 상수/추가 노드 정보 병합
         buffer_types.update(
             {name: [val.dtype, 1, [1], [1]] for name, val in V.graph.constants.items()}
         )
@@ -185,11 +209,13 @@ class MLIRKernelArgs(common.KernelArgs):
         arg_defs = []
         arg_attributes = []
         def set_info(outer, inner, arg_type):
+            # outer: 실제 그래프 이름, inner: MLIR 내부 이름(%X)
             mlir_shape = self.get_mlir_shape(buffer_types[outer])
             arg_defs.append(f"%{inner}: {mlir_shape}")
             call_args.append(outer)
             arg_attributes.append([outer] + [[arg_type] + buffer_types[outer]])
 
+        # inplaced, input, output, sizevar 등 카테고리별로 인자 등록
         for inplaced in unique(self.inplace_buffers.values()):
             if self._buffer_is_marked_removed(inplaced):
                 continue
@@ -209,19 +235,34 @@ class MLIRKernelArgs(common.KernelArgs):
         return arg_defs, call_args, arg_attributes, buffer_types
 
 class VectorLaneMapping():
+    """Vector lane (vlane) 관련 매핑 정보를 관리하는 유틸리티 클래스.
+
+    역할: 주어진 타일을 vlane 단위로 어떻게 분할할지(vlane split axis/stride, 사용 vlane 수 등)를 계산
+    하여 각 lane 당 처리량(타일 크기/stride 등)과 벡터화 크기를 결정합니다.
+    """
     def __init__(self, vector_lane: int, forced_vec_size: int, vlane_split_axis: int, vlane_stride: int):
+        # 하드웨어/매핑 관련 파라미터 보관
         self.vector_lane = vector_lane
         self.vlane_split_axis = vlane_split_axis
         self.vlane_stride = vlane_stride
         self.forced_vec_size = forced_vec_size
 
     def get_used_vlane(self, tile_size: list[int]):
+        """타일 크기에서 실제로 사용될 vlane 수를 계산.
+
+        계산: split_axis 차원의 크기 / vlane_stride를 올림한 값과 전체 vector_lane 중 작은 값을 선택.
+        이유: 타일의 해당 축이 vlane 단위로 어떻게 분배되는지 판단하여 자원 할당을 결정하기 위함.
+        """
         return min(
             math.ceil(tile_size[self.vlane_split_axis] / self.vlane_stride),
             self.vector_lane
         )
 
     def get_tile_size_per_lane(self, tile_size: list[int]):
+        """타일을 lane당 단위로 나눴을 때의 per-lane 타일 크기를 반환.
+
+        필요한 이유: per-lane 계산량과 메모리 요구량 추정을 위해 각 lane의 타일 크기 정보를 얻어야 함.
+        """
         per_lane = tile_size.copy()
         used = self.get_used_vlane(tile_size)
         if self.vlane_split_axis < 0 or self.vlane_split_axis >= len(per_lane):
@@ -230,20 +271,33 @@ class VectorLaneMapping():
         return per_lane
 
     def get_numel_per_lane(self, tile_size: list[int]):
+        # per-lane 타일의 원소 수(=연산량)를 계산
         return math.prod(self.get_tile_size_per_lane(tile_size))
 
     def get_tile_stride_per_lane(self, tile_size: list[int], tile_stride: list[int]):
+        """원래 타일 stride를 per-lane stride로 변환.
+
+        이유: 메모리 접근 패턴을 lane 단위로 재계산하여 DMA/로컬 인덱싱을 조정하기 위함.
+        """
         tile_stride = tile_stride.copy()  # original strides
         get_tile_size_per_lane = self.get_tile_size_per_lane(tile_size)
         coeff = tile_size[self.vlane_split_axis]//get_tile_size_per_lane[self.vlane_split_axis]
 
-        # Propagate stride according to per-lane tile size
+        # Per-lane로 전파할 때 필요한 stride 보정 수행
         for i in range(len(tile_stride)):
             if tile_stride[i] > tile_stride[self.vlane_split_axis]:
                 tile_stride[i] = tile_stride[i] // coeff
         return tile_stride
 
     def get_compute_vec_size(self, tile_size: list[int], reduction_numel: int, nr_rdim: int) -> int:
+        """계산에 사용할 벡터화(또는 SIMD) 단위 크기를 결정.
+
+        - forced_vec_size가 설정되어 있으면 강제값을 반환.
+        - reduction이 있는 경우 제약을 고려해 적절한 분할 크기를 계산.
+        - 그렇지 않으면 stride 단위를 기준으로 8/4/2 배수 중 적절한 크기를 선택.
+
+        목적: 벡터 연산의 폭을 결정하여 코드 생성 시 vector load/store 및 연산 단위를 맞추기 위함.
+        """
         if self.forced_vec_size is not None:
             return self.forced_vec_size
 
@@ -481,16 +535,26 @@ class TileConstraint:
         raise extension_codecache.TileSizeError("Cannot find suitable tile size under the given constraints.")
 
 class MLIRMultiDimTile(TileAdjustMixin):
+    """다차원 타일 설명자(타일 크기/stride/벡터 매핑 등).
+
+    역할: 타일의 크기, stride, axis 순서 및 vlane 매핑 정보를 보관하고,
+    코드 생성 시 MLIR에서 사용할 형태로 변환하는 헬퍼를 제공합니다.
+    """
     def __init__(self, tile_size, vector_lane, vlane_split_axis=None, vlane_stride=None, forced_vec_size=None):
         super().__init__()
+        # 식별자 이름
         self.name = ""
+        # 내부 타일 사이즈 리스트
         self._tile_size = list(tile_size)
+        # 계산된 stride(초기에는 None, update_tile_stride로 설정)
         self._tile_stride = None
+        # 각 축에 대한 제약 정보(TileConstraint 객체 목록)
         self.tile_constraint = [TileConstraint(vlane_stride) for _ in tile_size]
+        # 기본 축 순서
         self.tile_axis_order = list(range(len(tile_size)))
         self.update_tile_stride()
 
-        # Vector lane mapping config
+        # Vector lane 매핑 설정 보관
         self.vmap = VectorLaneMapping(
             vector_lane=vector_lane,
             forced_vec_size=forced_vec_size,
@@ -498,9 +562,10 @@ class MLIRMultiDimTile(TileAdjustMixin):
             vlane_stride=vlane_stride
         )
 
+        # implicit dim, reduction 깊이 등 추가 메타
         self.implicit_dim_size = None
         self.nr_rdim = 0
-        self.offset = sympy.Integer(0) # Dram offset
+        self.offset = sympy.Integer(0) # DRAM offset을 sympy로 표현
 
     def set_name(self, name: str): self.name = name
     def get_name(self) -> str: return self.name
@@ -511,15 +576,21 @@ class MLIRMultiDimTile(TileAdjustMixin):
     def get_reduction_numel(self): return reduce(mul, self.get_tile_size()[-1*self.nr_rdim:], 1)
 
     def set_tile_size(self, tile_size, tile_axis_order=None, constraints=None):
+        # 타일 크기/순서/제약을 적용 후 stride를 갱신
         self._tile_size = list(tile_size)
         self.tile_axis_order = list(range(len(tile_size))) if tile_axis_order is None else tile_axis_order
         self.update_tile_stride()
 
     def set_tile_size_stride(self, tile_size, tile_stride):
+        # 타일과 stride를 직접 설정할 때 사용
         self._tile_size = list(tile_size)
         self._tile_stride = list(tile_stride)
 
     def update_tile_stride(self):
+        """타일 사이즈와 axis order로부터 각 축에 대한 stride를 계산.
+
+        이유: 각 차원의 stride는 메모리 인덱싱 및 DMA 인코딩에 필요합니다.
+        """
         strides = [1] * len(self._tile_size)
         init = 1
 
@@ -534,13 +605,14 @@ class MLIRMultiDimTile(TileAdjustMixin):
         self._tile_stride = strides
 
     def get_dim_size(self, index):
+        # 정수 인덱스 또는 'indexN' 형태(sympy 변수)를 받아 해당 축 크기를 반환
         if isinstance(index, int):
             return self._tile_size[index]
         elif "index" in str(index):
             return self._tile_size[int(str(index)[5:])]
         raise NotImplementedError("Unsupported format of index")
 
-   # Vector mapping delegation
+   # Vector mapping delegation - 내부 vmap으로 위임
     def get_tile_size_per_lane(self): return self.vmap.get_tile_size_per_lane(self._tile_size)
     def get_used_vlane(self): return self.vmap.get_used_vlane(self._tile_size)
     def get_numel_per_lane(self): return self.vmap.get_numel_per_lane(self._tile_size)
@@ -549,31 +621,56 @@ class MLIRMultiDimTile(TileAdjustMixin):
 
     # Helper functions for codegen
     def get_mlir_shape(self, dtype):
+        # MLIR memref shape 문자열을 생성(예: memref<16x8xf32, 1>)
         shape = "x".join([str(dim) for dim in self._tile_size])
         return f"memref<{shape}x{dtype}, 1>"
 
     def get_mlir_vshape(self, mlir_dtype):
+        # 벡터 타입 문자열(벡터화 크기 > 1인 경우 vector<...> 형식)
         return f"vector<{self.get_compute_vec_size()}x{mlir_dtype}>" if self.get_compute_vec_size() > 1 else f"{mlir_dtype}"
 
 class MLIRWrapperKenrelGroup(cpp.KernelGroup):
+    """MLIR용 래퍼 커널 그룹. 인자와 타일 정보를 보관하는 컨테이너.
+
+    역할: 기존 C++/CUDA용 KernelGroup을 확장하여 MLIR 전용 args와 tile descriptor를 갖도록 함.
+    wrapper/렌더러가 타일 정보를 읽고 코드생성에 사용할 수 있도록 중앙에서 관리합니다.
+    """
     def __init__(self):
         super().__init__()
+        # MLIR 전용 인자 관리 객체
         self.args = MLIRKernelArgs()
+        # 코드 생성 시 사용될 MLIRMultiDimTile 객체(초기에는 None)
         self.tile_desc : MLIRMultiDimTile = None
 
     def set_tile_info(self, tile_desc : MLIRMultiDimTile):
+        # 외부에서 계산된 타일 설명자를 등록
         self.tile_desc = tile_desc
 
 class BaseMLIRHardwareInfo():
+    """하드웨어 관련 기본 정보 보관용 베이스 클래스.
+
+    역할: VPU/스패드/정밀도/코어 수 등 코드 생성 시 참조되는 하드웨어 파라미터를 중앙화합니다.
+    확장자가 원하는 하드웨어 설정을 여기서 정의하여 다른 컴포넌트가 일관되게 사용하도록 합니다.
+    """
     def __init__(self):
-        # Default HW setting
+        # Default HW setting (extension_config에서 값을 읽어 설정)
+        # vector_lane: VPU의 lane 수(벡터 연산 폭의 단위)
         self.vector_lane = extension_config.vpu_num_lanes
+        # spad_info: 스패드(로컬 메모리) 크기/설정 정보
         self.spad_info = extension_config.CONFIG_SPAD_INFO
+        # 정밀도(byte 단위 등) - e.g., f32 -> 4 bytes
         self.precision = extension_config.CONFIG_PRECISION
+        # 병렬 코어 수
         self.num_cores = extension_config.CONFIG_NUM_CORES
+        # 벡터 레지스터 길이(bits)
         self.vlen = extension_config.vpu_vector_length_bits
 
 class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
+    """MLIR 코드 생성의 공통 기반 클래스.
+
+    역할: MLIR 전용 코드 버퍼, CSE, 변수/버퍼 메타, 루프 정보 및 재컴파일 로직을 제공하여
+    실제 커널별 구현이 이를 활용하도록 공통 기능을 캡슐화합니다.
+    """
     newvar_prefix = "%"
     suffix = ""
     overrides = None
@@ -581,23 +678,29 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
     store_format = None
 
     def __init__(self, kernel_group, reason=None):
+        """기본 상태(버퍼, 루프, CSE 등)를 초기화.
+
+        reason: 재컴파일 원인을 전달(recodegen)하여 타일 조정/재시도 로직에 사용.
+        """
         super().__init__(kernel_group.args)
         self.kernel_group = kernel_group
-        # Kernel iteration range info
+        # 루프/범위 관련 상태
         self.call_ranges = None
         self.ranges = None
         self.reduction_depth = None
         self.itervars = None
-        # Code buffer
+        # 코드 버퍼: 벡터 연산 본문, 리덕션 접미사 등
         self.vector_compute = IndentedBuffer()
         self.reductions_suffix = IndentedBuffer()
         self.cse = common.CSE(self.newvar_prefix, self.suffix)
-        # MLIR SSA tracker
+        # MLIR SSA 변수 정보 추적기
         self.var_info = {} # MLIR variable info
         self.buffer_types : dict = None # format: dtype, numel, size, stride
+        # compute index 이름 및 루프 레벨 설정
         self.compute_idx = "compute_idx"
         self.compute_body_loop = LoopLevel(self.compute_idx, 1)
         self.prologue_compute_body_loop = LoopLevel(self.compute_idx, 1)
+        # 재컴파일 이유 (예: spad overflow 등)를 저장
         self.recodegen = reason # spad overflow, tile size, vlane stride
         self.stop_autotune = False
 

@@ -64,16 +64,14 @@ if __name__ == "__main__":
     import sys
     sys.path.append(os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim'))
 
-    from Scheduler.scheduler import PyTorchSimRunner
-    module = PyTorchSimRunner.setup_device()
-    device = module.custom_device()
+    device = torch.device("npu:0")
     parser = argparse.ArgumentParser(description='Process folder argument.')
     parser.add_argument('size', type=int, help='Folder value', default=256)
     args = parser.parse_args()
 
     folder = int(args.size)
     print("Taget size: ", folder)
-    folder_path = os.environ.get("TORCHSIM_DUMP_PATH")
+    folder_path = os.environ.get("TORCHSIM_LOG_PATH")
     print(folder_path)
     os.makedirs(folder_path, exist_ok=True)
     test_matmul(device, folder, folder, folder)

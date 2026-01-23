@@ -46,9 +46,7 @@ if __name__ == "__main__":
     import sys
     sys.path.append(os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim'))
 
-    from Scheduler.scheduler import PyTorchSimRunner
-    module = PyTorchSimRunner.setup_device()
-    device = module.custom_device()
+    device = torch.device("npu:0")
     test_BMM(device)
     test_BMM(device, 2, 256, 128, 256)
     test_BMM(device, 2, 128, 256, 256)

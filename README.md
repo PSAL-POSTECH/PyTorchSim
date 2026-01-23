@@ -99,7 +99,7 @@ The `tests` directory contains several AI workloads examples.
 ```bash
 python tests/test_matmul.py 
 ```
-The result is stored to `TORCHSIM_DUMP_PATH/hash/togsim_result/`. The log file contains detailed core, memory, and interconnect stats.
+The result is stored to `TORCHSIM_LOG_PATH/hash/togsim_result/`. The log file contains detailed core, memory, and interconnect stats.
 
 ### Run Your Own Model on PyTorchSim
 You can run your own PyTorch model on PyTorchSim by setting up a custom NPU device.  
@@ -197,9 +197,9 @@ Log contains memory & core stats.
 [2025-12-05 08:05:52.538] [info] Total execution cycles: 2065
 [2025-12-05 08:05:52.538] [info] Wall-clock time for simulation: 0.147463 seconds
 ```
-The log is dumped in `TORCHSIM_DUMP_PATH` and you can set the path as below.
+The log is dumped in `TORCHSIM_LOG_PATH` and you can set the path as below.
 ```bash
-export TORCHSIM_DUMP_PATH=/tmp/torchinductor # output file dump path
+export TORCHSIM_LOG_PATH=/tmp/torchinductor # output file dump path
 ```
 
 ## Training

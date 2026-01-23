@@ -111,7 +111,7 @@ class ExtensionWrapperCodegen(wrapper.PythonWrapperCodegen):
                 inductor_ops = torch.ops.inductor
                 assert_size_stride = torch._C._dynamo.guards.assert_size_stride
                 alloc_from_pool = torch.ops.inductor._alloc_from_pool
-                reinterpret_tensor = torch.ops.aten._reinterpret_tensor
+                reinterpret_tensor = torch.ops.inductor._reinterpret_tensor
                 custom_async_compile = CustomAsyncCompile()
                 async_compile = AsyncCompile()
                 os.environ["TORCHSIM_LAST_COMPILED_MODULE"] = __file__
@@ -313,7 +313,9 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         self.base_vector_initialized = False
 
     def reset(self, reason):
+        save = self.exit_stack, self._nested_context_depth
         self.__init__(self.kernel_group, reason=reason)
+        self.exit_stack, self._nested_context_depth = save
 
     # padding type 0: zero-padding 1: negative-padding(-inf) ...
     def get_padding_type(self):
@@ -327,7 +329,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         #         return 1
         return 0
 
-    def convert_index(self, expr, buffer):
+    def convert_index(self, expr):
         if len(expr.free_symbols) != 1:
             raise NotImplementedError("Not supporting this view operation...!")
 
@@ -346,17 +348,37 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         first_arg = expr.args[0]
         if len(first_arg.free_symbols) != 1:
             raise NotImplementedError("What is this case?")
+
+        # Create affine.apply operation
         indices = [list(first_arg.free_symbols)[0]]
-        args = ", ".join(map(str, indices))
-        map_var = self.map_cse.generate(self.global_vars, f"affine_map<({args}) -> ({expr_str})>")
-        args = ", ".join([f"%{i}" for i in indices])
-        index = self.apply_cse.generate(buffer, f"affine.apply #{map_var}({args})")
+        with self.override_buffer_cse(buffer=self.global_vars, cse=self.map_cse):
+            map_var = ops.affine_map(indices, expr_str)
+        index = ops.affine_apply(map_var, indices)
         return index
 
-    def parse_indices(self, expr, buffer=None, comments="", indirect_dims=[]) -> common.CSEVariable:
-        if buffer is None:
-            buffer = self.applys
+    def _convert_sympy_to_mlir_expr(self, expr, sorted_args):
+        """
+        Convert sympy expression to MLIR affine map expression by replacing index variables.
+        """
+        indices = []
 
+        for arg in sorted_args:
+            if arg.is_Mul and arg.args[0].is_number:
+                target_arg = arg.args[1]
+            elif not arg.is_number:
+                target_arg = arg
+            else:
+                continue
+            new_arg = sympy.Symbol(str(self.convert_index(target_arg)))
+            expr = expr.replace(target_arg, new_arg)
+            indices.append(str(new_arg))
+
+        expr_str = str(expr)
+        if "//" in expr_str:
+            expr_str = expr_str.replace("//", " floordiv ")
+        return expr_str, indices
+
+    def parse_indices(self, expr, comments="", indices=None, indirect_dims=[]) -> common.CSEVariable:
         # Constant case
         if expr.is_number and len(indirect_dims) == 0:
             return self.get_const_cse(int(expr))
@@ -372,33 +394,19 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         # Sort index variable.. ex) (%index1, %index0)
         args_dict = {term: list(term.free_symbols)[0] for term in args if term.free_symbols}
         sorted_args = sorted(args_dict.keys(), key=lambda term: str(args_dict[term]))
-        indices = []
-        for arg in sorted_args:
-            if arg.is_Mul and arg.args[0].is_number:
-                new_arg = sympy.Symbol(str(self.convert_index(arg.args[1], buffer)))
-                expr = expr.replace(arg.args[1], new_arg)
-                indices.append(str(new_arg))
-            elif not arg.is_number:
-                new_arg = sympy.Symbol(str(self.convert_index(arg, buffer)))
-                expr = expr.replace(arg, new_arg)
-                indices.append(str(new_arg))
 
-        # Extract index var
+        # Convert sympy expression to affine map expression
+        expr_str, indices = self._convert_sympy_to_mlir_expr(expr, sorted_args)
         indirect_args = [f"%{i}" for i in indirect_dims]
-        if len(indirect_args):
-            comments = "{indirect_access} " + comments # Add indirect access attribute
-        expr_str = str(expr)
-        if "//" in expr_str:
-            expr_str = expr_str.replace("//", " floordiv ")
-        args = ", ".join(map(str, indices))
-        map_var = self.map_cse.generate(self.global_vars, f"affine_map<({args})[{','.join(indirect_dims)}] -> ({expr_str})>")
-        args = ", ".join([f"%{i}" for i in indices])
-        index = self.apply_cse.generate(buffer, f"affine.apply #{map_var}({args})[{','.join(indirect_args)}] {comments}")
+        # Create affine.apply operation
+        with self.override_buffer_cse(buffer=self.global_vars, cse=self.map_cse):
+            map_var = ops.affine_map(indices, expr_str, symbol_names=indirect_dims)
+
+        index = ops.affine_apply(map_var, indices, indirect_dims=indirect_args, comment=comments)
         return index
 
-    def parse_index_list(self, expr_list:list, buffer=None, offset=sympy.Number(0)) -> common.CSEVariable:
-        if buffer is None:
-            buffer = self.applys
+    def parse_index_list(self, expr_list:list, offset=sympy.Number(0)) -> common.CSEVariable:
+        """ Need to override buffer and cse to use this function. """
         expr_list = [arg for arg in expr_list]
         dim_list = [f"d{i}" for i in range(len(expr_list))]
 
@@ -413,11 +421,11 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         new_expr_list = [0] * len(expr_list)
         for idx, arg in enumerate(expr_list):
             if arg.is_Mul and arg.args[0].is_number:
-                new_arg = sympy.Symbol(str(self.convert_index(arg.args[1], buffer)))
+                new_arg = sympy.Symbol(str(self.convert_index(arg.args[1])))
                 new_expr_list[idx] = arg.subs(arg.args[1], dim_list[idx])
                 indices.append(str(new_arg))
             elif not arg.is_number:
-                new_arg = sympy.Symbol(str(self.convert_index(arg, buffer)))
+                new_arg = sympy.Symbol(str(self.convert_index(arg)))
                 new_expr_list[idx] = new_arg.subs(new_arg, dim_list[idx])
                 indices.append(str(new_arg))
             else:
@@ -427,15 +435,14 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
                 indices.append(str(new_arg))
 
         # Extract index var
+        # Create affine.apply operation
         expr_str = str(sum(new_expr_list) + offset)
-        args = ", ".join(map(str, dim_list))
-        map_var = self.map_cse.generate(self.global_vars, f"affine_map<({args})[] -> ({expr_str})>")
-        args = ", ".join([f"%{i}" for i in indices])
-        index = self.apply_cse.generate(buffer, f"affine.apply #{map_var}({args})[]")
+        with self.override_buffer_cse(buffer=self.global_vars, cse=self.map_cse):
+            map_var = ops.affine_map(dim_list, expr_str)
+        index = ops.affine_apply(map_var, indices)
         return index
 
     def load(self, name: str, index: sympy.Expr):
-        index = self.rename_indexing(index)
         index, comptute_depedency = self.convert_indirect_indexing(index)
         padding = self.get_padding_type()
 
@@ -489,7 +496,6 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         return out
 
     def store(self, name: str, index: sympy.Expr, value, mode=None, *args, **kwargs):
-        index = self.rename_indexing(index)
         dtype = V.graph.get_dtype(name)
         mlir_dtype = mlir_common.DTYPE_TO_MLIR[dtype]
 
@@ -534,8 +540,8 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
                 value = ops.to_dtype(value, mlir_dtype)
 
             if compute_vec_size < self.var_info[value][0]:
-                value = self.cse.generate(self.stores, f"vector.extract_strided_slice  %{value} {{offsets = [0], sizes = [{compute_vec_size}], strides = [1]}}: vector<{self.var_info[value][0]}x{self.var_info[value][1]}> to {vshape}")
-                self.register_var_info(value, [compute_vec_size, mlir_dtype])
+                with self.override_buffer_cse(buffer=self.stores):
+                    value = ops.extract_strided_slice(value, compute_vec_size)
 
             with self.override_buffer_cse(buffer=self.stores):
                 ops._store(value, sram_var, compute_index_var, tile_shape, buffer_name=name)
@@ -642,7 +648,6 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         dram_var = self.kernel_group.args.output(name)
         dtype = V.graph.get_dtype(name)
         mlir_dtype = mlir_common.DTYPE_TO_MLIR[dtype]
-        index = self.rename_indexing(index)
 
         with self.override_buffer_cse(cse=self.reduction_cse):
             # Tile is always reuduced in inner loop
@@ -729,9 +734,11 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
                 outer_dim = ops.remainder(ops.truncdiv(dim, vlane_stride_vec), vlane_outer_vec)
                 dim = ops.add(stride_dim, ops.mul(outer_dim, nr_vector_lane_vec))
 
-                vlane_offset = self.const_cse.generate(self.const_buffer, f"arith.addi %{vlane_vec}, %{vlane_vec} {{ vlane_offset={offset} }} : vector<{vlane_vec_size}xi64> // vlane offset")
-                self.register_var_info(vlane_offset, [vlane_vec_size, "i64"])
-                vlane_offset = ops.index_cast(vlane_offset, "index")
+                with self.override_buffer_cse(buffer=self.const_buffer, cse=self.const_cse):
+                    vlane_offset = ops.vlane_offset(vlane_vec, vlane_vec, attributes={"vlane_offset": offset}, comment="vlane offset")
+                    if compute_vec_size < self.var_info[vlane_offset][0]:
+                        vlane_offset = ops.extract_strided_slice(vlane_offset, compute_vec_size)
+                    vlane_offset = ops.index_cast(vlane_offset, "index")
                 dim = ops.add(dim, vlane_offset)
             dim_list.append(dim)
 
@@ -777,7 +784,6 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         return accum
 
     def index_expr(self, index, dtype):
-        index = self.rename_indexing(index)
         base_tile_desc = self.kernel_group.tile_desc
         if len(self.ranges) != self.reduction_depth:
             # FIXME. This is a temporary solution to get tile stride of the reduction case
@@ -794,7 +800,6 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         else:
             tile_desc = base_tile_desc
         compute_vec_size = tile_desc.get_compute_vec_size()
-
 
         tile_shape = f"memref<{compute_vec_size*self.vector_lane}xindex, 1>"
         vshape = f"vector<{compute_vec_size}xindex>"
@@ -1083,7 +1088,8 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         if broadcast and (total_dims != local_dims or (self.reduction_depth!=len(total_dims) and total_dims[:self.reduction_depth] == local_dims)):
             local_dims = total_dims # Brodatcast tile shape
 
-        index_var = self.parse_indices(index, buffer=buffer, indirect_dims=indirect_dims, comments=f"// store_reduction={store_reduction}")
+        with self.override_buffer_cse(buffer=buffer, cse=self.apply_cse):
+            index_var = self.parse_indices(index, indirect_dims=indirect_dims, comments=f"// store_reduction={store_reduction}")
 
         if kg_tile_desc.vmap.vlane_split_axis in local_dims:
             local_vlane_split_axis = local_dims.index(kg_tile_desc.vmap.vlane_split_axis)

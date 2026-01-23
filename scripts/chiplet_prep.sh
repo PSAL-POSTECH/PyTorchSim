@@ -8,7 +8,7 @@ for size in "${sizes[@]}"; do
     export TORCHSIM_TILE_M=$((size / 2))
     export TORCHSIM_TILE_K=$((size / 2))
     export TORCHSIM_TILE_N=$((size / 2))
-    export TORCHSIM_DUMP_PATH=$(pwd)/chiplet_result/$size
+    export TORCHSIM_LOG_PATH=$(pwd)/chiplet_result/$size
     python3 chiplet_prep.py $size
     #python3 chiplet_run.py $(pwd)/chiplet_result
 done

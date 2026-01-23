@@ -73,9 +73,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     shape = tuple(map(int, args.shape.strip('()').split(',')))
 
-    from Scheduler.scheduler import PyTorchSimRunner
-    module = PyTorchSimRunner.setup_device()
-    device = module.custom_device()
+    device = torch.device("npu:0")
     test_tanh(device)
     test_exp(device)
     test_erf(device)

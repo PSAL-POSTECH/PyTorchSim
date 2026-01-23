@@ -94,9 +94,7 @@ if __name__ == "__main__":
     import sys
     sys.path.append(os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim'))
 
-    from Scheduler.scheduler import PyTorchSimRunner
-    module = PyTorchSimRunner.setup_device()
-    device = module.custom_device()
+    device = torch.device("npu:0")
     test_matmul(device, 32, 32, 32)
     test_matmul(device, 128, 128, 128)
     test_matmul(device, 256, 256, 256)

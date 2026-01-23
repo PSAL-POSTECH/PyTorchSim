@@ -11,3 +11,6 @@ RUN cd PyTorchSim/TOGSim && \
     conan install .. --build=missing && \
     cmake .. && \
     make -j$(nproc)
+
+RUN cd PyTorchSim/PyTorchSimDevice2 && \
+    python -m pip install --no-build-isolation -e .

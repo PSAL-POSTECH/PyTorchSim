@@ -612,8 +612,9 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
         instance_id = id(self)
         self.target_buffer_override = contextvars.ContextVar(f"Handler_compute_override_{instance_id}", default=self.compute)
         self.target_cse_override = contextvars.ContextVar(f"Handler_cse_override_{instance_id}", default=self.cse)
+        self._nested_context_depth = 0
 
-    def set_ranges(self, lengths, reduction_lengths):
+    def set_ranges(self, lengths, reduction_lengths, index_names=None):
         if self.call_ranges:
             assert self.call_ranges == tuple(lengths) + tuple(
                 reduction_lengths
@@ -622,7 +623,12 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
         else:
             self.call_ranges = tuple(lengths) + tuple(reduction_lengths)
             self.ranges = [self.rename_indexing(x) for x in self.call_ranges]
-            self.itervars = [sympy.Symbol(f"index{n}") for n in range(len(self.ranges))]
+            if index_names is None:
+                self.itervars = [sympy.Symbol(f"index{n}") for n in range(len(self.ranges))]
+            else:
+                assert len(index_names) == len(self.ranges), f"Index names length mismatch: {len(index_names)} != {len(self.ranges)}"
+                self.itervars = [sympy.Symbol(str(n)) for n in index_names]
+
             self.itervar_cses = {str(index) : self.register_var_cse(str(index), 1, "index") for index in self.itervars}
             self.reduction_depth = len(lengths)
         return (
@@ -866,18 +872,22 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
     def override_buffer_cse(self, *, buffer=None, cse=None):
         buffer_override = self.target_buffer_override
         cse_override = self.target_cse_override
-        target_buffer = target_cse = None
+        buffer_token = cse_token = None
         try:
+            # Store tokens for proper restoration in nested contexts
+            # contextvars.set() returns the previous value (token) which can be used for reset()
             if buffer is not None:
-                target_buffer = buffer_override.set(buffer)
+                buffer_token = buffer_override.set(buffer)
             if cse is not None:
-                target_cse = cse_override.set(cse)
+                cse_token = cse_override.set(cse)
             yield self
         finally:
-            if target_cse is not None:
-                cse_override.reset(target_cse)
-            if target_buffer is not None:
-                buffer_override.reset(target_buffer)
+            # Restore using tokens - contextvars automatically handles nested contexts
+            # Each level restores to its own previous value
+            if cse_token is not None:
+                cse_override.reset(cse_token)
+            if buffer_token is not None:
+                buffer_override.reset(buffer_token)
 
     def __enter__(self):
         class CSEProxy:
@@ -913,6 +923,7 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
 
             @staticmethod
             def load(name: str, index: sympy.Expr):
+                index = self.rename_indexing(index)
                 if name in self.cse.invalidated_stores:
                     # A load from an invalidated store requires us to
                     # keep the actual buffer around
@@ -937,6 +948,7 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
                         for other_name in self.current_node.get_output(name).get_mutations():
                             self.cse.store_cache[other_name] = value
                 if name not in V.graph.removed_buffers:
+                    index = self.rename_indexing(index)
                     return self.store(name, index, value, mode=mode)
 
             @staticmethod
@@ -948,6 +960,7 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
                         self.cse.store_cache[other_name] = value
 
                 if name not in V.graph.removed_buffers:
+                    index = self.rename_indexing(index)
                     return self.store_reduction(name, index, value)
 
             @staticmethod
@@ -960,6 +973,7 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
 
             @staticmethod
             def index_expr(index, dtype):
+                index = self.rename_indexing(index)
                 return self.index_expr(index, dtype)
 
             @staticmethod
@@ -988,13 +1002,20 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
                     values, offsets_name, offsets_size, indexing_dtype, right
                 )
 
-        super().__enter__()
-        assert self.overrides
-        parent_handler = self.overrides()
-        self.exit_stack.enter_context(V.set_ops_handler(CSEProxy()))
-        self.exit_stack.enter_context(V.set_kernel_handler(self))
+        if self._nested_context_depth == 0:
+            self.exit_stack.__enter__()
+            assert self.overrides
+            parent_handler = self.overrides()
+
+            self.exit_stack.enter_context(V.set_ops_handler(CSEProxy()))
+            self.exit_stack.enter_context(V.set_kernel_handler(self))
+        self._nested_context_depth += 1
         return self
 
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self._nested_context_depth -= 1
+        if self._nested_context_depth == 0:
+            super().__exit__(exc_type, exc_val, exc_tb)
 
 @dataclasses.dataclass
 class LoopLevel:

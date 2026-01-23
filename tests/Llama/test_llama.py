@@ -369,9 +369,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     sys.path.append(os.environ.get("PYTORCHSIM_ROOT_PATH", "/workspace/PyTorchSim"))
-    from Scheduler.scheduler import PyTorchSimRunner
-    module = PyTorchSimRunner.setup_device()
-    device = module.custom_device()
+    device = torch.device("npu:0")
     #test_triu(device, size=(32, 128), diagonal=1)
     torch.compiler.is_compiling = lambda: True # FIXME. How to fix this?
     #run_rmsnorm_test(device)

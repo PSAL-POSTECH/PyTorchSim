@@ -39,7 +39,7 @@ if __name__ == "__main__":
     batch = args.batch
     result_path = os.path.join(base_dir, args.dump_path, config_prefix, f"resnet18_{batch}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}")
     # setting environment variables
-    os.environ['TORCHSIM_DUMP_PATH'] = result_path
+    os.environ['TORCHSIM_LOG_PATH'] = result_path
     os.environ['TORCHSIM_USE_TIMING_POOLING'] = "1"
     # only timing simulation
     os.environ['TORCHSIM_VALIDATION_MODE'] = "0"

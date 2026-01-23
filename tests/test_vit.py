@@ -202,9 +202,7 @@ if __name__ == "__main__":
     shape = tuple(map(int, args.shape.strip('()').split(',')))
 
     sys.path.append(os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim'))
-    from Scheduler.scheduler import PyTorchSimRunner
-    module = PyTorchSimRunner.setup_device()
-    device = module.custom_device()
+    device = torch.device("npu:0")
     #test_multihead_attention(device)
     #test_encoder_block(device, seq_len=197)
     #test_encoder_block_with_class_token(device, seq_len=196)

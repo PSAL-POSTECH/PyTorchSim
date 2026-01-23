@@ -109,9 +109,7 @@ if __name__ == "__main__":
     import sys
     sys.path.append(os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim'))
 
-    from Scheduler.scheduler import PyTorchSimRunner
-    module = PyTorchSimRunner.setup_device()
-    device = module.custom_device()
+    device = torch.device("npu:0")
     test_mlp(device)
     test_mlp_inf(device, batch_size=1, input_size=256, hidden_size=512, output_size=256)
     test_mlp_inf(device, batch_size=8, input_size=256, hidden_size=512, output_size=256)

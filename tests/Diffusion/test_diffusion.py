@@ -8,6 +8,7 @@ from diffusers.models.unets.unet_2d_blocks import CrossAttnDownBlock2D, CrossAtt
 from diffusers.models.unets.unet_2d_condition import UNet2DConditionModel
 from diffusers.models.upsampling import Upsample2D
 from diffusers.models.resnet import ResnetBlock2D
+from diffusers.models.embeddings import Timesteps
 
 def test_result(name, out, cpu_out, rtol=1e-4, atol=1e-4):
     if torch.allclose(out.cpu(), cpu_out, rtol=rtol, atol=atol):
@@ -313,7 +314,7 @@ def test_cross_attn_down_block2d(
     dual_cross_attention=False
 ):
     print(f"Testing CrossAttnDownBlock2D on device: {device}")
-    
+
     # 1. Initialize the module on CPU
     cpu_block = CrossAttnDownBlock2D(
         in_channels=in_channels,
@@ -338,7 +339,7 @@ def test_cross_attn_down_block2d(
             temb=temb_cpu,
             encoder_hidden_states=encoder_hidden_states_cpu,
         )
-    
+
     # 4. Initialize the module on the custom device
     device_block = cpu_block.to(device).eval()
     device_block = torch.compile(device_block, dynamic=False)
@@ -347,7 +348,7 @@ def test_cross_attn_down_block2d(
     hidden_states_dev = hidden_states_cpu.to(device)
     temb_dev = temb_cpu.to(device)
     encoder_hidden_states_dev = encoder_hidden_states_cpu.to(device)
-    
+
     # 6. Get the output from the custom device module
     with torch.no_grad():
         dev_out, _ = device_block(
@@ -442,9 +443,9 @@ def test_groupnorm(
 
     # 1. Initialize the module on CPU
     cpu_norm = torch.nn.GroupNorm(
-        num_groups=num_groups, 
-        num_channels=channels, 
-        eps=eps, 
+        num_groups=num_groups,
+        num_channels=channels,
+        eps=eps,
         affine=True
     ).to("cpu").eval()
 
@@ -462,13 +463,13 @@ def test_groupnorm(
 
     # 4. Initialize the module on the custom device
     device_norm = torch.nn.GroupNorm(
-        num_groups=num_groups, 
-        num_channels=channels, 
-        eps=eps, 
+        num_groups=num_groups,
+        num_channels=channels,
+        eps=eps,
         affine=True
     ).to(device).eval()
     device_norm = torch.compile(device_norm, dynamic=False)
-    
+
     # Copy the weights from the CPU module to ensure they are identical
     device_norm.weight.data.copy_(cpu_norm.weight.data)
     device_norm.bias.data.copy_(cpu_norm.bias.data)
@@ -541,6 +542,89 @@ def test_upsample2d(
     print("Max diff >", torch.max(torch.abs(y_dev.cpu() - y_cpu)).item())
     print("Upsample2D simulation done.")
 
+
+def test_flip_sin_to_cos_embedding(
+    device,
+    batch=1,
+    embedding_dim=256,
+    rtol=1e-4,
+    atol=1e-4,
+):
+    def create_embeddings(timesteps, embedding_dim, scale=1.0, flip_sin_to_cos=False):
+        """
+        Replicate the embedding creation logic from Timesteps class.
+        """
+        half_dim = embedding_dim // 2
+        exponent = -math.log(10000) * torch.arange(start=0, end=half_dim, dtype=torch.float32, device=timesteps.device)
+        exponent = exponent / half_dim
+        emb = torch.exp(exponent)
+        emb = timesteps[:, None].float() * emb[None, :]
+        emb = scale * emb
+
+        emb = torch.cat([torch.sin(emb), torch.cos(emb)], dim=-1)
+        # flip sine and cosine embeddings
+        if flip_sin_to_cos:
+            new_emb = torch.cat([emb[:, half_dim:], emb[:, :half_dim]], dim=-1)
+            return emb, new_emb
+        return emb, emb
+
+    g = torch.Generator().manual_seed(0)
+    timesteps_cpu = torch.randint(low=0, high=1000, size=(batch,), generator=g, dtype=torch.long)
+
+    # Test with flip_sin_to_cos=True
+    with torch.no_grad():
+        emb_flip_cpu = create_embeddings(timesteps_cpu, embedding_dim, flip_sin_to_cos=True)
+
+    # Move to device and test
+    timesteps_dev = timesteps_cpu.to(device)
+    @torch.compile(dynamic=False)
+    def create_embeddings_compiled(timesteps, embedding_dim, scale=1.0, flip_sin_to_cos=False):
+        return create_embeddings(timesteps, embedding_dim, scale, flip_sin_to_cos)
+
+    with torch.no_grad():
+        emb_flip_dev = create_embeddings_compiled(timesteps_dev, embedding_dim, flip_sin_to_cos=True)
+
+    # Verify flip case
+    test_result("Embedding (flip_sin_to_cos=True)", emb_flip_dev[0], emb_flip_cpu[0], rtol=rtol, atol=atol)
+    print("Max diff (flip) >", torch.max(torch.abs(emb_flip_dev[0].cpu() - emb_flip_cpu[0])).item())
+    test_result("Embedding (flip_sin_to_cos=True)", emb_flip_dev[1], emb_flip_cpu[1], rtol=rtol, atol=atol)
+    print("Max diff (flip) >", torch.max(torch.abs(emb_flip_dev[1].cpu() - emb_flip_cpu[1])).item())
+
+
+def test_timesteps(
+    device,
+    batch=1,
+    num_channels=64,
+    flip_sin_to_cos=True,
+    downscale_freq_shift=1.0,
+    rtol=1e-4,
+    atol=1e-4,
+):
+    print(f"Testing Timesteps on device: {device}")
+
+    cpu_timesteps = Timesteps(
+        num_channels=num_channels,
+        flip_sin_to_cos=flip_sin_to_cos,
+        downscale_freq_shift=downscale_freq_shift,
+    ).to("cpu").eval()
+
+    g = torch.Generator().manual_seed(0)
+    timesteps_cpu = torch.randint(low=0, high=1000, size=(batch,), generator=g, dtype=torch.long)
+
+    with torch.no_grad():
+        cpu_out = cpu_timesteps(timesteps_cpu)
+
+    dev_timesteps = cpu_timesteps.to(device).eval()
+    dev_timesteps = torch.compile(dev_timesteps, dynamic=False)
+
+    timesteps_dev = timesteps_cpu.to(device)
+    with torch.no_grad():
+        dev_out = dev_timesteps(timesteps_dev)
+
+    test_result("Timesteps", dev_out, cpu_out, rtol=rtol, atol=atol)
+    print("Max diff >", torch.max(torch.abs(dev_out.cpu() - cpu_out)).item())
+    print("Timesteps simulation done.")
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run UNet (diffusers) test with comparison")
     parser.add_argument("--model", type=str, default="runwayml/stable-diffusion-v1-5",
@@ -553,18 +637,18 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     sys.path.append(os.environ.get("TORCHSIM_DIR", "/workspace/PyTorchSim"))
-    from Scheduler.scheduler import PyTorchSimRunner
-    module = PyTorchSimRunner.setup_device()
-    device = module.custom_device()
+    device = torch.device("npu:0")
 
-    test_upsample2d(device)
-    test_groupnorm(device)
-    test_groupnorm(device, stride=[1, 1, 320*32, 320])
-    test_resnetblock2d(device, in_channels=640, out_channels=320, temb_channels=320)
-    test_resnetblock2d(device, in_channels=640, out_channels=320, temb_channels=1280)
-    test_cross_attn_down_block2d(device)
-    test_unet_mid_block2d_cross_attn(device)
-    test_cross_attn_up_block2d(device)
+    #test_upsample2d(device)
+    #test_groupnorm(device)
+    #test_groupnorm(device, stride=[1, 1, 320*32, 320])
+    #test_resnetblock2d(device, in_channels=640, out_channels=320, temb_channels=256, resnet_act_fn='silu')
+    #test_resnetblock2d(device, in_channels=640, out_channels=320, temb_channels=1280)
+    #test_cross_attn_down_block2d(device)
+    #test_unet_mid_block2d_cross_attn(device)
+    #test_cross_attn_up_block2d(device)
+    #test_flip_sin_to_cos_embedding(device)
+    #test_timesteps(device)
     test_unet2d_condition_model(device)
     #test_unet_conditional(
     #    device=device,

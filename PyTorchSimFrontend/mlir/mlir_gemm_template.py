@@ -154,7 +154,7 @@ class MLIRGemmTemplate(MLIRTemplate):
         W_tile_desc.set_tile_size_stride(W_tile_size, W_tile_stride)
         W_tile_desc.set_name("W_buffer")
         W_tile_desc.offset = W.get_layout().offset
-        W_stride = W.get_layout().stride
+        W_stride = W.get_layout().stride if N>1 else [Y.get_layout().stride[0], 0]
         W_idx = [sympy.Symbol("index2") * W_stride[0], sympy.Symbol("index1") * W_stride[1]]
 
         vlane_split_axis = vlane_split_axis if nr_rdim==0 else 0
@@ -163,7 +163,7 @@ class MLIRGemmTemplate(MLIRTemplate):
         Y_tile_desc = mlir_common.MLIRMultiDimTile(Y_tile_size, kernel.vector_lane, vlane_split_axis, vlane_stride)
         Y_tile_desc.set_tile_size_stride(Y_tile_size, Y_tile_stride)
         Y_tile_desc.set_name("Y_buffer")
-        Y_stride = Y.get_layout().stride
+        Y_stride = Y.get_layout().stride if N>1 else [Y.get_layout().stride[0], 0]
         if nr_rdim == 0:
             Y_idx = [sympy.Symbol("index0") * Y_stride[0], sympy.Symbol("index1") * Y_stride[1]]
         else:

@@ -43,9 +43,7 @@ if __name__ == "__main__":
     import sys
     sys.path.append(os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim'))
 
-    from Scheduler.scheduler import PyTorchSimRunner
-    module = PyTorchSimRunner.setup_device()
-    device = module.custom_device()
+    device = torch.device("npu:0")
     test_addmm_residual(device, 32, 32, 32)
     test_addmm_residual(device, 128, 128, 128)
     test_addmm_residual(device, 512, 512, 512)

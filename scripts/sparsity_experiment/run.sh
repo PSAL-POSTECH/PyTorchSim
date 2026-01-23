@@ -1,4 +1,4 @@
-export TORCHSIM_DUMP_PATH=$(pwd)/result
+export TORCHSIM_LOG_PATH=$(pwd)/result
 export SPIKE_DUMP_SPARSE_TILE=1
 export TORCHSIM_FORCE_TIME_K=8
 export TORCHSIM_FORCE_TIME_M=8

@@ -163,9 +163,7 @@ if __name__ == "__main__":
     import sys
     sys.path.append(os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim'))
 
-    from Scheduler.scheduler import PyTorchSimRunner
-    module = PyTorchSimRunner.setup_device()
-    device = module.custom_device()
+    device = torch.device("npu:0")
     #test_rmsnorm(device, seq=1)
     #test_concat(device, size1=(1, 8, 64, 64), size2=(1,8,1,64), dim=2)
     test_decode(device, 32, 3)

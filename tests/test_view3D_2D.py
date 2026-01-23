@@ -44,9 +44,7 @@ if __name__ == "__main__":
     import sys
     sys.path.append(os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim'))
 
-    from Scheduler.scheduler import PyTorchSimRunner
-    module = PyTorchSimRunner.setup_device()
-    device = module.custom_device()
+    device = torch.device("npu:0")
     test_view3D_2D(device)
     test_view3D_2D(device, [12, 512, 64])
     test_view2D_3D(device, size=(512, 1024), h=16, d_k=64)

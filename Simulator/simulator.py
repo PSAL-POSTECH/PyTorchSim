@@ -151,7 +151,8 @@ class FunctionalSimulator():
         try:
             stdout_setting = subprocess.DEVNULL if silent_mode else None
             stderr_setting = subprocess.DEVNULL if silent_mode else None
-            subprocess.check_call(run_cmd, stdout=stdout_setting, stderr=stderr_setting)
+            with ProgressBar("[Spike] Running simulation", silent_mode=silent_mode):
+                subprocess.check_call(run_cmd, stdout=stdout_setting, stderr=stderr_setting)
         except subprocess.CalledProcessError as e:
             if not silent_mode:
                 logger.error(f"[Spike] Command failed with exit code {e.returncode}")

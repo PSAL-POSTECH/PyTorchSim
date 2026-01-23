@@ -119,9 +119,7 @@ if __name__ == "__main__":
     import sys
     sys.path.append(os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim'))
 
-    from Scheduler.scheduler import PyTorchSimRunner
-    module = PyTorchSimRunner.setup_device()
-    device = module.custom_device()
+    device = torch.device("npu:0")
     test_EncoderBlock(device)
     # test_Attention(device, head=16, seq=512, d_k=64)
     # test_MHA(device, num_heads=12, embed_dim=768)

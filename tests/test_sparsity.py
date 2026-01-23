@@ -96,9 +96,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    from Scheduler.scheduler import PyTorchSimRunner
-    module = PyTorchSimRunner.setup_device()
-    device = module.custom_device()
+    device = torch.device("npu:0")
 
     #test_dec_inf(device, sparsity=args.sparsity, block=args.block)
     test_mlp_inf(device, batch_size=32, input_size=784, hidden_size=512, output_size=256, sparsity=args.sparsity, block=args.block)

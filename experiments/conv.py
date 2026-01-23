@@ -48,7 +48,7 @@ if __name__ == "__main__":
     size_str = "_".join([str(i) for i in size])
     result_path = os.path.join(base_dir, args.dump_path, config_prefix, f"CONV_{size_str}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}")
     # setting environment variables
-    os.environ['TORCHSIM_DUMP_PATH'] = result_path
+    os.environ['TORCHSIM_LOG_PATH'] = result_path
     # only timing simulation
     os.environ['TORCHSIM_VALIDATION_MODE'] = "0"
     if 'pytorchsim_functional_mode' in os.environ:

@@ -52,13 +52,9 @@ def test_addmm(device, input_size=128, hidden_size=128, output_size=128, bias_ra
     test_result("Addmm Forward", res, y)
 
 if __name__ == "__main__":
-    import os
-    import sys
-    sys.path.append(os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim'))
     parser = argparse.ArgumentParser(description="Run matmul with given shape") 
     parser.add_argument('--shape', type=str, default="(512,512,512)")
     args = parser.parse_args()
     shape = tuple(map(int, args.shape.strip('()').split(',')))
-
     device = torch.device("npu:0")
     test_matmul(device, *shape)

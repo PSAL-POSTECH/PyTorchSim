@@ -1,6 +1,4 @@
 import torch
-import torch._dynamo
-import torch.utils.cpp_extension
 
 def test_result(name, out, cpu_out, rtol=1e-4, atol=1e-4):
     if torch.allclose(out.cpu(), cpu_out, rtol=rtol, atol=atol):
@@ -84,10 +82,6 @@ def test_elem_bmm_input_fusion(device, batch_size=1, m=512, n=512, k=64):
     test_result("BMM Element-wise Fusion Forward", res, out)
 
 if __name__ == "__main__":
-    import os
-    import sys
-    sys.path.append(os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim'))
-
     device = torch.device("npu:0")
     test_elem_broadcast_fusion(device)
     test_elem_fusion(device)

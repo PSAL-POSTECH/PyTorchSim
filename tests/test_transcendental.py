@@ -63,10 +63,7 @@ def test_cos(device, size=(128, 128)):
     test_result("Cos", res, out)
 
 if __name__ == "__main__":
-    import os
-    import sys
     import argparse
-    sys.path.append(os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim'))
 
     parser = argparse.ArgumentParser(description="Run LayerNorm test with dynamic shape")
     parser.add_argument('--shape', type=str, default="(512,768)")

@@ -5,8 +5,11 @@
 #include <torch/csrc/utils/device_lazy_init.h>
 #include <torch/csrc/utils/object_ptr.h>
 #include <torch/csrc/utils/python_numbers.h>
+#include <torch/csrc/DynamicTypes.h>
+#include <torch/csrc/Dtype.h>
 
 #include <runtime/OpenRegFunctions.h>
+#include <amp/OpenRegAmp.h>
 
 static PyObject* _initExtension(PyObject* self, PyObject* noargs) {
   HANDLE_TH_ERRORS
@@ -73,6 +76,65 @@ PyObject* _getDeviceCount(PyObject* self, PyObject* noargs) {
   END_HANDLE_TH_ERRORS
 }
 
+PyObject* _isAutocastEnabled(PyObject* self, PyObject* noargs) {
+  HANDLE_TH_ERRORS
+  if (c10::openreg::is_amp_enabled()) {
+    Py_RETURN_TRUE;
+  } else {
+    Py_RETURN_FALSE;
+  }
+  END_HANDLE_TH_ERRORS
+}
+
+PyObject* _setAutocastEnabled(PyObject* self, PyObject* arg) {
+  HANDLE_TH_ERRORS
+  TORCH_CHECK(
+      PyBool_Check(arg),
+      "set_autocast_enabled expects a bool, but got ",
+      THPUtils_typename(arg));
+  c10::openreg::set_amp_enabled(arg == Py_True);
+  Py_RETURN_NONE;
+  END_HANDLE_TH_ERRORS
+}
+
+PyObject* _getAutocastDtype(PyObject* self, PyObject* noargs) {
+  HANDLE_TH_ERRORS
+  THPDtype* dtype_obj = torch::getTHPDtype(c10::openreg::get_amp_dtype());
+  Py_INCREF(dtype_obj);
+  return reinterpret_cast<PyObject*>(dtype_obj);
+  END_HANDLE_TH_ERRORS
+}
+
+PyObject* _setAutocastDtype(PyObject* self, PyObject* arg) {
+  HANDLE_TH_ERRORS
+  TORCH_CHECK(
+      THPDtype_Check(arg),
+      "set_autocast_dtype expects a dtype, but got ",
+      THPUtils_typename(arg));
+  THPDtype* dtype_obj = reinterpret_cast<THPDtype*>(arg);
+  at::ScalarType dtype = dtype_obj->scalar_type;
+  c10::openreg::set_amp_dtype(dtype);
+  Py_RETURN_NONE;
+  END_HANDLE_TH_ERRORS
+}
+
+PyObject* _getAmpSupportedDtype(PyObject* self, PyObject* noargs) {
+  HANDLE_TH_ERRORS
+  PyObject* torch_mod = PyImport_ImportModule("torch");
+  TORCH_CHECK(torch_mod != nullptr, "Failed to import torch module");
+
+  PyObject* float16 = PyObject_GetAttrString(torch_mod, "float16");
+  PyObject* float32 = PyObject_GetAttrString(torch_mod, "float32");
+
+  PyObject* lst = PyList_New(1);
+  PyList_SetItem(lst, 0, float32);
+  //PyList_SetItem(lst, 1, float32);
+
+  Py_DECREF(torch_mod);
+  return lst;
+  END_HANDLE_TH_ERRORS
+}
+
 static PyMethodDef methods[] = {
     {"_init", _initExtension, METH_NOARGS, nullptr},
     {"_get_default_generator", _getDefaultGenerator, METH_O, nullptr},
@@ -80,6 +142,11 @@ static PyMethodDef methods[] = {
     {"_set_device", _setDevice, METH_O, nullptr},
     {"_exchangeDevice", _exchangeDevice, METH_O, nullptr},
     {"_get_device_count", _getDeviceCount, METH_NOARGS, nullptr},
+    {"is_autocast_enabled", _isAutocastEnabled, METH_NOARGS, nullptr},
+    {"set_autocast_enabled", _setAutocastEnabled, METH_O, nullptr},
+    {"get_autocast_dtype", _getAutocastDtype, METH_NOARGS, nullptr},
+    {"set_autocast_dtype", _setAutocastDtype, METH_O, nullptr},
+    {"get_amp_supported_dtype", _getAmpSupportedDtype, METH_NOARGS, nullptr},
     {nullptr, nullptr, 0, nullptr}};
 
 /*

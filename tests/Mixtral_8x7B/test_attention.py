@@ -1,7 +1,5 @@
 import copy
 import torch
-import torch._dynamo
-import torch.utils.cpp_extension
 from model import Transformer, TransformerBlock, ModelArgs, Attention, FeedForward, KVCache, RMSNorm, precompute_freqs_cis, sample
 
 def test_result(name, out, cpu_out, rtol=1e-4, atol=1e-4):
@@ -159,10 +157,6 @@ def test_rmsnorm(device, seq=32):
     test_result("RMSNorm", res, cpu_res)
 
 if __name__ == "__main__":
-    import os
-    import sys
-    sys.path.append(os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim'))
-
     device = torch.device("npu:0")
     #test_rmsnorm(device, seq=1)
     #test_concat(device, size1=(1, 8, 64, 64), size2=(1,8,1,64), dim=2)

@@ -1,6 +1,5 @@
 import torch
 import torch._dynamo
-import torch.utils.cpp_extension
 
 def test_result(name, out, cpu_out, rtol=1e-4, atol=1e-4):
     if torch.allclose(out.cpu(), cpu_out, rtol=rtol, atol=atol):
@@ -36,10 +35,6 @@ def test_conv2d(device, batch_size=1, in_channels=8, out_channels=16, input_size
     print("Max diff > ", torch.max(torch.abs(res.cpu() - out)))
 
 if __name__ == "__main__":
-    import os
-    import sys
-    sys.path.append(os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim'))
-
     device = torch.device("npu:0")
     torch._dynamo.config.cache_size_limit = 64
     with torch.no_grad():

@@ -1,6 +1,4 @@
 import torch
-import torch._dynamo
-import torch.utils.cpp_extension
 
 def test_result(name, out, cpu_out, rtol=1e-4, atol=1e-4):
     if torch.allclose(out.cpu(), cpu_out, rtol=rtol, atol=atol):
@@ -38,10 +36,6 @@ def test_bmm_reduce(device, batch=12, size=512):
     test_result("BMM Reduction Fusion reduction", res[1], y[1])
 
 if __name__ == "__main__":
-    import os
-    import sys
-    sys.path.append(os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim'))
-
     device = torch.device("npu:0")
     #test_bmm_reduce(device)
     test_bmm_reduce(device, 12, 512)

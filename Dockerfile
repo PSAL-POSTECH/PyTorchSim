@@ -12,5 +12,5 @@ RUN cd PyTorchSim/TOGSim && \
     cmake .. && \
     make -j$(nproc)
 
-RUN cd PyTorchSim/PyTorchSimDevice2 && \
+RUN cd PyTorchSim/PyTorchSimDevice && \
     python -m pip install --no-build-isolation -e .

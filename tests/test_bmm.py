@@ -1,6 +1,4 @@
 import torch
-import torch._dynamo
-import torch.utils.cpp_extension
 
 def test_result(name, out, cpu_out, rtol=1e-4, atol=1e-4):
     if torch.allclose(out.cpu(), cpu_out, rtol=rtol, atol=atol):
@@ -42,10 +40,6 @@ def test_addBMM(device, batch_size=1, m=32, n=16, k=64, bias_rank=1):#TODO: Fusi
     test_result("BMM Forward", res, out)
 
 if __name__ == "__main__":
-    import os
-    import sys
-    sys.path.append(os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim'))
-
     device = torch.device("npu:0")
     test_BMM(device)
     test_BMM(device, 2, 256, 128, 256)

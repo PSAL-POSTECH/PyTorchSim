@@ -1,11 +1,6 @@
 import torch
-import torch._dynamo
-import torch.utils.cpp_extension
 
 if __name__ == "__main__":
-    import os
-    import sys
-    sys.path.append(os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim'))
     device = torch.device("npu:0")
     
     # Target shape

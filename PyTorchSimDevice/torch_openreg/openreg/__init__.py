@@ -66,7 +66,7 @@ def _lazy_init():
 
 
 from .random import *  # noqa: F403
-
+from .amp import *
 
 __all__ = [
     "device",
@@ -83,4 +83,9 @@ __all__ = [
     "manual_seed_all",
     "get_rng_state",
     "set_rng_state",
+    "is_autocast_enabled",
+    "set_autocast_enabled",
+    "get_autocast_dtype",
+    "set_autocast_dtype",
+    "get_amp_supported_dtype",
 ]

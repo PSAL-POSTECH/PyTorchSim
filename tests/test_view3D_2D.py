@@ -1,6 +1,4 @@
 import torch
-import torch._dynamo
-import torch.utils.cpp_extension
 
 def test_result(name, out, cpu_out, rtol=1e-4, atol=1e-4):
     if torch.allclose(out.cpu(), cpu_out, rtol=rtol, atol=atol):
@@ -40,10 +38,6 @@ def test_view2D_3D(device, size=(512, 768), h=12, d_k=64):
     test_result("view 2D->3D", res, out)
 
 if __name__ == "__main__":
-    import os
-    import sys
-    sys.path.append(os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim'))
-
     device = torch.device("npu:0")
     test_view3D_2D(device)
     test_view3D_2D(device, [12, 512, 64])

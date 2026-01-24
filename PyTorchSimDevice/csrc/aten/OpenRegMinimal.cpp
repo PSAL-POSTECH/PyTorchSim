@@ -4,6 +4,10 @@
 #include <ATen/native/DispatchStub.h>
 
 #include <torch/library.h>
+#include <chrono>
+#include <iomanip>
+#include <sstream>
+#include <ctime>
 
 namespace at::openreg {
 
@@ -105,6 +109,23 @@ at::Tensor wrapper_view(const at::Tensor& self, c10::SymIntArrayRef size) {
 void wrapper_cpu_fallback(
     const c10::OperatorHandle& op,
     torch::jit::Stack* stack) {
+  const auto& op_name = op.schema().operator_name();
+
+  // Generate timestamp in format [YYYY-MM-DD HH:MM:SS.mmm]
+  auto now = std::chrono::system_clock::now();
+  auto time_t = std::chrono::system_clock::to_time_t(now);
+  auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+      now.time_since_epoch()) % 1000;
+
+  std::tm tm_buf;
+  localtime_r(&time_t, &tm_buf);
+
+  std::ostringstream oss;
+  oss << std::put_time(&tm_buf, "%Y-%m-%d %H:%M:%S");
+  oss << '.' << std::setfill('0') << std::setw(3) << ms.count();
+
+  std::cerr << "[" << oss.str() << "] [INFO] [PyTorchSimDevice] [Eager Mode] Operator: " << op_name << std::endl;
+
   at::native::openreg::cpu_fallback(op, stack);
 }
 // LITERALINCLUDE END: FALLBACK WRAPPER

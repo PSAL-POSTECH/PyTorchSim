@@ -1,6 +1,4 @@
 import torch
-import torch._dynamo
-import torch.utils.cpp_extension
 
 def test_result(name, out, cpu_out, rtol=1e-4, atol=1e-4):
     if torch.allclose(out.cpu(), cpu_out, rtol=rtol, atol=atol):
@@ -57,10 +55,6 @@ def test_Transpose3D_3(device, size=(4, 16, 32)):
     test_result("Transpose 3D Forward", res, out)
 
 if __name__ == "__main__":
-    import os
-    import sys
-    sys.path.append(os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim'))
-
     device = torch.device("npu:0")
     test_Transpose3D_1(device, [62, 34, 44])
     test_Transpose3D_1(device, [62, 134, 144])

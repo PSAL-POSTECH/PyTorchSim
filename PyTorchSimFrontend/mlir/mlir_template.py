@@ -1,54 +1,66 @@
-import functools
-import itertools
-import textwrap
-import re
-import os
-import contextlib
-import math
-import sympy
-from functools import reduce
-import operator
-from collections import OrderedDict
+# mlir_template.py
+# MLIR 템플릿 기반의 커널 생성/타일링/매핑 유틸리티들을 포함하는 파일입니다.
 
-from typing import List, Optional
-from unittest.mock import patch
+import functools  # 함수 헬퍼(예: partial) 사용
+import itertools  # 반복자 조합, 순열 등 유틸리티
+import textwrap  # 코드 블록 정렬/포맷에 사용
+import re  # 정규 표현식 처리
+import os  # 파일/디렉터리 조작
+import contextlib  # 컨텍스트 매니저 유틸리티
+import math  # 수학 함수 (ceil, sqrt 등)
+import sympy  # 기호 수학(약수, 분해 등) 유틸리티
+from functools import reduce  # 시퀀스 누적 연산에 사용
+import operator  # 연산자 함수(곱셈 등) 사용
+from collections import OrderedDict  # 순서 유지 딕셔너리
 
-from torch._inductor.codegen.common import KernelTemplate, ChoiceCaller, CSE, DeferredLine
-from torch._inductor.ir import Buffer, IRNode, TemplateBuffer
-from torch._inductor.select_algorithm import PartialRender
-from torch._inductor.codegen.cuda.cuda_kernel import CUDATemplateCaller
-from torch._inductor.autotune_process import TensorMeta
-from torch._inductor.virtualized import V, NullHandler, _ops as ops
-from torch._inductor.utils import IndentedBuffer
-from torch._inductor.codecache import write_atomic
+from typing import List, Optional  # 타입 힌트
+from unittest.mock import patch  # 테스트나 임시 패치용
 
-import PyTorchSimFrontend.extension_codecache as extension_codecache
-from PyTorchSimFrontend.mlir.mlir_autotune import MLIRBenchmarkRequest
-from PyTorchSimFrontend.mlir.mlir_common import BaseMLIRHardwareInfo
-from PyTorchSimFrontend.mlir.mlir_codegen_backend import MLIRKernel, reduction_init, reduction_partial_combine_vec, reduction_combine_vec, is_welford_reduction
-from PyTorchSimFrontend.mlir.mlir_scheduling import SchedulerNode
-from torch._inductor.codegen import common
+# Inductor 내부의 공통 템플릿/유틸 가져오기
+from torch._inductor.codegen.common import KernelTemplate, ChoiceCaller, CSE, DeferredLine  # 코드 생성 공통 유틸
+from torch._inductor.ir import Buffer, IRNode, TemplateBuffer  # IR 관련 타입
+from torch._inductor.select_algorithm import PartialRender  # 부분 렌더링 도우미
+from torch._inductor.codegen.cuda.cuda_kernel import CUDATemplateCaller  # CUDA 호출러(참조)
+from torch._inductor.autotune_process import TensorMeta  # 오토튜닝을 위한 텐서 메타
+from torch._inductor.virtualized import V, NullHandler, _ops as ops  # 가상화 유틸
+from torch._inductor.utils import IndentedBuffer  # 들여쓰기 지원 버퍼
+from torch._inductor.codecache import write_atomic  # 코드 캐시 쓰기 유틸
 
-from PyTorchSimFrontend import extension_config
-from . import mlir_common
+# 확장(Frontend) 관련 모듈
+import PyTorchSimFrontend.extension_codecache as extension_codecache  # 확장된 코드 캐시 구현
+from PyTorchSimFrontend.mlir.mlir_autotune import MLIRBenchmarkRequest  # MLIR용 벤치 요청 구조
+from PyTorchSimFrontend.mlir.mlir_common import BaseMLIRHardwareInfo  # 하드웨어 관련 정보 베이스
+from PyTorchSimFrontend.mlir.mlir_codegen_backend import MLIRKernel, reduction_init, reduction_partial_combine_vec, reduction_combine_vec, is_welford_reduction  # MLIR 코드 생성 백엔드 함수
+from PyTorchSimFrontend.mlir.mlir_scheduling import SchedulerNode  # 스케줄링 관련 노드 타입
+from torch._inductor.codegen import common  # 공통 코드 생성 유틸
+
+from PyTorchSimFrontend import extension_config  # 확장 설정 로드
+from . import mlir_common  # 같은 패키지의 공용 유틸
 
 class IndentedBufferGroup:
+    """여러 IndentedBuffer( loads/compute/stores 등)를 그룹화하여 임시로 커널에 적용/복원하는 유틸.
+
+    사용 예: prologue/epilogue 등 특정 블록에서 별도의 버퍼로 코드 생성을 수행한 뒤 원상 복귀.
+    """
     def __init__(self, kernel: 'MLIRTemplateKernel', prefix=""):
+        # kernel 참조와 여러 목적의 IndentedBuffer를 초기화합니다.
         self.kernel = kernel
-        self.body = IndentedBuffer()
-        self.loads = IndentedBuffer()
-        self.compute = IndentedBuffer()
-        self.stores = IndentedBuffer()
-        self.applys = IndentedBuffer()
-        self.dma_loads = IndentedBuffer()
-        self.dma_stores = IndentedBuffer()
-        self.spad_buffer = IndentedBuffer()
+        self.body = IndentedBuffer()  # 전체 바디용
+        self.loads = IndentedBuffer()  # 로드 라인용
+        self.compute = IndentedBuffer()  # 계산 라인용
+        self.stores = IndentedBuffer()  # 저장 라인용
+        self.applys = IndentedBuffer()  # 후처리용 라인
+        self.dma_loads = IndentedBuffer()  # DMA 로드 전용
+        self.dma_stores = IndentedBuffer()  # DMA 저장 전용
+        self.spad_buffer = IndentedBuffer()  # 스패드 관련 라인
+        # CSE(공통 하위식 제거) 인스턴스들: 이름 접두사로 구분
         self.cse = common.CSE("%", "", name_prefix=f"{prefix}")
         self.apply_cse = common.CSE("%", "", name_prefix=f"{prefix}apply")
-        # Original buffers will be saved later in the 'with' block
+        # with 블록 진입 전 원래 버퍼들을 저장하기 위한 사전
         self.original_buffers = {}
 
     def set_buffers(self):
+        # 현재 그룹의 버퍼들을 실제 커널의 속성으로 설정하여, 이후 생성되는 코드가 여기에 기록되게 합니다.
         self.kernel.loads = self.loads
         self.kernel.compute = self.compute
         self.kernel.stores = self.stores
@@ -60,6 +72,7 @@ class IndentedBufferGroup:
         self.kernel.apply_cse = self.apply_cse
 
     def restore_buffers(self):
+        # 저장해둔 원래 버퍼들을 복원합니다.
         self.kernel.loads = self.original_buffers['loads']
         self.kernel.compute = self.original_buffers['compute']
         self.kernel.stores = self.original_buffers['stores']
@@ -72,6 +85,7 @@ class IndentedBufferGroup:
 
     @contextlib.contextmanager
     def as_local(self):
+        # 컨텍스트 진입 시 현재 커널의 버퍼들을 저장하고 그룹 버퍼로 교체합니다.
         self.original_buffers = {
             'loads': self.kernel.loads,
             'compute': self.kernel.compute,
@@ -84,12 +98,16 @@ class IndentedBufferGroup:
             'apply_cse': self.kernel.apply_cse,
         }
         try:
-            self.set_buffers()
+            self.set_buffers()  # 그룹 버퍼로 교체
             yield self
         finally:
-            self.restore_buffers()
+            self.restore_buffers()  # 종료 시 복원
 
 class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
+    """MLIR 기반 템플릿 커널을 표현하는 핵심 클래스입니다.
+
+    이 클래스는 템플릿 렌더링에 필요한 메타데이터, 루프/타일 정보, CSE, prologue/epilogue 버퍼 그룹 등을 관리합니다.
+    """
     def __init__(self,
                  kernel_name,
                  input_nodes,
@@ -99,28 +117,38 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
                  outer_func_render=None,
                  kernel_arg_attributes=None,
                  reason=None) -> None:
+        # MLIRKernel 초기화: kernel_group이 주어지지 않으면 기본 Wrapper 그룹 사용
         super().__init__(kernel_group if kernel_group is not None else mlir_common.MLIRWrapperKenrelGroup())
+        # 식별자 및 입력/콜 사이즈 저장
         self.kernel_name = kernel_name
         self.input_nodes = input_nodes
         self.call_size = call_size
+        # 노드 이름과 루프 정보를 위한 컨테이너
         self.named_nodes = {}
         self.loop_info = {}
+        # outer function 관련 선택적 정보
         self.outer_func_name = outer_func_name
         self.outer_func_render = outer_func_render
+        # 커널 인자 속성을 외부에서 주입 가능
         self.kernel_arg_attributes = kernel_arg_attributes
+        # 렌더 후크, 버퍼 이름, 렌더 옵션
         self.render_hooks = OrderedDict()
         self.buffer_names = dict()
         self.render_options = dict()
+        # 타일/루프 관련 변수
         self.tile_size = []
         self.loop_size = None
+        # CSE(공통 하위식 제거) 인스턴스들: 맵/상수/할당 식별자에 사용
         self.map_cse = CSE("#", self.suffix, name_prefix="t_map")
         self.const_cse = CSE(self.newvar_prefix, self.suffix, name_prefix="t_const")
         self.alloc_cse = CSE(self.newvar_prefix, self.suffix, name_prefix="t_alloc")
+        # Prologue/Epilogue에서 별도 버퍼 관리를 위한 그룹
         self.prologue_buffer_group = IndentedBufferGroup(self, prefix="prologue_")
         self.epilogue_buffer_group = IndentedBufferGroup(self, prefix="epilogue_")
+        # 전역 변수와 예외 노드 저장
         self.global_vars = IndentedBuffer()
         self.exception_nodes = {}
-        # Reduction data structure
+        # Reduction 관련 상태와 버퍼
         self.reduction_epilogue_suffix = IndentedBuffer()
         self.reduction_fusion = False
         self.reduction_body_loop = None
@@ -128,11 +156,15 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         self.reduction_info = {}
         self.reduction_epilogue_result = {}
         self.reduction_mean = []
-        # Dim info
+        # 차원(alias) 정보 및 이유(reason)
         self.dim_aliasing = {}
         self.reason = reason
 
     def reset(self, reason):
+        """커널 상태를 주어진 reason으로 재초기화합니다.
+
+        테스트나 재사용 시 인스턴스를 초기 상태로 되돌리기 위해 사용합니다.
+        """
         self.__init__(
             self.kernel_name, self.input_nodes,
             self.call_size, self.kernel_group,
@@ -141,7 +173,12 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         )
 
     def add_loop_info(self, mat_size, tile_size):
+        """행렬 및 타일 크기로부터 각 루프 인덱스의 [start, end, stride] 정보를 생성하여 저장합니다.
+
+        mat_size: 전체 루프 범위, tile_size: 각 차원에서의 타일 크기(스트라이드)
+        """
         for idx, (loop_size, stride) in enumerate(zip(mat_size, tile_size)):
+            # index0, index1, ... 형태의 키로 루프 정보를 저장
             self.loop_info[f"index{idx}"] = [0, loop_size, stride]
 
     def gemmini_gemm_mapping(self, M, N, K):
@@ -200,40 +237,56 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         return inner_I, inner_J, inner_K
 
     def gemm_combination_mapping(self, M, N, K, n_extra_node=0, n_prologue_node=0, pad_k=True, min_tile=False, is_conv=False):
+        """GEMM용 타일 후보들을 생성하고 휴리스틱으로 우수 후보를 선택합니다.
+
+        고려 항목: 스패드 사용량, lane 당 사용량, weight reuse, 최소 타일 수 등
+        """
         tile_candidates = []
+        # 스패드/레인/정밀도 정보
         spad_size_per_lane = self.spad_info["spad_size"]
         spad_size = spad_size_per_lane * self.vector_lane
-        max_spad_size = spad_size // 2 # double buffer
-        max_spad_per_lane = spad_size_per_lane // 2 # double buffer
+        max_spad_size = spad_size // 2 # double buffer을 고려한 최대 사용 가능 스패드
+        max_spad_per_lane = spad_size_per_lane // 2 # lane 당 최대 스패드
         minimum_n_tile = self.num_cores if min_tile else 1
+        # 패딩 팩터 결정: 벡터 lane 단위로 패딩하거나 기본값 8을 사용
         m_pad_factor = self.vector_lane if M > self.vector_lane else 8
         n_pad_factor = self.vector_lane if N > self.vector_lane else 8
         k_pad_factor = self.vector_lane if K > self.vector_lane else (8 if pad_k else 1)
         K = max(K, 8)
+        # 차원을 패딩하여 정렬 단위를 맞춤
         M_padded = ((M + m_pad_factor - 1) // m_pad_factor) * m_pad_factor
         N_padded = ((N + n_pad_factor - 1) // n_pad_factor) * n_pad_factor
         K_padded = ((K + k_pad_factor - 1) // k_pad_factor) * k_pad_factor
         indexI, indexJ, indexK = (M_padded // self.vector_lane, N_padded // self.vector_lane, K_padded // self.vector_lane)
 
         max_used_spad_size = 0
-        mapping = (self.vector_lane, self.vector_lane, self.vector_lane)
+        mapping = (self.vector_lane, self.vector_lane, self.vector_lane)  # 기본 매핑
+        # 타일 분할 후보의 약수를 이용하여 후보 범위를 만듭니다.
         tile_M_range = sympy.divisors(indexI) if M > self.vector_lane else [1]
         tile_N_range = sympy.divisors(indexJ) if N > self.vector_lane else [1]
         tile_K_range = sympy.divisors(indexK) if K > self.vector_lane else [1]
-        maximize_i_j = 1 # reuse weight
-        for k in tile_K_range: # store tile candidates for manual mapping
+        maximize_i_j = 1 # weight reuse를 극대화하기 위한 보조 변수
+        for k in tile_K_range:  # K 차원의 타일 후보 반복 (각 k는 factor)
+            # tile_K: 실제 타일의 K 크기. K가 vector_lane보다 큰 경우 벡터 레인 단위로 확장
             tile_K = k * self.vector_lane if K > self.vector_lane else K_padded
-            for i in tile_M_range:
+            for i in tile_M_range:  # M 차원 타일 후보 반복
+                # tile_M: M 차원의 실제 타일 크기 (vector lane 단위 또는 패딩된 값)
                 tile_M = i * self.vector_lane if M > self.vector_lane else M_padded
-                for j in tile_N_range:
+                for j in tile_N_range:  # N 차원 타일 후보 반복
+                    # tile_N: N 차원의 실제 타일 크기
                     tile_N = j * self.vector_lane if N > self.vector_lane else N_padded
+                    # 다음으로 각 후보에 대해 필요한 스패드 사용량(입력, 가중치, 출력 포함)을 추정합니다.
+                    # used_spad_size는 전체 스패드 사용량(바이트 단위, precision을 곱함)을 의미합니다.
                     used_spad_size = (tile_M * tile_K * (1 + n_prologue_node) + tile_K * tile_N + tile_M * tile_N * (1 + n_extra_node)) * self.precision
-                    weight_size_per_lane = self.get_spad_size_per_lane(tile_K, tile_N)
-                    input_size_per_lane = self.get_spad_size_per_lane(tile_M * (1 + n_prologue_node), tile_K)
-                    output_size_per_lane = self.get_spad_size_per_lane(tile_M * (1 + n_extra_node), tile_N)
+                    # lane 당 가중치/입력/출력의 크기를 계산하여 lane 분산 관점에서의 사용량을 추정합니다.
+                    weight_size_per_lane = self.get_spad_size_per_lane(tile_K, tile_N)  # 가중치 크기 per lane
+                    input_size_per_lane = self.get_spad_size_per_lane(tile_M * (1 + n_prologue_node), tile_K)  # 입력 크기 per lane
+                    output_size_per_lane = self.get_spad_size_per_lane(tile_M * (1 + n_extra_node), tile_N)  # 출력 크기 per lane
+                    # lane 당 사용량들을 합쳐 실제 lane 단위로 필요한 스패드 사용량을 계산합니다.
                     used_spad_size_per_lane = (weight_size_per_lane + input_size_per_lane + output_size_per_lane) * self.precision
                     check_spad_size = (used_spad_size < max_spad_size and used_spad_size_per_lane < max_spad_per_lane)
                     if check_spad_size:
+                        # 디렉터리/파일에 후보를 기록하여 외부 검증/수집에 사용합니다.
                         dir_path = f"{extension_config.CONFIG_TORCHSIM_DIR}/validation/gemm_candidates"
                         os.makedirs(dir_path, exist_ok=True)
                         file_path = f"{dir_path}/gemm_{M}_{K}_{N}.txt"
@@ -247,6 +300,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
                             with open(file_path, "a") as f:
                                 f.write(line_to_write)
 
+        # 휴리스틱 탐색: 후보들을 평가하여 최적 후보를 선정
         for k in tile_K_range: # heuristic search
             tile_K = k * self.vector_lane if K > self.vector_lane else K_padded
             for i in tile_M_range:
@@ -258,8 +312,10 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
                     input_size_per_lane = self.get_spad_size_per_lane(tile_M * (1 + n_prologue_node), tile_K)
                     output_size_per_lane = self.get_spad_size_per_lane(tile_M * (1 + n_extra_node), tile_N)
                     used_spad_size_per_lane = (weight_size_per_lane + input_size_per_lane + output_size_per_lane) * self.precision
+                    # 전체 매트릭스에 필요한 타일 수 예측 (너무 작은 타일은 불리함)
                     n_tile = math.ceil(M / max(tile_M, 128)) * math.ceil(N / max(tile_N, 128))
                     check_spad_size = (used_spad_size < max_spad_size and used_spad_size_per_lane < max_spad_per_lane)
+                    # 다양한 기준을 결합해 우수 후보 선정: 스패드 사용량, weight reuse, 최소 타일 수 등
                     if check_spad_size and max_used_spad_size < used_spad_size and maximize_i_j <= tile_M * tile_N and n_tile >= minimum_n_tile and max(tile_N, 128) // max(tile_M, 128) < 10:
                         max_used_spad_size = used_spad_size
                         maximize_i_j = tile_M * tile_N
@@ -267,28 +323,37 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
                     if check_spad_size:
                         tile_candidates.append((used_spad_size, (tile_M, tile_N, tile_K)))
 
+        # 사용량 기준으로 후보 정렬 및 반환
         tile_candidates = sorted(tile_candidates, key=lambda x: x[0], reverse=True)
         tile_candidates = [v for _, v in tile_candidates]
         return tile_candidates
 
     def conv_combination_mapping(self, M, N, K, K_H, K_W, O_H, O_W, stride, dilation, n_extra_node=0):
+        """컨볼루션을 GEMM으로 근사하여 타일 후보를 생성합니다.
+
+        변수 설명: K_H/K_W 필터 차원, O_H/O_W 출력 차원, stride/dilation 등의 파라미터를 고려합니다.
+        """
         tile_candidates = []
         spad_size_per_lane = self.spad_info["spad_size"]
         spad_size = spad_size_per_lane * self.vector_lane
-        max_spad_size = spad_size // 2 # double buffer
-        max_spad_per_lane = spad_size_per_lane // 2 # double buffer
+        max_spad_size = spad_size // 2 # double buffer 고려
+        max_spad_per_lane = spad_size_per_lane // 2 # lane 당 최대
 
+        # 후보 선정용 보조 변수
         max_used_spad_size = 0
+        # 먼저 GEMM 근사 값으로 M,N,K를 구합니다 (conv->GEMM 변환 관점)
         M, N, K = self.gemm_combination_mapping(M, N, K, n_extra_node=n_extra_node, pad_k=False, is_conv=True)[0]
-        max_k_h_w = 1 # maximize kernel size
-        max_o_h_w = 1 # maximize output size
-        K = min(K, self.vector_lane)
+        max_k_h_w = 1 # kernel size 최대화 보조
+        max_o_h_w = 1 # output size 최대화 보조
+        K = min(K, self.vector_lane)  # K는 vector lane 이하로 제한
         for o_h in sympy.divisors(O_H):
             for o_w in sympy.divisors(O_W):
                 for k_h in sympy.divisors(K_H):
                     for k_w in sympy.divisors(K_W):
+                        # 입력(ih,iw) 크기 계산: output/stride/dilation 고려
                         i_h = 1 + (o_h - 1) * stride[0] + (k_h - 1) * dilation[0]
                         i_w = 1 + (o_w - 1) * stride[1] + (k_w - 1) * dilation[1]
+                        # 가중치/입력/출력의 스패드 사용량 계산
                         weight_size = k_w * k_h * K * N
                         input_size = i_w * i_h * M * K
                         output_size = o_w * o_h * M * N
@@ -297,6 +362,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
                         input_size_per_lane = self.get_spad_size_per_lane(i_w * i_h * M, K)
                         output_size_per_lane = self.get_spad_size_per_lane(o_w * o_h * M  * (1 + n_extra_node), N)
                         used_spad_size_per_lane = (weight_size_per_lane + input_size_per_lane + output_size_per_lane) * self.precision
+                        # lane 및 전체 스패드 제한을 넘지 않는지 확인
                         check_spad_size = (used_spad_size < max_spad_size and used_spad_size_per_lane < max_spad_per_lane)
                         if check_spad_size:
                             tile_candidates.append((used_spad_size, (k_h, k_w, o_h, o_w, M, N, K)))
@@ -313,6 +379,11 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         return tile_candidates
 
     def conv_multi_tile_mapping(self, M, N, K, K_H, K_W, O_H, O_W, stride, dilation, n_extra_node=0):
+        """Create convolution tiling candidates that allow multi-tile decomposition along kernel width.
+
+        설명: conv->GEMM 근사를 사용하되 K_W와 같은 커널 폭을 고려해 다중 타일 전략을 생성합니다.
+        필요성: 일부 conv 설정에서 단일 타일로 충분히 표현할 수 없을 때, 효과적인 multi-tile 분해를 찾기 위해 사용됩니다.
+        """
         tile_candidates = []
         spad_size_per_lane = self.spad_info["spad_size"]
         spad_size = spad_size_per_lane * self.vector_lane
@@ -349,6 +420,11 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         return tile_candidates
 
     def conv_single_batch_mapping(self, M, N, K, K_H, K_W, O_H, O_W, stride, dilation, n_extra_node=0):
+        """Create convolution tiling candidates targeting single-batch usage.
+
+        설명: 입력 배치가 1인 경우에 맞춘 conv 타일 후보를 생성합니다. stride/dilation 및 filter 크기를 반영합니다.
+        필요성: 단일 배치에서 메모리/스패드 활용을 최적화하고 성능을 높이기 위해 사용됩니다.
+        """
         tile_candidates = []
         spad_size_per_lane = self.spad_info["spad_size"]
         spad_size = spad_size_per_lane * self.vector_lane
@@ -385,6 +461,11 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         return tile_candidates
 
     def meta_kernel(self):
+        """Prepare and register metadata needed by the wrapper and external tooling.
+
+        이 메서드는 wrapper 코드에 출력할 루프 정보와 인자 속성을 정리하여 등록합니다.
+        목적: 생성된 커널 코드와 외부 툴(예: 검증/벤치마크)이 필요로 하는 메타정보를 제공하기 위함입니다.
+        """
         wrapper = V.graph.wrapper_code
         kernel_arg_attributes = self.kernel_arg_attributes
         _, _, arg_attributes, _ = self.kernel_group.args.mlir_argdefs()
@@ -399,14 +480,26 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         wrapper.add_import_once(f"arg_attributes = {arg_attributes}")
 
     def call_kernel(self, kernel_name):
+        """Generate and register the wrapper call to the compiled kernel.
+
+        역할: wrapper에 커널 호출 코드를 생성하여 외부(파이썬 또는 래퍼)에서 해당 커널을 실행할 수 있게 합니다.
+        왜 필요한가: 템플릿으로 생성된 커널을 실제 호출 코드와 연결하기 위해 필요합니다.
+        """
         wrapper = V.graph.wrapper_code
         _, call_args, _, _ = self.kernel_group.args.mlir_argdefs()
         # generate the code to call this
         wrapper.generate_kernel_call(
             kernel_name if self.outer_func_name is None else self.outer_func_name + f"_{len(call_args)}",
             call_args, cuda=False)
-
+    
+    # node = schedule buffer
     def codegen_template_code(self, render, template_node, prologue_nodes, epilogue_nodes, tile_info):
+        """Generate source code for a template given its render and surrounding prologue/epilogue nodes.
+
+        이 함수는 주어진 템플릿(render)을 실행하여 부분 코드를 얻고, prologue/epilogue 노드를 코드화하며
+        필요한 load/store/reduction 훅을 교체하여 통합된 소스 코드를 반환합니다.
+        왜 필요한가: 템플릿 기반 커널의 전체 소스(프로로그/에필로그 포함)를 일관되게 생성하기 위해 필요합니다.
+        """
         with self as kernel:
             _, _, _, kernel.buffer_types = self.kernel_group.args.mlir_argdefs()
             for node in [template_node, *prologue_nodes, *epilogue_nodes]:
@@ -489,6 +582,10 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         return src_code
 
     def make_choices(self, tile_candidates, render, template_node, prologue_nodes, epilogue_nodes):
+        """For each tile candidate, generate code, run benchmark and collect results.
+
+        목적: 자동 튜닝을 위해 후보별로 코드를 생성하고 실행(벤치마크) 결과를 수집하여 최적안을 찾을 수 있게 합니다.
+        """
         choices = []
         for tile_info in tile_candidates:
             if extension_config.CONFIG_DEBUG_MODE:
@@ -501,6 +598,10 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         return choices
 
     def _log_autotune_result(self, best_choice, best_cycle):
+        """Log the result of autotuning (best tile size and cycles).
+
+        필요성: 자동 튜닝 결과를 사용자에게 알려주고 디버깅/분석에 사용됩니다.
+        """
         tile_size = best_choice[2]
         print(
             f"[Auto-tune] Optimal tile size: {list(tile_size)}, "
@@ -508,6 +609,11 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         )
 
     def codegen_nodes(self, tile_candidates, render, template_node, prologue_nodes, epilogue_nodes):
+        """Top-level API to produce source for given template nodes.
+
+        동작: autotune 설정에 따라 자동 튜닝을 실행하거나(있다면), 첫 후보 또는 단일 타일로 코드를 생성합니다.
+        왜 필요한가: 실제 커널 소스 생성의 진입점으로 상위 로직이 이 함수를 호출합니다.
+        """
         if "autotune" in extension_config.codegen_mapping_strategy and len(tile_candidates):
             src_code, loop_size = self.autotune(tile_candidates, render, template_node, prologue_nodes, epilogue_nodes)
             self.loop_size = loop_size
@@ -534,6 +640,10 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
             write_atomic(gem5_write_path, self.gem5_header.getvalue())
 
     def codegen_prologue_body(self):
+        """Generate the prologue portion of the kernel body (DMA loads, spad setup, prologue compute).
+
+        왜 필요한가: prologue는 타일의 입력/가중치 로드와 초기화 작업을 수행하며, main compute 이전에 필요한 준비 코드를 제공합니다.
+        """
         body = IndentedBuffer()
         with self.prologue_buffer_group.as_local():
             body.splice(self.spad_buffer)
@@ -553,6 +663,10 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         return body
 
     def codegen_epilogue_body(self):
+        """Generate the epilogue portion of the kernel body (stores, reduction handling, DMA outs).
+
+        목적: 메인 계산 후 출력 저장과 리덕션 처리 등 후처리를 관리하여 결과를 메모리로 내보내는 역할을 합니다.
+        """
         def template_store():
             dram_var = self.epilogue_info["dram_var"]
             index_list = self.epilogue_info["dram_idx"]
@@ -600,6 +714,11 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         names_str: str = "",
         input_reorder: Optional[List[int]] = None,
     ) -> str:
+        """Register kernel input/output names and hook to render function signature.
+
+        역할: 입력/출력 노드와 이름을 매핑하고, 렌더 시 사용할 인자 정의 훅을 등록합니다.
+        왜 필요한가: 템플릿이 생성한 커널을 외부에서 호출할 때 정확한 인자 시그니처를 제공하기 위해 필요합니다.
+        """
         names = [x.strip() for x in names_str.strip().split(",")]
         if len(inputs) + len(outputs) != len(names):
             raise RuntimeError(
@@ -648,6 +767,10 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         padded_input_size: List[int] = [],
         input_reorder: Optional[List[int]] = None,
     ) -> str:
+        """Define convolution-specific kernel signature and handle padded input size adjustments.
+
+        이유: convolution의 경우 파이썬 래퍼에서 패딩을 처리하므로 템플릿 시그니처에 패딩된 입력 크기를 반영해야 합니다.
+        """
         names = [x.strip() for x in names_str.strip().split(",")]
         if len(inputs) + len(outputs) != len(names):
             raise RuntimeError(
@@ -686,6 +809,10 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
 
     # This function is for convolution wrapper function finalizing.
     def def_wrapper(self, only_store_buffer: bool = False, epilogue_buffer: str = False):
+        """Register a wrapper function signature hook used to finalize convolution wrappers.
+
+        목적: 파이썬 레벨의 래퍼 함수에서 사용할 인자 시그니처를 정의합니다(주로 buffer 이름만 전달).
+        """
         def wrapper_hook():
             arg_defs, *_ = self.kernel_group.args.mlir_argdefs(extra_node=self.extra_node)
             wrapper_arg_defs = [arg.split('%')[1].split(':')[0] for arg in arg_defs]
@@ -696,12 +823,24 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         return "<DEF_CONV_WRAPPER>"
 
     def get_conv_inputs(self):
+        """Return mapping of convolution input buffer names used by the kernel.
+
+        유용성: convolution wrapper/외부 코드가 입력 버퍼 이름을 필요로 할 때 호출됩니다.
+        """
         return self.kernel_group.args.input_buffers
 
     def get_conv_outputs(self):
+        """Return mapping of convolution output buffer names that are actively used (not REMOVED).
+
+        유용성: wrapper가 출력 버퍼들을 쿼리할 때 사용됩니다.
+        """
         return {k: v for k, v in self.kernel_group.args.output_buffers.items() if v != 'REMOVED'}
 
     def load_input(self, indent_size: int = 0):
+        """Create a render hook that prepares input (DMA-in and prologue) code for the kernel.
+
+        이유: 입력 데이터와 가중치를 타일까지 맞추어 DRAM에서 SRAM/SPAD로 불러오는 코드를 생성합니다.
+        """
         def hook():
             code = IndentedBuffer()
             prologue_code = self.codegen_prologue_body()
@@ -734,6 +873,10 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         return "<PREPARE_INPUT>"
 
     def store_output(self, indent_size: int = 0):
+        """Register a render hook that returns the epilogue (store/output) code.
+
+        목적: 커널의 출력 저장/후처리 코드를 템플릿 렌더링 과정에서 올바른 위치에 삽입하기 위해 필요합니다.
+        """
         def hook():
             epilogue_code = self.codegen_epilogue_body()
             return textwrap.indent(epilogue_code.getvalue(), " "*indent_size).strip()
@@ -744,6 +887,10 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         return "<STORE_OUTPUT>"
 
     def reduction_output(self, indent_size: int = 0):
+        """Register a hook that injects reduction-specific output code into rendered template.
+
+        이유: 리덕션 연산의 특수한 후처리 코드(축소 결과 집계 등)를 템플릿의 출력 부분에 주입하기 위해 사용됩니다.
+        """
         def hook():
             return textwrap.indent(self.reductions_suffix.getvalue(), " "*indent_size).strip()
 
@@ -752,6 +899,10 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         return "<REDUCTION_OUTPUT>"
 
     def def_function(self):
+        """Optionally define an outer (Python) function wrapper for the kernel.
+
+        목적: 외부에서 호출 가능한 파이썬 래퍼를 생성하거나, 없다면 None을 반환합니다.
+        """
         _, call_args, _ = self.kernel_group.args.python_argdefs()
         if self.outer_func_render is not None:
             partial_code, function_name = self.outer_func_render(input_args=call_args)
@@ -763,6 +914,10 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
             return None, None
 
     def def_global_vars(self):
+        """Register global variable definitions hook for the template rendering.
+
+        이유: 템플릿에서 필요한 전역 변수(예: 헤더에 들어갈 상수)를 렌더 시 삽입하기 위해 사용됩니다.
+        """
         key = "<GLOBAL_VARS>"
         def hook():
             return textwrap.indent(self.global_vars.getvalue(), "").strip()
@@ -772,6 +927,10 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         return key
 
     def def_local_vars(self, indent_size=0):
+        """Register local variable definitions (constants and allocations) for rendering.
+
+        목적: 커널 내부에서 사용되는 상수/할당 변수를 정의하고 템플릿 내부에서 참조 가능하게 합니다.
+        """
         key = "<LOCAL_VARS>"
         def hook():
             code = IndentedBuffer()
@@ -786,6 +945,10 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
 
     def def_dma_op(self, dma_type, dram_var:str, index_list:list, tile_desc:mlir_common.MLIRMultiDimTile,
                    subtile_size:list=[], async_type=None, indent_size=0):
+        """Generate DMA operation code (MVIN/MVOUT) for given DRAM variable and tile descriptor.
+
+        필요성: DRAM <-> SPAD(SRAM) 이동을 MLIR/시뮬레이터용 코드로 변환하기 위해 사용됩니다. subtile/async 옵션을 통해 세부 동작을 제어합니다.
+        """
         # Prepare code block
         local_code = IndentedBuffer()
         with V.set_kernel_handler(self):
@@ -828,6 +991,10 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         return textwrap.indent(local_code.getvalue(), " "*indent_size).strip()
 
     def def_sram_buffer(self, dram_name, tile_desc, id=0, indent_size=0):
+        """Define/get the SRAM (SPAD) buffer memref declaration for a given DRAM name and tile.
+
+        목적: 타일용 SRAM 전역 버퍼를 할당하고 해당 global memref 선언 코드를 반환합니다.
+        """
         # Prepare code block
         with V.set_kernel_handler(self):
             dtype = self.named_nodes[dram_name].get_layout().dtype
@@ -837,6 +1004,10 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         return textwrap.indent(code, " "*indent_size).strip()
 
     def render(self, template, kwargs, define_function=None):
+        """Render an MLIR template and attach rendering hooks.
+
+        역할: 주어진 템플릿을 실제 코드 문자열로 렌더링하고, 필요한 경우 define_function을 통해 훅을 등록합니다.
+        """
         code = template.render(**kwargs)
         if define_function is not None:
             define_function(self)
@@ -847,10 +1018,18 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         )
 
     def get_spad_size_per_lane(self, tile_m, tile_n):
+        """Estimate SPAD usage per lane given tile dimensions.
+
+        사용 이유: SPAD 사용량을 타일링/매핑 후보 평가에서 비교하기 위함입니다.
+        """
         size = tile_m * ((tile_n + self.vector_lane - 1) // self.vector_lane)
         return max(size, 2) # vector load/store
 
     def load_epilogue(self, name: str, index: sympy.Expr):
+        """Load data from SRAM (epilogue path) into vector registers for computation.
+
+        목적: epilogue 모드에서 SRAM에서 벡터를 읽어오는 코드를 생성하여 리덕션/후처리 계산에 사용됩니다.
+        """
         index = self.rename_indexing(index)
         dram_var = self.kernel_group.args.input(name)
         dram_shape = mlir_common.MLIRKernelArgs.get_mlir_shape(self.buffer_types[name])
@@ -911,6 +1090,10 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         return out
 
     def store_epilogue(self, name: str, index: sympy.Expr, value, *args, **kwargs):
+        """Store a computed value back into SRAM and schedule DMA out if necessary (epilogue path).
+
+        필요성: epilogue에서 계산된 값을 SRAM에 저장하고 최종적으로 DRAM으로 MVOUT을 생성하여 결과를 내보냅니다.
+        """
         index = self.rename_indexing(index)
         dram_var = self.kernel_group.args.output(name)
         dram_shape = mlir_common.MLIRKernelArgs.get_mlir_shape(self.buffer_types[name])
@@ -961,6 +1144,10 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         self.dma_stores.writeline(DeferredLine(name, code))
 
     def reduction_epilogue(self, dtype, src_dtype, reduction_type, value):
+        """Handle generation of partial reduction storage and merging logic for a reduction operation.
+
+        필요성: 리덕션의 중간 결과를 로드/결합/저장하여 최종 결과를 생성하는데 필요한 코드를 생성합니다. Welford 등 특별한 리덕션도 처리합니다.
+        """
         argmax_or_argmin = reduction_type in {"argmax", "argmin"}
         if argmax_or_argmin:
             raise NotImplementedError() #TODO: argmin, argmax
@@ -1024,6 +1211,10 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         return sram_var
 
     def store_reduction_epilogue(self, name, index, value):
+        """Finalize the reduction by combining partial results and emitting MVOUT to DRAM.
+
+        필요성: 여러 단계로 나뉜 리덕션의 파셜 결과들을 합치고, 최종적으로 DRAM에 저장하는 절차를 담당합니다.
+        """
         index = self.rename_indexing(index)
         dram_var = self.kernel_group.args.output(name)
         dram_shape = mlir_common.MLIRKernelArgs.get_mlir_shape(self.buffer_types[name])
@@ -1067,47 +1258,6 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
             line = f"{operation} %{init_vec}, %{value}[{compute_index_var}] : {partial_tile_shape}, {partial_vshape}"
             self.reductions_suffix.writeline(line)
 
-            # 2 step reduction
-            new_vec_size = 2
-            new_vshape = f"vector<{partial_vec_size//new_vec_size}x{new_vec_size}x{mlir_dtype}>"
-            new_reduced_shape = f"vector<{new_vec_size}x{mlir_dtype}>"
-            out = self.cse.generate(self.reductions_suffix, f"vector.shape_cast %{out} : {partial_vshape} to {new_vshape}")
-            init_vec = self.const_cse.generate(self.const_buffer, f"vector.broadcast %{init} : {mlir_dtype} to {new_reduced_shape}")
-            out = self.cse.generate(self.reductions_suffix, reduction_combine_vec(self.reduction_info[value][0], out, init_vec, axis=0, shape=new_vshape, reduced_shape=new_reduced_shape))
-            out2 = self.cse.generate(self.reductions_suffix, f"vector.shuffle %{out}, %{out} [1, 0] : {new_reduced_shape}, {new_reduced_shape}")
-
-            self.compute, self.reductions_suffix = self.reductions_suffix, self.compute
-            self.register_var_info(out, [new_vec_size, mlir_dtype])
-            self.register_var_info(out2, [new_vec_size, mlir_dtype])
-            out = reduction_partial_combine_vec(self.reduction_info[value][0], out, out2)
-            self.compute, self.reductions_suffix = self.reductions_suffix, self.compute
-
-            if self.welford_reduce_out is not None:
-                # NOTE: It not a real welford algorithm... We just used E(X^2) - E(X)^2
-                divider = self.cse.generate(self.reductions_suffix, f"arith.constant {float(self.r_dim_size)} : f32")
-                if self.buffer_types[name][1] > 1:
-                    divider_vec = self.cse.generate(self.reductions_suffix, f"vector.broadcast %{divider} : f32 to {new_reduced_shape}")
-                else:
-                    divider_vec = divider
-
-                if self.current_node.node.origin_node: # FIXME: This is a temporary solution
-                    # mean = SUM(X) / N
-                    self.reduction_mean.append(self.cse.generate(self.reductions_suffix, f"arith.divf %{out}, %{divider_vec} : {new_reduced_shape}"))
-                    out = self.reduction_mean[i]
-                else:
-                    # m2 = (E(X^2) - E(X)^2) * N
-                    sqr_mean = self.cse.generate(self.reductions_suffix, f"arith.divf %{out}, %{divider_vec} : {new_reduced_shape}")
-                    mean_sqr = self.cse.generate(self.reductions_suffix, f"arith.mulf %{self.reduction_mean[i]}, %{self.reduction_mean[i]} : {new_reduced_shape}")
-                    variance = self.cse.generate(self.reductions_suffix, f"arith.subf %{sqr_mean}, %{mean_sqr} : {new_reduced_shape}")
-                    m2 = self.cse.generate(self.reductions_suffix, f"arith.mulf %{variance}, %{divider_vec} : {new_reduced_shape}")
-                    out = m2
-
-            final_zero_var_list[-1] = f"%{body_index_var}"
-            final_compute_index_var = ",".join(final_zero_var_list)
-            operation = "affine.vector_store"
-            line = f"{operation} %{out}, %{sram_var}[{final_compute_index_var}] : {final_tile_shape}, {new_reduced_shape}"
-            self.reductions_suffix.writeline(DeferredLine(name, line))
-
         # MVOUT Encoding
         # Generate DMA instruction
         attribute = f"{{dram_stride={dram_stride}, sram_stride={final_tile_stride}, padding=0}}"
@@ -1116,6 +1266,10 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         self.reductions_suffix.writeline(DeferredLine(name, code))
 
     def set_tile_size(self, template_fusion_info, prologue=False):
+        """Configure tile descriptor and related loop/reduction state based on template fusion info.
+
+        왜 필요한가: 템플릿이 요구하는 타일 크기/벡터화 정보를 커널 상태에 반영하고, 리덕션일 경우 관련 루프 및 벡터 크기를 조정합니다.
+        """
         tile_desc = template_fusion_info["dram_tile_desc"]
         if "dim_aliasing" in template_fusion_info:
             self.dim_aliasing = template_fusion_info["dim_aliasing"]
@@ -1147,6 +1301,10 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         return tile_desc
 
     def rename_indexing(self, index) -> sympy.Expr:
+        """Apply dim_aliasing substitutions safely to avoid cyclic renames.
+
+        필요성: dim aliasing을 적용할 때 이름 충돌(서로 바꾸는 케이스)을 피하기 위해 임시 이름을 사용하여 안전하게 치환합니다.
+        """
         for dim_name, dim_aliased_name in self.dim_aliasing.items():
             index = index.subs(sympy.Symbol(dim_name), sympy.Symbol("tmp_"+dim_aliased_name))
         # To avoid this case ({"index0":"index1", "index1":"index0"})

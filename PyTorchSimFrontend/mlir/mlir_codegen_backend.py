@@ -430,10 +430,17 @@ class ExtensionOverrides(common.OpOverrides):
         # var_info = {operand: [tile_size, dtype]}
         # Ex) var_info[operand] = [8, "f32"]
 
-        ln2 = math.log(2)
-        coeff = ops.constant(ln2, "f32")
-        operand = ops.mul(operand, coeff)
-        return ops.exp(operand), var_info[operand]
+        # ln2 = math.log(2)
+        # coeff = ops.constant(ln2, "f32")
+        # operand = ops.mul(operand, coeff)
+        # return ops.exp(operand), var_info[operand]
+
+        tile_size, dtype = var_info[operand]
+        if tile_size > 1:
+            shape = f"vector<{tile_size}x{dtype}>"
+        else:
+            shape = dtype
+        return f'math.exp2 %{operand} : {shape}', [tile_size, dtype]
 
     @staticmethod
     def erf(operand, *args, var_info=None, **kwargs):
@@ -897,6 +904,7 @@ DMA_TYPE = {
     "MVOUT1": 3,
 }
 
+# Loop level ir -> MLIR 변환하는 translator
 class MLIRKernel(mlir_common.BaseMLIRKernel):
     overrides = ExtensionOverrides
     newvar_prefix = "%"

@@ -65,6 +65,118 @@ def _lazy_init():
     _initialized = True
 
 
+class Stream:
+    """Wrapper for OpenReg stream."""
+
+    def __init__(self, priority=None, flags=0):
+        if priority is not None:
+            self._stream = torch_openreg._C._stream_create_with_priority(flags, priority)
+        else:
+            self._stream = torch_openreg._C._stream_create()
+
+    def __del__(self):
+        if hasattr(self, '_stream'):
+            torch_openreg._C._stream_destroy(self._stream)
+
+    def synchronize(self):
+        """Wait for all operations in the stream to complete."""
+        torch_openreg._C._stream_synchronize(self._stream)
+
+    def query(self):
+        """Check if all operations in the stream have completed."""
+        return torch_openreg._C._stream_query(self._stream)
+
+    def wait_event(self, event):
+        """Make this stream wait for an event."""
+        torch_openreg._C._stream_wait_event(self._stream, event._event)
+
+    def get_priority(self):
+        """Get the priority of the stream."""
+        return torch_openreg._C._stream_get_priority(self._stream)
+
+    def launch_kernel(self, task):
+        """Add a Python callable kernel to this stream.
+
+        Args:
+            task: A Python callable (function) to be executed in the stream
+        """
+        torch_openreg._C._add_task_to_stream(self._stream, task)
+
+    @property
+    def cdata(self):
+        """Get the underlying stream pointer (for internal use)."""
+        return self._stream
+
+
+class Event:
+    """Wrapper for OpenReg event."""
+
+    def __init__(self, enable_timing=False):
+        if enable_timing:
+            # orEventEnableTiming = 0x1
+            self._event = torch_openreg._C._event_create_with_flags(0x1)
+        else:
+            self._event = torch_openreg._C._event_create()
+
+    def __del__(self):
+        if hasattr(self, '_event'):
+            torch_openreg._C._event_destroy(self._event)
+
+    def record(self, stream=None):
+        """Record the event in a stream."""
+        if stream is None:
+            # Use default stream (stream 0)
+            stream = Stream()
+        torch_openreg._C._event_record(self._event, stream._stream)
+
+    def synchronize(self):
+        """Wait for the event to complete."""
+        torch_openreg._C._event_synchronize(self._event)
+
+    def query(self):
+        """Check if the event has completed."""
+        return torch_openreg._C._event_query(self._event)
+
+    def elapsed_time(self, start_event):
+        """Get the elapsed time between two events in milliseconds."""
+        return torch_openreg._C._event_elapsed_time(start_event._event, self._event)
+
+    @property
+    def cdata(self):
+        """Get the underlying event pointer (for internal use)."""
+        return self._event
+
+
+def synchronize():
+    """Synchronize all streams on the current device."""
+    torch_openreg._C._device_synchronize()
+
+
+def stream(priority=None, flags=0):
+    """Create a new stream.
+
+    Args:
+        priority: Stream priority (optional)
+        flags: Stream flags (optional)
+
+    Returns:
+        Stream: A new stream object
+    """
+    return Stream(priority=priority, flags=flags)
+
+
+def event(enable_timing=False):
+    """Create a new event.
+
+    Args:
+        enable_timing: Whether to enable timing for the event
+
+    Returns:
+        Event: A new event object
+    """
+    return Event(enable_timing=enable_timing)
+
+
 from .random import *  # noqa: F403
 from .amp import *
 
@@ -88,4 +200,9 @@ __all__ = [
     "get_autocast_dtype",
     "set_autocast_dtype",
     "get_amp_supported_dtype",
+    "Stream",
+    "Event",
+    "stream",
+    "event",
+    "synchronize",
 ]

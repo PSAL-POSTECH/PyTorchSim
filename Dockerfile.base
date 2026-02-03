@@ -45,6 +45,11 @@ RUN wget https://github.com/riscv-collab/riscv-gnu-toolchain/releases/download/2
 # Install torchsim dependency
 RUN apt install ninja-build && pip install onnx matplotlib && pip install --user conan==1.56.0 && pip install "transformers<4.44" && pip install diffusers==0.34.0
 
+# Extra Python deps for YOLO/vision tests
+RUN python -m pip install -U pip setuptools wheel && \
+    python -m pip install --no-cache-dir --no-deps ultralytics && \
+    python -m pip install --no-cache-dir opencv-python-headless pandas seaborn
+
 ENV RISCV=/workspace/riscv
 ENV PATH=$RISCV/bin:$PATH
 

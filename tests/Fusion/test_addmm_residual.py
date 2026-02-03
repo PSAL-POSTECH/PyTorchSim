@@ -36,7 +36,8 @@ def test_addmm_residual(device, input_size=128, hidden_size=128, output_size=128
     y = addmm_residual(b2, x2, w2, r2)
     test_result("Addmm + Residual Fusion Forward", res, y)
 
-if __name__ == "__main__":    device = torch.device("npu:0")
+if __name__ == "__main__":
+    device = torch.device("npu:0")
     test_addmm_residual(device, 32, 32, 32)
     test_addmm_residual(device, 128, 128, 128)
     test_addmm_residual(device, 512, 512, 512)

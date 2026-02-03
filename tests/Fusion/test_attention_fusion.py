@@ -67,7 +67,8 @@ def test_MHA(device, num_heads=12, embed_dim=768, input_seq=512):
 
     test_result("MHA Forward", res, cpu_res)
 
-if __name__ == "__main__":    device = torch.device("npu:0")
+if __name__ == "__main__":
+    device = torch.device("npu:0")
     test_MHA(device)
     # test_Attention(device, head=16, seq=512, d_k=64)
     # test_MHA(device, num_heads=12, embed_dim=768)

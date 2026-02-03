@@ -6,6 +6,10 @@ file(GLOB_RECURSE SOURCE_FILES
 
 add_library(${LIBRARY_NAME} SHARED ${SOURCE_FILES})
 
+target_include_directories(${LIBRARY_NAME} PRIVATE
+    ${PROJECT_SOURCE_DIR}/third_party/openreg
+)
+
 target_link_libraries(${LIBRARY_NAME} PRIVATE torch_python_library torch_openreg)
 
 if(WIN32)

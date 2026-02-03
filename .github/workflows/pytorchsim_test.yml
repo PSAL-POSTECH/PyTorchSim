@@ -684,6 +684,27 @@ jobs:
             -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/Llama/test_llama.py
 
+  test_yolov5:
+    name: Run test_yolov5
+    runs-on: self-hosted
+    steps:
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run test_yolov5.py
+        run: |
+          echo "Running test_yolov5.py"
+          docker run --rm \
+            -v /tmp/torchsim-ci/${GITHUB_SHA}:/dump \
+            -e TORCHSIM_DUMP_PATH=/dump \
+            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
+            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            ${{ inputs.image_name }} python3 PyTorchSim/tests/Yolov5/test_yolov5.py
+
   test_accuracy:
     name: Run test_accuracy
     runs-on: self-hosted

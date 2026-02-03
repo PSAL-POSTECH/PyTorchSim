@@ -852,12 +852,9 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
             index = index.args[0] if index.args else index
 
         # Replace Identity arguments with Identity.args[0]
-        if hasattr(index, 'args') and len(index.args) > 0:
-            for arg in index.args:
-                if arg.is_Mul and arg.args[0].is_number and isinstance(arg.args[1], Identity):
-                    index = index.replace(arg.args[1], arg.args[1].args[0] if arg.args[1].args else arg.args[1])
-                if isinstance(arg, Identity):
-                    index = index.replace(arg, arg.args[0] if arg.args else arg)
+        Identity_args = [expr for expr in sympy.preorder_traversal(index) if isinstance(expr, Identity)]
+        for expr in Identity_args:
+            index = index.replace(expr, expr.args[0] if expr.args else expr)
 
         index = V.graph.sizevars.simplify(index)
         sorted_symbols = sorted(index.free_symbols, key=lambda s: s.name)

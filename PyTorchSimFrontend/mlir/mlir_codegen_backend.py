@@ -338,6 +338,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
 
         expr_str = str(expr)
         if isinstance(expr, ModularIndexing):
+            dim = list(expr.args[0].free_symbols)[0]
             replace_str = f"({expr.args[0]} floordiv {expr.args[1]}) mod {expr.args[2]}"
             expr_str = re.sub(r"ModularIndexing\([^)]*\)", replace_str, expr_str)
         elif "//" in expr_str:
@@ -1233,7 +1234,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
                 if isinstance(sub, ModularIndexing):
                     if not str(sub.args[0]).startswith("index"):
                         continue
-                    dim_idx = int((str(sub.args[0])[5:]))
+                    dim_idx = int((str(list(sub.args[0].free_symbols)[0])[5:]))
                     floor_divisor = sub.args[1]  # y: floorDiv divisor
                     mod_divisor = sub.args[2]    # z: modular divisor
                     current_tile_size = self.kernel_group.tile_desc.get_tile_size()[dim_idx]

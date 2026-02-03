@@ -25,6 +25,10 @@ std::shared_ptr<Tile> Scheduler::get_tile(int core_id, int slot_id) {
     return tile;
   } else {
     tile = std::move(_tile_graph.at(0)->get_tile(core_id, slot_id));
+     // Record start_time when first non-EMPTY tile is issued
+    if (tile->get_status() != Tile::Status::EMPTY && _tile_graph.at(0)->get_start_time() == 0) {
+      _tile_graph.at(0)->set_start_time(*_core_cycle);
+    }
   }
   refresh_status();
   return tile;
@@ -48,11 +52,22 @@ void Scheduler::refresh_status() {
 
   /* Remove finished request */
   if (_tile_graph.at(0)->is_finished()) {
-    spdlog::info("[Scheduler {}] Graph path: {} operation: {} finish at {}",
-                 _id, _tile_graph.at(0)->get_graph_path(),
+    unsigned int kernel_id = _tile_graph.at(0)->get_kernel_id();
+    cycle_type start_time = _tile_graph.at(0)->get_start_time();
+    cycle_type compute_time = 0;
+    if (start_time > 0) {
+      compute_time = *_core_cycle - start_time;
+    } else {
+      // Fallback to arrival_time if start_time was not recorded
+      start_time = _tile_graph.at(0)->get_arrival_time();
+      compute_time = *_core_cycle - start_time;
+    }
+    
+    spdlog::info("[Scheduler {}] Kernel {} has completed - TOG path: {} operation: {} finished at cycle {}",
+                 _id, kernel_id, _tile_graph.at(0)->get_graph_path(),
                  _tile_graph.at(0)->get_name(), *_core_cycle);
-    spdlog::info("Total compute time {}",
-                 *_core_cycle - _tile_graph.at(0)->get_arrival_time());
+    spdlog::info("[Scheduler {}] Kernel {} execution summary - Started at: {} cycles, Total compute time: {} cycles",
+                 _id, kernel_id, start_time, compute_time);
     _tile_graph.pop_front();
   }
 }

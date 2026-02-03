@@ -685,9 +685,9 @@ void TileLoopNode::print_node() {
   spdlog::debug("{} stride: {} ", spaces, _stride);
 }
 
-TileGraphParser::TileGraphParser(std::string onnx_path, std::string attribute_path, std::string config_path) {
+TileGraphParser::TileGraphParser(std::string onnx_path, std::string attribute_path, const YAML::Node& config_yaml) {
   loadConfig(attribute_path, _attribute_config);
-  loadConfig(config_path, _config_yaml);
+  _config_yaml = config_yaml;  // Use the pre-loaded config
   _attribute_path = attribute_path;
 
   if (!std::filesystem::exists(onnx_path)) {

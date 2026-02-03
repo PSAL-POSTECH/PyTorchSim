@@ -67,6 +67,10 @@ class TileGraph {
   std::string get_name() { return _name; }
   void set_arrival_time(cycle_type arrival_time) { _arrival_time = arrival_time; }
   cycle_type get_arrival_time() { return _arrival_time; }
+  void set_kernel_id(unsigned int kernel_id) { _kernel_id = kernel_id; }
+  unsigned int get_kernel_id() { return _kernel_id; }
+  void set_start_time(cycle_type start_time) { _start_time = start_time; }
+  cycle_type get_start_time() { return _start_time; }
   void init_cache_plan(IntervalTree<unsigned long long, int>::interval_vector it) {
     _cache_plan = std::make_shared<IntervalTree<unsigned long long, int>>(std::move(it));
   }
@@ -130,6 +134,7 @@ class TileGraph {
   int _vec_index=0;
   std::string _path;
   std::string _name = "?";
+  unsigned int _kernel_id = 0;
   std::vector<std::string> _loop_index_list;
   std::vector<std::tuple<int, int, int>> _ranges;
   std::vector<std::shared_ptr<TileSubGraph>> _subgraph_vec;
@@ -137,5 +142,6 @@ class TileGraph {
   std::map<int, std::map<int, std::shared_ptr<TileSubGraph>>> _cpu_graph_map;
   std::shared_ptr<IntervalTree<unsigned long long, int>> _cache_plan;
   cycle_type _arrival_time;
+  cycle_type _start_time = 0;  // First tile issue time, 0 means not started yet
   static std::shared_ptr<Tile> null_tile;
 };

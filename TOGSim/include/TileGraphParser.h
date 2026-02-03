@@ -65,7 +65,7 @@ class TileNode {
 
 class TileGraphParser {
  public:
-  TileGraphParser(std::string onnx_path, std::string attribute_path, std::string config_path);
+  TileGraphParser(std::string onnx_path, std::string attribute_path, const YAML::Node& config_yaml);
   std::shared_ptr<TileNode> get_top_loop();
   std::unique_ptr<TileGraph>& get_tile_graph() { return _tile_graph; }
   addr_type lookup(std::string key);

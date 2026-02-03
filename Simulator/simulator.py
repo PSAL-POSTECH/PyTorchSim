@@ -246,15 +246,17 @@ class TOGSimulator():
         os.mkfifo(self.trace_file_path)
         os.mkfifo(self.event_fifo_path)
 
-        # Event handling for kernel completion
-        self._pending_events = {}  # {kernel_id: threading.Event}
-        self._events_lock = threading.Lock()
-        self._event_thread = None
-        self._event_thread_stop = threading.Event()
-
         # Start TOGSim process with FIFO mode
         self._start_process()
-        self._start_event_thread()
+
+        # Open trace file FIFO once and keep it open (after process starts)
+        self._trace_file_lock = threading.Lock()
+        try:
+            self._trace_file_handle = open(self.trace_file_path, 'w')
+            logger.debug("[TOGSim] Opened trace file FIFO")
+        except IOError as e:
+            logger.error(f"[TOGSim] Failed to open trace file: {e}")
+            raise RuntimeError(f"Failed to open trace file: {e}")
 
     def __del__(self):
         """Cleanup on destruction"""
@@ -267,7 +269,7 @@ class TOGSimulator():
         return cmd
 
     def _start_process(self):
-        cmd = f"{self.get_togsim_command()} --models_list {self.trace_file_path} --event_fifo {self.event_fifo_path}"
+        cmd = f"{self.get_togsim_command()} --models_list {self.trace_file_path}"
         if extension_config.CONFIG_TOGSIM_DEBUG_LEVEL:
             cmd += f" --log_level {extension_config.CONFIG_TOGSIM_DEBUG_LEVEL}"
 
@@ -275,74 +277,11 @@ class TOGSimulator():
         if self.process is None:
             self.process = subprocess.Popen(
                 shlex.split(cmd),
-                stderr=subprocess.PIPE,
-                stdout=subprocess.PIPE,
                 universal_newlines=True
             )
             logger.info("[TOGSim] TOGSim process started successfully")
         else:
             logger.warning("[TOGSim] Simulator is already running.")
-
-    def _start_event_thread(self):
-        """Start the event handling thread that monitors event FIFO"""
-        if self._event_thread is not None:
-            logger.warning("[TOGSim] Event thread is already running.")
-            return
-
-        self._event_thread_stop.clear()
-        self._event_thread = threading.Thread(target=self._event_handler, daemon=True)
-        self._event_thread.start()
-        logger.debug("[TOGSim] Event handling thread started")
-
-    def _stop_event_thread(self):
-        """Stop the event handling thread"""
-        if self._event_thread is None:
-            return
-
-        self._event_thread_stop.set()
-        if self._event_thread.is_alive():
-            self._event_thread.join(timeout=1.0)
-        self._event_thread = None
-        logger.debug("[TOGSim] Event handling thread stopped")
-
-    def _event_handler(self):
-        """Background thread that reads from event FIFO and wakes up waiting processes"""
-        event_fifo = None
-        try:
-            # Keep the FIFO open for continuous reading
-            event_fifo = open(self.event_fifo_path, 'r')
-            logger.debug("[TOGSim] Event handler: FIFO opened for reading")
-
-            while not self._event_thread_stop.is_set():
-                try:
-                    # Read line from FIFO (blocks until data is available)
-                    event_line = event_fifo.readline()
-                    if not event_line:
-                        # EOF or empty line, check if we should stop
-                        if self._event_thread_stop.is_set():
-                            break
-                        continue
-
-                    completed_id = event_line.strip()
-                    logger.debug(f"[TOGSim] Event handler: received completion for kernel {completed_id}")
-
-                    # Wake up the waiting process
-                    with self._events_lock:
-                        if completed_id in self._pending_events:
-                            self._pending_events[completed_id].set()
-                            logger.debug(f"[TOGSim] Event handler: woke up kernel {completed_id}")
-                        else:
-                            logger.warning(f"[TOGSim] Event handler: received completion for unknown kernel {completed_id}")
-                except IOError as e:
-                    if not self._event_thread_stop.is_set():
-                        logger.error(f"[TOGSim] Event handler: error reading from FIFO: {e}")
-                    break
-        except IOError as e:
-            logger.error(f"[TOGSim] Event handler: failed to open event FIFO: {e}")
-        finally:
-            if event_fifo:
-                event_fifo.close()
-            logger.debug("[TOGSim] Event handler: thread exiting")
 
     def _cleanup_fifos(self):
         """Clean up FIFO files"""
@@ -401,8 +340,13 @@ class TOGSimulator():
         return result_path
 
     def stop(self):
-        # Stop event handling thread
-        self._stop_event_thread()
+        # Close trace file handle if open
+        if self._trace_file_handle is not None:
+            try:
+                self._trace_file_handle.close()
+            except:
+                pass
+            self._trace_file_handle = None
 
         if self.process:
             self.process.terminate()
@@ -436,40 +380,18 @@ class TOGSimulator():
         kernel_id = self._next_kernel_id
         self._next_kernel_id += 1
 
-        # Create an event for this kernel completion
-        completion_event = threading.Event()
-        with self._events_lock:
-            self._pending_events[str(kernel_id)] = completion_event
-
         # Format command: id,device_index,stream_index,tog_path,attribute_path
         command = f"{kernel_id},{device_index},{stream_index},{tog_path},{attribute_path}"
-        cmd_file = None
-        try:
-            # Open command file for writing (will block until reader is ready for FIFO)
-            cmd_file = open(self.trace_file_path, 'w')
-            cmd_file.write(command + '\n')
-            cmd_file.flush()
-            logger.debug(f"[TOGSim] Sent command: {command}")
-        except IOError as e:
-            if cmd_file:
-                cmd_file.close()
-            # Clean up event on error
-            with self._events_lock:
-                self._pending_events.pop(str(kernel_id), None)
-            logger.error(f"[TOGSim] Failed to write to command file: {e}")
-            raise RuntimeError(f"Failed to send command to TOGSim: {e}")
-        finally:
-            if cmd_file:
-                cmd_file.close()
-
-        # Wait for completion event (block until event handler wakes us up)
-        logger.debug(f"[TOGSim] Waiting for kernel {kernel_id} to complete...")
-        completion_event.wait()
-        logger.debug(f"[TOGSim] Kernel {kernel_id} completed")
-
-        # Clean up event
-        with self._events_lock:
-            self._pending_events.pop(str(kernel_id), None)
+        
+        with self._trace_file_lock:
+            # Write command to FIFO
+            try:
+                self._trace_file_handle.write(command + '\n')
+                self._trace_file_handle.flush()
+                logger.debug(f"[TOGSim] Sent command: {command}")
+            except IOError as e:
+                logger.error(f"[TOGSim] Failed to write to trace file: {e}")
+                raise RuntimeError(f"Failed to send command to TOGSim: {e}")
 
         return kernel_id
 
@@ -601,6 +523,30 @@ class TOGSimulator():
         return core_metrics, dram_channel_bw, avg_dram_bw, simulation_time, total_cycle
 
 if __name__ == "__main__":
-    sim = TOGSimulator("/workspace/PyTorchSim/TOGSim", "/workspace/PyTorchSim/configs/systolic_ws_128x128_c2_simple_noc_tpuv3_partition.yml")
-    sim.interactive_simulation()
-    sim.until(4000)
+    sim = TOGSimulator("/workspace/PyTorchSim/TOGSim", "/workspace/PyTorchSim/configs/systolic_ws_128x128_c2_simple_noc_tpuv3_partition.yml", 128)
+    
+    # Test: Launch multiple kernels
+    try:
+        # Example paths (adjust these to your actual test files)
+        test_tog_path = "/workspace/PyTorchSim/outputs/6vxl6mwzhfl/tile_graph.onnx"
+        test_attribute_path = "/workspace/PyTorchSim/outputs/6vxl6mwzhfl/runtime_0001/attribute/0"
+        
+        print("Launching kernel 1...")
+        id1 = sim.launch_kernel(device_index=0, stream_index=0, tog_path=test_tog_path, attribute_path=test_attribute_path)
+        print(f"Kernel 1 launched with ID: {id1}")
+        
+        print("Launching kernel 2...")
+        id2 = sim.launch_kernel(device_index=0, stream_index=0, tog_path=test_tog_path, attribute_path=test_attribute_path)
+        print(f"Kernel 2 launched with ID: {id2}")
+        
+        print("Launching kernel 3...")
+        id3 = sim.launch_kernel(device_index=0, stream_index=0, tog_path=test_tog_path, attribute_path=test_attribute_path)
+        print(f"Kernel 3 launched with ID: {id3}")
+        
+        print("All kernels launched successfully!")
+        
+    except Exception as e:
+        print(f"Error during kernel launch: {e}")
+    finally:
+        sim._trace_file_handle.close()
+    print("Simulation finished")

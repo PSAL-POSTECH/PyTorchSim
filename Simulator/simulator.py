@@ -246,7 +246,7 @@ class TOGSimulator():
         os.mkfifo(self.trace_file_path)
         os.mkfifo(self.event_fifo_path)
 
-        # Start TOGSim process with FIFO mode
+        # Start TOGSim process
         self._start_process()
 
         # Open trace file FIFO once and keep it open (after process starts)
@@ -382,7 +382,7 @@ class TOGSimulator():
 
         # Format command: id,device_index,stream_index,tog_path,attribute_path
         command = f"{kernel_id},{device_index},{stream_index},{tog_path},{attribute_path}"
-        
+
         with self._trace_file_lock:
             # Write command to FIFO
             try:
@@ -444,23 +444,6 @@ class TOGSimulator():
             return self.config_yaml["core_freq_mhz"] * 1000 * 1000 # MHz
         else:
             raise KeyError("Key 'core_freq' not found in JSON.")
-
-    def find_zero_sub_tensors(self, tensor):
-        x, y = self.vectorlane_size, self.vectorlane_size
-        zero_positions = {}
-
-        # Need to set vectorlane size
-        if self.vectorlane_size == -1:
-            return zero_positions
-
-        for i in range(0, tensor.shape[0], y):
-            for j in range(0, tensor.shape[1], x):
-                sub_tensor = tensor[i:i + y, j:j + x]
-                if np.all(sub_tensor == 0):
-                    if i not in zero_positions:
-                        zero_positions[i] = {}
-                    zero_positions[i][j] = 0 # i pos : j pos : 0
-        return zero_positions
 
     @staticmethod
     def get_result_from_file(result_path):
@@ -524,27 +507,27 @@ class TOGSimulator():
 
 if __name__ == "__main__":
     sim = TOGSimulator("/workspace/PyTorchSim/TOGSim", "/workspace/PyTorchSim/configs/systolic_ws_128x128_c2_simple_noc_tpuv3_partition.yml", 128)
-    
+
     # Test: Launch multiple kernels
     try:
         # Example paths (adjust these to your actual test files)
         test_tog_path = "/workspace/PyTorchSim/outputs/6vxl6mwzhfl/tile_graph.onnx"
         test_attribute_path = "/workspace/PyTorchSim/outputs/6vxl6mwzhfl/runtime_0001/attribute/0"
-        
+
         print("Launching kernel 1...")
         id1 = sim.launch_kernel(device_index=0, stream_index=0, tog_path=test_tog_path, attribute_path=test_attribute_path)
         print(f"Kernel 1 launched with ID: {id1}")
-        
+
         print("Launching kernel 2...")
         id2 = sim.launch_kernel(device_index=0, stream_index=0, tog_path=test_tog_path, attribute_path=test_attribute_path)
         print(f"Kernel 2 launched with ID: {id2}")
-        
+
         print("Launching kernel 3...")
         id3 = sim.launch_kernel(device_index=0, stream_index=0, tog_path=test_tog_path, attribute_path=test_attribute_path)
         print(f"Kernel 3 launched with ID: {id3}")
-        
+
         print("All kernels launched successfully!")
-        
+
     except Exception as e:
         print(f"Error during kernel launch: {e}")
     finally:

@@ -170,55 +170,8 @@ void Simulator::icnt_cycle() {
   _icnt->cycle();
 }
 
-int Simulator::until(cycle_type until_cycle) {
-  std::vector<bool> partition_scheudler_status;
-  for (auto &scheduler : _partition_scheduler)
-    partition_scheudler_status.push_back(scheduler->empty());
-
-  while (until_cycle == -1 || _core_cycles < until_cycle) {
-    set_cycle_mask();
-    // Core Cycle
-    if (IS_CORE_CYCLE(_cycle_mask))
-      core_cycle();
-
-    // DRAM cycle
-    if (IS_DRAM_CYCLE(_cycle_mask))
-      dram_cycle();
-
-    // Interconnect cycle
-    if (IS_ICNT_CYCLE(_cycle_mask))
-      icnt_cycle();
-
-    // Check if core status has changed
-    if (_core_cycles % 10 == 0) {
-      int bitmap = 0;
-      for (int i=0; i<_partition_scheduler.size(); i++) {
-        /* Skip this */
-        if (partition_scheudler_status.at(i))
-          continue;
-
-        if (_partition_scheduler.at(i)->empty()) {
-          bitmap |= (1 << i);
-        }
-      }
-      if (bitmap)
-        return bitmap;
-    }
-  }
-  int bitmap = 0;
-  for (int i=0; i<_partition_scheduler.size(); i++) {
-    /* Skip this */
-    if (partition_scheudler_status.at(i))
-      continue;
-
-    if (_partition_scheduler.at(i)->empty())
-      bitmap |= (1ULL << i);
-  }
-  return bitmap;
-}
-
 void Simulator::cycle() {
-  while (running()) {
+  while (running() || _core_cycles < 1) {
     set_cycle_mask();
     // Core Cycle
     if (IS_CORE_CYCLE(_cycle_mask))

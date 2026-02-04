@@ -230,12 +230,70 @@ class TOGSimulator():
         self.config_yaml = self.load_yaml(self.config_path)
         self.process = None
         self.vectorlane_size = vectorlane_size
+        self._next_kernel_id = 0  # Auto-incrementing kernel ID
+
+        # Create FIFOs for command and event communication
+        self.fifo_dir = os.path.join("/tmp", f"togsim_fifo_{os.getpid()}")
+        os.makedirs(self.fifo_dir, exist_ok=True)
+        self.trace_file_path = os.path.join(self.fifo_dir, "cmd_fifo")
+        self.event_fifo_path = os.path.join(self.fifo_dir, "event_fifo")
+
+        # Create FIFOs if they don't exist
+        if os.path.exists(self.trace_file_path):
+            os.remove(self.trace_file_path)
+        if os.path.exists(self.event_fifo_path):
+            os.remove(self.event_fifo_path)
+        os.mkfifo(self.trace_file_path)
+        os.mkfifo(self.event_fifo_path)
+
+        # Start TOGSim process with FIFO mode
+        self._start_process()
+
+        # Open trace file FIFO once and keep it open (after process starts)
+        self._trace_file_lock = threading.Lock()
+        try:
+            self._trace_file_handle = open(self.trace_file_path, 'w')
+            logger.debug("[TOGSim] Opened trace file FIFO")
+        except IOError as e:
+            logger.error(f"[TOGSim] Failed to open trace file: {e}")
+            raise RuntimeError(f"Failed to open trace file: {e}")
+
+    def __del__(self):
+        """Cleanup on destruction"""
+        self.stop()
 
     def get_togsim_command(self):
         bin = os.path.join(self.base_dir, "build/bin/Simulator")
         config = os.path.join(self.base_dir, self.config_path)
         cmd = f"{bin} --config {config}"
         return cmd
+
+    def _start_process(self):
+        cmd = f"{self.get_togsim_command()} --models_list {self.trace_file_path}"
+        if extension_config.CONFIG_TOGSIM_DEBUG_LEVEL:
+            cmd += f" --log_level {extension_config.CONFIG_TOGSIM_DEBUG_LEVEL}"
+
+        logger.debug(f"[TOGSim] cmd> {cmd}")
+        if self.process is None:
+            self.process = subprocess.Popen(
+                shlex.split(cmd),
+                universal_newlines=True
+            )
+            logger.info("[TOGSim] TOGSim process started successfully")
+        else:
+            logger.warning("[TOGSim] Simulator is already running.")
+
+    def _cleanup_fifos(self):
+        """Clean up FIFO files"""
+        try:
+            if os.path.exists(self.trace_file_path):
+                os.remove(self.trace_file_path)
+            if os.path.exists(self.event_fifo_path):
+                os.remove(self.event_fifo_path)
+            if os.path.exists(self.fifo_dir):
+                os.rmdir(self.fifo_dir)
+        except OSError as e:
+            logger.warning(f"[TOGSim] Failed to clean up FIFOs: {e}")
 
     def simulation(self, model_path, attribute_path="", silent_mode=False, autotune_mode=False):
         cmd = f"{self.get_togsim_command()} --models_list {model_path}"
@@ -281,78 +339,61 @@ class TOGSimulator():
             logger.info(f'[TOGSim] Simulation log{model_path_log}is stored to "{result_path}"')
         return result_path
 
-    def interactive_simulation(self):
-        cmd = f"{self.get_togsim_command()} --mode interactive"
-        if extension_config.CONFIG_TOGSIM_DEBUG_LEVEL:
-            cmd += f" --log_level {extension_config.CONFIG_TOGSIM_DEBUG_LEVEL}"
-
-        logger.debug(f"[TOGSim] cmd> {cmd}")
-        if self.process is None:
-            self.process = subprocess.Popen(
-                shlex.split(cmd),
-                stdin=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                universal_newlines=True
-            )
-        else:
-            logger.warning("[TOGSim] Simulator is already running.")
-
     def stop(self):
+        # Close trace file handle if open
+        if self._trace_file_handle is not None:
+            try:
+                self._trace_file_handle.close()
+            except:
+                pass
+            self._trace_file_handle = None
+
         if self.process:
             self.process.terminate()
             self.process.wait()
             self.process = None
             logger.info("[TOGSim] Simulator stopped.")
 
-    def wait(self):
-        if self.process:
-            logger.info("[TOGSim] Waiting for simulation to complete...")
-            self.quit()
-            self.process.wait()
-            self.process = None
-            logger.info("[TOGSim] Simulation completed.")
+        # Clean up FIFOs
+        self._cleanup_fifos()
 
-    def send_command(self, command):
-        if self.process:
+    def launch_kernel(self, device_index, stream_index, tog_path, attribute_path):
+        """
+        Launch a kernel via FIFO communication.
+
+        Args:
+            device_index: Device index
+            stream_index: Stream index
+            tog_path: Path to TOG file (ONNX model)
+            attribute_path: Path to attribute file
+
+        Returns:
+            int: The kernel ID assigned to this launch
+        """
+        if self.process is None:
+            raise RuntimeError("[TOGSim] Simulator process is not running")
+
+        if self.process.poll() is not None:
+            raise RuntimeError("[TOGSim] Simulator process has terminated")
+
+        # Get and increment kernel ID
+        kernel_id = self._next_kernel_id
+        self._next_kernel_id += 1
+
+        # Format command: id,device_index,stream_index,tog_path,attribute_path
+        command = f"{kernel_id},{device_index},{stream_index},{tog_path},{attribute_path}"
+        
+        with self._trace_file_lock:
+            # Write command to FIFO
             try:
-                logger.debug(command)
-                self.process.stdin.write(command + '\n')
-                self.process.stdin.flush()
-                ret = self.process.stderr.readline().strip()
-                return ret
-            except BrokenPipeError:
-                err = self.process.stderr.readlines()
-                for line in err:
-                    logger.error(line.strip())
-                self.process = None
-                exit(1)
-        else:
-            logger.warning("Simulator is not running.")
-            return None
+                self._trace_file_handle.write(command + '\n')
+                self._trace_file_handle.flush()
+                logger.debug(f"[TOGSim] Sent command: {command}")
+            except IOError as e:
+                logger.error(f"[TOGSim] Failed to write to trace file: {e}")
+                raise RuntimeError(f"Failed to send command to TOGSim: {e}")
 
-    def launch(self, onnx_path, attribute_path, arrival_time=0, partion_id=0):
-        command = f"launch {self.config_path} {onnx_path} {attribute_path} {arrival_time} {partion_id}"
-        ret = self.send_command(command)
-        return 0
-
-    def cycle(self):
-        ret = self.send_command("cycle")
-        return int(ret.split(" ")[-1])
-
-    def until(self, until_cycle):
-        command = f"until {until_cycle}"
-        ret = self.send_command(command)
-        bitmap = int(ret.split(" ")[-1])
-        indices = []
-        for i in range(64):
-            if (bitmap >> i) & 1:
-                indices.append(i)
-        return indices
-
-    def quit(self):
-        command = "quit"
-        ret = self.send_command(command)
-        return
+        return kernel_id
 
     @classmethod
     def sram_alloc(cls, buf_name, addr_range):
@@ -482,6 +523,30 @@ class TOGSimulator():
         return core_metrics, dram_channel_bw, avg_dram_bw, simulation_time, total_cycle
 
 if __name__ == "__main__":
-    sim = TOGSimulator("/workspace/PyTorchSim/TOGSim", "/workspace/PyTorchSim/configs/systolic_ws_128x128_c2_simple_noc_tpuv3_partition.yml")
-    sim.interactive_simulation()
-    sim.until(4000)
+    sim = TOGSimulator("/workspace/PyTorchSim/TOGSim", "/workspace/PyTorchSim/configs/systolic_ws_128x128_c2_simple_noc_tpuv3_partition.yml", 128)
+    
+    # Test: Launch multiple kernels
+    try:
+        # Example paths (adjust these to your actual test files)
+        test_tog_path = "/workspace/PyTorchSim/outputs/6vxl6mwzhfl/tile_graph.onnx"
+        test_attribute_path = "/workspace/PyTorchSim/outputs/6vxl6mwzhfl/runtime_0001/attribute/0"
+        
+        print("Launching kernel 1...")
+        id1 = sim.launch_kernel(device_index=0, stream_index=0, tog_path=test_tog_path, attribute_path=test_attribute_path)
+        print(f"Kernel 1 launched with ID: {id1}")
+        
+        print("Launching kernel 2...")
+        id2 = sim.launch_kernel(device_index=0, stream_index=0, tog_path=test_tog_path, attribute_path=test_attribute_path)
+        print(f"Kernel 2 launched with ID: {id2}")
+        
+        print("Launching kernel 3...")
+        id3 = sim.launch_kernel(device_index=0, stream_index=0, tog_path=test_tog_path, attribute_path=test_attribute_path)
+        print(f"Kernel 3 launched with ID: {id3}")
+        
+        print("All kernels launched successfully!")
+        
+    except Exception as e:
+        print(f"Error during kernel launch: {e}")
+    finally:
+        sim._trace_file_handle.close()
+    print("Simulation finished")

@@ -2,6 +2,7 @@ import os
 import re
 import shlex
 import subprocess
+import threading
 
 from torch._inductor.codecache import get_lock_dir, get_hash, write
 from torch._inductor.async_compile import AsyncCompile
@@ -14,6 +15,8 @@ from Simulator.simulator import FunctionalSimulator, CycleSimulator, TOGSimulato
 logger = extension_config.setup_logger()
 
 LOCK_TIMEOUT = 600
+_TOGSIM_SINGLETON = None
+_TOGSIM_LOCK = threading.Lock()
 
 def hash_prefix(hash_value):
     return hash_value[1:12]
@@ -30,6 +33,24 @@ def dump_metadata(args, arg_attributes, path):
         for (arg_name, arg_attribute), arg in zip(arg_attributes, args):
             file.write(f'{arg_name}=({arg_attribute[0]}, {arg.dtype}, {arg.shape})\n')
     return
+
+def init_togsim(vectorlane_size=-1):
+    return get_togsim(vectorlane_size=vectorlane_size)
+
+def get_togsim(vectorlane_size=-1):
+    global _TOGSIM_SINGLETON
+    with _TOGSIM_LOCK:
+        if _TOGSIM_SINGLETON is not None:
+            proc = getattr(_TOGSIM_SINGLETON, "process", None)
+            if proc is not None and proc.poll() is None:
+                if vectorlane_size != -1:
+                    _TOGSIM_SINGLETON.vectorlane_size = vectorlane_size
+                return _TOGSIM_SINGLETON
+        togsim_path = os.path.join(extension_config.CONFIG_TORCHSIM_DIR, "TOGSim")
+        _TOGSIM_SINGLETON = TOGSimulator(togsim_path, extension_config.CONFIG_TOGSIM_CONFIG)
+        if vectorlane_size != -1:
+            _TOGSIM_SINGLETON.vectorlane_size = vectorlane_size
+        return _TOGSIM_SINGLETON
 
 def mlir_compile_command(filename, vectorlane_size, vlen=256):
     return [re.sub(r"[ \n]+", " ",
@@ -249,7 +270,7 @@ class CustomAsyncCompile(AsyncCompile):
     def mlir(self, source_code, arg_attributes=[], vectorlane_size=16, tile_size=[], spad_info=None, origins=None, silent_mode=False, **kwargs):
         def task():
             key = MLIRCodeCache.load(source_code,
-                                          valdiation_wrapper_name=self.validation_binary_name,
+                                          validation_wrapper_name=self.validation_wrapper_name,
                                           validation_binary_name=self.validation_binary_name,
                                           arg_attributes=arg_attributes, vectorlane_size=vectorlane_size,
                                           tile_size=tile_size, spad_info=spad_info, origins=origins,
@@ -288,13 +309,29 @@ class CustomAsyncCompile(AsyncCompile):
 
                 onnx_path = os.path.join(result_path, "tile_graph.onnx")
                 attribute_path = os.path.join(runtime_path, "attribute")
-                togsim_path = os.path.join(extension_config.CONFIG_TORCHSIM_DIR, "TOGSim")
-                TOGSim = TOGSimulator(togsim_path, extension_config.CONFIG_TOGSIM_CONFIG)
-                TOGSim.vectorlane_size = vectorlane_size
+                               
+                TOGSim = get_togsim(vectorlane_size=vectorlane_size)
                 attribute_path = TOGSim.create_attribute_file(attribute_path, args, loop_size=loop_size)
-                result_path = TOGSim.simulation(onnx_path, attribute_path, silent_mode=silent_mode, autotune_mode=autotune)
-                result = TOGSimulator.get_result_from_file(result_path)
-                return result
+
+                stream = kwargs.get("stream")
+                stream_index = 0
+                if isinstance(stream, int):
+                    stream_index = stream
+                    
+                def _run_togsim_launch():
+                    TOGSim.launch_kernel(
+                        device_index=0,
+                        stream_index=stream_index,
+                        tog_path=onnx_path,
+                        attribute_path=attribute_path,
+                    )
+
+                if stream is not None and hasattr(stream, "launch_kernel"):
+                    stream.launch_kernel(_run_togsim_launch)
+                else:
+                    _run_togsim_launch()
+
+                return None
 
         def dryrun_simulator(*args, **kwargs):
             key = future.result()

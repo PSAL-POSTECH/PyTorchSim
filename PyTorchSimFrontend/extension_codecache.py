@@ -17,6 +17,10 @@ logger = extension_config.setup_logger()
 LOCK_TIMEOUT = 600
 _TOGSIM_SINGLETON = None
 _TOGSIM_LOCK = threading.Lock()
+_STREAM_LOCK = threading.Lock()
+_GLOBAL_STREAM = None
+_STREAM_INDEX_MAP = {}
+_NEXT_STREAM_INDEX = 1
 
 def hash_prefix(hash_value):
     return hash_value[1:12]
@@ -51,6 +55,33 @@ def get_togsim(vectorlane_size=-1):
         if vectorlane_size != -1:
             _TOGSIM_SINGLETON.vectorlane_size = vectorlane_size
         return _TOGSIM_SINGLETON
+
+def set_current_stream(stream):
+    global _GLOBAL_STREAM
+    with _STREAM_LOCK:
+        _GLOBAL_STREAM = stream
+
+def get_current_stream():
+    with _STREAM_LOCK:
+        return _GLOBAL_STREAM
+
+def get_stream_index(stream):
+    global _NEXT_STREAM_INDEX
+    if stream is None:
+        return 0
+    if isinstance(stream, int):
+        return stream
+
+    stream_key = getattr(stream, "cdata", None)
+    if stream_key is None:
+        stream_key = id(stream)
+
+    with _STREAM_LOCK:
+        if stream_key not in _STREAM_INDEX_MAP:
+            _STREAM_INDEX_MAP[stream_key] = _NEXT_STREAM_INDEX
+            _NEXT_STREAM_INDEX += 1
+        return _STREAM_INDEX_MAP[stream_key]
+
 
 def mlir_compile_command(filename, vectorlane_size, vlen=256):
     return [re.sub(r"[ \n]+", " ",
@@ -314,9 +345,9 @@ class CustomAsyncCompile(AsyncCompile):
                 attribute_path = TOGSim.create_attribute_file(attribute_path, args, loop_size=loop_size)
 
                 stream = kwargs.get("stream")
-                stream_index = 0
-                if isinstance(stream, int):
-                    stream_index = stream
+                if stream is None:
+                    stream = get_current_stream()
+                stream_index = get_stream_index(stream)
                     
                 def _run_togsim_launch():
                     TOGSim.launch_kernel(

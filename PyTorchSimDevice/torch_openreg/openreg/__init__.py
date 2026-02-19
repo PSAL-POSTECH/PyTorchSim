@@ -80,8 +80,21 @@ class Stream:
         self._stream = torch_openreg._C._stream_create()
 
     def __del__(self):
-        if hasattr(self, '_stream'):
-            torch_openreg._C._stream_destroy(self._stream)
+        # Interpreter shutdown can clear module globals before __del__ runs.
+        # Only destroy when both runtime handle and stream are still valid.
+        stream = getattr(self, "_stream", None)
+        backend = globals().get("torch_openreg", None)
+        c_api = getattr(backend, "_C", None) if backend is not None else None
+        if stream is None or c_api is None:
+            return
+        destroy = getattr(c_api, "_stream_destroy", None)
+        if destroy is None:
+            return
+        try:
+            destroy(stream)
+        except (AttributeError, TypeError):
+            # Ignore cleanup-time teardown ordering issues.
+            pass
 
     def launch_kernel(self, task):
         """Add a Python callable kernel to this stream.

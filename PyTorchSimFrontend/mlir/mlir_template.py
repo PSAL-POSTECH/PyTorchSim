@@ -861,6 +861,8 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         vlane_stride = self.kernel_group.tile_desc.vmap.vlane_stride
         tile_shape = self.kernel_group.tile_desc.get_mlir_shape(mlir_dtype)
         tile_stride = self.kernel_group.tile_desc.get_tile_stride()
+        tile_rank = self.kernel_group.tile_desc.get_nr_dim()
+        dram_stride = dram_stride[:tile_rank] + [0] * max(tile_rank - len(dram_stride), 0)
 
         # Compute vector unit size
         vshape = self.kernel_group.tile_desc.get_mlir_vshape(mlir_dtype)
@@ -913,6 +915,8 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         vlane_stride = self.kernel_group.tile_desc.vmap.vlane_stride
         tile_shape = self.kernel_group.tile_desc.get_mlir_shape(mlir_dtype)
         tile_stride = self.kernel_group.tile_desc.get_tile_stride()
+        tile_rank = self.kernel_group.tile_desc.get_nr_dim()
+        dram_stride = dram_stride[:tile_rank] + [0] * max(tile_rank - len(dram_stride), 0)
 
         if name not in self.buffer_names:
             sram_var, sram_index_var = self.get_scratchpad_buffer(dtype, name, self.kernel_group.tile_desc, index)

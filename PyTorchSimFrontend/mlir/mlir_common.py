@@ -504,7 +504,7 @@ class MLIRMultiDimTile(TileAdjustMixin):
             vlane_stride=vlane_stride
         )
 
-        self.implicit_dim_size = None
+        self.implicit_dim_size = {}
         self.nr_rdim = 0
         self.offset = sympy.Integer(0) # Dram offset
 
@@ -654,6 +654,11 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
     def indirect_indexing(self, index_var, size, check, wrap_neg):
         raise NotImplementedError()
 
+    def check_bounds(self, expr, size, lower, upper):
+        # MLIR backend currently relies on masked paths for out-of-bounds handling.
+        # Keep this hook as a no-op to satisfy Inductor's check_bounds callback.
+        return
+    
     def codegen_global_init(self):
         raise NotImplementedError()
 
@@ -963,6 +968,10 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
             @staticmethod
             def reduction(dtype, src_dtype, reduction_type, value):
                 return self.reduction(dtype, src_dtype, reduction_type, value)
+
+            @staticmethod
+            def check_bounds(index, size, lower, upper):
+                return self.check_bounds(index, size, lower, upper)
 
             @staticmethod
             def _index_expr(tile_size, buffer, renamed_expression, index):

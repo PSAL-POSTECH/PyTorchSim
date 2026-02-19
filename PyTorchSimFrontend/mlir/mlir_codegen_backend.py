@@ -110,6 +110,7 @@ class ExtensionWrapperCodegen(wrapper.PythonWrapperCodegen):
                 aten = torch.ops.aten
                 inductor_ops = torch.ops.inductor
                 assert_size_stride = torch._C._dynamo.guards.assert_size_stride
+                assert_alignment = torch._C._dynamo.guards.assert_alignment
                 alloc_from_pool = torch.ops.inductor._alloc_from_pool
                 reinterpret_tensor = torch.ops.inductor._reinterpret_tensor
                 custom_async_compile = CustomAsyncCompile()
@@ -375,6 +376,10 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
             indices.append(str(new_arg))
 
         expr_str = str(expr)
+        if "ModularIndexing" in expr_str:
+            def _replace_mod(m):
+                return f"({m.group(1)} floordiv {m.group(2)}) mod {m.group(3)}"
+            expr_str = re.sub(r"ModularIndexing\(([^,]+), ([^,]+), ([^)]+)\)", _replace_mod, expr_str)
         if "//" in expr_str:
             expr_str = expr_str.replace("//", " floordiv ")
         return expr_str, indices
@@ -1159,30 +1164,28 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
                 for constraint in sorted_constraints[1:]:
                     index = index.replace(constraint.original_expr, 0)
 
-        # Calculate dram stride
+        # Calculate dram stride in local tile-dim order.
+        # This keeps dram/sram stride rank aligned with tile rank.
+        local_dim_to_axis = {dim: axis for axis, dim in enumerate(local_dims)}
         dram_stride = [0] * local_tile_desc.get_nr_dim()
         if index.is_Symbol:
             dim_idx = int(str(index)[5:])
-            dram_stride[dim_idx] = 1
+            if dim_idx in local_dim_to_axis:
+                dram_stride[local_dim_to_axis[dim_idx]] = 1
         elif index.is_Number:
             pass
         else:
-            dram_dict = defaultdict(list)
+            dram_dict = defaultdict(lambda: 0)
             # Assume that div will have high priority than mod
             for arg in index.as_ordered_terms():
                 coeff, dim = arg.as_coeff_mul()
                 if len(dim) == 0:
                     continue
                 real_dim = list(dim[0].free_symbols)[0]
-                dram_dict[str(real_dim)].append(coeff)
-            # Add missing dims if not added
-            max_dim = len(self.ranges) if not store_reduction else len(self.ranges) - 1
-            for i in range(max_dim):
-                target_dim = f"index{i}"
-                if sympy.Symbol(target_dim) not in index.free_symbols:
-                    dram_dict[target_dim] = [0]
-            sorted_keys = sorted(dram_dict.keys())
-            dram_stride = sum((dram_dict[key] for key in sorted_keys), [])
+                real_dim_name = str(real_dim)
+                if real_dim_name.startswith("index"):
+                    dram_dict[int(real_dim_name[5:])] += int(coeff)
+            dram_stride = [dram_dict[dim] for dim in local_dims]
 
         # Support floordiv pattern
         # FIXME. How to integrate implicit dims and floordiv?
@@ -1194,6 +1197,9 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
                     if not str(sub.args[0]).startswith("index"):
                         continue
                     dim_idx = int((str(sub.args[0])[5:]))
+                    if dim_idx not in local_dim_to_axis:
+                        continue
+                    local_dim_idx = local_dim_to_axis[dim_idx]
                     if int(self.kernel_group.tile_desc.get_tile_size()[dim_idx] % sub.args[1]) != 0:
                         # In this case, need to recompile
                         original_tile = self.kernel_group.tile_desc.get_tile_size()
@@ -1212,7 +1218,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
                         # Send recompile signal
                         self.reset("recompile")
                         raise mlir_common.RecompileSignal(f"Tile size {self.kernel_group.tile_desc.get_tile_size()[dim_idx]} is not divisible by {sub.args[1]}")
-                    dim_divisor[dim_idx] = sub.args[1]
+                    dim_divisor[local_dim_idx] = sub.args[1]
 
             # Update dram_stride, just insert 0 next to target dim
             offset = 0

@@ -173,7 +173,11 @@ class MLIRKernelArgs(common.KernelArgs):
     def mlir_argdefs(self, extra_node=dict()):
         buffer_types = {}
         for x in V.graph.buffers:
-            if not isinstance(x.layout, MultiOutputLayout): # FIXME: MultiOutputLayout should be handled
+            if isinstance(x.layout, MultiOutputLayout):
+                # MultiOutput kernel containers own concrete output nodes in `outputs`.
+                for out in getattr(x, "outputs", []):
+                    buffer_types[out.get_name()] = [out.get_dtype(), out.get_numel(), out.get_size(), out.get_stride()]
+            else:
                 buffer_types[x.get_name()] = [x.get_dtype(), x.get_numel(), x.get_size(), x.get_stride()]
         for name, val in V.graph.graph_inputs.items():
             if isinstance(val, sympy.Expr):

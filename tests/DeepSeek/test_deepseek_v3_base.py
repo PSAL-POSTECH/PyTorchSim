@@ -1,7 +1,54 @@
 import os
 import sys
 import argparse
+import copy
+from pathlib import Path
 import torch
+
+# recursive compile for some ops that are caused by graph break
+torch.npu.register_eager_to_compile([
+    "aten::zero_",
+    "aten::sum.IntList_out",
+    "aten::mul.out",
+    "aten::floor_divide",
+    "aten::floor_divide.Tensor",
+    "aten::floor_divide.Scalar",
+    "aten::cat.out",
+    "aten::sort.values_stable",
+])
+
+
+def test_result(name, out, cpu_out, rtol=1e-4, atol=1e-4):
+    out_cpu = out.cpu()
+    max_diff = (out_cpu - cpu_out).abs().max().item()
+    mean_diff = (out_cpu - cpu_out).abs().mean().item()
+    if torch.allclose(out_cpu, cpu_out, rtol=rtol, atol=atol):
+        message = f"|{name} Test Passed|"
+        print("-" * len(message))
+        print(message)
+        print("-" * len(message))
+        print(f"Max absolute difference: {max_diff:.6f}")
+        print(f"Mean absolute difference: {mean_diff:.6f}")
+    else:
+        message = f"|{name} Test Failed|"
+        print("-" * len(message))
+        print(message)
+        print("-" * len(message))
+        print("NPU out: ", out_cpu)
+        print("CPU out: ", cpu_out)
+        print(f"Max absolute difference: {max_diff:.6f}")
+        print(f"Mean absolute difference: {mean_diff:.6f}")
+        exit(1)
+
+
+def _extract_logits(output):
+    if isinstance(output, torch.Tensor):
+        return output
+    if hasattr(output, "logits"):
+        return output.logits
+    if isinstance(output, (list, tuple)) and len(output) > 0 and isinstance(output[0], torch.Tensor):
+        return output[0]
+    raise TypeError(f"Unsupported output type for comparison: {type(output)}")
 
 
 def _dtype_from_str(name: str) -> torch.dtype:
@@ -81,7 +128,7 @@ def _maybe_scale_config(config, scale=1.0, max_layers=None):
 
 def _apply_preset(scale, max_layers, batch, seq_len, preset):
     if preset == "tiny":
-        return 0.03, 4, 1, min(seq_len, 16)
+        return 0.03, 1, 1, min(seq_len, 16)
     if preset == "small":
         return 0.07, 8, 1, min(seq_len, 32)
     if preset == "medium":
@@ -89,8 +136,58 @@ def _apply_preset(scale, max_layers, batch, seq_len, preset):
     return scale, max_layers, batch, seq_len
 
 
+def _togsim_log_count() -> int:
+    log_dir = Path("togsim_results")
+    if not log_dir.exists():
+        return 0
+    return len(list(log_dir.glob("*.log")))
+
+
+def _assert_simulation_happened(before_count: int, case_name: str):
+    after_count = _togsim_log_count()
+    if after_count <= before_count:
+        raise RuntimeError(
+            f"{case_name}: TOGSim log count did not increase "
+            f"(before={before_count}, after={after_count})"
+        )
+    print(f"{case_name}: TOGSim logs increased ({before_count} -> {after_count})")
+
+
+def test_cat_default(device):
+    def cat_default_fn(a, b):
+        return torch.cat([a, b], dim=0)
+
+    x = torch.randn(8, 16, device=device)
+    y = torch.randn(6, 16, device=device)
+    opt_fn = torch.compile(dynamic=False)(cat_default_fn)
+
+    before = _togsim_log_count()
+    out = opt_fn(x, y)
+    _assert_simulation_happened(before, "cat.default")
+
+    cpu_out = torch.cat([x.cpu(), y.cpu()], dim=0)
+    test_result("cat.default", out, cpu_out, rtol=1e-4, atol=1e-4)
+
+
+def test_cat_out(device):
+    def cat_out_fn(a, b, out):
+        return torch.ops.aten.cat.out([a, b], 0, out=out)
+
+    x = torch.randn(8, 16, device=device)
+    y = torch.randn(6, 16, device=device)
+    out_buf = torch.empty(14, 16, device=device)
+    opt_fn = torch.compile(dynamic=False)(cat_out_fn)
+
+    before = _togsim_log_count()
+    out = opt_fn(x, y, out_buf)
+    _assert_simulation_happened(before, "cat.out")
+
+    cpu_out = torch.cat([x.cpu(), y.cpu()], dim=0)
+    test_result("cat.out", out, cpu_out, rtol=1e-4, atol=1e-4)
+    
+    
 @torch.no_grad()
-def run_deep_seek_v3_base_test(
+def run_deepseek_v3_base(
     model_id,
     device,
     init_mode="config-random",
@@ -120,7 +217,6 @@ def run_deep_seek_v3_base_test(
     # (call .to_dict()), so only disable it for pretrained loading path.
     if init_mode == "pretrained" and getattr(config, "quantization_config", None) is not None:
         config.quantization_config = None
-
     config = _maybe_scale_config(config, scale=scale, max_layers=max_layers)
 
     if init_mode == "config-random":
@@ -141,7 +237,6 @@ def run_deep_seek_v3_base_test(
     else:
         raise ValueError(f"Unsupported init mode: {init_mode}")
 
-    model = model.to(device)
     model_params = sum(p.numel() for p in model.parameters())
     print("init mode:", init_mode)
     print("scaled hidden_size:", getattr(config, "hidden_size", "n/a"))
@@ -157,23 +252,33 @@ def run_deep_seek_v3_base_test(
             revision=revision,
         )
         encoded = tokenizer(prompt, return_tensors="pt")
-        input_ids = encoded["input_ids"].to(device)
+        cpu_input_ids = encoded["input_ids"].cpu()
     else:
         vocab_size = getattr(config, "vocab_size", None)
         if vocab_size is None:
             raise ValueError("Config has no vocab_size; use --use-tokenizer or pass a model with vocab_size.")
-        input_ids = _build_random_inputs(batch, seq_len, vocab_size, device)
+        cpu_input_ids = _build_random_inputs(batch, seq_len, vocab_size, torch.device("cpu"))
+    input_ids = cpu_input_ids.to(device)
 
+    # CPU version
+    model_cpu = copy.deepcopy(model).cpu().eval()
+    cpu_out = _extract_logits(model_cpu(cpu_input_ids))
+
+    # NPU version
+    model_npu = copy.deepcopy(model_cpu).to(device).eval()
     if compile_model:
-        model = torch.compile(model, dynamic=False)
+        model_npu = torch.compile(model_npu, dynamic=False)
+    npu_out = _extract_logits(model_npu(input_ids))
 
-    out = model(input_ids)
-    logits = out.logits
+    # Campare results
+    test_result(
+        "DeepSeek V3 Base",
+        npu_out,
+        cpu_out,
+        rtol=3e-1,
+        atol=2e-1,
+    )
     
-    print("logits shape:", tuple(logits.shape))
-    print("logits dtype:", logits.dtype)
-    print("logits max:", logits.max().item())
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="DeepSeek V3 download-based test")
@@ -181,7 +286,7 @@ if __name__ == "__main__":
     parser.add_argument("--revision", type=str, default=None)
     parser.add_argument("--trust-remote-code", action="store_true", default=True)
     parser.add_argument("--init-mode", type=str, default="config-random", choices=["config-random", "pretrained"])
-    parser.add_argument("--preset", type=str, default="tiny", choices=["none", "tiny", "small", "medium"])
+    parser.add_argument("--preset", type=str, default="small", choices=["none", "tiny", "small", "medium"])
     parser.add_argument("--scale", type=float, default=1.0)
     parser.add_argument("--max-layers", type=int, default=None)
     parser.add_argument("--dtype", type=str, default="float32", choices=["float32", "float16", "bfloat16"])
@@ -190,6 +295,7 @@ if __name__ == "__main__":
     parser.add_argument("--use-tokenizer", action="store_true")
     parser.add_argument("--prompt", type=str, default="Hello, DeepSeek V3")
     parser.add_argument("--compile", action="store_true", default=True)
+    parser.add_argument("--test", type=str, default="e2e", choices=["all", "e2e", "cat"])
 
     args = parser.parse_args()
 
@@ -203,18 +309,22 @@ if __name__ == "__main__":
 
     device = torch.device("npu:0")
 
-    run_deep_seek_v3_base_test(
-        model_id=args.model_id,
-        device=device,
-        init_mode=args.init_mode,
-        scale=args.scale,
-        max_layers=args.max_layers,
-        dtype=args.dtype,
-        batch=args.batch,
-        seq_len=args.seq_len,
-        use_tokenizer=args.use_tokenizer,
-        prompt=args.prompt,
-        trust_remote_code=args.trust_remote_code,
-        revision=args.revision,
-        compile_model=args.compile,
-    )
+    if args.test in ("all", "cat"):
+        test_cat_default(device)
+        test_cat_out(device)
+    if args.test in ("all", "e2e"):
+        run_deepseek_v3_base(
+            model_id=args.model_id,
+            device=device,
+            init_mode=args.init_mode,
+            scale=args.scale,
+            max_layers=args.max_layers,
+            dtype=args.dtype,
+            batch=args.batch,
+            seq_len=args.seq_len,
+            use_tokenizer=args.use_tokenizer,
+            prompt=args.prompt,
+            trust_remote_code=args.trust_remote_code,
+            revision=args.revision,
+            compile_model=args.compile,
+        )

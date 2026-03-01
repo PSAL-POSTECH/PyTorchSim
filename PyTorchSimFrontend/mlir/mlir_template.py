@@ -403,7 +403,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         _, call_args, _, _ = self.kernel_group.args.mlir_argdefs()
         # generate the code to call this
         wrapper.generate_kernel_call(
-            kernel_name if self.outer_func_name is None else "wrapper_" + kernel_name, call_args)
+            kernel_name if self.outer_func_name is None else self.outer_func_name + f"_{len(call_args)}", call_args)
 
     def codegen_template_code(self, render, template_node, prologue_nodes, epilogue_nodes, tile_info):
         with self as kernel:
@@ -628,8 +628,26 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
                 self.buffer_names[node.get_name()] = self.epilogue_info['sram_var']
 
         def hook():
-            arg_defs, *_ = self.kernel_group.args.mlir_argdefs(extra_node=extra_node)
-            return f"({', '.join(arg_defs)})"
+            arg_defs, call_args, *_ = self.kernel_group.args.mlir_argdefs(extra_node=extra_node)
+            output_names = names[len(inputs) : len(inputs) + len(outputs)]
+            out_ptr_idx = 0
+            renamed_arg_defs = []
+            for outer, arg_def in zip(call_args, arg_defs):
+                raw_symbol = arg_def.split(":", 1)[0].strip().lstrip("%")
+                if outer in self.kernel_group.args.input_buffers:
+                    symbol = self.kernel_group.args.input_buffers[outer]
+                elif outer in self.kernel_group.args.output_buffers:
+                    symbol = self.kernel_group.args.output_buffers[outer]
+                elif raw_symbol.startswith("out_ptr") and out_ptr_idx < len(output_names):
+                    symbol = output_names[out_ptr_idx]
+                    out_ptr_idx += 1
+                elif outer in self.kernel_group.args.sizevars:
+                    symbol = self.kernel_group.args.sizevars[outer]
+                else:
+                    symbol = raw_symbol
+                _, arg_type = arg_def.split(":", 1)
+                renamed_arg_defs.append(f"%{symbol}:{arg_type}")
+            return f"({', '.join(renamed_arg_defs)})"
 
         assert "<DEF_KERNEL>" not in self.render_hooks
         self.render_hooks["<DEF_KERNEL>"] = hook
@@ -1151,6 +1169,8 @@ class MLIRTemplate(KernelTemplate):
         super().__init__(name)
         self.input_nodes = [node for node in input_nodes if node is not None]
         self.output_node: Buffer = Buffer(name="buf_out", layout=layout)
+        # Multi-output templates can override this with explicit output buffers.
+        self.output_nodes = [self.output_node]
         self.input_reorder = input_reorder
         self.layout = layout
 
@@ -1166,10 +1186,12 @@ class MLIRTemplate(KernelTemplate):
         kernel_hash_name = f"mlir_{self.name}_{next(self.index_counter)}"
         extra_args = []
         # create the BenchmarkRequest
+        output_nodes = getattr(self, "output_nodes", None) or [self.output_node]
+
         bmreq = MLIRBenchmarkRequest(
             kernel_name=kernel_name,
             input_tensor_meta=TensorMeta.from_irnodes(self.input_nodes),
-            output_tensor_meta=TensorMeta.from_irnodes(self.output_node),
+            output_tensor_meta=TensorMeta.from_irnodes(output_nodes),
             extra_args=extra_args,
             source_code=code,
         )

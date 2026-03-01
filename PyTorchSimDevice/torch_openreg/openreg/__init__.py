@@ -256,6 +256,52 @@ def launch_model(model, *args, stream_index=0, timestamp=0, **kwargs):
 from .random import *  # noqa: F403
 from .amp import *
 
+def _precheck_cat_out_args(args, kwargs):
+    tensors = args[0] if len(args) > 0 else kwargs.get("tensors")
+    dim = args[1] if len(args) > 1 else kwargs.get("dim", 0)
+    out = kwargs.get("out", args[2] if len(args) > 2 else None)
+
+    if out is None:
+        return
+    if not isinstance(tensors, (list, tuple)) or len(tensors) == 0:
+        raise RuntimeError("aten::cat.out requires non-empty tensor list")
+    if not all(isinstance(t, torch.Tensor) for t in tensors):
+        raise RuntimeError("aten::cat.out tensors must be Tensor values")
+    if not isinstance(out, torch.Tensor):
+        raise RuntimeError("aten::cat.out out must be a Tensor")
+
+    rank = tensors[0].dim()
+    if rank == 0:
+        raise RuntimeError("aten::cat.out does not support scalar inputs")
+    if dim < 0:
+        dim += rank
+    if dim < 0 or dim >= rank:
+        raise RuntimeError(f"aten::cat.out dim out of range: dim={dim}, rank={rank}")
+    if any(t.dim() != rank for t in tensors):
+        raise RuntimeError("aten::cat.out inputs must have the same rank")
+    if any(t.dtype != tensors[0].dtype for t in tensors):
+        raise RuntimeError("aten::cat.out inputs must have the same dtype")
+    if out.dim() != rank:
+        raise RuntimeError("aten::cat.out out rank mismatch")
+
+    for d in range(rank):
+        if d == dim:
+            continue
+        base = tensors[0].shape[d]
+        if any(t.shape[d] != base for t in tensors[1:]):
+            raise RuntimeError(
+                f"aten::cat.out non-concatenated dimension mismatch at dim={d}"
+            )
+        if out.shape[d] != base:
+            raise RuntimeError(f"aten::cat.out out shape mismatch at dim={d}")
+
+    expected = sum(t.shape[dim] for t in tensors)
+    if out.shape[dim] != expected:
+        raise RuntimeError(
+            f"aten::cat.out out concatenated dimension mismatch at dim={dim}: "
+            f"expected {expected}, got {out.shape[dim]}"
+        )
+
 def eager_to_compile(op_name):
     """
     Register an eager mode operation as a graph-based implementation using torch.compile().
@@ -267,6 +313,9 @@ def eager_to_compile(op_name):
         torch.npu.eager_to_compile("aten::mul.Tensor")
     """
     def wrapper(*args, **kwargs):
+        if op_name == "aten::cat.out":
+            _precheck_cat_out_args(args, kwargs)
+
         @torch.compile(dynamic=False)
         def dummy_graph(*args, **kwargs):
             # Convert "aten::mul.Tensor" -> torch.ops.aten.mul.Tensor

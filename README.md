@@ -417,6 +417,17 @@ You can set TOGSim config path as below.
 ```bash
 export TORCHSIM_CONFIG=/workspace/PyTorchSim/configs/systolic_ws_128x128_c1_simple_noc_tpuv3.yml
 ```
+## Tutorial
+Check out our [KSC 2025 tutorial](https://www.youtube.com/watch?v=6vcwKCPdoTw&list=PLYIb5dkr4isISXGhVf6gdePqBVb42j-mb&pp=gAQB) to learn:
+- PyTorchSim architecture, motivation, and design goals
+- The end-to-end PyTorch compilation pipeline (PyTorch code → FX → MLIR → LLVM → ISA)
+- TPU-style NPU architecture and memory hierarchy
+- Running and analyzing operators and DNN models in PyTorchSim
+- Scheduling, mapping, optimization, and performance analysis tools
+- Extending PyTorchSim with custom NPU ISA instructions
+
+KSC 2025 tutorial recordings are only available in Korean. The tutorial materials are in English.
+
 ## Future Works
 Currently, PyTorchSim supports PyTorch 2.2. Support for newer versions will be added soon.
 

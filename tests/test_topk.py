@@ -31,21 +31,11 @@ def test_topk(device, size=(128, 128), k=5, dim=-1, largest=True, sorted=True):
 
     opt_topk = torch.compile(dynamic=False)(topk_fn)
     res_values, res_indices = opt_topk(x)
-
     ref_values, ref_indices = torch.topk(x.cpu(), k, dim=dim, largest=largest, sorted=sorted)
 
     test_result("TopK/values", res_values, ref_values)
     test_result("TopK/indices", res_indices, ref_indices)
 
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Run LayerNorm test with dynamic shape")
-    parser.add_argument('--shape', type=str, default="(512,768)")
-    args = parser.parse_args()
-    shape = tuple(map(int, args.shape.strip('()').split(',')))
-
-    from Scheduler.scheduler import ExecutionEngine
-    module = ExecutionEngine.setup_device()
-    device = module.custom_device()
+    device = torch.device('npu:0') 
     test_topk(device, (128, 128), k=2, dim=-1)

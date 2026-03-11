@@ -51,8 +51,8 @@ def test_sort_stable(device, size=(128, 128), dim=-1, descending=False):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run sort tests")
-    parser.add_argument("--shape", type=str, default="(16)")
-    parser.add_argument("--dim", type=int, default=0)
+    parser.add_argument("--shape", type=str, default="(2, 16)")
+    parser.add_argument("--dim", type=int, default=-1)
     parser.add_argument("--descending", action="store_true")
     parser.add_argument(
         "--mode",

@@ -1147,12 +1147,26 @@ class ExtensionOverrides(common.OpOverrides):
         return line, [red_size, type_name]
 
     @staticmethod
-    def vector_shuffle(operand, indices, *args, **kwargs):
-        tile_size, dtype = V.kernel.var_info[operand]
-        vt = f"vector<{tile_size}x{dtype}>"
+    def vector_shuffle(operand, indices, operand2=None, *args, **kwargs):
+        tile_size1, dtype1 = V.kernel.var_info[operand]
+        if operand2 is None:
+            operand2 = operand
+        tile_size2, dtype2 = V.kernel.var_info[operand2]
+        if dtype1 != dtype2:
+            raise ValueError(
+                f"vector_shuffle expects same element type, got {dtype1} and {dtype2}"
+            )
+        total_size = tile_size1 + tile_size2
+        for idx in indices:
+            if idx < -1 or idx >= total_size:
+                raise ValueError(
+                    f"vector_shuffle index out of range: {idx}, expected in [-1, {total_size - 1}]"
+                )
+        vt1 = f"vector<{tile_size1}x{dtype1}>"
+        vt2 = f"vector<{tile_size2}x{dtype1}>"
         idx_str = ", ".join(str(i) for i in indices)
-        op_str = f"vector.shuffle %{operand}, %{operand} [{idx_str}]"
-        return format_mlir_op(op_str, f"{vt}, {vt}", **kwargs), [tile_size, dtype]
+        op_str = f"vector.shuffle %{operand}, %{operand2} [{idx_str}]"
+        return format_mlir_op(op_str, f"{vt1}, {vt2}", **kwargs), [len(indices), dtype1]
 
     @staticmethod
     def constant_mask(select_min, N, *args, **kwargs):

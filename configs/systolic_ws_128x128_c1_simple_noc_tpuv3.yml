@@ -3,7 +3,7 @@ core_freq_mhz: 940
 core_stats_print_period_cycles: 10000
 num_systolic_array_per_core: 2
 
-vpu_num_lanes: 128
+vpu_num_lanes: 16
 vpu_spad_size_kb_per_lane: 128
 vpu_vector_length_bits: 256
 

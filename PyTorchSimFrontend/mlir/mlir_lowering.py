@@ -22,8 +22,6 @@ from PyTorchSimFrontend import extension_config
 
 aten = torch.ops.aten
 aten_spmm = MLIRExternKernelChoice(torch.sparse.mm, "custom_op::sparse_addmm")
-_orig_cat_default_lowering = lowerings.get(aten.cat.default)
-_orig_cat_out_lowering = lowerings.get(aten.cat.out)
 _orig_sort_values_stable_lowering = lowerings.get(aten.sort.values_stable)
 
 def tuned_mm(mat1, mat2, * ,layout=None):
@@ -229,48 +227,28 @@ def custom_cat_default(tensors: Sequence[TensorBox], dim: int = 0):
     mlir_template = MLIRCatTemplate(list(new_tensors), layout, dim=dim)
     return mlir_template.generate().output_node()
 
-def _custom_sort_values_impl(
-    self: TensorBox,
+def custom_sort_default(
+    value: TensorBox,
     dim: int = -1,
     descending: bool = False,
-    values: Optional[TensorBox] = None,
-    indices: Optional[TensorBox] = None,
     stable: Optional[bool] = None,
 ):
-    if values is None or indices is None:
-        raise RuntimeError("sort.values* lowering requires both out tensors: values, indices")
+    if dim < 0:
+        dim += len(value.get_size())
 
-    def _normalize_dim(rank: int, d: int) -> int:
-        return d + rank if d < 0 else d
+    value.realize()
 
-    if not hasattr(self, "get_size"):
-        raise RuntimeError("sort.values* lowering requires TensorBox input")
-
-    rank = len(self.get_size())
-    norm_dim = _normalize_dim(rank, dim)
-    if norm_dim < 0 or norm_dim >= rank:
-        raise RuntimeError(f"sort.values* dim out of range: dim={dim}, rank={rank}")
-    if rank != 2:
-        raise RuntimeError(f"sort.values* lowering currently supports rank-2 only, got rank={rank}")
-    if norm_dim not in (0, 1):
-        raise RuntimeError(f"sort.values* lowering currently supports dim in {{0,1}} only, got dim={norm_dim}")
-
-    self.realize()
-    if isinstance(values, TensorBox):
-        values.realize()
-    if isinstance(indices, TensorBox):
-        indices.realize()
-
-    value_layout, _ = _sort_layouts(self, norm_dim, descending)
+    value_layout, _ = _sort_layouts(value, dim, descending)
     mlir_template = MLIRSortTemplate(
-        [self],
+        [value],
         value_layout,
-        dim=norm_dim,
+        dim=dim,
         descending=descending,
         stable=True if stable is None else stable,
-        indices_node=indices,
     )
-    sorted_values = mlir_template.generate(template_buffer_node=values, epilogue_nodes=[indices]).output_node()
+    empty_strided_lowering = lowerings.get(aten.empty_strided.default)
+    indices = empty_strided_lowering(value.get_size(), [1] * len(value.get_size()), dtype=torch.int64, device=value.get_device())
+    sorted_values = mlir_template.generate(template_buffer_node=value).output_node()
     return sorted_values, indices
 
 
@@ -290,78 +268,6 @@ def _sort_layouts(x: TensorBox, dim: int, descending: bool):
     index_layout = ir.FixedLayout(x.get_device(), torch.int64, i_sizes, i_stride)
     return value_layout, index_layout
 
-
-def custom_sort_stable(
-    self: TensorBox,
-    *,
-    stable: Optional[bool] = None,
-    dim: int = -1,
-    descending: bool = False,
-):
-    empty_strided_lowering = lowerings.get(aten.empty_strided.default)
-    if empty_strided_lowering is None:
-        if _orig_sort_values_stable_lowering is None:
-            raise RuntimeError("sort.stable lowering requires aten.empty_strided.default")
-        return _orig_sort_values_stable_lowering(self, dim=dim, descending=descending, stable=True)
-
-    rank = len(self.get_size()) if hasattr(self, "get_size") else 0
-    norm_dim = dim + rank if dim < 0 else dim
-    if rank > 0 and (norm_dim < 0 or norm_dim >= rank):
-        raise RuntimeError(f"sort.stable dim out of range: dim={dim}, rank={rank}")
-
-    # Template specialization supports rank-2 and dim in {0,1}.
-    if rank == 2 and norm_dim not in (0, 1):
-        if _orig_sort_values_stable_lowering is None:
-            raise RuntimeError("Original aten.sort.values_stable lowering is missing")
-        return _orig_sort_values_stable_lowering(self, dim=dim, descending=descending, stable=True)
-
-    try:
-        value_layout, index_layout = _sort_layouts(self, norm_dim, descending)
-        values = empty_strided_lowering(
-            list(value_layout.size),
-            list(value_layout.stride),
-            dtype=value_layout.dtype,
-            device=self.get_device(),
-        )
-        indices = empty_strided_lowering(
-            list(index_layout.size),
-            list(index_layout.stride),
-            dtype=index_layout.dtype,
-            device=self.get_device(),
-        )
-        return _custom_sort_values_impl(
-            self=self,
-            dim=dim,
-            descending=descending,
-            values=values,
-            indices=indices,
-            stable=True if stable is None else stable,
-        )
-    except Exception:
-        if _orig_sort_values_stable_lowering is None:
-            raise
-        return _orig_sort_values_stable_lowering(self, dim=dim, descending=descending, stable=stable)
-
-
-def custom_sort_values_stable(
-    self: TensorBox,
-    *,
-    stable: Optional[bool] = None,
-    dim: int = -1,
-    descending: bool = False,
-    values: Optional[TensorBox] = None,
-    indices: Optional[TensorBox] = None,
-):
-    return _custom_sort_values_impl(
-        self=self,
-        dim=dim,
-        descending=descending,
-        values=values,
-        indices=indices,
-        stable=stable,
-    )
-
-
 lowerings.update({getattr(aten.mm, overload): tuned_mm for overload in aten.mm.overloads()})
 lowerings.update({getattr(aten.addmm, overload): tuned_addmm for overload in aten.addmm.overloads()})
 lowerings.update({getattr(aten.convolution, overload): convolution for overload in aten.convolution.overloads()})
@@ -369,9 +275,7 @@ lowerings.update({getattr(aten.bmm, overload): tuned_bmm for overload in aten.bm
 lowerings.update({getattr(aten._sparse_addmm, overload): sparse_addmm for overload in aten._sparse_addmm.overloads()})
 lowerings.update({getattr(aten._unsafe_index, overload): custom_unsafe_index for overload in aten._unsafe_index.overloads()})
 lowerings.update({getattr(aten.cat, overload): custom_cat_default for overload in aten.cat.overloads()})
-
-lowerings.update({aten.sort.stable: custom_sort_stable})
-lowerings.update({aten.sort.values_stable: custom_sort_values_stable})
+lowerings.update({getattr(aten.sort, overload): custom_sort_default for overload in aten.sort.overloads()})
     
 if extension_config.CONFIG_USE_TIMING_POOLING:
     lowerings.update({getattr(aten.max_pool2d_with_indices, overload): custom_maxpool for overload in aten.max_pool2d_with_indices.overloads()}) # FIXME: maxpool should be implemented as a template

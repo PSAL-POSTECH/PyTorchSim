@@ -182,7 +182,7 @@ class ExtensionOverrides(common.OpOverrides):
 
         # Case A: Integer -> Float
         if src_type_char == "i" and dst_type_char == "f":
-            op_str = f"arith.sitofp %{operand} : {src_shape} to {shape}"
+            op_str = f"arith.uitofp %{operand} : {src_shape} to {shape}"
         # Case B: Float -> Integer
         elif src_type_char == "f" and dst_type_char == "i":
             op_str = f"arith.fptosi %{operand} : {src_shape} to {shape}"
@@ -1141,6 +1141,66 @@ class ExtensionOverrides(common.OpOverrides):
             value = ops.shape_cast(acc, red_shape, new_vshape)
             line = reduction_combine_vec(red_type, value, init, axis=0, shape=new_vshape, reduced_shape=final_reduced_shape)
         return line, [red_size, type_name]
+
+    @staticmethod
+    def vector_shuffle(operand, indices, *args, **kwargs):
+        tile_size, dtype = V.kernel.var_info[operand]
+        vt = f"vector<{tile_size}x{dtype}>"
+        idx_str = ", ".join(str(i) for i in indices)
+        op_str = f"vector.shuffle %{operand}, %{operand} [{idx_str}]"
+        return format_mlir_op(op_str, f"{vt}, {vt}", **kwargs), [tile_size, dtype]
+
+    @staticmethod
+    def constant_mask(select_min, N, *args, **kwargs):
+        vals = ", ".join("true" if x else "false" for x in select_min)
+        op_str = f"arith.constant dense<[{vals}]>"
+        return format_mlir_op(op_str, f"vector<{N}xi1>", **kwargs), [N, "i1"]
+
+    @staticmethod
+    def bitonic_sort(operand, descending=False, *args, **kwargs):
+        def _compute_bitonic_stages(N: int, descending: bool):
+            assert N >= 2 and (N & (N - 1)) == 0, "N must be power-of-2 >= 2"
+            stages = []
+            size = 2
+            while size <= N:
+                stride = size // 2
+                while stride >= 1:
+                    merged_shuffle = list(range(N))
+                    merged_mask = [None] * N
+
+                    for start in range(0, N, size):
+                        blk_dir = "ASCENDING" if (start // size) % 2 == 0 else "DESCENDING"
+                        for i in range(start, start + size - stride, stride * 2):
+                            for j in range(stride):
+                                a, b = i + j, i + j + stride
+                                merged_shuffle[a] = b
+                                merged_shuffle[b] = a
+                                if blk_dir == "ASCENDING":
+                                    merged_mask[a] = True   # a = min
+                                    merged_mask[b] = False  # b = max
+                                else:
+                                    merged_mask[a] = False  # a = max
+                                    merged_mask[b] = True   # b = min
+                    select_min = [bool(x) if x is not None else False for x in merged_mask]
+                    if descending:
+                        select_min = [not x for x in select_min]
+                    stages.append({
+                        "shuffle": merged_shuffle,
+                        "select_min": select_min,
+                    })
+                    stride //= 2
+                size *= 2
+            return stages
+
+        tile_size, _ = V.kernel.var_info[operand]
+        cur = operand
+        for stage in _compute_bitonic_stages(tile_size, descending):
+            mask     = ops.constant_mask(stage["select_min"], tile_size)
+            shuffled = ops.vector_shuffle(cur, stage["shuffle"])
+            vmin     = ops.minimum(cur, shuffled)
+            vmax     = ops.maximum(cur, shuffled)
+            cur      = ops.where(mask, vmin, vmax)
+        return cur, V.kernel.var_info[cur]
 
     @staticmethod
     def _load(compute_vec_size, mlir_dtype, buffer, indices, buffer_shape, *args, **kwargs):

@@ -1,0 +1,25 @@
+Frontend:
+  impl: GEM5            
+
+MemorySystem:
+  impl: GenericDRAM
+  clock_ratio: 1
+
+  DRAM:
+    impl: LPDDR5BL16
+    org:
+      preset: LPDDR5_8Gb_x16
+      channel: 1
+    timing:
+      preset: LPDDR5X_8533
+
+  Controller:
+    impl: Generic
+    Scheduler:
+      impl: FRFCFS
+    RefreshManager:
+      impl: AllBank
+    plugins:
+
+  AddrMapper:
+    impl: RoBaRaCoCh

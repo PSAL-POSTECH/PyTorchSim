@@ -1,0 +1,61 @@
+---
+description: Docker workflow conventions for this repo (how to run the provided TorchSim image, mount the workspace, and handle outputs). Use when running containers, editing docker_run.sh, or troubleshooting Docker runs.
+alwaysApply: true
+---
+
+# Docker workflow (PyTorchSim)
+
+## Default image
+
+- Use the pinned image in `docker_run.sh`: `ghcr.io/psal-postech/torchsim-ci:v1.0.1`.
+
+## Preferred run pattern
+
+Use a unique container name, set the working directory, keep IPC host, and remove on exit:
+
+```bash
+timestamp=$(date +%Y%m%d%H%M%S)
+docker run -it --ipc=host --rm \
+  --name "torchsim_${USER}_${timestamp}" \
+  -w /workspace/PyTorchSim \
+  ghcr.io/psal-postech/torchsim-ci:v1.0.1 \
+  bash
+```
+
+## When you need to persist changes
+
+By default, the container has no access to your local repo. If you want edits/results to persist, mount the repo into the container:
+
+```bash
+timestamp=$(date +%Y%m%d%H%M%S)
+docker run -it --ipc=host --rm \
+  --name "torchsim_${USER}_${timestamp}" \
+  -v "$PWD:/workspace/PyTorchSim" \
+  -w /workspace/PyTorchSim \
+  ghcr.io/psal-postech/torchsim-ci:v1.0.1 \
+  bash
+```
+
+## GPU usage (only if the host supports it)
+
+If NVIDIA Container Toolkit is installed and GPUs should be exposed:
+
+```bash
+docker run -it --rm --ipc=host --gpus all \
+  -v "$PWD:/workspace/PyTorchSim" -w /workspace/PyTorchSim \
+  ghcr.io/psal-postech/torchsim-ci:v1.0.1 bash
+```
+
+If `--gpus all` fails, prefer fixing host tooling rather than changing project code.
+
+## Outputs and git hygiene
+
+- Write run artifacts under `output/`, `outputs/`, or `togsim_results/` (already ignored by `.gitignore`).
+- Do not commit generated artifacts (logs, results folders, notebooks checkpoints).
+
+## Troubleshooting quick checks
+
+- **Can't see repo files in container**: you likely forgot `-v "$PWD:/workspace/PyTorchSim"`.
+- **Permission issues writing outputs**: check host directory permissions; consider `-u "$(id -u):$(id -g)"` if the image supports it.
+- **Shared memory / dataloader hangs**: keep `--ipc=host` (as in `docker_run.sh`).
+

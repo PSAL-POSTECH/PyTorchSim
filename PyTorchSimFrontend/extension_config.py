@@ -31,8 +31,6 @@ def __getattr__(name):
           "spad_size" : config_yaml["vpu_spad_size_kb_per_lane"] << 10 # Note: spad size per lane
         }
 
-    if name == "CONFIG_PRECISION":
-        return 4 # 32bit
     if name == "CONFIG_NUM_CORES":
         return config_yaml["num_cores"]
     if name == "vpu_vector_length_bits":
@@ -132,7 +130,7 @@ CONFIG_TLS_MODE = int(os.environ.get('TORCHSIM_TLS_MODE', default=1))
 
 CONFIG_USE_TIMING_POOLING = int(os.environ.get('TORCHSIM_USE_TIMING_POOLING', default=0))
 
-CONFIG_DEBUG_MODE = int(os.environ.get('TORCHSIM_DEBUG_MODE', default=0))
+CONFIG_DEBUG_MODE = int(os.environ.get('TORCHSIM_DEBUG_MODE', default=1))
 
 
 def setup_logger(name=None, level=None):

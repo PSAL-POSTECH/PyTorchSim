@@ -396,7 +396,6 @@ export TORCHSIM_USE_TIMING_POOLING=0 # use lightweight pooling for timing
   "icnt_injection_ports_per_core" : 16 // Interconnect injection ports per core
   "icnt_config_path" : "../configs/booksim2_configs/fly_c4_m32.icnt", // Booksim2 config file path
 
-  "precision" : 4,                   // Element's precision in tensor (Byte)
   "scheduler" : "simple",            // Scheduler type (Now, only support simple scheduler)
   "num_partition" : 2,               // Multi-core Partitioning
   "partition": {                     // allocate request queue index

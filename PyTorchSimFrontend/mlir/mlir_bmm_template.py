@@ -166,8 +166,9 @@ class MLIRBMMTemplate(MLIRTemplate):
                tile_info = None,
                **kwargs):
         X, W, Y, Bias, W_tensor, X_tensor, B, M, N, K, n_extra_node, n_prologue_node = self.extract_info(template_buffer_node, epilogue_nodes, prologue_nodes)
+        precision_bytes = mlir_common.get_dtype_nbytes(X.get_dtype())
         if tile_info is None:
-            TILE_M, TILE_N, TILE_K, SUB_TILE_M, SUB_TILE_N, SUB_TILE_K = self.select_tile(kernel, M, N, K, n_extra_node, 0, n_prologue_node)[0]
+            TILE_M, TILE_N, TILE_K, SUB_TILE_M, SUB_TILE_N, SUB_TILE_K = self.select_tile(kernel, M, N, K, n_extra_node, 0, n_prologue_node, precision_bytes)[0]
         else:
             TILE_M, TILE_N, TILE_K, SUB_TILE_M, SUB_TILE_N, SUB_TILE_K = tile_info
 
@@ -350,10 +351,11 @@ class MLIRBMMTemplate(MLIRTemplate):
                prologue_nodes: Optional[List[IRNode]] = None,
                **kwargs):
         X, W, Y, Bias, W_tensor, X_tensor, B, M, N, K, n_extra_node, n_prologue_node = self.extract_info(template_buffer_node, epilogue_nodes, prologue_nodes)
-        return self.select_tile(kernel, M, N, K, n_extra_node, 0, n_prologue_node)
+        precision_bytes = mlir_common.get_dtype_nbytes(X.get_dtype())
+        return self.select_tile(kernel, M, N, K, n_extra_node, 0, n_prologue_node, precision_bytes)
 
-    def select_tile(self, kernel, M, N, K, n_extra_node, n_extra_read, n_prologue_node):
-        tile_candidates = kernel.gemm_combination_mapping(M, N, K, n_extra_node=n_extra_node)
+    def select_tile(self, kernel, M, N, K, n_extra_node, n_extra_read, n_prologue_node, precision_bytes):
+        tile_candidates = kernel.gemm_combination_mapping(M, N, K, n_extra_node=n_extra_node, precision_bytes=precision_bytes)
         for idx, (TILE_M, TILE_N, TILE_K) in enumerate(tile_candidates):
             SUB_TILE_M = TILE_M if (TILE_M < kernel.vector_lane) or n_prologue_node else kernel.vector_lane
             SUB_TILE_N = TILE_N # if (TILE_N < kernel.vector_lane) or prologue_nodes else kernel.vector_lane

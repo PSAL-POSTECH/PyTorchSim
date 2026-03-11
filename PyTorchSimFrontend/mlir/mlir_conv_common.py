@@ -2,7 +2,7 @@ import os
 import math
 from typing import List, Optional
 
-from PyTorchSimFrontend.mlir.mlir_common import MLIRKernelArgs
+from PyTorchSimFrontend.mlir.mlir_common import MLIRKernelArgs, get_dtype_nbytes
 from PyTorchSimFrontend.mlir.mlir_template import MLIRTemplate
 from PyTorchSimFrontend.mlir.mlir_template import MLIRTemplateKernel
 from torch._inductor.ir import IRNode
@@ -40,7 +40,7 @@ class MLIRConvCommonTemplate(MLIRTemplate):
                **kwargs):
         raise NotImplementedError()
 
-    def select_tile(self, kernel, n_extra_node, BATCH, I_C, O_C, K_H, K_W, O_H, O_W):
+    def select_tile(self, kernel, n_extra_node, BATCH, I_C, O_C, K_H, K_W, O_H, O_W, precision_bytes):
         raise NotImplementedError()
 
     def extract_info(self, kernel, template_buffer_node, epilogue_nodes):
@@ -58,6 +58,7 @@ class MLIRConvCommonTemplate(MLIRTemplate):
         if len({dtype for _, dtype in dtype_infos}) != 1:
             dtype_desc = ", ".join(f"{name}={dtype}" for name, dtype in dtype_infos)
             raise NotImplementedError(f"Mixed dtype Conv is not implemented yet ({dtype_desc})")
+        precision_bytes = get_dtype_nbytes(X.get_dtype())
 
         if epilogue_nodes is not None:
             extra_node_rw = {
@@ -75,7 +76,7 @@ class MLIRConvCommonTemplate(MLIRTemplate):
         PADDING_W=self.padding[1]
         STRIDE_H=self.stride[0]
         STRIDE_W=self.stride[1]
-        return X,W,Y,Bias,n_extra_node,BATCH,I_C,I_H,I_W,O_C,K_H,K_W,O_H,O_W,PADDING_H,PADDING_W,STRIDE_H,STRIDE_W
+        return X,W,Y,Bias,n_extra_node,BATCH,I_C,I_H,I_W,O_C,K_H,K_W,O_H,O_W,PADDING_H,PADDING_W,STRIDE_H,STRIDE_W,precision_bytes
 
     def get_tile_candidates(self,
                kernel: MLIRTemplateKernel,
@@ -83,8 +84,8 @@ class MLIRConvCommonTemplate(MLIRTemplate):
                epilogue_nodes: Optional[List[IRNode]] = None,
                **kwargs):
         # Extract input arguments info
-        X, W, Y, Bias, n_extra_node, BATCH, I_C, I_H, I_W, O_C, K_H, K_W, O_H, O_W, PADDING_H, PADDING_W, STRIDE_H, STRIDE_W = self.extract_info(kernel, template_buffer_node, epilogue_nodes)
-        return self.select_tile(kernel, n_extra_node, BATCH, I_C, O_C, K_H, K_W, O_H, O_W)
+        X, W, Y, Bias, n_extra_node, BATCH, I_C, I_H, I_W, O_C, K_H, K_W, O_H, O_W, PADDING_H, PADDING_W, STRIDE_H, STRIDE_W, precision_bytes = self.extract_info(kernel, template_buffer_node, epilogue_nodes)
+        return self.select_tile(kernel, n_extra_node, BATCH, I_C, O_C, K_H, K_W, O_H, O_W, precision_bytes)
 
     def outer_func_render(self, kernel_name, input_args):
         X, W = self.input_nodes[0], self.input_nodes[1]

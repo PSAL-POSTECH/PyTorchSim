@@ -56,6 +56,11 @@ class MLIRCatTemplate(MLIRTemplate):
     ):
         input_nodes = self.input_nodes
         y = self.output_node
+        dtype_infos = [("Y", y.get_dtype())] + [(f"X{i}", x.get_dtype()) for i, x in enumerate(input_nodes)]
+        if len({dtype for _, dtype in dtype_infos}) != 1:
+            dtype_desc = ", ".join(f"{name}={dtype}" for name, dtype in dtype_infos)
+            raise NotImplementedError(f"Mixed dtype Cat is not implemented yet ({dtype_desc})")
+        precision_bytes = mlir_common.get_dtype_nbytes(y.get_dtype())
         num_inputs = len(input_nodes)
         rank = len(y.get_size())
 
@@ -68,7 +73,7 @@ class MLIRCatTemplate(MLIRTemplate):
         excluded_dims = self._compute_excluded_dims(tile_sizes)
 
         input_tile_sizes_dim = self._calculate_input_tile_sizes(
-            kernel, input_sizes, tile_sizes, num_inputs, rank
+            kernel, input_sizes, tile_sizes, num_inputs, rank, precision_bytes
         )
         buffer_name_to_template_name, input_dram_names = self._build_buffer_mapping(input_nodes)
         input_tile_descs, output_tile_descs, unique_tile_descs = self._build_tile_descriptors(
@@ -145,6 +150,11 @@ class MLIRCatTemplate(MLIRTemplate):
             self.output_node = template_buffer_node
 
         y = self.output_node
+        dtype_infos = [("Y", y.get_dtype())] + [(f"X{i}", x.get_dtype()) for i, x in enumerate(self.input_nodes)]
+        if len({dtype for _, dtype in dtype_infos}) != 1:
+            dtype_desc = ", ".join(f"{name}={dtype}" for name, dtype in dtype_infos)
+            raise NotImplementedError(f"Mixed dtype Cat is not implemented yet ({dtype_desc})")
+        precision_bytes = mlir_common.get_dtype_nbytes(y.get_dtype())
         num_inputs = len(self.input_nodes)
         output_sizes = [sz for d, sz in enumerate(y.get_size()) if d != self.dim]
 
@@ -152,7 +162,7 @@ class MLIRCatTemplate(MLIRTemplate):
             return [[1]]
 
         max_tile_total = kernel.spad_info["spad_size"] // (
-            kernel.vector_lane * kernel.precision * 2 * num_inputs
+            kernel.vector_lane * precision_bytes * 2 * num_inputs
         )
 
         dim_tile_candidates = []
@@ -174,7 +184,7 @@ class MLIRCatTemplate(MLIRTemplate):
         tile_candidates = [
             list(combo)
             for combo in itertools.product(*dim_tile_candidates)
-            if math.prod(combo) * (num_inputs + 1) * kernel.precision
+            if math.prod(combo) * (num_inputs + 1) * precision_bytes
                <= kernel.spad_info["spad_size"] * kernel.vector_lane
         ]
 
@@ -199,11 +209,11 @@ class MLIRCatTemplate(MLIRTemplate):
             tile_sizes[idx] = 1
         return excluded
 
-    def _calculate_input_tile_sizes(self, kernel, input_sizes, tile_sizes, num_inputs, rank):
+    def _calculate_input_tile_sizes(self, kernel, input_sizes, tile_sizes, num_inputs, rank, precision_bytes):
         """Calculate tile sizes along the concat dimension for each input."""
         non_dim_tile_elements = math.prod(tile_sizes) if tile_sizes else 1
         max_spad_per_input = kernel.spad_info["spad_size"] * kernel.vector_lane // 2
-        extra_concat = math.ceil(max_spad_per_input / (non_dim_tile_elements * kernel.precision)) - num_inputs
+        extra_concat = math.ceil(max_spad_per_input / (non_dim_tile_elements * precision_bytes)) - num_inputs
 
         input_tile_sizes_dim = []
         for i in range(num_inputs):

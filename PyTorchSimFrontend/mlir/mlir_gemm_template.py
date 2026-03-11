@@ -117,8 +117,9 @@ class MLIRGemmTemplate(MLIRTemplate):
                tile_info = None,
                **kwargs):
         X, W, Y, M, N, K, n_epilogue_node, n_prologue_node, n_extra_read = self.extract_info(template_buffer_node, epilogue_nodes, prologue_nodes)
+        precision_bytes = mlir_common.get_dtype_nbytes(X.get_dtype())
         if tile_info is None:
-            TILE_M, TILE_N, TILE_K, SUB_TILE_M, SUB_TILE_N, SUB_TILE_K = self.select_tile(kernel, M, N, K, n_epilogue_node, n_extra_read, n_prologue_node)[0]
+            TILE_M, TILE_N, TILE_K, SUB_TILE_M, SUB_TILE_N, SUB_TILE_K = self.select_tile(kernel, M, N, K, n_epilogue_node, n_extra_read, n_prologue_node, precision_bytes)[0]
         else:
             TILE_M, TILE_N, TILE_K, SUB_TILE_M, SUB_TILE_N, SUB_TILE_K = tile_info
 
@@ -274,7 +275,8 @@ class MLIRGemmTemplate(MLIRTemplate):
                prologue_nodes: Optional[List[IRNode]] = None,
                **kwargs):
         X, W, Y, M, N, K, n_epilogue_node, n_prologue_node, n_extra_read = self.extract_info(template_buffer_node, epilogue_nodes, prologue_nodes)
-        return self.select_tile(kernel, M, N, K, n_epilogue_node, n_extra_read, n_prologue_node)
+        precision_bytes = mlir_common.get_dtype_nbytes(X.get_dtype())
+        return self.select_tile(kernel, M, N, K, n_epilogue_node, n_extra_read, n_prologue_node, precision_bytes)
 
     def extract_info(self, template_buffer_node, epilogue_nodes, prologue_nodes):
         if template_buffer_node is not None:
@@ -307,7 +309,7 @@ class MLIRGemmTemplate(MLIRTemplate):
         M, N, K = X_tensor.size()[0], W_tensor.size()[1], X_tensor.size()[1]
         return X,W,Y,M,N,K,n_epilogue_node,n_prologue_node,len(n_extra_read)
 
-    def select_tile(self, kernel, M, N, K, n_extra_node, n_extra_read, n_prologue_node):
+    def select_tile(self, kernel, M, N, K, n_extra_node, n_extra_read, n_prologue_node, precision_bytes):
         data = {}
         gemm_shape = f"{M}_{N}_{K}"
         if "external" in extension_config.codegen_mapping_strategy:
@@ -327,7 +329,7 @@ class MLIRGemmTemplate(MLIRTemplate):
         else:
             # case 2: use heuristic mapping
             min_tile = (n_extra_node + n_prologue_node) == 0
-            tile_candidates = kernel.gemm_combination_mapping(M, N, K, max(n_extra_read-2, 0), n_prologue_node, min_tile=True)
+            tile_candidates = kernel.gemm_combination_mapping(M, N, K, max(n_extra_read-2, 0), n_prologue_node, min_tile=True, precision_bytes=precision_bytes)
 
         # Edge case
         if (M == 0) or (N == 0) or (K == 0):

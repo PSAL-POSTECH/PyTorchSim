@@ -90,6 +90,12 @@ MLIR_TO_BIT = {
     "index": 64
 }
 
+def get_dtype_nbytes(dtype):
+    mlir_dtype = DTYPE_TO_MLIR.get(dtype)
+    if mlir_dtype is None or mlir_dtype not in MLIR_TO_BIT:
+        raise NotImplementedError(f"Unsupported dtype for precision calculation: {dtype}")
+    return MLIR_TO_BIT[mlir_dtype] // 8
+
 DTYPE_LOWP_FP = [
     torch.bfloat16,
     torch.float16,
@@ -579,7 +585,6 @@ class BaseMLIRHardwareInfo():
         # Default HW setting
         self.vector_lane = extension_config.vpu_num_lanes
         self.spad_info = extension_config.CONFIG_SPAD_INFO
-        self.precision = extension_config.CONFIG_PRECISION
         self.num_cores = extension_config.CONFIG_NUM_CORES
         self.vlen = extension_config.vpu_vector_length_bits
 

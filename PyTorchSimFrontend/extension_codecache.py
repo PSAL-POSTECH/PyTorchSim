@@ -67,9 +67,10 @@ def mlir_compile_command(filename, vectorlane_size, vlen=256):
         f"""
             {extension_config.CONFIG_TORCHSIM_LLVM_PATH}/llc \
                 -relocation-model=pic -march=riscv64 -O3 --stack-size-section \
-                -mattr=+m,+f,+d,+a,+c,+v,+xsfvcp,zvl{vlen}b \
+                -mattr=+m,+f,+d,+a,+c,+v,+zvfh,+xsfvcp,zvl{vlen}b \
+                -filetype=obj \
                 {'--print-after-all' if extension_config.CONFIG_TORCHSIM_DUMP_LLVM_IR else ''} \
-                -O2 {filename}.ll -o {filename}.s
+                -O2 {filename}.ll -o {filename}.o
         """,
     ).strip()]
 
@@ -109,9 +110,10 @@ def mlir_gem5_compile_command(filename, sample_filename, tog_file, vectorlane_si
         f"""
             {extension_config.CONFIG_TORCHSIM_LLVM_PATH}/llc \
                 -relocation-model=pic -march=riscv64 -O3 --stack-size-section \
-                -mattr=+m,+f,+d,+a,+c,+v,+xsfvcp,zvl{vlen}b \
+                -mattr=+m,+f,+d,+a,+c,+v,+zvfh,+xsfvcp,zvl{vlen}b \
+                -filetype=obj \
                 {'--print-after-all' if extension_config.CONFIG_TORCHSIM_DUMP_LLVM_IR else ''} \
-                -O2 {sample_filename}.ll -o {sample_filename}.s
+                -O2 {sample_filename}.ll -o {sample_filename}.o
         """,
     ).strip()]
 
@@ -180,17 +182,6 @@ class MLIRCodeCache:
                 val_llvm_caller.generate_wrapper_file(write_path, validation_wrapper_name)
                 val_llvm_caller.compile_wih_kernel(write_path, key, validation_wrapper_name,
                                                    validation_binary_name, new_link_option)
-
-                stack_size = val_llvm_caller.parse_stack_sizes(f"{write_path}/{key}.s", vlenb=vlenb)
-                spad_size =  val_llvm_caller.get_spad_size(validation_binary_path)
-                spad_usage = stack_size + spad_size # Spad usage per lane
-                if extension_config.CONFIG_SPAD_INFO["spad_size"] < spad_usage:
-                    logger.debug(
-                        f"Scratchpad size exceeded: required {spad_usage} bytes, "
-                        f"but only {extension_config.CONFIG_SPAD_INFO['spad_size']} bytes available."
-                    )
-                    raise SpadOverflowError()
-
         # Skip if TOG file already exists
         if os.path.isfile(tog_path):
             return key

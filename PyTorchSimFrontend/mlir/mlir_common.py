@@ -67,7 +67,7 @@ MLIR_TO_DTYPE = {
 DTYPE_TO_C = {
     torch.float32: "float",
     torch.float64: "double",
-    torch.float16: "half",
+    torch.float16: "uint16_t",
     torch.int64: "int64_t",
     torch.int32: "int32_t",
     torch.int16: "int16_t",

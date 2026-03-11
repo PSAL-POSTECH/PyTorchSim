@@ -182,22 +182,18 @@ class MLIRKernelCallerCodeGen():
     def compile_wih_kernel(self, write_path, llvm_name, wrapper_name, binary_name, link_option=""):
         main_path = os.path.join(write_path, self.add_extention(wrapper_name, 'c'))
         main_obj_path = os.path.join(write_path, self.add_extention(wrapper_name, 'o'))
-        kernel_path = os.path.join(write_path, self.add_extention(llvm_name, 's'))
         kernel_obj_path = os.path.join(write_path, self.add_extention(llvm_name, 'o'))
 
         main_compile = f'riscv64-unknown-elf-gcc -march=rv64gcv -c {main_path} -o {main_obj_path}'
-        kernel_compile = f'clang -c --target="riscv64" -march=rv64gcv -O2 -nostdlib {kernel_path} -o {kernel_obj_path}'
 
         target = os.path.join(write_path, binary_name)
         link = f'riscv64-unknown-elf-gcc -march=rv64gcv {main_obj_path} {kernel_obj_path} -o {target} -lm {link_option}'
 
         main_compile_cmd = shlex.split(main_compile)
-        kernel_compile_cmd = shlex.split(kernel_compile)
         link_cmd = shlex.split(link)
 
         try:
             subprocess.check_call(main_compile_cmd)
-            subprocess.check_call(kernel_compile_cmd)
             subprocess.check_call(link_cmd)
         except subprocess.CalledProcessError as e:
             print("Command failed with exit code", e.returncode)

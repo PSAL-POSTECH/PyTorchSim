@@ -27,14 +27,14 @@ func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[X, W, Bias], outputs=[Y]
   {{ kernel.def_sram_buffer("W", W_tile_desc, indent_size=2) }}
   {{ kernel.def_sram_buffer("Y", Y_tile_desc, indent_size=2) }}
   {% if not Bias %}
-  %v0 = arith.constant dense<0.0> : vector<{{ kernel.get_spad_size_per_lane(TILE_M, TILE_N) }}xf32>{% endif %}
+  %v0 = arith.constant dense<0.0> : vector<{{ kernel.get_spad_size_per_lane(TILE_M, TILE_N) }}x{{DATA_STYPE}}>{% endif %}
   {{ kernel.def_local_vars(indent_size=2) }}
   affine.for %index0 = 0 to {{ M }} step {{ TILE_M }} {
     affine.for %index1 = 0 to {{ N }} step {{ TILE_N }} {
       {%- if Bias %}
       {{ kernel.def_dma_op("MVIN", "Bias", Bias_idx, Bias_tile_desc, subtile_size=[SUB_TILE_M, SUB_TILE_N], indent_size=6) }}
       {%- else %}
-      affine.vector_store %v0, %Y_buffer[0, 0] : {{ Y_tile_desc.get_mlir_shape(DATA_STYPE) }}, vector<{{ kernel.get_spad_size_per_lane(TILE_M, TILE_N) }}xf32>
+      affine.vector_store %v0, %Y_buffer[0, 0] : {{ Y_tile_desc.get_mlir_shape(DATA_STYPE) }}, vector<{{ kernel.get_spad_size_per_lane(TILE_M, TILE_N) }}x{{DATA_STYPE}}>
       {%- endif %}
       affine.for %index2 = 0 to {{ K }} step {{ TILE_K }} {
         {% if prologue_nodes -%}
@@ -77,16 +77,16 @@ func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[X, W, Bias], outputs=[Y]
   {{ kernel.def_sram_buffer("W", W_tile_desc, indent_size=2) }}
   {{ kernel.def_sram_buffer("Y", Y_tile_desc, indent_size=2) }}
   {% if not Bias %}
-  %v0 = arith.constant dense<0.0> : vector<{{ kernel.get_spad_size_per_lane(TILE_M, TILE_N) }}xf32>
+  %v0 = arith.constant dense<0.0> : vector<{{ kernel.get_spad_size_per_lane(TILE_M, TILE_N) }}x{{DATA_STYPE}}>
   {% endif %}
   {{ kernel.def_local_vars(indent_size=2) }}
   affine.for %index1 = 0 to {{ N }} step {{ TILE_N }} {
     affine.for %index0 = 0 to {{ M }} step {{ TILE_M }} {
-      %Y_bufferT = memref.reinterpret_cast %Y_buffer to offset: [0], sizes: [{{ TILE_M }}, {{ TILE_N }}], strides: [{{ TILE_N }}, 1] : {{ Y_tile_desc.get_mlir_shape(DATA_STYPE) }} to memref<{{ TILE_M }}x{{ TILE_N }}xf32, 1>
+      %Y_bufferT = memref.reinterpret_cast %Y_buffer to offset: [0], sizes: [{{ TILE_M }}, {{ TILE_N }}], strides: [{{ TILE_N }}, 1] : {{ Y_tile_desc.get_mlir_shape(DATA_STYPE) }} to memref<{{ TILE_M }}x{{ TILE_N }}x{{DATA_STYPE}}, 1>
       {%- if Bias %}
       {{ kernel.def_dma_op("MVIN", "Bias", Bias_idx, Bias_tile_desc, subtile_size=[SUB_TILE_M, SUB_TILE_N], indent_size=6) }}
       {%- else %}
-      affine.vector_store %v0, %Y_buffer[0, 0] : memref<{{ TILE_N }}x{{ TILE_M }}xf32, 1>, vector<{{ kernel.get_spad_size_per_lane(TILE_M, TILE_N) }}xf32>
+      affine.vector_store %v0, %Y_buffer[0, 0] : memref<{{ TILE_N }}x{{ TILE_M }}x{{DATA_STYPE}}, 1>, vector<{{ kernel.get_spad_size_per_lane(TILE_M, TILE_N) }}x{{DATA_STYPE}}>
       {%- endif %}
       affine.for %index2 = 0 to {{ K }} step {{ TILE_K }} {
         {{ kernel.def_dma_op("MVIN", "X", X_idx, X_tile_desc, subtile_size=[SUB_TILE_M, SUB_TILE_K], indent_size=8) }}
@@ -187,6 +187,8 @@ class MLIRGemmTemplate(MLIRTemplate):
         else:
           Bias_idx = None
 
+        data_stype = mlir_common.DTYPE_TO_MLIR[X.get_dtype()]
+
         kernel.render_options = dict(
             KERNEL_NAME=self.name,
             kernel=kernel,
@@ -197,7 +199,7 @@ class MLIRGemmTemplate(MLIRTemplate):
             SUB_TILE_M=SUB_TILE_M,
             SUB_TILE_N=SUB_TILE_N,
             SUB_TILE_K=SUB_TILE_K,
-            DATA_STYPE="f32",
+            DATA_STYPE=data_stype,
             X = X, W = W, Y = Y,
             Bias = Bias,
             X_idx = X_idx,
@@ -280,6 +282,12 @@ class MLIRGemmTemplate(MLIRTemplate):
 
         # Extract input arguments info
         X, W, Y = self.input_nodes[0], self.input_nodes[1], self.output_node
+        dtype_infos = [("X", X.get_dtype()), ("W", W.get_dtype()), ("Y", Y.get_dtype())]
+        if len(self.input_nodes) > 2:
+            dtype_infos.append(("Bias", self.input_nodes[2].get_dtype()))
+        if len({dtype for _, dtype in dtype_infos}) != 1:
+            dtype_desc = ", ".join(f"{name}={dtype}" for name, dtype in dtype_infos)
+            raise NotImplementedError(f"Mixed dtype GEMM is not implemented yet ({dtype_desc})")
         X_tensor = empty_strided(X.layout.size, X.layout.stride)
         W_tensor = empty_strided(W.layout.size, W.layout.stride)
         if len(W_tensor.size()) > 2 or len(X_tensor.size()) > 2:

@@ -52,6 +52,12 @@ class MLIRConvCommonTemplate(MLIRTemplate):
         X, W = self.input_nodes[0], self.input_nodes[1]
         Y = self.output_node
         Bias = None if len(self.input_nodes) == 2 else self.input_nodes[2]
+        dtype_infos = [("X", X.get_dtype()), ("W", W.get_dtype()), ("Y", Y.get_dtype())]
+        if Bias is not None:
+            dtype_infos.append(("Bias", Bias.get_dtype()))
+        if len({dtype for _, dtype in dtype_infos}) != 1:
+            dtype_desc = ", ".join(f"{name}={dtype}" for name, dtype in dtype_infos)
+            raise NotImplementedError(f"Mixed dtype Conv is not implemented yet ({dtype_desc})")
 
         if epilogue_nodes is not None:
             extra_node_rw = {

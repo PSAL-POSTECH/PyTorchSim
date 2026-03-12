@@ -389,6 +389,100 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         tile_candidates = sorted(tile_candidates, key=lambda x: x[0], reverse=True)
         tile_candidates = [v for _, v in tile_candidates]
         return tile_candidates
+    
+    # Flash Attention requires more SRAM compared to standard GEMM.
+    # Total buffers needed: query, key, value, out, mul, max, sum
+    # Tensor Shapes:
+    #   query (tile_l, tile_e), key (tile_s, tile_e), value (tile_s, tile_e), mul (tile_s, tile_l), out(tile_l, tile_e)
+    #   max, sum : (tile_l, 2) 
+    def flash_sdpa_mapping(self, l, s, e, n_extra_node=0, n_prologue_node=0, pad_e=True, min_tile=False, is_conv=False):
+        tile_candidates = []
+        
+        spad_size_per_lane = self.spad_info["spad_size"]
+        spad_size = spad_size_per_lane * self.vector_lane
+        
+        # Double buffering
+        max_spad_per_lane = spad_size_per_lane // 2
+        max_spad_size = spad_size // 2 
+
+        # Padding for utilization        
+        minimum_tile_size = 8 
+        minimum_n_tile = self.num_cores if min_tile else 1
+        l_pad_factor = self.vector_lane if l > self.vector_lane else minimum_tile_size
+        s_pad_factor = self.vector_lane if s > self.vector_lane else minimum_tile_size
+
+        pad = lambda x, factor: ((x + factor - 1) // factor) * factor
+        l_padded = pad(l, l_pad_factor)
+        s_padded = pad(s, s_pad_factor)
+
+        # Calculate the total number of vector-sized blocks
+        l_idx = l_padded // self.vector_lane
+        s_idx = s_padded // self.vector_lane
+
+        # Generate candidates for the number of blocks per tile
+        l_tile_range = sympy.divisors(l_idx) if l > self.vector_lane else [1]
+        s_tile_range = sympy.divisors(s_idx) if s > self.vector_lane else [1]
+        
+        # Convert block count to actual tile size
+        maximize_i_j = 1
+        max_used_spad_size = 0
+    
+        # Flash Attention does not tile along the head dimension (e or ev).
+        tile_e = e
+
+        for i in l_tile_range:
+            tile_l = i * self.vector_lane if l > self.vector_lane else l_padded
+            for j in s_tile_range:
+                tile_s = j * self.vector_lane if s > self.vector_lane else s_padded
+                
+                # Calculate used spad size
+                used_spad_size = (
+                    tile_l * tile_e * (1 + n_prologue_node) # query
+                    + tile_s * tile_e                       # key
+                    + tile_s * tile_e                       # value
+                    + tile_s * tile_l                       # mul
+                    + tile_l * tile_e * (1 + n_extra_node)  # out
+                    + (tile_l * 2) * 2                      # max, sum
+                ) * self.precision
+                
+                # Calculate used spad size per lane.
+                query_per_lane = tile_e * (1+n_prologue_node)
+                key_per_lane = tile_s
+                value_per_lane = tile_e
+                mul_per_lane = tile_s
+                out_per_lane = tile_e * (1 + n_extra_node)
+                vec_per_lane = 2 * 2
+
+                used_spad_per_lane = (
+                    query_per_lane
+                    + key_per_lane
+                    + value_per_lane
+                    + mul_per_lane
+                    + out_per_lane
+                    + vec_per_lane
+                ) * self.precision
+                
+                # Add the validated candidate to the list if it passes all hardware constraints.
+                n_tile = math.ceil(l / max(tile_l, 128)) * math.ceil(s / max(tile_s, 128))
+                check_spad_size = (used_spad_size < max_spad_size and used_spad_per_lane < max_spad_per_lane)
+
+                if (check_spad_size 
+                    and max_used_spad_size < used_spad_size             # SRAM utilization
+                    and maximize_i_j <= tile_l * tile_s                 # Larger tile
+                    and n_tile >= minimum_n_tile                        # Pallelism
+                    and max(tile_s, 128) // max(tile_l, 128) < 10):     # Balanced Shape
+                    max_used_spad_size = used_spad_size
+                    maximize_i_j = tile_l * tile_s
+                
+                if check_spad_size:
+                    tile_candidates.append((used_spad_size, (tile_l, tile_s, tile_e)))
+
+        # Sort by used_spad_size.
+        # tile_candidates[0] is the best solution we have.
+        tile_candidates = sorted(tile_candidates, key=lambda x: x[0], reverse=True)
+        tile_candidates = [v for _, v in tile_candidates]
+
+        return tile_candidates
 
     def meta_kernel(self):
         kernel_arg_attributes = self.kernel_arg_attributes
@@ -877,7 +971,12 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
     def def_sram_buffer(self, dram_name, tile_desc, id=0, indent_size=0):
         # Prepare code block
         with self:
-            dtype = self.named_nodes[dram_name].get_layout().dtype
+            try:
+                dtype = self.named_nodes[dram_name].get_layout().dtype
+            except (KeyError, AttributeError, TypeError):
+                import torch
+                dtype = torch.float32
+            
             tile_shape = tile_desc.get_mlir_shape(mlir_common.DTYPE_TO_MLIR[dtype])
             buffer_name = self.allocate_sram_buffer(dtype, dram_name, tile_desc, id, forced_name=dram_name)
             code = f"%{tile_desc.name} = memref.get_global @{buffer_name} : {tile_shape}"

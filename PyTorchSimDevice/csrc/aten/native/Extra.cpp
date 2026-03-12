@@ -19,7 +19,8 @@ int64_t _fused_sdp_choice(
     bool is_causal,
     std::optional<double> scale,
     bool enable_gqa) {
-  auto backend = sdp::SDPBackend::math;
+
+  auto backend = sdp::SDPBackend::overrideable;
   return static_cast<int64_t>(backend);
 }
 
@@ -28,54 +29,6 @@ void quantize_tensor_per_tensor_affine_stub(
     at::Tensor& qtensor,
     double scale,
     int64_t zero_point) {}
-
-std::tuple<
-    at::Tensor,
-    at::Tensor,
-    at::Tensor,
-    at::Tensor,
-    c10::SymInt,
-    c10::SymInt,
-    at::Tensor,
-    at::Tensor,
-    at::Tensor>
-_scaled_dot_product_fused_attention_overrideable(
-    const at::Tensor& query,
-    const at::Tensor& key,
-    const at::Tensor& value,
-    const std::optional<at::Tensor>& attn_bias,
-    double dropout_p,
-    bool is_causal,
-    bool return_debug_mask,
-    std::optional<double> scale) {
-  const int64_t batch_size = query.size(0);
-  const int64_t num_heads = query.size(1);
-  const int64_t head_dim_v = value.size(3);
-  const int64_t max_seqlen_q = query.size(2);
-  const int64_t max_seqlen_kv = key.size(2);
-
-  auto opts = query.options();
-  auto output =
-      at::empty({batch_size, num_heads, max_seqlen_q, head_dim_v}, opts);
-  auto logsumexp =
-      at::empty({batch_size, num_heads, max_seqlen_q}, opts.dtype(at::kFloat));
-  auto debug_attn_mask = at::empty(
-      {batch_size, num_heads, max_seqlen_q, max_seqlen_kv},
-      opts.dtype(at::kFloat));
-  auto philox_seed = at::empty({}, at::dtype(at::kLong));
-  auto philox_offset = at::empty({}, at::dtype(at::kLong));
-
-  return std::make_tuple(
-      output,
-      logsumexp,
-      at::Tensor(),
-      at::Tensor(),
-      max_seqlen_q,
-      max_seqlen_kv,
-      philox_seed,
-      philox_offset,
-      debug_attn_mask);
-}
 
 std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor>
 _scaled_dot_product_fused_attention_overrideable_backward(

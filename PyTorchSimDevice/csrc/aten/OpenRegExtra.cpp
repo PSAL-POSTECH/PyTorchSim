@@ -2,6 +2,7 @@
 
 #include <ATen/native/CPUFallback.h>
 #include <ATen/native/DispatchStub.h>
+#include <ATen/native/transformers/attention.h>
 
 #include <torch/csrc/autograd/autograd_not_implemented_fallback.h>
 #include <torch/library.h>
@@ -38,36 +39,6 @@ void wrapper_quantize_tensor_per_tensor_affine_stub(
     int64_t zero_point) {
   at::native::openreg::quantize_tensor_per_tensor_affine_stub(
       rtensor, qtensor, scale, zero_point);
-}
-
-std::tuple<
-    at::Tensor,
-    at::Tensor,
-    at::Tensor,
-    at::Tensor,
-    c10::SymInt,
-    c10::SymInt,
-    at::Tensor,
-    at::Tensor,
-    at::Tensor>
-wrapper__scaled_dot_product_fused_attention_overrideable(
-    const at::Tensor& query,
-    const at::Tensor& key,
-    const at::Tensor& value,
-    const std::optional<at::Tensor>& attn_bias,
-    double dropout_p,
-    bool is_causal,
-    bool return_debug_mask,
-    std::optional<double> scale) {
-  return at::native::openreg::_scaled_dot_product_fused_attention_overrideable(
-      query,
-      key,
-      value,
-      attn_bias,
-      dropout_p,
-      is_causal,
-      return_debug_mask,
-      scale);
 }
 
 std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor>
@@ -172,9 +143,6 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("abs.out", &wrapper_abs_out);
   m.impl("quantize_per_tensor", &wrapper_quantize_per_tensor);
   m.impl("_fused_sdp_choice", &wrapper__fused_sdp_choice);
-  m.impl(
-      "_scaled_dot_product_fused_attention_overrideable",
-      &wrapper__scaled_dot_product_fused_attention_overrideable);
   m.impl(
       "_scaled_dot_product_fused_attention_overrideable_backward",
       &wrapper_scaled_dot_product_fused_attention_overrideable_backward);

@@ -24,7 +24,7 @@ class device:
 
     def __init__(self, device):
         self.idx = torch.accelerator._get_device_index(device, optional=True)
-        self.prev_idx = -1
+        self.prev_idx = -1 
 
     def __enter__(self):
         self.prev_idx = torch_openreg._C._exchangeDevice(self.idx)
@@ -64,6 +64,11 @@ def _lazy_init():
     global _initialized, _tog_simulator
     if is_initialized():
         return
+
+    # Replace the global C++ binding with our custom dispatcher patch
+    # from PyTorchSimFrontend.mlir.mlir_sdpa_template import patched_scaled_dot_product_attention
+    # torch._C._nn.scaled_dot_product_attention = patched_scaled_dot_product_attention
+    
     torch_openreg._C._init()
     register_interface_for_device(custom_device(), ExtensionDeviceInterface)
     _initialized = True

@@ -121,7 +121,7 @@ void Simulator::icnt_cycle() {
         front->set_core_id(core_id);
         if (!_icnt->is_full(port_id, front)) {
           int node_id = _dram->get_channel_id(front) / _config.dram_channels_per_partitions;
-          if (core_id == node_id)
+          if (get_partition_id(core_id) == node_id)
             _cores[core_id]->inc_numa_local_access();
           else
             _cores[core_id]->inc_numa_remote_access();

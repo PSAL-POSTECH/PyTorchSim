@@ -59,6 +59,10 @@ class ExtensionOverrides(common.OpOverrides):
         str_val = str(value)
         if "inf" == str_val or "-inf" == str_val or "nan" == str_val:
             value = f"0x{mlir_common.MLIR_INF[str_val][src_type]:x}"
+        elif isinstance(value, bool):
+            value = 1 if value else 0
+            if src_type[0] == "f":
+                value = format(float(value), ".20f")
         # scientific notation check
         elif "e" in str_val:
             value = format(float(value), ".20f")

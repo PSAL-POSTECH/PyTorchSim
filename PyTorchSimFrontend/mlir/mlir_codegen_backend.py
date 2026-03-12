@@ -1423,11 +1423,11 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
             value = float(value)
         else:
             value = int(value)
-
-        if value not in self.consts:
-            self.consts[str(value)+dtype] = self.const_cse.generate(self.const_buffer, f"arith.constant {value} : {dtype}")
-            self.register_var_info(self.consts[str(value)+dtype], [1, dtype])
-        return self.consts[str(value)+dtype]
+        key = str(value)+dtype
+        if key not in self.consts:
+            self.consts[key] = self.const_cse.generate(self.const_buffer, f"arith.constant {value} : {dtype}")
+            self.register_var_info(self.consts[key], [1, dtype])
+        return self.consts[key]
 
     def get_tag_cse(self, value=None, shape="memref<1xi32>"):
         if value is None:

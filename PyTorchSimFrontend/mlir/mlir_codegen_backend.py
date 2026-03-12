@@ -285,7 +285,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         self.gem5_header = IndentedBuffer()
         self.header.writeline("#include <unistd.h>")
         self.header.writeline("#include <stdlib.h>")
-        self.header.writeline("void* __wrap_malloc(size_t size) { return sbrk(size); }")
+        self.header.writeline("void* __wrap_malloc(size_t size) { size = (size + 511UL) & ~511UL; return sbrk(size); }") # Align to 512 bytes
         self.header.writeline("void __wrap_free(void *ptr) { return; }")
         self.reduction_cse = common.CSE(self.newvar_prefix, self.suffix, name_prefix="tmp_acc")
         self.spad_cse = common.CSE(self.newvar_prefix, self.suffix, name_prefix="spad")
@@ -1060,6 +1060,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
                 "vlen" : self.vlen,
                 "arg_attributes" : arg_attributes,
                 "autotune" : True,
+                "origins" : {str(i) for node in nodes for i in node.node.origins},
             },
             source_code=src_code,
         )

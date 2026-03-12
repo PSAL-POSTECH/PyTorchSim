@@ -276,7 +276,7 @@ class MLIRScheduling(BaseScheduling):
         MLIRScheduling.count += 1
         src_code, meta_code = ex_kernel.codegen_nodes(nodes, kernel_name_candidate)
         kernel_name = self.define_kernel(src_code, meta_code, kernel_name_candidate, ex_kernel.vector_lane,
-                           ex_kernel.spad_info, origins= {str(i) for i in nodes[0].node.origins})
+                           ex_kernel.spad_info, origins={str(i) for node in nodes for i in node.node.origins})
         ex_kernel.call_kernel(kernel_name)
         _, args, _, _ = ex_kernel.args.mlir_argdefs()
         args = ", ".join(args)
@@ -332,8 +332,10 @@ class MLIRScheduling(BaseScheduling):
         src_code, meta_code = kernel.codegen_nodes(tile_candidates, render, template_node, prologue_nodes, epilogue_nodes)
 
         with kernel:
+            all_nodes = [template_node] + (epilogue_nodes or []) + (prologue_nodes or [])
+            origins = {str(i) for n in all_nodes for i in n.node.origins}
             kernel_name = self.define_kernel(src_code, meta_code, kernel.kernel_name, kernel.vector_lane, kernel.spad_info,
-                                             kernel.loop_size, origins={str(i) for i in template_node.node.origins})
+                                             kernel.loop_size, origins=origins)
             self.define_function(kernel)
 
         kernel.call_kernel(kernel_name)

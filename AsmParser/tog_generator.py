@@ -37,7 +37,7 @@ class tog_generator:
     StonneTraceCompute= 6
     StonneTraceLoad = 7
     StonneTraceStore = 8
-    def __init__(self, origins="Unknown") -> None:
+    def __init__(self, origins={"Unknown"}) -> None:
         self.module_name = "tile_operation_graph"
         self.module = None
         self.raw_graph = {}
@@ -226,7 +226,7 @@ class tog_generator:
                         offset = w_offset if is_preload else x_offset
                         iter_node.torchsim_overlapping_cycle = max(iter_node.torchsim_cycle - offset, 0)
 
-        origin_info = "_".join(map(str, self.origins))
+        origin_info = self.origins if isinstance(self.origins, str) else "_".join(map(str, self.origins))
         onnx_node_list = [node.to_onnx() for node in node_list] # Exclude root node
         dump_onnx_graph(name, onnx_node_list, vector_lane, origin_info, stonneGraph=stonneGraph)
 

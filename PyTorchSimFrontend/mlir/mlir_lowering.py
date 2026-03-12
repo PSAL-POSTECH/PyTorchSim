@@ -89,6 +89,7 @@ def tuned_flash_sdpa(
         )
         partial_tmpl = MLIRDecodeGQASDPAPartialTemplate([query, key, value], partial_layout, scale, BlkS=BlkS)
         partial = partial_tmpl.generate().output_node()
+        partial.realize()
         reduce_tmpl = MLIRDecodeGQASDPAReduceTemplate([partial], layout, BlkS=BlkS)
         out_node = reduce_tmpl.generate().output_node()
         return (out_node, None, None, None, None, None, None, None, None)

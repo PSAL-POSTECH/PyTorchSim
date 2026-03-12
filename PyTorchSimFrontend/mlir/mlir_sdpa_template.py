@@ -16,17 +16,87 @@ from PyTorchSimFrontend.mlir.mlir_template import MLIRTemplate
 from PyTorchSimFrontend.mlir.mlir_template import MLIRTemplateKernel
 
 
+def _make_offset_map_with_sym(strides, sym_dim, sym_stride, offset=0):
+    """Like _make_offset_map but injects a block symbol ``s`` into dimension ``sym_dim``.
+
+    The effective index for that dimension becomes ``d{sym_dim} + sym_stride * s``.
+    Use this to keep ``affine.for`` bounds static and encode the block contribution
+    directly inside the ``affine.apply`` call that computes the DRAM offset.
+
+    Args:
+        strides:    per-dimension DRAM strides.
+        sym_dim:    which dimension carries the block symbol.
+        sym_stride: multiplier for the symbol (1 for abs-position loops like FLASH
+                    ``%blk``; ``BlkS`` for block-index loops like PARTIAL ``%blk``).
+        offset:     constant layout offset.
+
+    Returns:
+        MLIR affine_map string with one symbol, e.g.
+        ``affine_map<(d0, d1, d2)[s] -> (d0 * 8192 + (d1 + 128 * s) * 64 + d2)>``
+    """
+    n = len(strides)
+    terms = []
+    for j, sv in enumerate(strides):
+        sv = int(sv)
+        if sv == 0:
+            continue
+        if j == sym_dim:
+            inner = f"d{j} + s" if sym_stride == 1 else f"d{j} + {sym_stride} * s"
+            terms.append(f"({inner})" if sv == 1 else f"({inner}) * {sv}")
+        else:
+            terms.append(f"d{j}" if sv == 1 else f"d{j} * {sv}")
+    try:
+        off = int(offset)
+    except (TypeError, ValueError):
+        off = 0
+    if off:
+        terms.append(str(off))
+    dim_str = ", ".join(f"d{j}" for j in range(n))
+    expr = " + ".join(terms) if terms else "0"
+    return f"affine_map<({dim_str})[s] -> ({expr})>"
+
+
+def _make_offset_map(strides, offset=0):
+    """Generate an MLIR affine_map string for a flat DRAM base-address.
+
+    Args:
+        strides: list of integer per-dimension strides.
+                 A stride of 0 means the dimension does not contribute.
+        offset:  constant layout offset (e.g. from IRNode.get_layout().offset).
+
+    Returns:
+        MLIR affine_map string, e.g. ``affine_map<(d0, d1) -> (d0 * 128 + d1)>``
+    """
+    n = len(strides)
+    terms = []
+    for j, s in enumerate(strides):
+        s = int(s)
+        if s == 1:
+            terms.append(f"d{j}")
+        elif s != 0:
+            terms.append(f"d{j} * {s}")
+    try:
+        off = int(offset)
+    except (TypeError, ValueError):
+        off = 0
+    if off:
+        terms.append(str(off))
+    dim_str = ", ".join(f"d{j}" for j in range(n))
+    expr = " + ".join(terms) if terms else "0"
+    return f"affine_map<({dim_str}) -> ({expr})>"
+
+
 def flash_sdpa_args(
-        query : TensorBox, 
-        key   : TensorBox, 
+        query : TensorBox,
+        key   : TensorBox,
         value : TensorBox) -> list:
     """
     Arg processing for flash SDPA.
-    Its logic is based on: 
+    Its logic is based on:
     mm_args() which is in torch._inductor.kernel.mm_common.py (142 line).
     """
 
-    # Materialize input buffers for the codegen backend. 
+    # Materialize input buffers for the codegen backend.
     query, key, value = realize_inputs(query, key, value)
 
     # query : (n, hq, l, e)
@@ -43,7 +113,7 @@ def flash_sdpa_args(
 
     n = V.graph.sizevars.guard_equals(nq, nk)
     n = V.graph.sizevars.guard_equals(nq, nk)
-    
+
     h = V.graph.sizevars.guard_equals(hk, hv)
     s = V.graph.sizevars.guard_equals(sk, sv)
     e = V.graph.sizevars.guard_equals(eq, ek)
@@ -62,7 +132,7 @@ def flash_sdpa_args(
         raise NotImplementedError(
             f"Flash SDPA currently requires e to be a multiple of vlanes (e: {e}, vlanes: {vector_lane})."
         )
-    
+
     # Minimal GQA support (single-batch only for now).
     # We map each query head to a KV head by grouping: hq = g * h.
     if hq != h:
@@ -70,14 +140,14 @@ def flash_sdpa_args(
             raise NotImplementedError("Flash SDPA GQA is currently supported only for n == 1.")
         if (hq % h) != 0:
             raise NotImplementedError(f"Flash SDPA GQA requires hq % h == 0 (hq: {hq}, h: {h}).")
-    
+
     layout = FixedLayout(
         query.get_device(),
         query.get_dtype(),
         [n, hq, l, ev]
     )
 
-    return [n, hq, h, l, s, e, ev, layout, query, key, value]    
+    return [n, hq, h, l, s, e, ev, layout, query, key, value]
 
 def calculate_scale(query: torch.Tensor, scale: float) -> float:
     """
@@ -109,7 +179,7 @@ func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[query, key, value], outp
   {{ kernel.def_sram_buffer("query", q_tile_desc, indent_size=2) }}
   {{ kernel.def_sram_buffer("key", k_tile_desc, indent_size=2) }}
   {{ kernel.def_sram_buffer("value", v_tile_desc, indent_size=2) }}
-  
+
   // Output
   {{ kernel.def_sram_buffer("out", out_tile_desc, indent_size=2) }}
 
@@ -117,7 +187,7 @@ func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[query, key, value], outp
   {{ kernel.def_sram_buffer("mul", mul_tile_desc, indent_size=2) }}
   {{ kernel.def_sram_buffer("max", max_desc, indent_size=2) }}
   {{ kernel.def_sram_buffer("sum", sum_desc, indent_size=2) }}
-  
+
   // Constants
   %c0 = arith.constant 0.0 : {{ data_stype }}
   %c1 = arith.constant 1.0 : {{ data_stype }}
@@ -133,33 +203,36 @@ func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[query, key, value], outp
   %v_neg_inf_2x = arith.constant dense<-1.0e+30> : vector<2x{{ data_stype }}>
 
   %v_scale = vector.broadcast %c_scale : {{ data_stype }} to vector<{{ tile_s }}x{{ data_stype }}>
-  
-  {{ kernel.def_local_vars(indent_size=2) }}  
-  
+
+  {{ kernel.def_local_vars(indent_size=2) }}
+
   affine.for %index0 = 0 to {{ b }} {
     affine.for %index3 = 0 to 1 step 1 {
       affine.for %index1 = 0 to {{ l }} step {{ tile_l }} {
-        {{ kernel.def_dma_op("MVIN", "query", q_idx, q_tile_desc, subtile_size=[1, subtile_l, subtile_e], indent_size=8) }}  
-        
+        %q_dram_offset = affine.apply {{ q_offset_map }}(%index0, %index1, %index3)
+        {{ kernel.def_dma_op("MVIN", "query", [], q_tile_desc, subtile_size=[1, subtile_l, subtile_e], indent_size=8, dram_stride=q_dram_stride, dram_offset="q_dram_offset") }}
+
         affine.vector_store %v0_l, %out_buffer[0, 0, 0] : {{ out_tile_desc.get_mlir_shape(data_stype) }}, vector<{{ kernel.get_spad_size_per_lane(tile_l, tile_e) }}x{{ data_stype }}>
-        affine.vector_store %v_neg_inf_2x, %max_buffer[0, 0] : {{ max_desc.get_mlir_shape(data_stype) }}, vector<2x{{ data_stype }}> 
+        affine.vector_store %v_neg_inf_2x, %max_buffer[0, 0] : {{ max_desc.get_mlir_shape(data_stype) }}, vector<2x{{ data_stype }}>
         affine.vector_store %v0_2x, %sum_buffer[0, 0] : {{ sum_desc.get_mlir_shape(data_stype) }}, vector<2x{{ data_stype }}>
-              
+
         %qt_buffer2D = memref.reinterpret_cast %q_buffer to offset: [0], sizes: [{{ tile_e }}, {{ tile_l }}], strides: [{{ tile_l }}, 1] : {{ q_tile_desc.get_mlir_shape(data_stype) }} to memref<{{ tile_e }}x{{ tile_l }}x{{ data_stype }}, 1>
         %ot_buffer2D = memref.reinterpret_cast %out_buffer to offset: [0], sizes: [{{ tile_e }}, {{ tile_l }}], strides: [{{ tile_l }}, 1] : {{ out_tile_desc.get_mlir_shape(data_stype) }} to memref<{{ tile_e }}x{{ tile_l }}x{{ data_stype }}, 1>
 
         affine.for %index2 = 0 to {{ s }} step {{ tile_s }} {
-          {{ kernel.def_dma_op("MVIN", "key", k_idx, k_tile_desc, subtile_size=[1, subtile_s, subtile_e], indent_size=10) }} 
-          {{ kernel.def_dma_op("MVIN", "value", v_idx, v_tile_desc, subtile_size=[1, subtile_s, subtile_e], indent_size=10) }}
+          %k_dram_offset = affine.apply {{ k_offset_map }}(%index0, %index2, %index3)
+          {{ kernel.def_dma_op("MVIN", "key", [], k_tile_desc, subtile_size=[1, subtile_s, subtile_e], indent_size=10, dram_stride=k_dram_stride, dram_offset="k_dram_offset") }}
+          %v_dram_offset = affine.apply {{ v_offset_map }}(%index0, %index2, %index3)
+          {{ kernel.def_dma_op("MVIN", "value", [], v_tile_desc, subtile_size=[1, subtile_s, subtile_e], indent_size=10, dram_stride=v_dram_stride, dram_offset="v_dram_offset") }}
 
-          affine.vector_store %v0_s, %mul_buffer[0, 0] : {{ mul_tile_desc.get_mlir_shape(data_stype) }}, vector<{{ kernel.get_spad_size_per_lane(tile_s, tile_l) }}x{{ data_stype }}>        
+          affine.vector_store %v0_s, %mul_buffer[0, 0] : {{ mul_tile_desc.get_mlir_shape(data_stype) }}, vector<{{ kernel.get_spad_size_per_lane(tile_s, tile_l) }}x{{ data_stype }}>
 
           %k_buffer2D = memref.reinterpret_cast %k_buffer to offset: [0], sizes: [{{ tile_s }}, {{ tile_e }}], strides: [{{ tile_e }}, 1] : {{ k_tile_desc.get_mlir_shape(data_stype) }} to memref<{{ tile_s }}x{{ tile_e }}x{{ data_stype }}, 1>
           %vt_buffer2D = memref.reinterpret_cast %v_buffer to offset: [0], sizes: [{{ tile_e }}, {{ tile_s }}], strides: [{{ tile_s }}, 1] : {{ v_tile_desc.get_mlir_shape(data_stype) }} to memref<{{ tile_e }}x{{ tile_s }}x{{ data_stype }}, 1>
 
-          
+
           // key @ query.t and scaling.
-          linalg.matmul 
+          linalg.matmul
             { idx_map = array<i32: 1, 0, -1> }
             ins(%k_buffer2D, %qt_buffer2D : memref<{{ tile_s }}x{{ tile_e }}x{{ data_stype }}, 1>, memref<{{ tile_e }}x{{ tile_l }}x{{ data_stype }}, 1>)
             outs(%mul_buffer : {{ mul_tile_desc.get_mlir_shape(data_stype) }})
@@ -168,7 +241,7 @@ func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[query, key, value], outp
           %scaled_mul_vec = arith.mulf %raw_mul_vec, %v_scale :  vector<{{ tile_s }}x{{ data_stype }}>
           affine.vector_store %scaled_mul_vec, %mul_buffer[0, 0] : {{ mul_tile_desc.get_mlir_shape(data_stype) }}, vector<{{ tile_s }}x{{ data_stype }}>
 
-          
+
           // Find new max.
           %old_max = affine.vector_load %max_buffer[0,0] : {{ max_desc.get_mlir_shape(data_stype) }}, vector<2x{{ data_stype }}>
 
@@ -182,22 +255,22 @@ func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[query, key, value], outp
           %max_reduced_1 = vector.multi_reduction <maximumf>, %max_cast, %v_neg_inf_2x [0] : vector<8x2x{{ data_stype }}> to vector<2x{{ data_stype }}>
           %max_shuffled = vector.shuffle %max_reduced_1, %max_reduced_1 [1, 0] : vector<2x{{ data_stype }}>, vector<2x{{ data_stype }}>
           %max_reduced_2 = arith.maximumf %max_reduced_1, %max_shuffled : vector<2x{{ data_stype }}>
-          
-          %new_max = arith.maximumf %max_reduced_2, %old_max : vector<2x{{ data_stype }}> 
+
+          %new_max = arith.maximumf %max_reduced_2, %old_max : vector<2x{{ data_stype }}>
           affine.vector_store %new_max, %max_buffer[0, 0] : {{ max_desc.get_mlir_shape(data_stype) }}, vector<2x{{ data_stype }}>
-          
+
 
           // Compute rescale factors: exp(old_max - new_max)
           %max_diff = arith.subf %old_max, %new_max : vector<2x{{ data_stype }}>
           %max_diff_scalar = vector.extract %max_diff[0] : {{ data_stype }} from vector<2x{{ data_stype }}>
-          
-          %rescale_bcast_e = vector.broadcast %max_diff_scalar : {{ data_stype }} to vector<{{ tile_e }}x{{ data_stype }}> 
-          %exp_rescale_e = math.exp %rescale_bcast_e : vector<{{ tile_e }}x{{ data_stype }}> 
+
+          %rescale_bcast_e = vector.broadcast %max_diff_scalar : {{ data_stype }} to vector<{{ tile_e }}x{{ data_stype }}>
+          %exp_rescale_e = math.exp %rescale_bcast_e : vector<{{ tile_e }}x{{ data_stype }}>
 
           %rescale_bcast_2 = vector.broadcast %max_diff_scalar : {{ data_stype }} to vector<2x{{ data_stype }}>
           %exp_rescale_2 = math.exp %rescale_bcast_2 : vector<2x{{ data_stype }}>
 
-          
+
           // Rescale previous out and sum accumulators
           %old_out = affine.vector_load %ot_buffer2D[0, 0] : memref<{{ tile_e }}x{{ tile_l }}x{{ data_stype }}, 1>, vector<{{ tile_e }}x{{ data_stype }}>
           %rescaled_out = arith.mulf %exp_rescale_e, %old_out : vector<{{ tile_e }}x{{ data_stype }}>
@@ -206,16 +279,16 @@ func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[query, key, value], outp
           %old_sum = affine.vector_load %sum_buffer[0, 0] : {{ sum_desc.get_mlir_shape(data_stype) }}, vector<2x{{ data_stype }}>
           %rescaled_sum = arith.mulf %old_sum, %exp_rescale_2 : vector<2x{{ data_stype }}>
 
-          
+
           // Shift scores and apply exp: exp(x - new_max)
           %scaled_scores_reload = affine.vector_load %mul_buffer[0, 0] : {{ mul_tile_desc.get_mlir_shape(data_stype) }}, vector<{{ tile_s }}x{{ data_stype }}>
           %new_max_scalar = vector.extract %new_max[0] : {{ data_stype }} from vector<2x{{ data_stype }}>
           %new_max_bcast = vector.broadcast %new_max_scalar : {{ data_stype }} to vector<{{ tile_s }}x{{ data_stype }}>
-          
+
           %shifted_scores = arith.subf %scaled_scores_reload, %new_max_bcast : vector<{{ tile_s }}x{{ data_stype }}>
           %exp_scores = math.exp %shifted_scores :  vector<{{ tile_s }}x{{ data_stype }}>
           affine.vector_store %exp_scores, %mul_buffer[0, 0] : {{ mul_tile_desc.get_mlir_shape(data_stype) }}, vector<{{ tile_s }}x{{ data_stype }}>
-          
+
 
           // accumulate current sum
           %chunk_sum_res = affine.for %index5 = 0 to {{ tile_s }} step {{ chunk_size }} iter_args(%iter_sum=%v0_c) -> (vector<{{ chunk_size }}x{{ data_stype }}>) {
@@ -223,19 +296,19 @@ func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[query, key, value], outp
             %local_sum = arith.addf %chunk_exp, %iter_sum : vector<{{ chunk_size }}x{{ data_stype }}>
             affine.yield %local_sum : vector<{{ chunk_size }}x{{ data_stype }}>
           }
-          
+
           %zero_2x = vector.broadcast %c0 : {{ data_stype }} to vector<2x{{ data_stype }}>
           %sum_cast = vector.shape_cast %chunk_sum_res : vector<{{ chunk_size }}x{{ data_stype }}> to vector<{{ chunk_size // 2 }}x2x{{ data_stype }}>
           %sum_reduced_1 = vector.multi_reduction <add>, %sum_cast, %zero_2x [0] : vector<8x2x{{ data_stype }}> to vector<2x{{ data_stype }}>
           %sum_shuffled = vector.shuffle %sum_reduced_1, %sum_reduced_1 [1, 0] : vector<2x{{ data_stype }}>, vector<2x{{ data_stype }}>
           %sum_reduced_2 = arith.addf %sum_reduced_1, %sum_shuffled : vector<2x{{ data_stype }}>
-          
+
           %new_sum = arith.addf %sum_reduced_2, %rescaled_sum :  vector<2x{{ data_stype }}>
           affine.vector_store %new_sum, %sum_buffer[0, 0] : {{ sum_desc.get_mlir_shape(data_stype) }}, vector<2x{{ data_stype }}>
 
-          
+
           // value.t @ mul
-          linalg.matmul 
+          linalg.matmul
             { idx_map = array<i32: 2, 1, -1> }
             ins(%vt_buffer2D, %mul_buffer : memref<{{ tile_e }}x{{ tile_s }}x{{ data_stype }}, 1>, {{ mul_tile_desc.get_mlir_shape(data_stype) }})
             outs(%ot_buffer2D : memref<{{ tile_e }}x{{ tile_l }}x{{ data_stype }}, 1>)
@@ -244,20 +317,21 @@ func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[query, key, value], outp
         // out @ row_sum^(-1)
         %final_row_sum = affine.vector_load %sum_buffer[0, 0] : {{ sum_desc.get_mlir_shape(data_stype) }}, vector<2x{{ data_stype }}>
         %one_2x = vector.broadcast %c1 : {{ data_stype }} to vector<2x{{ data_stype }}>
-        
+
         %reciprocal_row_sum_2x = arith.divf %one_2x, %final_row_sum : vector<2x{{ data_stype }}>
         %reciprocal_scalar = vector.extract %reciprocal_row_sum_2x[0] : {{ data_stype }} from vector<2x{{ data_stype }}>
         %reciprocal_bcast_e = vector.broadcast %reciprocal_scalar : {{ data_stype }} to vector<{{ tile_e }}x{{ data_stype }}>
-        
+
         %accumulated_out = affine.vector_load %ot_buffer2D[0, 0] : memref<{{ tile_e }}x{{ tile_l }}x{{ data_stype }}, 1>, vector<{{ tile_e }}x{{ data_stype }}>
         %stable_final_out = arith.mulf %accumulated_out, %reciprocal_bcast_e : vector<{{ tile_e }}x{{ data_stype }}>
         affine.vector_store %stable_final_out, %ot_buffer2D[0, 0] : memref<{{ tile_e }}x{{ tile_l }}x{{ data_stype }}, 1>, vector<{{ tile_e }}x{{ data_stype }}>
 
-        {{ kernel.store_output(indent_size=8) }}
-      } { accumulation_loop=true } 
+        %out_dram_offset = affine.apply {{ out_offset_map }}(%index0, %index1, %index3)
+        {{ kernel.def_dma_op("MVOUT", "out", [], out_tile_desc, indent_size=8, dram_stride=out_dram_stride, dram_offset="out_dram_offset") }}
+      } { accumulation_loop=true }
     } { outer_loop=true }
   } { outer_loop=true }
-  return 
+  return
 }
 """
 
@@ -273,10 +347,10 @@ class MLIRFlashSDPATemplate(MLIRTemplate):
                prologue_nodes: Optional[List[IRNode]] = None,
                tile_info = None,
                **kwargs):
-    
+
         # Except for kernel, other arguments are usually None.
         query, key, value, out, q_tensor, k_tensor, v_tensor, out_tensor, b, l, s, e, ev, n_extra_node, n_prologue_node = self.extract_info(template_buffer_node, epilogue_nodes, prologue_nodes)
-       
+
         if tile_info is None:
             tile_l, tile_s, tile_e, subtile_l, subtile_s, subtile_e = self.select_tile(kernel, l, s, e, n_extra_node, 0, n_prologue_node)[0]
         else:
@@ -299,10 +373,10 @@ class MLIRFlashSDPATemplate(MLIRTemplate):
 
         # Prepare tile descriptors for input and output tensors.
         # Intermediate buffers (transient data) do not require DRAM settings(dram stride and dram indices)
-        # as they are not synchronized with external DRAM. 
+        # as they are not synchronized with external DRAM.
         # DRAM and SRAM tile shapes must match.
         vlane_stride = 1
-        
+
         # (n, l, s, e, ev)
         loop_dim = [sympy.Symbol("index0"), sympy.Symbol("index1"), sympy.Symbol("index2"), sympy.Symbol("index3")]
 
@@ -317,11 +391,10 @@ class MLIRFlashSDPATemplate(MLIRTemplate):
         q_tile_desc.set_tile_size_stride(q_tile_size, q_tile_stride)
         q_tile_desc.set_name("q_buffer")
         q_tile_desc.offset = query.get_layout().offset
-        # DRAM settings 
+        # DRAM settings
         q_stride = q_tensor.stride()
-        q_idx = [loop_dim[0]*q_stride[0], loop_dim[1]*q_stride[1], loop_dim[3]*q_stride[2]] # To keep index arguemnt order, we used index_list
 
-        # Since we use a weight-stationary approach in the Systolic Array (SA), 
+        # Since we use a weight-stationary approach in the Systolic Array (SA),
         # the split axis of the first operand differs from a standard linear algebra matmul.
         # The first operand (key) must be split along the column axis.
         # This logic aligns with the relationship between the dot product's summation direction and the hardware's accumulation direction in the SA.
@@ -335,7 +408,6 @@ class MLIRFlashSDPATemplate(MLIRTemplate):
         k_tile_desc.offset = key.get_layout().offset
         # DRAM settings
         k_stride = k_tensor.stride()
-        k_idx = [loop_dim[0]*k_stride[0], loop_dim[2]*k_stride[1], loop_dim[3]*k_stride[2]]
 
         # Since we compute mul = key @ query.t, we perform out.t = (value.t @ Softmax(mul).t).t,
         # which simplifies to (value.t @ Softmax(mul))
@@ -349,19 +421,17 @@ class MLIRFlashSDPATemplate(MLIRTemplate):
         v_tile_desc.offset = value.get_layout().offset
         # DRAM settings
         v_stride = v_tensor.stride()
-        v_idx = [loop_dim[0]*v_stride[0], loop_dim[2]*v_stride[1], loop_dim[3]*v_stride[2]] # To keep index arguemnt order, we used index_list
 
         # Output is also stored in transposed format to match the value.t @ Softmax(mul) operation.
         # SRAM settings
         vlane_split_axis = 1
-        out_tile_size = [1, tile_l, tile_e] 
-        out_tile_stride=[0, tile_e, 1] 
+        out_tile_size = [1, tile_l, tile_e]
+        out_tile_stride=[0, tile_e, 1]
         out_tile_desc = mlir_common.MLIRMultiDimTile(out_tile_size, kernel.vector_lane, vlane_split_axis, vlane_stride)
         out_tile_desc.set_tile_size_stride(out_tile_size, out_tile_stride)
         out_tile_desc.set_name("out_buffer")
         # DRAM settings
         out_stride = out.get_layout().stride[1:]
-        out_idx = [loop_dim[0]*out_stride[0], loop_dim[1]*out_stride[1], loop_dim[3]*out_stride[2]]
 
         # Intermediate buffers
 
@@ -393,28 +463,46 @@ class MLIRFlashSDPATemplate(MLIRTemplate):
         # For reduction
         chunk_size = 16
 
+        # DMA strides and offset affine maps (dram_stride + dram_offset style)
+        q_dram_stride  = [int(q_stride[0]), int(q_stride[1]), int(q_stride[2])]
+        k_dram_stride  = [int(k_stride[0]), int(k_stride[1]), int(k_stride[2])]
+        v_dram_stride  = [int(v_stride[0]), int(v_stride[1]), int(v_stride[2])]
+        out_dram_stride = [int(out_stride[0]), int(out_stride[1]), int(out_stride[2])]
+
+        q_offset_map   = _make_offset_map(q_dram_stride,   q_tile_desc.offset)
+        k_offset_map   = _make_offset_map(k_dram_stride,   k_tile_desc.offset)
+        v_offset_map   = _make_offset_map(v_dram_stride,   v_tile_desc.offset)
+        out_offset_map = _make_offset_map(out_dram_stride, 0)
+
+        # Keep out_idx only for epilogue_info (not in render_options)
+        out_idx = [loop_dim[0]*out_stride[0], loop_dim[1]*out_stride[1], loop_dim[3]*out_stride[2]]
+
         kernel.render_options = dict(
             KERNEL_NAME = self.name,
             kernel = kernel,
-            b = b, 
-            l = l, 
-            s = s, 
+            b = b,
+            l = l,
+            s = s,
             e = e,                             # Input sizes (dram)
-            tile_l = tile_l, 
-            tile_s = tile_s, 
+            tile_l = tile_l,
+            tile_s = tile_s,
             tile_e = tile_e,                   # Tile sizes (sram)
-            subtile_l = subtile_l, 
-            subtile_s = subtile_s, 
-            subtile_e = subtile_e,             # Subtile sizes (sram)  
+            subtile_l = subtile_l,
+            subtile_s = subtile_s,
+            subtile_e = subtile_e,             # Subtile sizes (sram)
             data_stype="f32",
-            query = query, 
+            query = query,
             key = key,
-            value = value, 
+            value = value,
             out = out,                         # Inputs and output (dram)
-            q_idx = q_idx,
-            k_idx = k_idx,
-            v_idx = v_idx,
-            out_idx = out_idx,                 # Strides (dram)       
+            q_dram_stride  = q_dram_stride,
+            k_dram_stride  = k_dram_stride,
+            v_dram_stride  = v_dram_stride,
+            out_dram_stride = out_dram_stride, # Per-dim DRAM strides
+            q_offset_map   = q_offset_map,
+            k_offset_map   = k_offset_map,
+            v_offset_map   = v_offset_map,
+            out_offset_map = out_offset_map,   # Affine maps for base address
             q_tile_desc = q_tile_desc,
             k_tile_desc = k_tile_desc,
             v_tile_desc = v_tile_desc,
@@ -423,19 +511,8 @@ class MLIRFlashSDPATemplate(MLIRTemplate):
             max_desc = max_desc,
             sum_desc = sum_desc,               # Intermediate buffer descriptions (sram)
             scale = self.scale,
-            chunk_size = chunk_size,        
-            input_reorder = self.input_reorder # ETC 
-        )
-
-        kernel.epilogue_info = dict(
-            output_node = self.output_node.name,
-            sram_var = "out_buffer",
-            dram_var = "out",
-            dram_idx = out_idx,
-            dram_tile_desc = out_tile_desc,
-            nr_rdim = nr_rdim,
-            r_dim_size = 0,
-            dim_aliasing = epilogue_dim_aliasing
+            chunk_size = chunk_size,
+            input_reorder = self.input_reorder # ETC
         )
 
         code = self._template_from_string(template).render(**kernel.render_options)
@@ -445,7 +522,7 @@ class MLIRFlashSDPATemplate(MLIRTemplate):
     def extract_info(self, template_buffer_node, epilogue_nodes, prologue_nodes):
         if template_buffer_node is not None:
             self.output_node = template_buffer_node
-        
+
         query = self.input_nodes[0]
         key = self.input_nodes[1]
         value = self.input_nodes[2]
@@ -462,7 +539,7 @@ class MLIRFlashSDPATemplate(MLIRTemplate):
         v_tensor = v_tensor.view([-1, v_tensor.shape[-2], v_tensor.shape[-1]])
         out_tensor = out_tensor.view([-1, out_tensor.shape[-2], out_tensor.shape[-1]])
 
-        b, l, s, e, ev = q_tensor.size(0), q_tensor.size(1), k_tensor.size(1), k_tensor.size(2), v_tensor.size(2) 
+        b, l, s, e, ev = q_tensor.size(0), q_tensor.size(1), k_tensor.size(1), k_tensor.size(2), v_tensor.size(2)
 
         n_extra_node = len(epilogue_nodes) if epilogue_nodes is not None else 0
         n_prologue_node = len(prologue_nodes) if prologue_nodes is not None else 0
@@ -549,7 +626,7 @@ func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[query, key, value], outp
         }
       }
 
-      affine.for %s0 = %blk to (%blk + {{ BlkS }}) step {{ tile_s }} {
+      affine.for %s0 = 0 to {{ BlkS }} step {{ tile_s }} {
         // Accumulate score per qsub so K tiles can be shared across qsub.
         affine.for %qsub = 0 to {{ g }} {
           affine.vector_store %v0_s_acc, %score_buffer[%qsub, 0] : {{ score_desc.get_mlir_shape(acc_stype) }}, vector<{{ tile_s }}x{{ acc_stype }}>
@@ -557,11 +634,14 @@ func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[query, key, value], outp
 
         affine.for %k0 = 0 to {{ Dh }} step {{ tile_e }} {
           // Load K slice once for all qsub.
-          {{ kernel.def_dma_op("MVIN", "key", kk_idx, k_tile_desc, subtile_size=[1, tile_s, tile_e], indent_size=10, padding=1) }}
+          %kk_offset = affine.apply {{ kk_offset_map_blk }}(%kv, %s0, %k0)[%blk]
+          {{ kernel.def_dma_op("MVIN", "key", [], k_tile_desc, subtile_size=[1, tile_s, tile_e], indent_size=10, padding=1, dram_stride=k_dram_stride, dram_offset="kk_offset") }}
           %k2D = memref.reinterpret_cast %k_buffer to offset: [0], sizes: [{{ tile_s }}, {{ tile_e }}], strides: [{{ tile_e }}, 1] : {{ k_tile_desc.get_mlir_shape(io_stype) }} to memref<{{ tile_s }}x{{ tile_e }}x{{ io_stype }}, 1>
 
           affine.for %qsub = 0 to {{ g }} {
-            {{ kernel.def_dma_op("MVIN", "query", qk_idx, q_tile_desc, subtile_size=[1, 1, tile_e], indent_size=12) }}
+            %q_head = affine.apply affine_map<(d0, d1) -> (d0 * {{ g }} + d1)>(%kv, %qsub)
+            %qk_offset = affine.apply {{ qk_offset_map }}(%q_head, %k0)
+            {{ kernel.def_dma_op("MVIN", "query", [], q_tile_desc, subtile_size=[1, 1, tile_e], indent_size=12, dram_stride=q_dram_stride, dram_offset="qk_offset") }}
             %q2D = memref.reinterpret_cast %q_buffer to offset: [0], sizes: [{{ tile_e }}, 1], strides: [1, 1] : {{ q_tile_desc.get_mlir_shape(io_stype) }} to memref<{{ tile_e }}x1x{{ io_stype }}, 1>
 
             // mul = k @ q  -> (tile_s x 1) in io dtype, then upcast and accumulate.
@@ -571,9 +651,9 @@ func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[query, key, value], outp
               outs(%mul_buffer : {{ mul_tile_desc.get_mlir_shape(io_stype) }})
 
             %raw_mul_io = affine.vector_load %mul_buffer[0, 0] : {{ mul_tile_desc.get_mlir_shape(io_stype) }}, vector<{{ tile_s }}x{{ io_stype }}>
-            %raw_mul = arith.extf %raw_mul_io : vector<{{ tile_s }}x{{ io_stype }}> to vector<{{ tile_s }}x{{ acc_stype }}>
+            {% if io_stype != acc_stype %}%raw_mul = arith.extf %raw_mul_io : vector<{{ tile_s }}x{{ io_stype }}> to vector<{{ tile_s }}x{{ acc_stype }}>{% endif %}
             %old_score = affine.vector_load %score_buffer[%qsub, 0] : {{ score_desc.get_mlir_shape(acc_stype) }}, vector<{{ tile_s }}x{{ acc_stype }}>
-            %new_score = arith.addf %old_score, %raw_mul : vector<{{ tile_s }}x{{ acc_stype }}>
+            %new_score = arith.addf %old_score, {{ "%raw_mul" if io_stype != acc_stype else "%raw_mul_io" }} : vector<{{ tile_s }}x{{ acc_stype }}>
             affine.vector_store %new_score, %score_buffer[%qsub, 0] : {{ score_desc.get_mlir_shape(acc_stype) }}, vector<{{ tile_s }}x{{ acc_stype }}>
           } { accumulation_loop=true }
         } { accumulation_loop=true }
@@ -618,8 +698,8 @@ func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[query, key, value], outp
             %shifted = arith.subf %scaled_mul_vec, %new_max_bcast : vector<{{ tile_s }}x{{ acc_stype }}>
             %exp_scores = math.exp %shifted : vector<{{ tile_s }}x{{ acc_stype }}>
             // For SV matmul: downcast softmax output to io dtype (common in practice)
-            %exp_scores_io = arith.truncf %exp_scores : vector<{{ tile_s }}x{{ acc_stype }}> to vector<{{ tile_s }}x{{ io_stype }}>
-            affine.vector_store %exp_scores_io, %prob_buffer[%qsub, 0] : {{ prob_desc.get_mlir_shape(io_stype) }}, vector<{{ tile_s }}x{{ io_stype }}>
+            {% if io_stype != acc_stype %}%exp_scores_io = arith.truncf %exp_scores : vector<{{ tile_s }}x{{ acc_stype }}> to vector<{{ tile_s }}x{{ io_stype }}>{% endif %}
+            affine.vector_store {{ "%exp_scores_io" if io_stype != acc_stype else "%exp_scores" }}, %prob_buffer[%qsub, 0] : {{ prob_desc.get_mlir_shape(io_stype) }}, vector<{{ tile_s }}x{{ io_stype }}>
 
             // sum += reduce(exp_scores)
             %sum_cast = vector.shape_cast %exp_scores : vector<{{ tile_s }}x{{ acc_stype }}> to vector<{{ tile_s // 2 }}x2x{{ acc_stype }}>
@@ -635,7 +715,8 @@ func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[query, key, value], outp
         // 2) SV accumulation: for each output dh tile, load V once and share across qsub.
         affine.for %dht = 0 to {{ dh_tiles }} {
           %dh0 = affine.apply affine_map<(d0) -> (d0 * {{ tile_e }})>(%dht)
-          {{ kernel.def_dma_op("MVIN", "value", v_idx, v_tile_desc, subtile_size=[1, tile_s, tile_e], indent_size=10, padding=0) }}
+          %v_offset = affine.apply {{ v_offset_map_blk }}(%kv, %s0, %dh0)[%blk]
+          {{ kernel.def_dma_op("MVIN", "value", [], v_tile_desc, subtile_size=[1, tile_s, tile_e], indent_size=10, padding=0, dram_stride=v_dram_stride, dram_offset="v_offset") }}
           %v2D = memref.reinterpret_cast %v_buffer to offset: [0], sizes: [{{ tile_e }}, {{ tile_s }}], strides: [{{ tile_s }}, 1] : {{ v_tile_desc.get_mlir_shape(io_stype) }} to memref<{{ tile_e }}x{{ tile_s }}x{{ io_stype }}, 1>
 
           affine.for %qsub = 0 to {{ g }} {
@@ -649,9 +730,9 @@ func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[query, key, value], outp
               outs(%out_io_2D : memref<{{ tile_e }}x1x{{ io_stype }}, 1>)
 
             %out_io_vec = affine.vector_load %out_io_buffer[0, 0, 0] : {{ out_io_tile_desc.get_mlir_shape(io_stype) }}, vector<{{ tile_e }}x{{ io_stype }}>
-            %out_io_f32 = arith.extf %out_io_vec : vector<{{ tile_e }}x{{ io_stype }}> to vector<{{ tile_e }}x{{ acc_stype }}>
+            {% if io_stype != acc_stype %}%out_io_f32 = arith.extf %out_io_vec : vector<{{ tile_e }}x{{ io_stype }}> to vector<{{ tile_e }}x{{ acc_stype }}>{% endif %}
             %out_acc_vec = affine.vector_load %out_acc_buffer[%qsub, %dht, 0] : {{ out_acc_tile_desc.get_mlir_shape(acc_stype) }}, vector<{{ tile_e }}x{{ acc_stype }}>
-            %out_acc_new = arith.addf %out_acc_vec, %out_io_f32 : vector<{{ tile_e }}x{{ acc_stype }}>
+            %out_acc_new = arith.addf %out_acc_vec, {{ "%out_io_f32" if io_stype != acc_stype else "%out_io_vec" }} : vector<{{ tile_e }}x{{ acc_stype }}>
             affine.vector_store %out_acc_new, %out_acc_buffer[%qsub, %dht, 0] : {{ out_acc_tile_desc.get_mlir_shape(acc_stype) }}, vector<{{ tile_e }}x{{ acc_stype }}>
           } { accumulation_loop=true }
         } { accumulation_loop=true }
@@ -669,9 +750,11 @@ func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[query, key, value], outp
           %dh0 = affine.apply affine_map<(d0) -> (d0 * {{ tile_e }})>(%dht)
           %acc_out = affine.vector_load %out_acc_buffer[%qsub, %dht, 0] : {{ out_acc_tile_desc.get_mlir_shape(acc_stype) }}, vector<{{ tile_e }}x{{ acc_stype }}>
           %final_out_acc = arith.mulf %acc_out, %inv_bcast : vector<{{ tile_e }}x{{ acc_stype }}>
-          %final_out_io = arith.truncf %final_out_acc : vector<{{ tile_e }}x{{ acc_stype }}> to vector<{{ tile_e }}x{{ io_stype }}>
-          affine.vector_store %final_out_io, %out_io_buffer[0, 0, 0] : {{ out_io_tile_desc.get_mlir_shape(io_stype) }}, vector<{{ tile_e }}x{{ io_stype }}>
-          {{ kernel.store_output(indent_size=10) }}
+          {% if io_stype != acc_stype %}%final_out_io = arith.truncf %final_out_acc : vector<{{ tile_e }}x{{ acc_stype }}> to vector<{{ tile_e }}x{{ io_stype }}>{% endif %}
+          affine.vector_store {{ "%final_out_io" if io_stype != acc_stype else "%final_out_acc" }}, %out_io_buffer[0, 0, 0] : {{ out_io_tile_desc.get_mlir_shape(io_stype) }}, vector<{{ tile_e }}x{{ io_stype }}>
+          %q_head = affine.apply affine_map<(d0, d1) -> (d0 * {{ g }} + d1)>(%kv, %qsub)
+          %out_offset = affine.apply {{ out_offset_map }}(%q_head, %dh0)
+          {{ kernel.def_dma_op("MVOUT", "out", [], out_io_tile_desc, indent_size=10, dram_stride=out_dram_stride, dram_offset="out_offset") }}
         }
       } { outer_loop=true }
     } { outer_loop=true }
@@ -690,7 +773,12 @@ class MLIRDecodeGQASDPATemplate(MLIRTemplate):
 
     def render(self, kernel: MLIRTemplateKernel, template_buffer_node=None, epilogue_nodes=None, prologue_nodes=None, tile_info=None, **kwargs):
         # Decode-only: q is (B,Hq,1,Dh)
-        query, key, value, out = self.input_nodes[0], self.input_nodes[1], self.input_nodes[2], self.output_node
+        # Use template_buffer_node (the actual V.graph-registered CUDATemplateBuffer with its
+        # real name e.g. "buf0") when available, instead of the placeholder self.output_node
+        # (always named "buf_out").  This ensures output_buffers["buf0"] maps correctly
+        # in mlir_argdefs, which looks up buffer_types by the actual DRAM buffer name.
+        query, key, value, out = self.input_nodes[0], self.input_nodes[1], self.input_nodes[2], \
+            template_buffer_node if template_buffer_node is not None else self.output_node
 
         # Materialize tensors for stride metadata
         q_tensor4 = empty_strided(query.layout.size, query.layout.stride)
@@ -765,14 +853,7 @@ class MLIRDecodeGQASDPATemplate(MLIRTemplate):
         sum_desc.set_tile_size_stride([g, 2], [2, 1])
         sum_desc.set_name("sum_buffer")
 
-        # Indices
-        kv = sympy.Symbol("kv")
-        qsub = sympy.Symbol("qsub")
-        dh0 = sympy.Symbol("dh0")
-        k0 = sympy.Symbol("k0")
-        s0 = sympy.Symbol("s0")
-        q_head = kv * g + qsub
-
+        # Strides from 3D tensor views
         q_stride = q_tensor.stride()
         k_stride = k_tensor.stride()
         v_stride = v_tensor.stride()
@@ -780,11 +861,34 @@ class MLIRDecodeGQASDPATemplate(MLIRTemplate):
         out_tensor = empty_strided(out.get_layout().size, out.get_layout().stride).view(Hq, 1, Dh)
         out_stride = out_tensor.stride()
 
-        # QK indices use k0 reduction over Dh
-        qk_idx = [q_head * q_stride[0], sympy.Integer(0), k0 * q_stride[2]]
-        kk_idx = [kv * k_stride[0], s0 * k_stride[1], k0 * k_stride[2]]
-        # V and output use dh0 tile offset
-        v_idx = [kv * v_stride[0], s0 * v_stride[1], dh0 * v_stride[2]]
+        # DMA strides (per-dimension DRAM strides for each tile)
+        k_dram_stride  = [int(k_stride[0]), int(k_stride[1]), int(k_stride[2])]
+        # Q: q_head is pre-computed in template; stride[1]=0 since Lq=1
+        q_dram_stride  = [int(q_stride[0]), 0, int(q_stride[2])]
+        v_dram_stride  = [int(v_stride[0]), int(v_stride[1]), int(v_stride[2])]
+        # out: q_head is pre-computed; stride[1]=0 since Lq=1
+        out_dram_stride = [int(out_stride[0]), 0, int(out_stride[2])]
+
+        # Affine maps for flat DRAM base address (used with pre-computed loop var expressions)
+        # K: offset(kv, s0, k0)
+        kk_offset_map = _make_offset_map(k_dram_stride, k_tile_desc.offset)
+        # Q: offset(q_head, k0)  -- q_head = kv*g+qsub pre-computed in template
+        qk_offset_map = _make_offset_map([int(q_stride[0]), int(q_stride[2])], q_tile_desc.offset)
+        # V: offset(kv, s0, dh0)
+        v_offset_map  = _make_offset_map(v_dram_stride, v_tile_desc.offset)
+        # Out: offset(q_head, dh0)  -- q_head pre-computed in template
+        out_offset_map = _make_offset_map([int(out_stride[0]), int(out_stride[2])], 0)
+        # Blk-symbol variants: %s0 is relative (0..BlkS-1), %blk is the absolute
+        # block start (steps by BlkS), so actual_s = s0_rel + 1*blk → sym_stride=1.
+        kk_offset_map_blk = _make_offset_map_with_sym(k_dram_stride, sym_dim=1, sym_stride=1, offset=k_tile_desc.offset)
+        v_offset_map_blk  = _make_offset_map_with_sym(v_dram_stride, sym_dim=1, sym_stride=1, offset=v_tile_desc.offset)
+
+        # Keep sympy-based out_idx only for epilogue_info (not in render_options)
+        kv      = sympy.Symbol("kv")
+        qsub    = sympy.Symbol("qsub")
+        dh0     = sympy.Symbol("dh0")
+        s0      = sympy.Symbol("s0")
+        q_head  = kv * g + qsub
         out_idx = [q_head * out_stride[0], sympy.Integer(0), dh0 * out_stride[2]]
 
         kernel.loop_size = [tile_s, tile_e, 1]
@@ -819,22 +923,19 @@ class MLIRDecodeGQASDPATemplate(MLIRTemplate):
             prob_desc=prob_desc,
             max_desc=max_desc,
             sum_desc=sum_desc,
-            qk_idx=qk_idx,
-            kk_idx=kk_idx,
-            v_idx=v_idx,
-            out_idx=out_idx,
+            # DMA strides
+            k_dram_stride=k_dram_stride,
+            q_dram_stride=q_dram_stride,
+            v_dram_stride=v_dram_stride,
+            out_dram_stride=out_dram_stride,
+            # Affine offset maps
+            kk_offset_map=kk_offset_map,
+            qk_offset_map=qk_offset_map,
+            v_offset_map=v_offset_map,
+            out_offset_map=out_offset_map,
+            kk_offset_map_blk=kk_offset_map_blk,
+            v_offset_map_blk=v_offset_map_blk,
             input_reorder=self.input_reorder,
-        )
-
-        kernel.epilogue_info = dict(
-            output_node=self.output_node.name,
-            sram_var="out_io_buffer",
-            dram_var="out",
-            dram_idx=out_idx,
-            dram_tile_desc=out_io_tile_desc,
-            nr_rdim=0,
-            r_dim_size=0,
-            dim_aliasing={"kv": "kv", "qsub": "qsub", "dh0": "dh0", "s0": "s0"},
         )
 
         return self._template_from_string(DECODE_GQA_SDPA_TEMPLATE).render(**kernel.render_options)
@@ -891,27 +992,30 @@ func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[query, key, value], outp
         }
       }
 
-      affine.for %s0 = ({{ BlkS }} * %blk) to ({{ BlkS }} * (%blk + 1)) step {{ tile_s }} {
+      affine.for %s0 = 0 to {{ BlkS }} step {{ tile_s }} {
         // Accumulate score per qsub so K tiles can be shared across qsub.
         affine.for %qsub = 0 to {{ g }} {
           affine.vector_store %v0_s, %score_buffer[%qsub, 0] : {{ score_desc.get_mlir_shape("f32") }}, vector<{{ tile_s }}xf32>
         }
 
         affine.for %k0 = 0 to {{ Dh }} step {{ tile_e }} {
-          {{ kernel.def_dma_op("MVIN", "key", kk_idx, k_tile_desc, subtile_size=[1, tile_s, tile_e], indent_size=10, padding=1) }}
+          %kk_offset = affine.apply {{ kk_offset_map_blk }}(%kv, %s0, %k0)[%blk]
+          {{ kernel.def_dma_op("MVIN", "key", [], k_tile_desc, subtile_size=[1, tile_s, tile_e], indent_size=10, padding=1, dram_stride=k_dram_stride, dram_offset="kk_offset") }}
           %k2D = memref.reinterpret_cast %k_buffer to offset: [0], sizes: [{{ tile_s }}, {{ tile_e }}], strides: [{{ tile_e }}, 1] : {{ k_tile_desc.get_mlir_shape(io_stype) }} to memref<{{ tile_s }}x{{ tile_e }}x{{ io_stype }}, 1>
 
           affine.for %qsub = 0 to {{ g }} {
-            {{ kernel.def_dma_op("MVIN", "query", qk_idx, q_tile_desc, subtile_size=[1, 1, tile_e], indent_size=12) }}
+            %q_head = affine.apply affine_map<(d0, d1) -> (d0 * {{ g }} + d1)>(%kv, %qsub)
+            %qk_offset = affine.apply {{ qk_offset_map }}(%q_head, %k0)
+            {{ kernel.def_dma_op("MVIN", "query", [], q_tile_desc, subtile_size=[1, 1, tile_e], indent_size=12, dram_stride=q_dram_stride, dram_offset="qk_offset") }}
             %q2D = memref.reinterpret_cast %q_buffer to offset: [0], sizes: [{{ tile_e }}, 1], strides: [1, 1] : {{ q_tile_desc.get_mlir_shape(io_stype) }} to memref<{{ tile_e }}x1x{{ io_stype }}, 1>
             linalg.matmul
               { idx_map = array<i32: 1, 0, -1> }
               ins(%k2D, %q2D : memref<{{ tile_s }}x{{ tile_e }}x{{ io_stype }}, 1>, memref<{{ tile_e }}x1x{{ io_stype }}, 1>)
               outs(%mul_buffer : {{ mul_tile_desc.get_mlir_shape(io_stype) }})
             %raw_mul_io = affine.vector_load %mul_buffer[0, 0] : {{ mul_tile_desc.get_mlir_shape(io_stype) }}, vector<{{ tile_s }}x{{ io_stype }}>
-            %raw_mul = arith.extf %raw_mul_io : vector<{{ tile_s }}x{{ io_stype }}> to vector<{{ tile_s }}xf32>
+            {% if io_stype != "f32" %}%raw_mul = arith.extf %raw_mul_io : vector<{{ tile_s }}x{{ io_stype }}> to vector<{{ tile_s }}xf32>{% endif %}
             %old_score = affine.vector_load %score_buffer[%qsub, 0] : {{ score_desc.get_mlir_shape("f32") }}, vector<{{ tile_s }}xf32>
-            %new_score = arith.addf %old_score, %raw_mul : vector<{{ tile_s }}xf32>
+            %new_score = arith.addf %old_score, {{ "%raw_mul" if io_stype != "f32" else "%raw_mul_io" }} : vector<{{ tile_s }}xf32>
             affine.vector_store %new_score, %score_buffer[%qsub, 0] : {{ score_desc.get_mlir_shape("f32") }}, vector<{{ tile_s }}xf32>
           } { accumulation_loop=true }
         } { accumulation_loop=true }
@@ -951,8 +1055,8 @@ func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[query, key, value], outp
           %new_max_bcast = vector.broadcast %new_max_scalar : f32 to vector<{{ tile_s }}xf32>
           %shifted = arith.subf %scaled, %new_max_bcast : vector<{{ tile_s }}xf32>
           %exp_scores = math.exp %shifted : vector<{{ tile_s }}xf32>
-          %exp_scores_io = arith.truncf %exp_scores : vector<{{ tile_s }}xf32> to vector<{{ tile_s }}x{{ io_stype }}>
-          affine.vector_store %exp_scores_io, %prob_buffer[%qsub, 0] : {{ prob_desc.get_mlir_shape(io_stype) }}, vector<{{ tile_s }}x{{ io_stype }}>
+          {% if io_stype != "f32" %}%exp_scores_io = arith.truncf %exp_scores : vector<{{ tile_s }}xf32> to vector<{{ tile_s }}x{{ io_stype }}>{% endif %}
+          affine.vector_store {{ "%exp_scores_io" if io_stype != "f32" else "%exp_scores" }}, %prob_buffer[%qsub, 0] : {{ prob_desc.get_mlir_shape(io_stype) }}, vector<{{ tile_s }}x{{ io_stype }}>
 
           %sum_cast = vector.shape_cast %exp_scores : vector<{{ tile_s }}xf32> to vector<{{ tile_s // 2 }}x2xf32>
           %zero_2x = vector.broadcast %c0 : f32 to vector<2xf32>
@@ -966,7 +1070,8 @@ func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[query, key, value], outp
         // For each output dh tile, load V once and share it across qsub.
         affine.for %dht = 0 to {{ dh_tiles }} {
           %dh0 = affine.apply affine_map<(d0) -> (d0 * {{ tile_e }})>(%dht)
-          {{ kernel.def_dma_op("MVIN", "value", v_idx, v_tile_desc, subtile_size=[1, tile_s, tile_e], indent_size=10, padding=0) }}
+          %v_offset = affine.apply {{ v_offset_map_blk }}(%kv, %s0, %dh0)[%blk]
+          {{ kernel.def_dma_op("MVIN", "value", [], v_tile_desc, subtile_size=[1, tile_s, tile_e], indent_size=10, padding=0, dram_stride=v_dram_stride, dram_offset="v_offset") }}
           %v2D = memref.reinterpret_cast %v_buffer to offset: [0], sizes: [{{ tile_e }}, {{ tile_s }}], strides: [{{ tile_s }}, 1] : {{ v_tile_desc.get_mlir_shape(io_stype) }} to memref<{{ tile_e }}x{{ tile_s }}x{{ io_stype }}, 1>
 
           affine.for %qsub = 0 to {{ g }} {
@@ -980,9 +1085,9 @@ func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[query, key, value], outp
               outs(%out_io_2D : memref<{{ tile_e }}x1x{{ io_stype }}, 1>)
 
             %out_io_vec = affine.vector_load %out_io_buffer[0, 0, 0] : {{ out_io_tile_desc.get_mlir_shape(io_stype) }}, vector<{{ tile_e }}x{{ io_stype }}>
-            %out_io_f32 = arith.extf %out_io_vec : vector<{{ tile_e }}x{{ io_stype }}> to vector<{{ tile_e }}xf32>
+            {% if io_stype != "f32" %}%out_io_f32 = arith.extf %out_io_vec : vector<{{ tile_e }}x{{ io_stype }}> to vector<{{ tile_e }}xf32>{% endif %}
             %out_acc_vec = affine.vector_load %out_acc_buffer[%qsub, %dht, 0] : {{ out_acc_tile_desc.get_mlir_shape("f32") }}, vector<{{ tile_e }}xf32>
-            %out_acc_new = arith.addf %out_acc_vec, %out_io_f32 : vector<{{ tile_e }}xf32>
+            %out_acc_new = arith.addf %out_acc_vec, {{ "%out_io_f32" if io_stype != "f32" else "%out_io_vec" }} : vector<{{ tile_e }}xf32>
             affine.vector_store %out_acc_new, %out_acc_buffer[%qsub, %dht, 0] : {{ out_acc_tile_desc.get_mlir_shape("f32") }}, vector<{{ tile_e }}xf32>
           } { accumulation_loop=true }
         } { accumulation_loop=true }
@@ -1000,89 +1105,15 @@ func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[query, key, value], outp
 
         affine.for %dht = 0 to {{ dh_tiles }} {
           %out_vec = affine.vector_load %out_acc_buffer[%qsub, %dht, 0] : {{ out_acc_tile_desc.get_mlir_shape("f32") }}, vector<{{ tile_e }}xf32>
-          %packed = vector.concat %out_vec, %ml1 : vector<{{ tile_pack }}xf32>
+          %packed = vector.shuffle %out_vec, %ml1 [{{ range(tile_pack) | join(', ') }}] : vector<{{ tile_e }}xf32>, vector<{{ tile_e }}xf32>
           affine.vector_store %packed, %partial_buffer[0, 0, 0] : {{ partial_tile_desc.get_mlir_shape("f32") }}, vector<{{ tile_pack }}xf32>
-          {{ kernel.store_output(indent_size=10) }}
+          %q_head = affine.apply affine_map<(d0, d1) -> (d0 * {{ g }} + d1)>(%kv, %qsub)
+          %gh = affine.apply affine_map<(d0, d1) -> (d0 * {{ dh_tiles }} + d1)>(%q_head, %dht)
+          %partial_offset = affine.apply {{ partial_offset_map }}(%gh, %blk)
+          {{ kernel.def_dma_op("MVOUT", "partial", [], partial_tile_desc, indent_size=10, dram_stride=partial_dram_stride, dram_offset="partial_offset") }}
         }
       } { outer_loop=true }
     } { outer_loop=true }
-  } { outer_loop=true }
-  return
-}
-"""
-
-
-DECODE_GQA_SDPA_REDUCE_TEMPLATE = r"""
-// Decode GQA SDPA reduce kernel: merge partials across blocks
-// Input partial shape: (HgDhTiles, nblk, tile_pack)
-{{kernel.def_global_vars()}}
-
-func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[partial], outputs=[out], names_str="partial, out", input_reorder=input_reorder)}} {
-  {{ kernel.def_sram_buffer("partial", partial_tile_desc, indent_size=2) }}
-  {{ kernel.def_sram_buffer("out_acc", out_acc_tile_desc, indent_size=2) }}
-  {{ kernel.def_sram_buffer("max", max_desc, indent_size=2) }}
-  {{ kernel.def_sram_buffer("sum", sum_desc, indent_size=2) }}
-
-  %c0 = arith.constant 0.0 : f32
-  %c1 = arith.constant 1.0 : f32
-  %c_neg_inf = arith.constant -1.0e+30 : f32
-  %v0_e = arith.constant dense<0.0> : vector<{{ tile_e }}xf32>
-  %v0_2x = arith.constant dense<0.0> : vector<2xf32>
-  %v_neg_inf_2x = arith.constant dense<-1.0e+30> : vector<2xf32>
-
-  {{ kernel.def_local_vars(indent_size=2) }}
-
-  affine.for %gh = 0 to {{ HgDhTiles }} {
-    // reset merged accumulators
-    affine.vector_store %v0_e, %out_acc_buffer[0, 0, 0] : {{ out_acc_tile_desc.get_mlir_shape("f32") }}, vector<{{ tile_e }}xf32>
-    affine.vector_store %v_neg_inf_2x, %max_buffer[0, 0] : {{ max_desc.get_mlir_shape("f32") }}, vector<2xf32>
-    affine.vector_store %v0_2x, %sum_buffer[0, 0] : {{ sum_desc.get_mlir_shape("f32") }}, vector<2xf32>
-
-    affine.for %blk = 0 to {{ nblk }} {
-      {{ kernel.def_dma_op("MVIN", "partial", partial_idx, partial_tile_desc, subtile_size=[1, 1, tile_pack], indent_size=8) }}
-      %p = affine.vector_load %partial_buffer[0, 0, 0] : {{ partial_tile_desc.get_mlir_shape("f32") }}, vector<{{ tile_pack }}xf32>
-      %p2 = vector.shape_cast %p : vector<{{ tile_pack }}xf32> to vector<2x{{ tile_e }}xf32>
-      %o_j = vector.extract %p2[0] : vector<{{ tile_e }}xf32> from vector<2x{{ tile_e }}xf32>
-      %ml_j = vector.extract %p2[1] : vector<{{ tile_e }}xf32> from vector<2x{{ tile_e }}xf32>
-      %m_j = vector.extract %ml_j[0] : f32 from vector<{{ tile_e }}xf32>
-      %l_j = vector.extract %ml_j[1] : f32 from vector<{{ tile_e }}xf32>
-
-      %old_max = affine.vector_load %max_buffer[0, 0] : {{ max_desc.get_mlir_shape("f32") }}, vector<2xf32>
-      %m_old = vector.extract %old_max[0] : f32 from vector<2xf32>
-      %m_new = arith.maximumf %m_old, %m_j : f32
-      %m_new2 = vector.broadcast %m_new : f32 to vector<2xf32>
-      affine.vector_store %m_new2, %max_buffer[0, 0] : {{ max_desc.get_mlir_shape("f32") }}, vector<2xf32>
-
-      %diff_old = arith.subf %m_old, %m_new : f32
-      %diff_j = arith.subf %m_j, %m_new : f32
-      %scale_old = math.exp %diff_old : f32
-      %scale_j = math.exp %diff_j : f32
-      %scale_old_e = vector.broadcast %scale_old : f32 to vector<{{ tile_e }}xf32>
-      %scale_j_e = vector.broadcast %scale_j : f32 to vector<{{ tile_e }}xf32>
-
-      %o_old = affine.vector_load %out_acc_buffer[0, 0, 0] : {{ out_acc_tile_desc.get_mlir_shape("f32") }}, vector<{{ tile_e }}xf32>
-      %o_old_rs = arith.mulf %o_old, %scale_old_e : vector<{{ tile_e }}xf32>
-      %o_j_rs = arith.mulf %o_j, %scale_j_e : vector<{{ tile_e }}xf32>
-      %o_new = arith.addf %o_old_rs, %o_j_rs : vector<{{ tile_e }}xf32>
-      affine.vector_store %o_new, %out_acc_buffer[0, 0, 0] : {{ out_acc_tile_desc.get_mlir_shape("f32") }}, vector<{{ tile_e }}xf32>
-
-      %old_sum = affine.vector_load %sum_buffer[0, 0] : {{ sum_desc.get_mlir_shape("f32") }}, vector<2xf32>
-      %l_old = vector.extract %old_sum[0] : f32 from vector<2xf32>
-      %l_new = arith.addf (arith.mulf %l_old, %scale_old : f32), (arith.mulf %l_j, %scale_j : f32) : f32
-      %l_new2 = vector.broadcast %l_new : f32 to vector<2xf32>
-      affine.vector_store %l_new2, %sum_buffer[0, 0] : {{ sum_desc.get_mlir_shape("f32") }}, vector<2xf32>
-    } { accumulation_loop=true }
-
-    // finalize: out = o / l
-    %sum2 = affine.vector_load %sum_buffer[0, 0] : {{ sum_desc.get_mlir_shape("f32") }}, vector<2xf32>
-    %l = vector.extract %sum2[0] : f32 from vector<2xf32>
-    %inv = arith.divf %c1, %l : f32
-    %inv_e = vector.broadcast %inv : f32 to vector<{{ tile_e }}xf32>
-    %o = affine.vector_load %out_acc_buffer[0, 0, 0] : {{ out_acc_tile_desc.get_mlir_shape("f32") }}, vector<{{ tile_e }}xf32>
-    %out_f32 = arith.mulf %o, %inv_e : vector<{{ tile_e }}xf32>
-    %out_io = arith.truncf %out_f32 : vector<{{ tile_e }}xf32> to vector<{{ tile_e }}x{{ io_stype }}>
-    affine.vector_store %out_io, %out_buffer[0, 0, 0] : {{ out_tile_desc.get_mlir_shape(io_stype) }}, vector<{{ tile_e }}x{{ io_stype }}>
-    {{ kernel.store_output(indent_size=4) }}
   } { outer_loop=true }
   return
 }
@@ -1097,7 +1128,8 @@ class MLIRDecodeGQASDPAPartialTemplate(MLIRTemplate):
 
     def render(self, kernel: MLIRTemplateKernel, template_buffer_node=None, epilogue_nodes=None, prologue_nodes=None, tile_info=None, **kwargs):
         query, key, value = self.input_nodes[0], self.input_nodes[1], self.input_nodes[2]
-        partial = self.output_node
+        # Use the actual registered buffer node (e.g. "buf0") instead of the placeholder "buf_out".
+        partial = template_buffer_node if template_buffer_node is not None else self.output_node
 
         q_tensor4 = empty_strided(query.layout.size, query.layout.stride)
         k_tensor4 = empty_strided(key.layout.size, key.layout.stride)
@@ -1173,28 +1205,39 @@ class MLIRDecodeGQASDPAPartialTemplate(MLIRTemplate):
         partial_tile_desc.set_tile_size_stride([1, 1, tile_pack], [0, tile_pack, 1])
         partial_tile_desc.set_name("partial_buffer")
 
-        # Indices
-        kv = sympy.Symbol("kv")
-        qsub = sympy.Symbol("qsub")
-        dht = sympy.Symbol("dht")
-        dh0 = sympy.Symbol("dh0")
-        k0 = sympy.Symbol("k0")
-        blk = sympy.Symbol("blk")
-        s0 = sympy.Symbol("s0")
-        q_head = kv * g + qsub
-
+        # Strides from 3D tensor views
         q_stride = q_tensor.stride()
         k_stride = k_tensor.stride()
         v_stride = v_tensor.stride()
 
-        qk_idx = [q_head * q_stride[0], sympy.Integer(0), k0 * q_stride[2]]
-        kk_idx = [kv * k_stride[0], s0 * k_stride[1], k0 * k_stride[2]]
-        v_idx = [kv * v_stride[0], s0 * v_stride[1], dh0 * v_stride[2]]
-
         # partial tensor is view(HgDhTiles, nblk, tile_pack) contiguous
         p_tensor = empty_strided(partial.get_layout().size, partial.get_layout().stride).view(HgDhTiles, nblk, tile_pack)
         p_stride = p_tensor.stride()
-        # group head index: ((kv*g + qsub)*dh_tiles + dht)
+
+        # DMA strides
+        k_dram_stride = [int(k_stride[0]), int(k_stride[1]), int(k_stride[2])]
+        q_dram_stride = [int(q_stride[0]), 0, int(q_stride[2])]
+        v_dram_stride = [int(v_stride[0]), int(v_stride[1]), int(v_stride[2])]
+        partial_dram_stride = [int(p_stride[0]), int(p_stride[1]), 1]
+
+        # Affine offset maps
+        kk_offset_map   = _make_offset_map(k_dram_stride, k_tile_desc.offset)
+        qk_offset_map   = _make_offset_map([int(q_stride[0]), int(q_stride[2])], q_tile_desc.offset)
+        v_offset_map    = _make_offset_map(v_dram_stride, v_tile_desc.offset)
+        # partial: offset(gh, blk)  -- gh = (kv*g+qsub)*dh_tiles+dht, pre-computed in template
+        partial_offset_map = _make_offset_map([int(p_stride[0]), int(p_stride[1])], 0)
+        # Blk-symbol variants: %s0 is relative (0..BlkS-1), %blk is a block index (0..nblk-1),
+        # so actual_s = s0_rel + BlkS * blk → sym_stride=BlkS.
+        kk_offset_map_blk = _make_offset_map_with_sym(k_dram_stride, sym_dim=1, sym_stride=int(BlkS), offset=k_tile_desc.offset)
+        v_offset_map_blk  = _make_offset_map_with_sym(v_dram_stride, sym_dim=1, sym_stride=int(BlkS), offset=v_tile_desc.offset)
+
+        # Keep sympy-based indices only for epilogue_info
+        kv   = sympy.Symbol("kv")
+        qsub = sympy.Symbol("qsub")
+        dht  = sympy.Symbol("dht")
+        dh0  = sympy.Symbol("dh0")
+        blk  = sympy.Symbol("blk")
+        q_head = kv * g + qsub
         gh = (kv * g + qsub) * dh_tiles + dht
         partial_idx = [gh * p_stride[0], blk * p_stride[1], sympy.Integer(0)]
 
@@ -1230,24 +1273,108 @@ class MLIRDecodeGQASDPAPartialTemplate(MLIRTemplate):
             max_desc=max_desc,
             sum_desc=sum_desc,
             partial_tile_desc=partial_tile_desc,
-            qk_idx=qk_idx,
-            kk_idx=kk_idx,
-            v_idx=v_idx,
-            partial_idx=partial_idx,
+            # DMA strides
+            k_dram_stride=k_dram_stride,
+            q_dram_stride=q_dram_stride,
+            v_dram_stride=v_dram_stride,
+            partial_dram_stride=partial_dram_stride,
+            # Affine offset maps
+            kk_offset_map=kk_offset_map,
+            qk_offset_map=qk_offset_map,
+            v_offset_map=v_offset_map,
+            partial_offset_map=partial_offset_map,
+            kk_offset_map_blk=kk_offset_map_blk,
+            v_offset_map_blk=v_offset_map_blk,
             input_reorder=self.input_reorder,
         )
 
-        kernel.epilogue_info = dict(
-            output_node=self.output_node.name,
-            sram_var="partial_buffer",
-            dram_var="partial",
-            dram_idx=partial_idx,
-            dram_tile_desc=partial_tile_desc,
-            nr_rdim=0,
-            r_dim_size=0,
-            dim_aliasing={"kv": "kv", "qsub": "qsub", "dht": "dht", "dh0": "dh0", "k0": "k0", "blk": "blk", "s0": "s0"},
-        )
         return self._template_from_string(DECODE_GQA_SDPA_PARTIAL_TEMPLATE).render(**kernel.render_options)
+
+
+DECODE_GQA_SDPA_REDUCE_TEMPLATE = r"""
+// Decode GQA SDPA reduce kernel: merge partials across blocks
+// Input partial shape: (HgDhTiles, nblk, tile_pack)
+{{kernel.def_global_vars()}}
+
+func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[partial], outputs=[out], names_str="partial, out", input_reorder=input_reorder)}} {
+  {{ kernel.def_sram_buffer("partial", partial_tile_desc, indent_size=2) }}
+  {{ kernel.def_sram_buffer("out_acc", out_acc_tile_desc, indent_size=2) }}
+  {{ kernel.def_sram_buffer("out", out_tile_desc, indent_size=2) }}
+  {{ kernel.def_sram_buffer("max", max_desc, indent_size=2) }}
+  {{ kernel.def_sram_buffer("sum", sum_desc, indent_size=2) }}
+
+  %c0 = arith.constant 0.0 : f32
+  %c1 = arith.constant 1.0 : f32
+  %c_neg_inf = arith.constant -1.0e+30 : f32
+  %v0_e = arith.constant dense<0.0> : vector<{{ tile_e }}xf32>
+  %v0_2x = arith.constant dense<0.0> : vector<2xf32>
+  %v_neg_inf_2x = arith.constant dense<-1.0e+30> : vector<2xf32>
+
+  {{ kernel.def_local_vars(indent_size=2) }}
+
+  affine.for %gh = 0 to {{ HgDhTiles }} {
+    // reset merged accumulators
+    affine.vector_store %v0_e, %out_acc_buffer[0, 0, 0] : {{ out_acc_tile_desc.get_mlir_shape("f32") }}, vector<{{ tile_e }}xf32>
+    affine.vector_store %v_neg_inf_2x, %max_buffer[0, 0] : {{ max_desc.get_mlir_shape("f32") }}, vector<2xf32>
+    affine.vector_store %v0_2x, %sum_buffer[0, 0] : {{ sum_desc.get_mlir_shape("f32") }}, vector<2xf32>
+
+    affine.for %blk = 0 to {{ nblk }} {
+      %partial_offset = affine.apply {{ partial_offset_map }}(%gh, %blk)
+      {{ kernel.def_dma_op("MVIN", "partial", [], partial_tile_desc, subtile_size=[1, 1, tile_pack], indent_size=8, dram_stride=partial_dram_stride, dram_offset="partial_offset") }}
+      %p = affine.vector_load %partial_buffer[0, 0, 0] : {{ partial_tile_desc.get_mlir_shape("f32") }}, vector<{{ tile_pack }}xf32>
+      %p2 = vector.shape_cast %p : vector<{{ tile_pack }}xf32> to vector<2x{{ tile_e }}xf32>
+      %o_j = vector.extract %p2[0] : vector<{{ tile_e }}xf32> from vector<2x{{ tile_e }}xf32>
+      %ml_j = vector.extract %p2[1] : vector<{{ tile_e }}xf32> from vector<2x{{ tile_e }}xf32>
+      %m_j = vector.extract %ml_j[0] : f32 from vector<{{ tile_e }}xf32>
+      %l_j = vector.extract %ml_j[1] : f32 from vector<{{ tile_e }}xf32>
+
+      %old_max = affine.vector_load %max_buffer[0, 0] : {{ max_desc.get_mlir_shape("f32") }}, vector<2xf32>
+      %m_old = vector.extract %old_max[0] : f32 from vector<2xf32>
+      %m_new = arith.maximumf %m_old, %m_j : f32
+      %m_new2 = vector.broadcast %m_new : f32 to vector<2xf32>
+      affine.vector_store %m_new2, %max_buffer[0, 0] : {{ max_desc.get_mlir_shape("f32") }}, vector<2xf32>
+
+      %diff_old = arith.subf %m_old, %m_new : f32
+      %diff_j = arith.subf %m_j, %m_new : f32
+      %diff_old_v = vector.broadcast %diff_old : f32 to vector<1xf32>
+      %diff_j_v = vector.broadcast %diff_j : f32 to vector<1xf32>
+      %scale_old_v = math.exp %diff_old_v : vector<1xf32>
+      %scale_j_v = math.exp %diff_j_v : vector<1xf32>
+      %scale_old = vector.extract %scale_old_v[0] : f32 from vector<1xf32>
+      %scale_j = vector.extract %scale_j_v[0] : f32 from vector<1xf32>
+      %scale_old_e = vector.broadcast %scale_old : f32 to vector<{{ tile_e }}xf32>
+      %scale_j_e = vector.broadcast %scale_j : f32 to vector<{{ tile_e }}xf32>
+
+      %o_old = affine.vector_load %out_acc_buffer[0, 0, 0] : {{ out_acc_tile_desc.get_mlir_shape("f32") }}, vector<{{ tile_e }}xf32>
+      %o_old_rs = arith.mulf %o_old, %scale_old_e : vector<{{ tile_e }}xf32>
+      %o_j_rs = arith.mulf %o_j, %scale_j_e : vector<{{ tile_e }}xf32>
+      %o_new = arith.addf %o_old_rs, %o_j_rs : vector<{{ tile_e }}xf32>
+      affine.vector_store %o_new, %out_acc_buffer[0, 0, 0] : {{ out_acc_tile_desc.get_mlir_shape("f32") }}, vector<{{ tile_e }}xf32>
+
+      %old_sum = affine.vector_load %sum_buffer[0, 0] : {{ sum_desc.get_mlir_shape("f32") }}, vector<2xf32>
+      %l_old = vector.extract %old_sum[0] : f32 from vector<2xf32>
+      %l_old_rs = arith.mulf %l_old, %scale_old : f32
+      %l_j_rs = arith.mulf %l_j, %scale_j : f32
+      %l_new = arith.addf %l_old_rs, %l_j_rs : f32
+      %l_new2 = vector.broadcast %l_new : f32 to vector<2xf32>
+      affine.vector_store %l_new2, %sum_buffer[0, 0] : {{ sum_desc.get_mlir_shape("f32") }}, vector<2xf32>
+    } { accumulation_loop=true }
+
+    // finalize: out = o / l
+    %sum2 = affine.vector_load %sum_buffer[0, 0] : {{ sum_desc.get_mlir_shape("f32") }}, vector<2xf32>
+    %l = vector.extract %sum2[0] : f32 from vector<2xf32>
+    %inv = arith.divf %c1, %l : f32
+    %inv_e = vector.broadcast %inv : f32 to vector<{{ tile_e }}xf32>
+    %o = affine.vector_load %out_acc_buffer[0, 0, 0] : {{ out_acc_tile_desc.get_mlir_shape("f32") }}, vector<{{ tile_e }}xf32>
+    %out_f32 = arith.mulf %o, %inv_e : vector<{{ tile_e }}xf32>
+    {% if io_stype != "f32" %}%out_io = arith.truncf %out_f32 : vector<{{ tile_e }}xf32> to vector<{{ tile_e }}x{{ io_stype }}>{% endif %}
+    affine.vector_store {{ "%out_io" if io_stype != "f32" else "%out_f32" }}, %out_buffer[0, 0, 0] : {{ out_tile_desc.get_mlir_shape(io_stype) }}, vector<{{ tile_e }}x{{ io_stype }}>
+    %out_offset = affine.apply {{ out_offset_map }}(%gh)
+    {{ kernel.def_dma_op("MVOUT", "out", [], out_tile_desc, indent_size=4, dram_stride=out_dram_stride, dram_offset="out_offset") }}
+  } { outer_loop=true }
+  return
+}
+"""
 
 
 class MLIRDecodeGQASDPAReduceTemplate(MLIRTemplate):
@@ -1257,7 +1384,8 @@ class MLIRDecodeGQASDPAReduceTemplate(MLIRTemplate):
 
     def render(self, kernel: MLIRTemplateKernel, template_buffer_node=None, epilogue_nodes=None, prologue_nodes=None, tile_info=None, **kwargs):
         partial = self.input_nodes[0]
-        out = self.output_node
+        # Use the actual registered buffer node (e.g. "buf0") instead of the placeholder "buf_out".
+        out = template_buffer_node if template_buffer_node is not None else self.output_node
 
         tile_e = kernel.vector_lane
         tile_pack = tile_e * 2
@@ -1288,21 +1416,33 @@ class MLIRDecodeGQASDPAReduceTemplate(MLIRTemplate):
         out_tile_desc.set_tile_size_stride([1, 1, tile_e], [0, tile_e, 1])
         out_tile_desc.set_name("out_buffer")
 
-        # Indexing: partial is already 3D; out is (Hq,1,Dh) but view as (Hq*Dh/tile_e, 1, tile_e)
+        # Partial tensor strides
         p_tensor = empty_strided(partial.get_layout().size, partial.get_layout().stride)
         p_stride = p_tensor.stride()
-        gh = sympy.Symbol("gh")
-        blk = sympy.Symbol("blk")
-        partial_idx = [gh * p_stride[0], blk * p_stride[1], sympy.Integer(0)]
 
-        # out view
+        # Out view: (Hq*dh_tiles, 1, tile_e)
         out_tensor4 = empty_strided(out.get_layout().size, out.get_layout().stride)
         B, Hq, Lq, Dh = out_tensor4.shape
         assert B == 1 and Lq == 1
         dh_tiles = int(Dh) // int(tile_e)
         out_tensor = out_tensor4.view(Hq * dh_tiles, 1, tile_e)
         o_stride = out_tensor.stride()
-        out_idx = [gh * o_stride[0], sympy.Integer(0), sympy.Integer(0)]
+
+        # DMA strides
+        partial_dram_stride = [int(p_stride[0]), int(p_stride[1]), 1]
+        out_dram_stride     = [int(o_stride[0]), 0, 0]
+
+        # Affine offset maps
+        # partial: offset(gh, blk)
+        partial_offset_map = _make_offset_map([int(p_stride[0]), int(p_stride[1])], partial_tile_desc.offset)
+        # out: offset(gh)  -- single dimension
+        out_offset_map     = _make_offset_map([int(o_stride[0])], 0)
+
+        # Keep sympy-based indices for epilogue_info
+        gh  = sympy.Symbol("gh")
+        blk = sympy.Symbol("blk")
+        partial_idx = [gh * p_stride[0], blk * p_stride[1], sympy.Integer(0)]
+        out_idx     = [gh * o_stride[0], sympy.Integer(0), sympy.Integer(0)]
 
         kernel.loop_size = [tile_pack, tile_e, 1]
 
@@ -1321,19 +1461,13 @@ class MLIRDecodeGQASDPAReduceTemplate(MLIRTemplate):
             max_desc=max_desc,
             sum_desc=sum_desc,
             out_tile_desc=out_tile_desc,
-            partial_idx=partial_idx,
-            out_idx=out_idx,
+            # DMA strides
+            partial_dram_stride=partial_dram_stride,
+            out_dram_stride=out_dram_stride,
+            # Affine offset maps
+            partial_offset_map=partial_offset_map,
+            out_offset_map=out_offset_map,
             input_reorder=self.input_reorder,
         )
 
-        kernel.epilogue_info = dict(
-            output_node=self.output_node.name,
-            sram_var="out_buffer",
-            dram_var="out",
-            dram_idx=out_idx,
-            dram_tile_desc=out_tile_desc,
-            nr_rdim=0,
-            r_dim_size=0,
-            dim_aliasing={"gh": "gh", "blk": "blk"},
-        )
         return self._template_from_string(DECODE_GQA_SDPA_REDUCE_TEMPLATE).render(**kernel.render_options)

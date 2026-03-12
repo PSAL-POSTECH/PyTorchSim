@@ -18,7 +18,13 @@ from PyTorchSimFrontend.mlir.mlir_conv_sbs_template import MLIRConvSingleBatchSt
 from PyTorchSimFrontend.mlir.mlir_maxpool_template import MLIRMaxPoolTemplate
 from PyTorchSimFrontend.mlir.mlir_cat_template import MLIRCatTemplate
 from PyTorchSimFrontend.mlir.mlir_sort_template import MLIRSortTemplate
-from PyTorchSimFrontend.mlir.mlir_sdpa_template import MLIRFlashSDPATemplate, flash_sdpa_args, calculate_scale
+from PyTorchSimFrontend.mlir.mlir_sdpa_template import (
+    MLIRFlashSDPATemplate,
+    MLIRDecodeGQASDPAPartialTemplate,
+    MLIRDecodeGQASDPAReduceTemplate,
+    flash_sdpa_args,
+    calculate_scale,
+)
 from PyTorchSimFrontend import extension_config
 
 aten = torch.ops.aten
@@ -58,6 +64,35 @@ def tuned_flash_sdpa(
     scale = calculate_scale(query, scale)
     N, Hq, H, L, S, E, Ev, layout, query, key, value = flash_sdpa_args(query, key, value)
     
+    # Decode-only GQA fast path: q is (B,Hq,1,Dh), B==1, Hq!=H, Hq%H==0.
+    # Always use the 2-kernel decode path:
+    # 1) block partials over (kv head, sequence block)
+    # 2) reduce/merge across blocks
+    # This keeps KV shared across qsub, avoids dh0-outer duplication, and
+    # stores compact partials instead of full score/prob tensors in DRAM.
+    if L == 1 and Hq != H and N == 1 and (Hq % H) == 0:
+        g = Hq // H
+        vector_lane = extension_config.vpu_num_lanes
+        tile_e = vector_lane
+        dh_tiles = E // tile_e
+        decode_gqa_block_size = 512
+        BlkS = decode_gqa_block_size if S >= decode_gqa_block_size else int(S)
+        # Padding-based tail handling: allow S not divisible by BlkS.
+        nblk = (S + BlkS - 1) // BlkS
+        HgDhTiles = H * g * dh_tiles
+        tile_pack = tile_e * 2
+
+        partial_layout = ir.FixedLayout(
+            query.get_device(),
+            torch.float32,
+            [HgDhTiles, nblk, tile_pack],
+        )
+        partial_tmpl = MLIRDecodeGQASDPAPartialTemplate([query, key, value], partial_layout, scale, BlkS=BlkS)
+        partial = partial_tmpl.generate().output_node()
+        reduce_tmpl = MLIRDecodeGQASDPAReduceTemplate([partial], layout, BlkS=BlkS)
+        out_node = reduce_tmpl.generate().output_node()
+        return (out_node, None, None, None, None, None, None, None, None)
+
     mlir_template = MLIRFlashSDPATemplate([query, key, value], layout, scale)
 
     # _scaled_dot_product_flash_attention has to return a tuple which has 9 values

@@ -470,7 +470,12 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
                 new_expr_list[idx] = arg.subs(arg.args[1], dim_list[idx])
                 indices.append(str(new_arg))
             elif not arg.is_number:
-                new_arg = sympy.Symbol(str(self.convert_index(arg)))
+                try:
+                    new_arg = sympy.Symbol(str(self.convert_index(arg)))
+                #not implemented case
+                except NotImplementedError:
+                    print(f"Not implemented case: {arg}")
+                    raise NotImplementedError(f"Not implemented case: {arg}")
                 new_expr_list[idx] = new_arg.subs(new_arg, dim_list[idx])
                 indices.append(str(new_arg))
             else:

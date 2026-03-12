@@ -904,7 +904,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
 
     def def_dma_op(self, dma_type, dram_var:str, index_list:list, tile_desc:mlir_common.MLIRMultiDimTile,
                    subtile_size:list=[], async_type=None, indent_size=0, priority: int = 5, lazy_mode: bool = True,
-                   dram_stride:list=None, dram_offset=None):
+                   dram_stride:list=None, dram_offset=None, padding: int = 0):
         # Todo. Remove legacy behavior (i.e., index_list parsing)
         def generate_dma_code():
             """Internal method to generate DMA code directly."""
@@ -948,7 +948,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
                 zero_cse = self.get_const_cse(0, "index")
                 sram_index_var = ", ".join([f"%{str(zero_cse)}"]*tile_desc.get_nr_dim())
 
-                attribute_parts = [f"dram_stride={_dram_stride}", f"sram_stride={sram_strides}", "padding=0"]
+                attribute_parts = [f"dram_stride={_dram_stride}", f"sram_stride={sram_strides}", f"padding={int(padding)}"]
                 if subtile_size:
                     attribute_parts.append(f"subtile_size={subtile_size}, async={int(async_type) if async_type is not None else 1}")
                 attribute = "  {" + ", ".join(attribute_parts) + "}"

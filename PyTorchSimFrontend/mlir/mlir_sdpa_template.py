@@ -713,7 +713,7 @@ class MLIRDecodeGQASDPAPartialTemplate(MLIRTemplate):
 
         # DMA strides
         k_dram_stride = [int(k_stride[0]), int(k_stride[1]), int(k_stride[2])]
-        q_dram_stride = [int(q_stride[2]), 0, int(q_stride[1])]
+        q_dram_stride = [int(q_stride[2]), 0, int(q_stride[0])]
         v_dram_stride = [int(v_stride[0]), int(v_stride[1]), int(v_stride[2])]
         partial_dram_stride = [int(p_stride[0]), int(p_stride[1]), 1]
 

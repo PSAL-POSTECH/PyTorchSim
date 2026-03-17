@@ -964,7 +964,10 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
 
             # Try initial tile size
             self.reset(None)
-            src_code, meta_code = super().codegen_nodes(nodes, kernel_name)
+            try:
+                src_code, meta_code = super().codegen_nodes(nodes, kernel_name)
+            except mlir_common.RecompileSignal:
+                continue
             current_tile_sz = tuple(self.kernel_group.tile_desc.get_tile_size())
             search_space.add(current_tile_sz)
 
@@ -993,7 +996,12 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
                         continue
 
                     self.reset(None)
-                    src_code, meta_code = super().codegen_nodes(nodes, kernel_name)
+                    try:
+                        src_code, meta_code = super().codegen_nodes(nodes, kernel_name)
+                    except mlir_common.RecompileSignal:
+                        candidate_axes.remove(axis)
+                        self.reset(None)
+                        continue
                     current_tile_sz = tuple(self.kernel_group.tile_desc.get_tile_size())
 
                     # FIXME. How to intergrate this constraint to tile system?

@@ -1041,7 +1041,7 @@ class ExtensionOverrides(common.OpOverrides):
         op_type = V.kernel.var_info[operand]
         shape = f"vector<{op_type[0]}x{op_type[1]}>" if op_type[0] > 1 else f"{op_type[1]}"
         target_type = f"vector<{op_type[0]}x{dtype}>" if op_type[0] > 1 else f"{dtype}"
-        if op_type[0] == "f":
+        if dtype[0] == "f":
             opcode = f'arith.extf'
         else:
             opcode = f'arith.extui'

@@ -1086,9 +1086,9 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
         # Constraint: Vector element count must be compatible across all types.
         # VLEN=256: f16 (LMUL=2) and f32 (LMUL=4) both yield 32 elements.
         # Note: Gem5 version restricts widening ops to LMUL < 8 for destination registers.
-        # Max LMUL set to 2 to ensure compatibility/safety.
+        # Max LMUL set to 1 to ensure compatibility/safety.
 
-        widen_safe_cap = self.vlen * 2 // min_lowp_bits
+        widen_safe_cap = self.vlen // min_lowp_bits
         if widen_safe_cap <= 0:
             return default_vec_size
 

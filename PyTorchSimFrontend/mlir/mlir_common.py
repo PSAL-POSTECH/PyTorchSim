@@ -103,14 +103,17 @@ DTYPE_LOWP_FP = [
 
 MLIR_INF = {
     "inf" : {
+        "f16" : 0x7C00,
         "f32" : 0x7F800000,
         "f64" : 0x7FF0000000000000
     },
     "-inf" : {
+        "f16" : 0xFC00,
         "f32" : 0xFF800000,
         "f64" : 0xFFF0000000000000
     },
     "nan" : {
+        "f16" : 0x7C00,
         "f32" : 0x7FC00000,
         "f64" : 0x7FF8000000000000
     }
@@ -260,17 +263,23 @@ class VectorLaneMapping():
         return tile_stride
 
     def get_compute_vec_size(self, tile_size: list[int], reduction_numel: int, nr_rdim: int) -> int:
-        if self.forced_vec_size is not None:
-            return self.forced_vec_size
-
         per_lane = self.get_numel_per_lane(tile_size)
         stride = self.vlane_stride
         if nr_rdim:
             val = per_lane // max(reduction_numel, 1)
+            result = val
             for mult in [8, 4, 2]:
                 if per_lane >= val * mult:
-                    return val * mult
-            return val
+                    result = val * mult
+                    break
+            if self.forced_vec_size is not None:
+                # Cap while keeping result divisible by val (= reduction_size).
+                # This preserves the assert(vec_len % reduction_size == 0) invariant.
+                capped = (min(result, self.forced_vec_size) // max(val, 1)) * max(val, 1)
+                result = max(capped, val)
+            return result
+        if self.forced_vec_size is not None:
+            return self.forced_vec_size
         for mult in [8, 4, 2]:
             if (per_lane // stride) >= mult:
                 return stride * mult
@@ -787,10 +796,24 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
             # Set node range info
             vars, reduction_vars = self.set_ranges(group, reduction_group)
             tile_desc = self.compute_tile_size(nodes, vars, reduction_vars)
+            _, _, _, self.buffer_types = self.kernel_group.args.mlir_argdefs()
+            safe_vec_size = self.get_safe_vec_size(tile_desc.get_compute_vec_size())
+            # For pointwise (non-reduction) kernels, cap the MLIR vector size so that
+            # f16->f32 widening stays within LMUL<=4 (step and forced_vec_size must match).
+            # Reduction kernels are left unchanged: their accumulator/multi_reduction
+            # structure assumes compute_vec_size == step, so we must not split them here.
+            tile_desc.vmap.forced_vec_size = safe_vec_size
+            compute_vec = tile_desc.get_compute_vec_size()
+            # RVV requires vector lengths that produce integer power-of-2 LMUL values.
+            # Non-power-of-2 element counts (e.g. 24) cause LLVM WidenVectorResult crashes.
+            # Raise BEFORE the try/except so this propagates to make_choices (not retried).
+            if compute_vec > 1 and (compute_vec & (compute_vec - 1)) != 0:
+                raise RecompileSignal(
+                    f"Non-power-of-2 compute_vec_size {compute_vec}: tile rejected (RVV requires power-of-2 LMUL)"
+                )
             self.compute_body_loop.size = tile_desc.get_numel_per_lane()
-            self.compute_body_loop.step = tile_desc.get_compute_vec_size()
+            self.compute_body_loop.step = compute_vec
             try:
-                _, _, _, self.buffer_types = self.kernel_group.args.mlir_argdefs()
                 with self as kernel:
                     for node in nodes:
                         node.run(vars, reduction_vars)
@@ -1035,6 +1058,42 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
         self._nested_context_depth -= 1
         if self._nested_context_depth == 0:
             super().__exit__(exc_type, exc_val, exc_tb)
+    
+    def get_safe_vec_size(self, default_vec_size: int = 64) -> int:
+        """
+        Cap forced vector size for low-precision paths so widening ops
+        (e.g., f16/bf16 -> f32) do not exceed RVV LMUL limits.
+
+        Widening is legal up to source LMUL<=4 (destination LMUL<=8).
+        Using RVV relation LMUL = (SEW * VL) / VLEN, the safe source VL is:
+            VL <= 4 * VLEN / SEW
+        """
+
+        if not hasattr(self, "buffer_types") or not self.buffer_types:
+            return default_vec_size
+
+        lowp_bits = []
+        for info in self.buffer_types.values():
+            dtype = info[0] if info else None
+            if dtype in DTYPE_LOWP_FP:
+                mlir_dtype = DTYPE_TO_MLIR[dtype]
+                lowp_bits.append(MLIR_TO_BIT[mlir_dtype])
+
+        if not lowp_bits:
+            return default_vec_size
+
+        min_lowp_bits = min(lowp_bits)
+        # Constraint: Vector element count must be compatible across all types.
+        # VLEN=256: f16 (LMUL=2) and f32 (LMUL=4) both yield 32 elements.
+        # Note: Gem5 version restricts widening ops to LMUL < 8 for destination registers.
+        # Max LMUL set to 2 to ensure compatibility/safety.
+
+        widen_safe_cap = self.vlen * 2 // min_lowp_bits
+        if widen_safe_cap <= 0:
+            return default_vec_size
+
+        vec_size = min(default_vec_size, widen_safe_cap)
+        return vec_size
 
 @dataclasses.dataclass
 class LoopLevel:

@@ -1255,7 +1255,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
             numel_per_lane = tile_desc.get_numel_per_lane()
             r_tile_size = tile_desc.get_tile_size()[-1]
             nr_outer_loop = (numel_per_lane + r_tile_size-1) // r_tile_size
-            tile_desc.vmap.forced_vec_size = nr_outer_loop * 32 # Why? Emprically selected, other option failed to functionality...
+            tile_desc.vmap.forced_vec_size = self.get_safe_vec_size(nr_outer_loop * 32) # Why? Emprically selected, other option failed to functionality...
 
             self.reduction_fusion = True
             self.r_tile_size = tile_desc.get_tile_size()[-1]
@@ -1266,7 +1266,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
             self.compute_body_loop.step = tile_desc.get_compute_vec_size() // nr_outer_loop
             self.reduction_body_loop = mlir_common.LoopLevel(self.reduction_loop_idx, nr_outer_loop)
         else:
-            tile_desc.vmap.forced_vec_size = 64
+            tile_desc.vmap.forced_vec_size = self.get_safe_vec_size(64)
 
             if prologue:
                 self.prologue_compute_body_loop.size = tile_desc.get_numel_per_lane()

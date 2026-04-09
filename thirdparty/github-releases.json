@@ -1,0 +1,19 @@
+{
+  "description": "GitHub release pins for CI (docker base image). pytorch_image is the ARG PYTORCH_IMAGE for Dockerfile.base. Use release_tag \"latest\" or an exact release tag for GitHub deps. asset_name must match the release attachment filename. CI builds ghcr.io/.../torchsim_base:thirdparty-<12 hex> when missing (pin = sha256 of this file plus Dockerfile.base) and updates :latest on that push.",
+  "pytorch_image": "pytorch/pytorch:2.8.0-cuda12.6-cudnn9-devel",
+  "gem5": {
+    "repository": "PSAL-POSTECH/gem5",
+    "release_tag": "v1.0.1",
+    "asset_name": "gem5-release.tar.gz"
+  },
+  "llvm_project": {
+    "repository": "PSAL-POSTECH/llvm-project",
+    "release_tag": "v1.0.6",
+    "asset_name": "riscv-llvm-release.tar.gz"
+  },
+  "spike": {
+    "repository": "PSAL-POSTECH/riscv-isa-sim",
+    "release_tag": "v1.0.1",
+    "asset_name": "spike-release.tar.gz"
+  }
+}

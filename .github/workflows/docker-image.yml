@@ -1,12 +1,14 @@
-name: Build & Push Docker Image on Tag
+name: Docker image CI
 
 on:
-  push:
-    tags:
-      - 'v*'
+  pull_request:
+    branches: [ "master", "develop" ]
+  workflow_dispatch:
 
 env:
   BASE_IMAGE_REPO: ghcr.io/psal-postech/torchsim_base
+  # PR: head commit; otherwise workflow_dispatch uses the branch SHA
+  SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
 jobs:
   ensure-base:
@@ -18,11 +20,10 @@ jobs:
       packages: write
 
     steps:
-      - name: Checkout code
+      - name: Checkout Code
         uses: actions/checkout@v4
         with:
-          repository: PSAL-POSTECH/PyTorchSim
-          ref: ${{ github.sha }}
+          ref: ${{ env.SOURCE_SHA }}
           submodules: recursive
 
       - name: Log in to GitHub Container Registry
@@ -73,11 +74,9 @@ jobs:
             GEM5_ASSET_ID=${{ env.GEM5_ASSET_ID }}
             LLVM_ASSET_ID=${{ env.LLVM_ASSET_ID }}
             SPIKE_ASSET_ID=${{ env.SPIKE_ASSET_ID }}
-          tags: |
-            ${{ env.BASE_IMAGE }}
-            ${{ env.BASE_IMAGE_REPO }}:latest
+          tags: ${{ env.BASE_IMAGE }}
 
-  build:
+  build-and-test:
     needs: ensure-base
     runs-on: self-hosted
 
@@ -86,25 +85,18 @@ jobs:
       packages: write
 
     steps:
-      - name: Checkout code
+      - name: Checkout Code
         uses: actions/checkout@v4
         with:
-          repository: PSAL-POSTECH/PyTorchSim
-          ref: ${{ github.ref_name }}
+          ref: ${{ env.SOURCE_SHA }}
           submodules: recursive
 
-      - name: Log in to GitHub Container Registry
+      - name: Login to GHCR
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Set Tag Environment
-        run: |
-          echo "IMAGE_TAG=torchsim-ci:${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
-          echo "GITHUB_SHA=$GITHUB_SHA" >> $GITHUB_ENV
-          echo "GITHUB_SHA=$GITHUB_SHA"
 
       - name: Build and Push Docker Image
         uses: docker/build-push-action@v6
@@ -112,8 +104,46 @@ jobs:
           context: .
           file: ./Dockerfile
           push: true
-          secrets: |
-            GIT_ACCESS_TOKEN=${{ secrets.GIT_ACCESS_TOKEN }}
+          no-cache: true
           build-args: |
             BASE_IMAGE=${{ needs.ensure-base.outputs.base_image }}
-          tags: ghcr.io/psal-postech/${{ env.IMAGE_TAG }}
+          tags: ghcr.io/psal-postech/torchsim-test:${{ env.SOURCE_SHA }}
+
+      # Do not use GITHUB_SHA here: on pull_request it is the merge commit, while the image tag uses SOURCE_SHA (PR head).
+      - name: Wait for GHCR propagation
+        env:
+          IMAGE_SHA: ${{ env.SOURCE_SHA }}
+        run: |
+          IMG="ghcr.io/psal-postech/torchsim-test:${IMAGE_SHA}"
+          echo "Verifying tag matches push: ${IMAGE_SHA}"
+          for i in $(seq 1 30); do
+            echo "Checking if image exists in GHCR (attempt $i)..."
+            if docker buildx imagetools inspect "$IMG" > /dev/null 2>&1; then
+              echo "Image is now available in GHCR."
+              exit 0
+            fi
+            if [ "$i" -eq 1 ]; then
+              echo "buildx imagetools inspect failed; stderr (first attempt):"
+              docker buildx imagetools inspect "$IMG" 2>&1 || true
+            fi
+            echo "Image not yet available, retrying in 20 seconds..."
+            sleep 20
+          done
+          echo "Image did not become available in GHCR within expected time."
+          exit 1
+
+  test-pytorchsim-wrapper1:
+    needs: build-and-test
+    uses: ./.github/workflows/pytorchsim_test.yml
+    with:
+      image_name: ghcr.io/psal-postech/torchsim-test:${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+      vector_lane: 128
+      spad_size: 128
+
+  test-pytorchsim-wrapper2:
+    needs: build-and-test
+    uses: ./.github/workflows/pytorchsim_test.yml
+    with:
+      image_name: ghcr.io/psal-postech/torchsim-test:${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+      vector_lane: 32
+      spad_size: 32

@@ -16,6 +16,8 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Sync Wiki
         uses: Andrew-Chen-Wang/github-wiki-action@v4

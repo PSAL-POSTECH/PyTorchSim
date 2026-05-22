@@ -7,9 +7,10 @@ import argparse
 import torch
 import torch._dynamo
 import torch.utils.cpp_extension
-sys.path.append(os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim'))
-from test_transformer import EncoderBlock, test_result
-from test_mlp import MLP
+sys.path.insert(0, os.path.join(os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim'), 'tests'))
+from _pytorchsim_utils import test_result
+from models.test_transformer import EncoderBlock
+from models.test_mlp import MLP
 
 def apply_random_zero(tensor, zero_prob, block_size=8):
     if not 0 <= zero_prob <= 1:

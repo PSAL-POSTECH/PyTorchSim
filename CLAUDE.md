@@ -45,6 +45,8 @@ python tests/test_eager.py      # eager-fallback registration
 
 Run a model from `tests/Llama/`, `tests/DeepSeek/`, etc. similarly.
 
+**CI coverage:** the GitHub Actions workflow `.github/workflows/pytorchsim_test.yml` runs an **explicit allowlist** of `tests/*.py` files (~40 jobs, one Docker container per test). Adding a new file under `tests/` does *not* automatically gate PRs — register it in `pytorchsim_test.yml` if you want CI to exercise it. Conversely, files like `tests/test_gqa.py`, `tests/test_gqa_decode.py`, and `tests/test_eager.py` exist in the repo but are *not* in CI, so local validation is the only safety net for them.
+
 **For fast iteration** (skip functional check):
 ```bash
 export pytorchsim_functional_mode=False   # skips Spike
@@ -134,6 +136,7 @@ Conan deps for TOGSim: `boost/1.79.0`, `robin-hood-hashing/3.11.5`, `spdlog/1.11
 - Multi-tenant runs **must** use the `with TOGSimulator(...)` context manager — otherwise compile-time `TOGSIM_CONFIG` and runtime config can diverge.
 - `pytorchsim_functional_mode` exists as both an **env var** and a **YAML key**; the env var path is via `extension_config.py` while the YAML key is read inside the same module. They should agree.
 - "No CUDA runtime is found" warnings on `import torch` are expected — this is a CPU + simulated-NPU environment, not real CUDA.
+- **Codegen changes are sticky across runs because of caches.** When iterating on `PyTorchSimFrontend/mlir/*` or any code that affects emitted MLIR/wrapper code, clear `$TORCHSIM_DUMP_PATH` (default `$TORCHSIM_DIR/outputs/`) before re-running — it holds both Inductor's compile cache (`.torchinductor/`, set via `TORCHINDUCTOR_CACHE_DIR` in `extension_config.py:139`) and the per-source-hash MLIR/wrapper dirs (`<hash>/`) keyed by `extension_codecache.get_write_path(src_code)`. Otherwise a buggy graph compiled before your fix is replayed verbatim. `togsim_results/` (TOGSim run logs) is cosmetic and not part of the codegen replay path. For parallel worktrees see `docs/worktrees.md`.
 
 ## Git workflow (per CONTRIBUTING.md)
 

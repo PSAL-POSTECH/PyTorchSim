@@ -111,7 +111,7 @@ with TOGSimulator(config_path=...):
 - **Docker (recommended):** `docker run -it --ipc=host --name torchsim -w /workspace/PyTorchSim ghcr.io/psal-postech/torchsim-ci:v1.0.1 bash`
 - **TOGSim from source:** `cd TOGSim && mkdir -p build && cd build && conan install .. --build=missing && cmake .. && make -j$(nproc)`
 - **PyTorchSimDevice (Python package):** `cd PyTorchSimDevice && python -m pip install --no-build-isolation -e .`
-- **gem5 / LLVM+MLIR / Spike from source:** `bash scripts/build_from_source.sh` (clones to `/workspace/{gem5,llvm-project,riscv-isa-sim}`)
+- **gem5 / LLVM+MLIR / Spike from source:** `bash scripts/build_from_source.sh` (clones to `/workspace/{gem5,llvm-project,riscv-isa-sim}` at the tags pinned in `thirdparty/github-releases.json`, same manifest as the CI docker image).
 
 Conan deps for TOGSim: `boost/1.79.0`, `robin-hood-hashing/3.11.5`, `spdlog/1.11.0`, `yaml-cpp/0.8.0`.
 
@@ -137,5 +137,6 @@ Conan deps for TOGSim: `boost/1.79.0`, `robin-hood-hashing/3.11.5`, `spdlog/1.11
 
 ## Git workflow (per CONTRIBUTING.md)
 
-- Fork → branch (`feature/<name>`) → PR against **`develop`**, not `main`.
+- Fork, branch (`feature/<name>`), PR against `develop`, not `main`.
 - Commit prefix style observed: `[Frontend] ...`, `[TOGSim] ...`, etc.
+- Commit messages: plain text only. No Markdown formatting (no backticks, bold, bullet lists, headings). Avoid Unicode where ASCII works (use `->` not arrows, `--` not em-dashes, straight quotes).

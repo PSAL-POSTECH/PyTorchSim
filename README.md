@@ -100,6 +100,7 @@ This script builds [Gem5](https://github.com/PSAL-POSTECH/gem5.git), [LLVM](http
 ```bash
 bash scripts/build_from_source.sh
 ```
+The script clones each dep at the tag pinned in [`thirdparty/github-releases.json`](thirdparty/github-releases.json), the same manifest the CI docker image uses, so a from-source build matches the docker env.
 ### Run Examples
 The `tests` directory contains several AI workload examples.
 ```bash

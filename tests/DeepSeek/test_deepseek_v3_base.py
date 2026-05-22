@@ -4,6 +4,8 @@ import argparse
 import copy
 from pathlib import Path
 import torch
+sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
+from _pytorchsim_utils import test_result
 
 # recursive compile for some ops that are caused by graph break
 torch.npu.register_eager_to_compile([
@@ -17,28 +19,6 @@ torch.npu.register_eager_to_compile([
     "aten::sort.values_stable",
 ])
 
-
-def test_result(name, out, cpu_out, rtol=1e-4, atol=1e-4):
-    out_cpu = out.cpu()
-    max_diff = (out_cpu - cpu_out).abs().max().item()
-    mean_diff = (out_cpu - cpu_out).abs().mean().item()
-    if torch.allclose(out_cpu, cpu_out, rtol=rtol, atol=atol):
-        message = f"|{name} Test Passed|"
-        print("-" * len(message))
-        print(message)
-        print("-" * len(message))
-        print(f"Max absolute difference: {max_diff:.6f}")
-        print(f"Mean absolute difference: {mean_diff:.6f}")
-    else:
-        message = f"|{name} Test Failed|"
-        print("-" * len(message))
-        print(message)
-        print("-" * len(message))
-        print("NPU out: ", out_cpu)
-        print("CPU out: ", cpu_out)
-        print(f"Max absolute difference: {max_diff:.6f}")
-        print(f"Mean absolute difference: {mean_diff:.6f}")
-        exit(1)
 
 
 def _extract_logits(output):

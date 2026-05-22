@@ -5,19 +5,8 @@ import copy
 import torch
 from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.models.llama.modeling_llama import LlamaForCausalLM, LlamaDecoderLayer, LlamaRMSNorm, LlamaRotaryEmbedding, LlamaModel
-
-def test_result(name, out, ref, rtol=1e-4, atol=1e-4):
-    if torch.allclose(out.cpu(), ref.cpu(), rtol=rtol, atol=atol):
-        msg = f"|{name} Test Passed|"
-        print("-" * len(msg)); print(msg); print("-" * len(msg))
-    else:
-        msg = f"|{name} Test Failed|"
-        print("-" * len(msg)); print(msg); print("-" * len(msg))
-        diff = (out.cpu().int() - ref.cpu().int()).abs().max().item()
-        print("device out:", out.detach().cpu())
-        print("cpu ref  :", ref.detach().cpu())
-        print(f"Max abs diff: {diff}")
-        sys.exit(1)
+sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
+from _pytorchsim_utils import test_result
 
 @torch.no_grad()
 def run_rmsnorm_test(

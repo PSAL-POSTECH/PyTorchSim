@@ -20,22 +20,8 @@ import torch._dynamo
 import torch.utils.cpp_extension
 from torch._inductor import config
 
-sys.path.append(os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim'))
-
-def test_result(name, out, cpu_out, rtol=1e-4, atol=1e-4):
-    pass_message = f"|{name} Test Passed|"
-    fail_message = f"|{name} Test Failed|"
-    if torch.allclose(out.cpu(), cpu_out, rtol=rtol, atol=atol):
-        print("-" * len(pass_message))
-        print(pass_message)
-        print("-" * len(pass_message))
-    else:
-        print("-" * len(fail_message))
-        print(fail_message)
-        print("-" * len(fail_message))
-
-        print("custom out: ", out.cpu())
-        print("cpu out: ", cpu_out)
+sys.path.insert(0, os.path.join(os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim'), 'tests'))
+from _pytorchsim_utils import test_result
 
 class MLP(nn.Module):
     def __init__(self, input_size, output_size, hidden_size):

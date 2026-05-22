@@ -3,21 +3,10 @@ import torch.nn as nn
 import torch._dynamo
 import torch.utils.cpp_extension
 import torch.nn.utils.prune as prune
-
-def test_result(name, out, cpu_out, rtol=1e-4, atol=1e-4):
-    if torch.allclose(out.cpu(), cpu_out, rtol=rtol, atol=atol):
-        message = f"|{name} Test Passed|"
-        print("-" * len(message))
-        print(message)
-        print("-" * len(message))
-    else:
-        message = f"|{name} Test Failed|"
-        print("-" * len(message))
-        print(message)
-        print("-" * len(message))
-        print("custom out: ", out.cpu())
-        print("cpu out: ", cpu_out)
-        exit(1)
+import os
+import sys
+sys.path.insert(0, os.path.join(os.environ.get('TORCHSIM_DIR', default='/root/workspace/PyTorchSim'), 'tests'))
+from _pytorchsim_utils import test_result
 
 class MLP(nn.Module):
     def __init__(self, input_size=16, hidden_size=16, output_size=16, sparsity_fc1=0, sparsity_fc2=0):
@@ -79,7 +68,6 @@ def test_sparse_mlp(device, batch_size=32, input_size=128, hidden_size=128, outp
 if __name__ == "__main__":
     import os
     import sys
-    sys.path.append(os.environ.get('TORCHSIM_DIR', default='/root/workspace/PyTorchSim'))
     device = torch.device("npu:0")
     test_sparse_mlp(device, batch_size=8, input_size=16, hidden_size=32, output_size=64)
     

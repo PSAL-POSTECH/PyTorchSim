@@ -4,6 +4,10 @@ import torch.utils.cpp_extension
 import random
 import numpy as np
 import argparse
+import os
+import sys
+sys.path.insert(0, os.path.join(os.environ.get('TORCHSIM_DIR', default='/root/workspace/PyTorchSim'), 'tests'))
+from _pytorchsim_utils import test_result
 
 random.seed(0)
 np.random.seed(0)
@@ -12,21 +16,6 @@ torch.manual_seed(0)
 def apply_pruning(tensor, sparsity):
     mask = torch.rand_like(tensor) >= sparsity
     tensor *= mask
-
-def test_result(name, out, cpu_out, rtol=1e-4, atol=1e-4):
-    if torch.allclose(out.cpu(), cpu_out, rtol=rtol, atol=atol):
-        message = f"|{name} Test Passed|"
-        print("-" * len(message))
-        print(message)
-        print("-" * len(message))
-    else:
-        message = f"|{name} Test Failed|"
-        print("-" * len(message))
-        print(message)
-        print("-" * len(message))
-        print("custom out: ", out.cpu())
-        print("cpu out: ", cpu_out)
-        exit(1)
 
 def sparse_matmul(a, b):
     return torch.sparse.mm(a, b)
@@ -52,7 +41,6 @@ if __name__ == "__main__":
     parser.add_argument("sparsity", nargs="?", type=float, help="%% of zero", default=0.0)
 
     args = parser.parse_args()
-    sys.path.append(os.environ.get('TORCHSIM_DIR', default='/root/workspace/PyTorchSim'))
  
     device = torch.device("npu:0")
     test_sparse_mm(device, args.sz, args.sz, args.sz, args.sparsity)

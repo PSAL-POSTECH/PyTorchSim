@@ -1,15 +1,9 @@
+import os
+import sys
 import torch
+sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
+from _pytorchsim_utils import test_result
 
-def test_result(name, out, cpu_out, rtol=1e-4, atol=1e-4):
-    message = f"|{name} Test Passed|"
-    if torch.allclose(out.cpu(), cpu_out, rtol=rtol, atol=atol):
-        print("-" * len(message))
-        print(message)
-        print("-" * len(message))
-    else:
-        print("Failed")
-        print("custom out: ", out.cpu())
-        print("cpu out: ", cpu_out)
         # exit(1)
 
 def test_conv_residual(device, batch_size=1, in_channels=8, out_channels=16, input_size=64, kernel_size=3, stride=1, padding=0):

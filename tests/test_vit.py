@@ -4,21 +4,10 @@ import torch.utils.cpp_extension
 import argparse
 from torchvision import models
 from torchvision.models.vision_transformer import _vision_transformer, EncoderBlock
-
-def test_result(name, out, cpu_out, rtol=1e-4, atol=1e-4):
-    if torch.allclose(out.cpu(), cpu_out, rtol=rtol, atol=atol):
-        message = f"|{name} Test Passed|"
-        print("-" * len(message))
-        print(message)
-        print("-" * len(message))
-    else:
-        message = f"|{name} Test Failed|"
-        print("-" * len(message))
-        print(message)
-        print("-" * len(message))
-        print("custom out: ", out.cpu())
-        print("cpu out: ", cpu_out)
-        exit(1)
+import os
+import sys
+sys.path.insert(0, os.path.join(os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim'), 'tests'))
+from _pytorchsim_utils import test_result
 
 def init_vit_weights(m):
     if isinstance(m, torch.nn.Linear):
@@ -201,7 +190,6 @@ if __name__ == "__main__":
 
     shape = tuple(map(int, args.shape.strip('()').split(',')))
 
-    sys.path.append(os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim'))
     device = torch.device("npu:0")
     #test_multihead_attention(device)
     #test_encoder_block(device, seq_len=197)

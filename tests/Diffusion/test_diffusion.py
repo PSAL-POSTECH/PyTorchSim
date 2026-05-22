@@ -9,23 +9,8 @@ from diffusers.models.unets.unet_2d_condition import UNet2DConditionModel
 from diffusers.models.upsampling import Upsample2D
 from diffusers.models.resnet import ResnetBlock2D
 from diffusers.models.embeddings import Timesteps
-
-def test_result(name, out, cpu_out, rtol=1e-4, atol=1e-4):
-    if torch.allclose(out.cpu(), cpu_out, rtol=rtol, atol=atol):
-        message = f"|{name} Test Passed|"
-        print("-" * len(message))
-        print(message)
-        print("-" * len(message))
-    else:
-        message = f"|{name} Test Failed|"
-        print("-" * len(message))
-        print(message)
-        print("-" * len(message))
-        print("custom out: ", out.cpu())
-        print("cpu out: ", cpu_out)
-        diff = torch.max(torch.abs(out.cpu() - cpu_out)).item()
-        print(f"Max abs diff: {diff}")
-        exit(1)
+sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
+from _pytorchsim_utils import test_result
 
 @torch.no_grad()
 def test_unet_conditional(
@@ -636,7 +621,6 @@ if __name__ == "__main__":
     parser.add_argument("--prompt", type=str, default="a cat in a hat")
     args = parser.parse_args()
 
-    sys.path.append(os.environ.get("TORCHSIM_DIR", "/workspace/PyTorchSim"))
     device = torch.device("npu:0")
 
     #test_upsample2d(device)

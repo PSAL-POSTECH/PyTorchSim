@@ -1,17 +1,10 @@
+import os
+import sys
 import torch
 import torch._dynamo
 import torch.utils.cpp_extension
-
-def test_result(name, out, cpu_out, rtol=1e-4, atol=1e-4):
-    message = f"|{name} Test Passed|"
-    if torch.allclose(out.cpu(), cpu_out, rtol=rtol, atol=atol):
-        print("-" * len(message))
-        print(message)
-        print("-" * len(message))
-    else:
-        print("custom out: ", out.cpu())
-        print("cpu out: ", cpu_out)
-        exit(1)
+sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
+from _pytorchsim_utils import test_result
 
 def test_softmax(device, size=(128, 128), dim=1):
     torch.manual_seed(0)

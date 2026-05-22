@@ -1,21 +1,10 @@
+import os
+import sys
 import torch
 import torch._dynamo
 import torch.utils.cpp_extension
-
-def test_result(name, out, cpu_out, rtol=1e-4, atol=1e-4):
-    if torch.allclose(out.cpu(), cpu_out, rtol=rtol, atol=atol):
-        message = f"|{name} Test Passed|"
-        print("-" * len(message))
-        print(message)
-        print("-" * len(message))
-    else:
-        message = f"|{name} Test Failed|"
-        print("-" * len(message))
-        print(message)
-        print("-" * len(message))
-        print("custom out: ", out.cpu())
-        print("cpu out: ", cpu_out)
-        exit(1)
+sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
+from _pytorchsim_utils import test_result
 
 def test_tanh(device, size=(128, 128)):
     def tanh(a):

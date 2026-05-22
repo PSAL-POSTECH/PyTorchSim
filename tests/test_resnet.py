@@ -3,21 +3,10 @@ import torch
 import torch._dynamo
 import torch.utils.cpp_extension
 from torchvision.models import resnet18, resnet50
-
-def test_result(name, out, cpu_out, rtol=1e-4, atol=1e-4):
-    if torch.allclose(out.cpu(), cpu_out, rtol=rtol, atol=atol):
-        message = f"|{name} Test Passed|"
-        print("-" * len(message))
-        print(message)
-        print("-" * len(message))
-    else:
-        message = f"|{name} Test Failed|"
-        print("-" * len(message))
-        print(message)
-        print("-" * len(message))
-        print("custom out: ", out.cpu())
-        print("cpu out: ", cpu_out)
-        exit(1)
+import os
+import sys
+sys.path.insert(0, os.path.join(os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim'), 'tests'))
+from _pytorchsim_utils import test_result
 
 def test_resnet(device, batch=1, model_type='resnet18'):
     from torchvision.models import resnet
@@ -47,7 +36,6 @@ if __name__ == "__main__":
     args = argparse.ArgumentParser()
     args.add_argument('--model_type', type=str, default="resnet18", help='ex) resnet18')
     args = args.parse_args()
-    sys.path.append(os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim'))
 
     device = torch.device("npu:0")
     test_resnet(device, model_type=args.model_type)

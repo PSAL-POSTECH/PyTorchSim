@@ -5,22 +5,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch._dynamo
 import argparse
+sys.path.insert(0, os.path.join(os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim'), 'tests'))
+from _pytorchsim_utils import test_result
 
-
-def test_result(name, out, cpu_out, rtol=1e-4, atol=1e-4):
-    if torch.allclose(out.cpu(), cpu_out, rtol=rtol, atol=atol):
-        message = f"|{name} Test Passed|"
-        print("-" * len(message))
-        print(message)
-        print("-" * len(message))
-    else:
-        message = f"|{name} Test Failed|"
-        print("-" * len(message))
-        print(message)
-        print("-" * len(message))
-        print("custom out: ", out.cpu())
-        print("cpu out: ", cpu_out)
-        exit(1)
 
 
 class GQAMultiheadAttention(nn.Module):
@@ -300,7 +287,6 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
 
-    sys.path.append(os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim'))
     device = torch.device("npu:0")
     
     test_repeat_interleave_compilation(

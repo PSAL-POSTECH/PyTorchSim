@@ -265,7 +265,7 @@ class ExtensionOverrides(common.OpOverrides):
 
         # Data type check
         if op_type1[1] != op_type2[1]:
-            if op_type1[1] == "index" or op_type1 == "index":
+            if op_type1[1] == "index" or op_type2[1] == "index":
                 if op_type1[1] == "index":
                     # index -> target type: 2-step casting if target is float
                     if op_type2[1][0] == "f":

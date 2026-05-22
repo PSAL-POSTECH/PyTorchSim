@@ -116,3 +116,7 @@ echo "Next:"
 echo "  cd $WT_DIR"
 echo "  source .envrc"
 echo "  (cd PyTorchSimDevice && python setup.py build_ext --inplace)   # build the .so once"
+echo
+echo "When iterating on PyTorchSimFrontend/mlir/* (or any codegen) in this worktree,"
+echo "run scripts/clear_codegen_cache.sh between runs so the cached compile does not"
+echo "shadow your changes."

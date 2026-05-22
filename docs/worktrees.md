@@ -79,6 +79,30 @@ locally — `Simulator/simulator.py` resolves the binary path relative to
 If neither worktree has the binary yet, build it once (any worktree) per
 the CLAUDE.md "Build" section.
 
+## Iterating on codegen inside a worktree
+
+`.envrc` gives each worktree its own `$TORCHSIM_DUMP_PATH=$_self/outputs`,
+so parallel worktrees do not share caches. But within a worktree, after
+editing anything that affects emitted MLIR or wrapper code
+(`PyTorchSimFrontend/mlir/*`, lowering rules, codegen backend), the next
+`torch.compile` will replay the previously cached compile from
+`outputs/<hash>/` and your change silently does not take. Run:
+
+```bash
+scripts/clear_codegen_cache.sh
+```
+
+between iterations. It wipes `outputs/.torchinductor` (Inductor's compile
+cache, set via `TORCHINDUCTOR_CACHE_DIR` in `extension_config.py:139`) and
+the per-source-hash dirs (`outputs/<11-char-hash>/`, keyed by
+`extension_codecache.hash_prefix`). `togsim_results/` (run logs) is left
+alone.
+
+Diagnostic for the other common gotcha: if a traceback mentions a path
+under `/workspace/PyTorchSim/...` while you are editing in a different
+worktree, you forgot to `source .envrc` in that shell — Python imported the
+canonical worktree's `PyTorchSimFrontend` instead of yours.
+
 ## What the env looks like
 
 Worktree-scoped (auto-set by `.envrc`):

@@ -23,7 +23,7 @@ The pipeline runs in that order on every `torch.compile` invocation; you'll see 
 | `TOGSim/` | C++ TOGSim source. `src/Simulator.cc`, `Core.cc`, `Dram.cc`, `Interconnect.cc`, `L2Cache.cc`, `Tile.cc`, `TileGraph.cc` are the core models. Externals: ramulator2, booksim, stonneCore, onnx, protobuf, spdlog, yaml-cpp |
 | `AsmParser/` | `tog_generator.py`, `onnx_utility.py` — TOG generation from ONNX/ASM |
 | `configs/` | TOGSim hardware configs (YAML). The default is `systolic_ws_128x128_c1_simple_noc_tpuv3.yml`. Naming pattern: `systolic_ws_<size>_c<cores>_<noc>_<target>.yml` |
-| `tests/` | ~36 op- and model-level tests. Subdirs `DeepSeek/`, `Diffusion/`, `Llama/`, `MLP/`, `Mixtral_8x7B/`, `MoE/`, `Yolov5/`, `Fusion/` for whole-model workloads |
+| `tests/` | Op- and model-level tests organized under `ops/<family>/` (elementwise, reduce, gemm, conv, attention, view, sort, sparsity, misc, fusion), `models/<name>/` (Llama, Mixtral8x7B, DeepSeek, Diffusion, MoE, MLP, MobileNet, Yolov5) plus single-file model tests (test_resnet, test_transformer, test_vit, test_mlp, test_single_perceptron), and `system/` (scheduler, eager, hetro, stonne, vectorops). Shared helper: `tests/_utils.py` |
 | `experiments/artifact/` | Paper reproduction scripts (`cycle_validation/run_cycle.sh`, `speedup/run_speedup.sh`) |
 | `scripts/` | One-off experiment runners (CompilerOpt, ILS, batch, chiplet, sparsity, stonne, end2end). `build_from_source.sh` builds gem5/llvm/spike |
 | `gem5_script/` | gem5 wrapper scripts called by `CycleSimulator` |
@@ -36,16 +36,16 @@ The pipeline runs in that order on every `torch.compile` invocation; you'll see 
 Most tests follow the same pattern: build CPU reference, compile via `torch.compile` on `npu:0`, compare with `torch.allclose` (rtol=atol=1e-4). They all have `if __name__ == "__main__"` blocks.
 
 ```bash
-python tests/test_add.py        # vector add (smoke test, fastest)
-python tests/test_matmul.py     # GEMM
-python tests/test_mlp.py        # MLP forward + backward (training path)
-python tests/test_scheduler.py  # multi-tenant launch_model
-python tests/test_eager.py      # eager-fallback registration
+python tests/ops/elementwise/test_add.py        # vector add (smoke test, fastest)
+python tests/ops/gemm/test_matmul.py     # GEMM
+python tests/models/test_mlp.py        # MLP forward + backward (training path)
+python tests/system/test_scheduler.py  # multi-tenant launch_model
+python tests/system/test_eager.py      # eager-fallback registration
 ```
 
-Run a model from `tests/Llama/`, `tests/DeepSeek/`, etc. similarly.
+Run a model from `tests/models/Llama/`, `tests/models/DeepSeek/`, etc. similarly.
 
-**CI coverage:** the GitHub Actions workflow `.github/workflows/pytorchsim_test.yml` runs an **explicit allowlist** of `tests/*.py` files (~40 jobs, one Docker container per test). Adding a new file under `tests/` does *not* automatically gate PRs — register it in `pytorchsim_test.yml` if you want CI to exercise it. Conversely, files like `tests/test_gqa.py`, `tests/test_gqa_decode.py`, and `tests/test_eager.py` exist in the repo but are *not* in CI, so local validation is the only safety net for them.
+**CI coverage:** the GitHub Actions workflow `.github/workflows/pytorchsim_test.yml` runs an **explicit allowlist** of `tests/*.py` files (~40 jobs, one Docker container per test). Adding a new file under `tests/` does *not* automatically gate PRs — register it in `pytorchsim_test.yml` if you want CI to exercise it. Conversely, files like `tests/ops/attention/test_gqa.py`, `tests/ops/attention/test_gqa_decode.py`, and `tests/system/test_eager.py` exist in the repo but are *not* in CI, so local validation is the only safety net for them.
 
 **For fast iteration** (skip functional check):
 ```bash
@@ -123,7 +123,7 @@ Conan deps for TOGSim: `boost/1.79.0`, `robin-hood-hashing/3.11.5`, `spdlog/1.11
 - **Adding a PyTorch device op:** `PyTorchSimDevice/csrc/aten/native/*` (Minimal/Extra split mirrors `torch_openreg`).
 - **TOGSim hardware model changes:** `TOGSim/src/{Core,Dram,Interconnect,L2Cache,Tile,TileGraph}.cc` + matching `include/*.h`.
 - **TOG generation:** `AsmParser/tog_generator.py` builds the raw graph and serializes it via `AsmParser/onnx_utility.py` to **ONNX, which is the on-disk TOG format** consumed by TOGSim.
-- **Eager fallback registration:** `torch.npu.register_eager_to_compile([...])` — see `tests/test_eager.py`.
+- **Eager fallback registration:** `torch.npu.register_eager_to_compile([...])` — see `tests/system/test_eager.py`.
 - **Per-run results:** `togsim_results/<YYYYMMDD_HHMMSS_<hash>>.log` (stats) and `.trace` (instruction trace). The path is also printed at the end of every run.
 - **Wrapper codegen path:** printed as `Wrapper Codegen Path = /tmp/torchinductor_<user>/<hash>/...py` — useful for inspecting generated kernel code and tensor names for `SRAM_BUFFER_PLAN_PATH`.
 

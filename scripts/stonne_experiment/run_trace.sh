@@ -1,6 +1,6 @@
 #!/bin/bash
 
-SCRIPT="/workspace/PyTorchSim/tests/test_stonne.py"
+SCRIPT="/workspace/PyTorchSim/tests/system/test_stonne.py"
 
 SIZES=(32 64 128)
 SPARSITIES=(0.0 0.2 0.4 0.6 0.8)

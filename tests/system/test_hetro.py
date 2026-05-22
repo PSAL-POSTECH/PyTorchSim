@@ -3,10 +3,10 @@ import sys
 import torch
 import argparse
 
-sys.path.append(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"))
+sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
 
 from Simulator.simulator import TOGSimulator
-from test_stonne import sparse_matmul
+from system.test_stonne import sparse_matmul
 
 
 def custom_matmul(a, b):

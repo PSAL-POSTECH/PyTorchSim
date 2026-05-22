@@ -40,15 +40,15 @@ PyTorchSim **supports**:
 |---|:-:|:-:|---|
 | ResNet-18 | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | channel last format |
 | ResNet-50 | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | channel last format |
-| MobileNet-v2 | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | `tests/MobileNet/` (torchvision) |
-| YOLOv5 | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | `tests/Yolov5/` |
+| MobileNet-v2 | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | `tests/models/MobileNet/` (torchvision) |
+| YOLOv5 | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | `tests/models/Yolov5/` |
 | BERT | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ |  |
 | GPT-2 | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ |  |
-| ViT | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | `tests/test_vit.py` |
+| ViT | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | `tests/models/test_vit.py` |
 | Mistral | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | |
 | Stable-diffusion v1 | 🤗 | ✅ |  |
-| Llama 2/3 | 🤗 | ✅ | `tests/Llama/` (blocks & decode-style paths) |
-| DeepSeek-V3 (base) | 🤗 | ✅ | `tests/DeepSeek/` — several ops(e.g., gate ops) are not cycle-modeled |
+| Llama 2/3 | 🤗 | ✅ | `tests/models/Llama/` (blocks & decode-style paths) |
+| DeepSeek-V3 (base) | 🤗 | ✅ | `tests/models/DeepSeek/` — several ops(e.g., gate ops) are not cycle-modeled |
 | Llama-4 | 🤗 | ⏳ | In development |
 | Broader model support | — | ⏳ | In development |
 <!-- ## Requirements
@@ -104,7 +104,7 @@ The script clones each dep at the tag pinned in [`thirdparty/github-releases.jso
 ### Run Examples
 The `tests` directory contains several AI workload examples.
 ```bash
-python tests/test_matmul.py 
+python tests/ops/gemm/test_matmul.py 
 ```
 The result is written to `${TORCHSIM_LOG_PATH}/togsim_result/XXX.log`. The log file contains detailed core, memory, and interconnect stats.
 
@@ -201,7 +201,7 @@ optimizer.zero_grad()
 loss.backward()
 compiled_step()
 ```
-`tests/test_mlp.py` provides an example of MLP training.
+`tests/models/test_mlp.py` provides an example of MLP training.
 
 ## One TOGSim session, one continuous log
 
@@ -243,7 +243,7 @@ with TOGSimulator(config_path=config):
 Here `synchronize()` acts as a barrier: it does not return until every `launch_model` issued **above** it has finished in the simulator. The later pair of `launch_model` calls therefore runs only after those earlier models have fully completed—so the sync is the point in the timeline where **all preceding launches are done**.
 
 ```bash
-python tests/test_scheduler.py
+python tests/system/test_scheduler.py
 ```
 
 Use a TOGSim config(`.yml`) that defines **partitions** when mapping queues to cores, for example:

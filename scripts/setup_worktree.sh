@@ -61,6 +61,24 @@ git -C "$REPO_ROOT" worktree add "$WT_DIR" -b "$BRANCH" "$BASE_REF"
 # pushes to its own name on first `git push -u origin <branch>`.
 git -C "$WT_DIR" branch --unset-upstream || true
 
+# Share the TOGSim binary from the worktree this script was run from. TOGSim
+# is a standalone C++ simulator that rarely changes alongside Python frontend
+# work, so symlinking saves a ~10-minute rebuild per worktree. If you do
+# modify TOGSim C++ in the new worktree, run `cd TOGSim/build && make` after
+# wiping the link target -- the symlink will be replaced by the local build
+# output.
+TOGSIM_BIN_SRC="$REPO_ROOT/TOGSim/build/bin/Simulator"
+TOGSIM_BIN_DST="$WT_DIR/TOGSim/build/bin/Simulator"
+if [[ -x "$TOGSIM_BIN_SRC" ]]; then
+    # Resolve so we point at the real binary, not a chain of worktree symlinks.
+    TOGSIM_BIN_REAL="$(readlink -f "$TOGSIM_BIN_SRC")"
+    mkdir -p "$(dirname "$TOGSIM_BIN_DST")"
+    ln -sfn "$TOGSIM_BIN_REAL" "$TOGSIM_BIN_DST"
+    TOGSIM_LINK_MSG="Symlinked TOGSim binary from $TOGSIM_BIN_REAL"
+else
+    TOGSIM_LINK_MSG="TOGSim binary not found at $TOGSIM_BIN_SRC; build it once with 'cd TOGSim/build && conan install .. --build=missing && cmake .. && make -j' or symlink from another worktree."
+fi
+
 # Per-worktree env. Container-dedicated paths for shared binaries.
 cat > "$WT_DIR/.envrc" <<'ENVRC'
 #!/usr/bin/env bash
@@ -92,6 +110,7 @@ ENVRC
 echo
 echo "Created worktree: $WT_DIR"
 echo "Branch:           $BRANCH (base: $BASE_REF)"
+echo "$TOGSIM_LINK_MSG"
 echo
 echo "Next:"
 echo "  cd $WT_DIR"

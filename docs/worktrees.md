@@ -67,6 +67,18 @@ whichever worktree it already pointed at — `PYTHONPATH` from `.envrc` does
 the per-worktree routing. (Running `pip install -e` again rewrites that
 record and will pin "default" Python to the new worktree.)
 
+## TOGSim binary is shared
+
+`TOGSim/build/bin/Simulator` is a standalone C++ binary whose source rarely
+changes alongside Python frontend work, so `setup_worktree.sh` symlinks it
+from the worktree the script was invoked in. If you do modify TOGSim C++ in
+a particular worktree, delete the symlink and run `cd TOGSim/build && make`
+locally — `Simulator/simulator.py` resolves the binary path relative to
+`TORCHSIM_DIR`, so each worktree has its own resolution.
+
+If neither worktree has the binary yet, build it once (any worktree) per
+the CLAUDE.md "Build" section.
+
 ## What the env looks like
 
 Worktree-scoped (auto-set by `.envrc`):

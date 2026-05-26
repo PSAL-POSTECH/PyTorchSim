@@ -42,6 +42,23 @@ CONFIG_TORCHSIM_TOG_HOST_LDFLAGS = _default_tog_host_ldflags()
 CONFIG_TORCHSIM_DUMP_MLIR_IR = int(os.environ.get("TORCHSIM_DUMP_MLIR_IR", default=False))
 CONFIG_TORCHSIM_DUMP_LLVM_IR = int(os.environ.get("TORCHSIM_DUMP_LLVM_IR", default=False))
 
+
+def get_dump_path():
+    """Resolve TORCHSIM_DUMP_PATH and re-point Inductor's cache dir at it.
+
+    Side-effect by design: tutorials under ``tutorial/session*/`` mutate
+    ``os.environ['TORCHSIM_DUMP_PATH']`` between cells to redirect both
+    codegen output and Inductor's compile cache. Codegen call sites use
+    this helper so both stay in sync as the env var changes mid-session.
+    """
+    dump_path = os.environ.get(
+        "TORCHSIM_DUMP_PATH",
+        default=os.path.join(CONFIG_TORCHSIM_DIR, "outputs"),
+    )
+    os.environ["TORCHINDUCTOR_CACHE_DIR"] = os.path.join(dump_path, ".torchinductor")
+    return dump_path
+
+
 def __getattr__(name):
     # TOGSim config
     config_path = os.environ.get('TOGSIM_CONFIG',
@@ -134,12 +151,10 @@ def __getattr__(name):
 
     if name == "CONFIG_TOGSIM_DEBUG_LEVEL":
         return os.environ.get("TOGSIM_DEBUG_LEVEL", "")
-    if name == "CONFIG_TORCHSIM_DUMP_PATH":
-        dump_path = os.environ.get('TORCHSIM_DUMP_PATH', default = os.path.join(CONFIG_TORCHSIM_DIR, "outputs"))
-        os.environ["TORCHINDUCTOR_CACHE_DIR"] = os.path.join(dump_path, ".torchinductor")
-        return dump_path
     if name == "CONFIG_TORCHSIM_LOG_PATH":
         return os.environ.get('TORCHSIM_LOG_PATH', default = os.path.join(CONFIG_TORCHSIM_DIR, "togsim_results"))
+
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 # SRAM Buffer allocation plan
 def load_plan_from_module(module_path):

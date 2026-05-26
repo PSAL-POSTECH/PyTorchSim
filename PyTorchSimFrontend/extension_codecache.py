@@ -20,7 +20,7 @@ def hash_prefix(hash_value):
     return hash_value[1:12]
 
 def get_write_path(src_code):
-    return os.path.join(extension_config.CONFIG_TORCHSIM_DUMP_PATH, hash_prefix(get_hash(src_code.strip())))
+    return os.path.join(extension_config.get_dump_path(), hash_prefix(get_hash(src_code.strip())))
 
 
 def get_lock_path(write_path):
@@ -283,7 +283,7 @@ class CustomAsyncCompile(AsyncCompile):
             # Wait for compilation
             key = future.result()
             from filelock import FileLock
-            result_path = os.path.join(extension_config.CONFIG_TORCHSIM_DUMP_PATH, hash_prefix(key))
+            result_path = os.path.join(extension_config.get_dump_path(), hash_prefix(key))
             lock = FileLock(get_lock_path(result_path), timeout=LOCK_TIMEOUT)
             with lock:
                 # Run simulator pass

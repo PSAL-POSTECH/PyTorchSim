@@ -93,7 +93,7 @@ scripts/clear_codegen_cache.sh
 ```
 
 between iterations. It wipes `outputs/.torchinductor` (Inductor's compile
-cache, set via `TORCHINDUCTOR_CACHE_DIR` in `extension_config.py:139`) and
+cache, set via `TORCHINDUCTOR_CACHE_DIR` inside `extension_config.get_dump_path()`) and
 the per-source-hash dirs (`outputs/<11-char-hash>/`, keyed by
 `extension_codecache.hash_prefix`). `togsim_results/` (run logs) is left
 alone.

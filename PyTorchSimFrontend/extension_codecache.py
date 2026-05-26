@@ -271,7 +271,7 @@ class CustomAsyncCompile(AsyncCompile):
         autotune = kwargs.get('autotune', False)
         def task():
             key = MLIRCodeCache.load(source_code,
-                                          valdiation_wrapper_name=self.validation_binary_name,
+                                          validation_wrapper_name=self.validation_wrapper_name,
                                           validation_binary_name=self.validation_binary_name,
                                           arg_attributes=arg_attributes, vectorlane_size=vectorlane_size,
                                           tile_size=tile_size, spad_info=spad_info, origins=origins,

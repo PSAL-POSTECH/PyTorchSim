@@ -14,7 +14,7 @@ from typing import List, Optional
 from unittest.mock import patch
 
 from PyTorchSimFrontend import extension_config
-from torch._inductor.codegen.common import KernelTemplate, CSE, DeferredLine
+from torch._inductor.codegen.common import KernelTemplate, DeferredLine
 from torch._inductor.ir import Buffer, IRNode, TemplateBuffer, ChoiceCaller, ir_node_to_tensor
 from torch._inductor.select_algorithm import PartialRender
 from torch._inductor.codegen.cuda.cuda_kernel import CUDATemplateCaller
@@ -46,8 +46,8 @@ class IndentedBufferGroup:
         self.dma_loads = IndentedBuffer()
         self.dma_stores = IndentedBuffer()
         self.spad_buffer = IndentedBuffer()
-        self.cse = common.CSE("%", "", name_prefix=f"{prefix}")
-        self.apply_cse = common.CSE("%", "", name_prefix=f"{prefix}apply")
+        self.cse = mlir_common.MLIRCSE("%", "", name_prefix=f"{prefix}")
+        self.apply_cse = mlir_common.MLIRCSE("%", "", name_prefix=f"{prefix}apply")
         # Original buffers will be saved later in the 'with' block
         self.original_buffers = {}
 
@@ -118,9 +118,9 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         self.render_options = dict()
         self.tile_size = []
         self.loop_size = None
-        self.map_cse = CSE("#", self.suffix, name_prefix="t_map")
-        self.const_cse = CSE(self.newvar_prefix, self.suffix, name_prefix="t_const")
-        self.alloc_cse = CSE(self.newvar_prefix, self.suffix, name_prefix="t_alloc")
+        self.map_cse = mlir_common.MLIRCSE("#", self.suffix, name_prefix="t_map")
+        self.const_cse = mlir_common.MLIRCSE(self.newvar_prefix, self.suffix, name_prefix="t_const")
+        self.alloc_cse = mlir_common.MLIRCSE(self.newvar_prefix, self.suffix, name_prefix="t_alloc")
         self.prologue_buffer_group = IndentedBufferGroup(self, prefix="prologue_")
         self.epilogue_buffer_group = IndentedBufferGroup(self, prefix="epilogue_")
         self.global_vars = IndentedBuffer()
@@ -1057,7 +1057,12 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
 
             with self.override_buffer_cse(buffer=self.loads):
                 out = ops._load(vsize, mlir_dtype, sram_var, compute_index_var, tile_shape)
-            self.register_var_info(out, [self.compute_body_loop.step, mlir_dtype])
+            # `vsize` is the MLIR emission chunk; the logical (loop-tracking)
+            # size for downstream is the outer compute step. `dtype` overrides
+            # the proxy's lossy mlir_dtype->torch derivation for the uint8/int8
+            # ambiguity (OpResult.from_mlir defaults "i8" to torch.int8).
+            out.vec_size = self.compute_body_loop.step
+            out.dtype = dtype
         return out
 
     def store_epilogue(self, name: str, index: sympy.Expr, value, *args, **kwargs):
@@ -1088,7 +1093,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         sram_var = self.buffer_names[name]
         zero_var = self.get_const_cse(0)
 
-        _, operand_type = self.var_info[value]
+        _, operand_type = value.vec_size, value.mlir_dtype
         if mlir_dtype != operand_type:
             value = ops.to_dtype(value, mlir_dtype)
         compute_index_var = ",".join([f"%{zero_var}"] * (self.kernel_group.tile_desc.get_nr_dim()-1) + [f"%{self.compute_idx}"])
@@ -1217,8 +1222,8 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
                 reduction_type = self.reduction_info[value][0]
                 out = ops.multi_reduction(out, init_vec2, partial_vec_size, new_vec_size, partial_vshape, reduction_type, mlir_dtype)
 
-            out2 = self.cse.generate(self.reductions_suffix, f"vector.shuffle %{out}, %{out} [1, 0] : {new_reduced_shape}, {new_reduced_shape}")
-            self.register_var_info(out2, [new_vec_size, mlir_dtype])
+            out2 = self.cse.generate(self.reductions_suffix, f"vector.shuffle %{out}, %{out} [1, 0] : {new_reduced_shape}, {new_reduced_shape}", dtype=dtype)
+            out2.vec_size = new_vec_size
 
             with self.override_buffer_cse(buffer=self.reductions_suffix):
                 out = reduction_partial_combine_vec(self.reduction_info[value][0], out, out2)
@@ -1270,7 +1275,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
             self.r_tile_size = tile_desc.get_tile_size()[-1]
             self.r_dim_size = template_fusion_info['r_dim_size']
             self.reduction_nr_outer_loop = nr_outer_loop
-            self.reduction_loop_idx = self.register_var_cse("reduce_loop_idx", 1, "index")
+            self.reduction_loop_idx = self.cse.namedvar("reduce_loop_idx", dtype=mlir_common.INDEX_DTYPE)
             self.compute_body_loop.size = r_tile_size
             self.compute_body_loop.step = tile_desc.get_compute_vec_size() // nr_outer_loop
             self.reduction_body_loop = mlir_common.LoopLevel(self.reduction_loop_idx, nr_outer_loop)

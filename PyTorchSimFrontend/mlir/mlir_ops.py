@@ -5,6 +5,7 @@ import warnings
 from torch._inductor.codegen import common
 from torch._inductor.virtualized import V, _ops as ops
 from . import mlir_common
+from .mlir_common import OpResult, MLIRCSEVariable
 
 warnings.filterwarnings('ignore', message='undefined OpHandler\\..*, please add missing op schema')
 
@@ -70,11 +71,10 @@ class ExtensionOverrides(common.OpOverrides):
             value = format(float(value), ".20f")
         elif src_type[0] == "i":
             value = int(float(value))
-        return format_mlir_op(f'arith.constant {value}', src_type, **kwargs), [1, src_type]
-
+        return format_mlir_op(f'arith.constant {value}', src_type, **kwargs), OpResult.from_mlir(1, src_type)
     @staticmethod
     def broadcast(operand, target_size, *args, **kwargs):
-        src_size, dtype = V.kernel.var_info[operand]
+        src_size, dtype = operand.vec_size, operand.mlir_dtype
 
         src_shape = f"vector<{src_size}x{dtype}>" if src_size > 1 else dtype
         dst_shape = f"vector<{target_size}x{dtype}>"
@@ -98,11 +98,10 @@ class ExtensionOverrides(common.OpOverrides):
             shape = f"{src_shape} to {dst_shape}"
         else:
             raise ValueError(f"Invalid source size: {src_size}")
-        return format_mlir_op(op_str, shape, **kwargs), [target_size, dtype]
-
+        return format_mlir_op(op_str, shape, **kwargs), OpResult.from_mlir(target_size, dtype)
     @staticmethod
     def broadcast_unflat(operand, target_size, *args, **kwargs):
-        src_size, dtype = V.kernel.var_info[operand]
+        src_size, dtype = operand.vec_size, operand.mlir_dtype
 
         outer_dim = target_size // src_size
         src_shape = f"vector<{src_size}x{dtype}>"
@@ -110,8 +109,7 @@ class ExtensionOverrides(common.OpOverrides):
 
         op_str = f"vector.broadcast %{operand}"
         shape = f"{src_shape} to {dst_shape}"
-        return format_mlir_op(op_str, shape, **kwargs), [target_size, dtype]
-
+        return format_mlir_op(op_str, shape, **kwargs), OpResult.from_mlir(target_size, dtype)
     def load_seed(self, *args, **kwargs):
         raise NotImplementedError
 
@@ -130,32 +128,30 @@ class ExtensionOverrides(common.OpOverrides):
         result = body()
         val = ops.constant(other, dtype, *args, **kwargs)
         result = ops.where(mask, result, val)
-        return result, V.kernel.var_info[result]
-
+        return result, OpResult.from_var(result)
     @staticmethod
     def where(condition, operand1, operand2, *args, **kwargs):
         tile_size, ret_type, operand1, operand2 = ExtensionOverrides.binary_elementwise_common(operand1, operand2)
-        cond_type = V.kernel.var_info[condition]
-        operand_type = V.kernel.var_info[operand1]
+        cond_type = (condition.vec_size, condition.mlir_dtype)
+        operand_type = (operand1.vec_size, operand1.mlir_dtype)
         condition = ops.to_bool(condition)
         if cond_type[0] < tile_size:
             condition = ops.broadcast(condition, tile_size)
         elif cond_type[0] > tile_size:
             operand1 = ops.broadcast(operand1, cond_type[0])
             operand2 = ops.broadcast(operand2, cond_type[0])
-        tile_size, ret_type = V.kernel.var_info[operand1]
+        tile_size, ret_type = operand1.vec_size, operand1.mlir_dtype
         shape = f"vector<{tile_size}x{ret_type}>" if tile_size > 1 else ret_type
         cond_shape = f"vector<{tile_size}xi1>" if tile_size > 1 else ""
 
         op_str = f"arith.select %{condition}, %{operand1}, %{operand2}"
         shape = f"{cond_shape}, {shape}"
-        return format_mlir_op(op_str, shape, **kwargs), [tile_size, ret_type]
-
+        return format_mlir_op(op_str, shape, **kwargs), OpResult.from_mlir(tile_size, ret_type)
     @staticmethod
     def to_dtype(operand, dst_mlir_dtype, *args, **kwargs):
         # Extract source information
-        src_mlir_dtype = V.kernel.var_info[operand][1]
-        tile_size = V.kernel.var_info[operand][0]
+        src_mlir_dtype = operand.mlir_dtype
+        tile_size = operand.vec_size
 
         # Normalize destination type (Torch dtype -> MLIR string)
         if isinstance(dst_mlir_dtype, torch.dtype):
@@ -168,13 +164,11 @@ class ExtensionOverrides(common.OpOverrides):
         if dst_mlir_dtype == "index":
             # If source is already index, return as is; otherwise cast
             if src_mlir_dtype == "index":
-                return operand, [tile_size, "index"]
-            return ops.index_cast(operand, "index"), [tile_size, "index"]
-
+                return operand, OpResult(vec_size=tile_size, dtype=mlir_common.INDEX_DTYPE)
+            return ops.index_cast(operand, "index"), OpResult(vec_size=tile_size, dtype=mlir_common.INDEX_DTYPE)
         # Early return if types are identical
         if src_mlir_dtype == dst_mlir_dtype:
-            return operand, [tile_size, dst_mlir_dtype]
-
+            return operand, OpResult.from_mlir(tile_size, dst_mlir_dtype)
         dst_bits = mlir_common.MLIR_TO_BIT[dst_mlir_dtype]
         src_bits = mlir_common.MLIR_TO_BIT[src_mlir_dtype]
         shape = f"vector<{tile_size}x{dst_mlir_dtype}>" if tile_size > 1 else dst_mlir_dtype
@@ -198,7 +192,7 @@ class ExtensionOverrides(common.OpOverrides):
                 # Use arith.trunci for integer truncation
                 op_str = f"arith.trunci %{operand} : {src_shape} to {shape}"
             else:
-                return operand, [tile_size, dst_mlir_dtype]
+                return operand, OpResult.from_mlir(tile_size, dst_mlir_dtype)
         # Case D: Float -> Float (Extension / Truncation)
         elif src_type_char == "f" and dst_type_char == "f":
             if dst_bits > src_bits:
@@ -207,20 +201,18 @@ class ExtensionOverrides(common.OpOverrides):
                 # Corrected 'trunf' to 'truncf'
                 op_str = f"arith.truncf %{operand} : {src_shape} to {shape}"
             else:
-                return operand, [tile_size, dst_mlir_dtype]
+                return operand, OpResult.from_mlir(tile_size, dst_mlir_dtype)
         else:
             raise NotImplementedError(f"Unsupported conversion: {src_mlir_dtype} -> {dst_mlir_dtype}")
 
-        return op_str, [tile_size, dst_mlir_dtype]
-
+        return op_str, OpResult.from_mlir(tile_size, dst_mlir_dtype)
     @staticmethod
     def identity(operand, *args, **kwargs):
-        operand_info = V.kernel.var_info[operand]
-        return operand, operand_info
+        return operand, OpResult.from_var(operand)
 
     @staticmethod
     def to_dtype_bitcast(operand, dtype, *args, **kwargs):
-        tile_size, current_src_type = V.kernel.var_info[operand]
+        tile_size, current_src_type = operand.vec_size, operand.mlir_dtype
 
         if isinstance(dtype, torch.dtype):
             dst_mlir_type = mlir_common.DTYPE_TO_MLIR[dtype]
@@ -241,16 +233,14 @@ class ExtensionOverrides(common.OpOverrides):
 
         op_str = f"arith.bitcast %{operand}"
         shape = f"{src_shape} to {dst_shape}"
-        return format_mlir_op(op_str, shape, **kwargs), [tile_size, dst_mlir_type]
-
+        return format_mlir_op(op_str, shape, **kwargs), OpResult.from_mlir(tile_size, dst_mlir_type)
     # Binary element wise operations
     @staticmethod
     def binary_elementwise_common(operand1, operand2):
-        V.kernel.var_info = V.kernel.var_info
         operand1.bounds = operand1.bounds.unknown()
         operand2.bounds = operand2.bounds.unknown()
-        op_type1 = V.kernel.var_info[operand1]
-        op_type2 = V.kernel.var_info[operand2]
+        op_type1 = (operand1.vec_size, operand1.mlir_dtype)
+        op_type2 = (operand2.vec_size, operand2.mlir_dtype)
         # Tile size check
         if op_type1[0] != op_type2[0]:
             # Try to broad cast
@@ -258,11 +248,10 @@ class ExtensionOverrides(common.OpOverrides):
             rhs_tile_size, rhs_dtype = op_type2
             if lhs_tile_size > rhs_tile_size:
                 operand2 = ops.broadcast(operand2, lhs_tile_size)
-                op_type2 = V.kernel.var_info[operand2]
+                op_type2 = (operand2.vec_size, operand2.mlir_dtype)
             elif lhs_tile_size < rhs_tile_size:
                 operand1 = ops.broadcast(operand1, rhs_tile_size)
-                op_type1 = V.kernel.var_info[operand1]
-
+                op_type1 = (operand1.vec_size, operand1.mlir_dtype)
         # Data type check
         if op_type1[1] != op_type2[1]:
             if op_type1[1] == "index" or op_type2[1] == "index":
@@ -271,34 +260,34 @@ class ExtensionOverrides(common.OpOverrides):
                     if op_type2[1][0] == "f":
                         operand1 = ops.index_cast(operand1, "i64")
                         operand1 = ops.to_dtype(operand1, op_type2[1])
-                        op_type1 = V.kernel.var_info[operand1]
+                        op_type1 = (operand1.vec_size, operand1.mlir_dtype)
                     else:
                         # index -> integer: direct casting
                         operand1 = ops.index_cast(operand1, op_type2[1])
-                        op_type1 = V.kernel.var_info[operand1]
+                        op_type1 = (operand1.vec_size, operand1.mlir_dtype)
                 if op_type2[1] == "index":
                     # index -> target type: 2-step casting if target is float
                     if op_type1[1][0] == "f":
                         operand2 = ops.index_cast(operand2, "i64")
                         operand2 = ops.to_dtype(operand2, op_type1[1])
-                        op_type2 = V.kernel.var_info[operand2]
+                        op_type2 = (operand2.vec_size, operand2.mlir_dtype)
                     else:
                         # index -> integer: direct casting
                         operand2 = ops.index_cast(operand2, op_type1[1])
-                        op_type2 = V.kernel.var_info[operand2]
+                        op_type2 = (operand2.vec_size, operand2.mlir_dtype)
             elif op_type1[1][0] == "i" and op_type2[1][0] == "f":
                 operand1 = ops.to_dtype(operand1, op_type2[1])
-                op_type1 = V.kernel.var_info[operand1]
+                op_type1 = (operand1.vec_size, operand1.mlir_dtype)
             elif op_type1[1][0] == "f" and op_type2[1][0] == "i":
                 operand2 = ops.to_dtype(operand2, op_type1[1])
-                op_type2 = V.kernel.var_info[operand2]
+                op_type2 = (operand2.vec_size, operand2.mlir_dtype)
             elif op_type1[1][0] == op_type2[1][0]:
                 if mlir_common.MLIR_TO_BIT[op_type1[1]] > mlir_common.MLIR_TO_BIT[op_type2[1]]:
                    operand2 = ops.ext(operand2, op_type1[1])
-                   op_type2 = V.kernel.var_info[operand2]
+                   op_type2 = (operand2.vec_size, operand2.mlir_dtype)
                 elif mlir_common.MLIR_TO_BIT[op_type1[1]] < mlir_common.MLIR_TO_BIT[op_type2[1]]:
                    operand1 = ops.ext(operand1, op_type2[1])
-                   op_type1 = V.kernel.var_info[operand1]
+                   op_type1 = (operand1.vec_size, operand1.mlir_dtype)
             else:
                 raise NotImplementedError("Unsupported type converting")
 
@@ -314,25 +303,24 @@ class ExtensionOverrides(common.OpOverrides):
     @staticmethod
     def exp(operand, *args, **kwargs):
         # Check scalar
-        op_type = V.kernel.var_info[operand]
+        op_type = (operand.vec_size, operand.mlir_dtype)
         if op_type[0] == 1:
             operand = ops.broadcast(operand, 4)
             val = ops.exp(operand)
             result = ops.extractelement(val, 0)
-            return result, V.kernel.var_info[result]
-        op_type = V.kernel.var_info[operand]
+            return result, OpResult.from_var(result)
+        op_type = (operand.vec_size, operand.mlir_dtype)
         tile_size = op_type[0]
         dtype = op_type[1]
         shape = f"vector<{tile_size}x{dtype}>" if tile_size > 1 else dtype
-        return format_mlir_op(f'math.exp %{operand}', shape, **kwargs), [tile_size, dtype]
-
+        return format_mlir_op(f'math.exp %{operand}', shape, **kwargs), OpResult.from_mlir(tile_size, dtype)
     @staticmethod
     def exp2(operand, *args, **kwargs):
         # Hands-on part: implement exp2 using math.exp2
         # V.kernel.var_info = {operand: [tile_size, dtype]}
         # Ex) V.kernel.var_info[operand] = [8, "f32"]
         #
-        # tile_size, dtype = V.kernel.var_info[operand]
+        # tile_size, dtype = operand.vec_size, operand.mlir_dtype
         # if tile_size > 1:
         #     shape = f"vector<{tile_size}x{dtype}>"
         # else:
@@ -342,19 +330,16 @@ class ExtensionOverrides(common.OpOverrides):
         ln2 = math.log(2)
         coeff = ops.constant(ln2, "f32")
         operand = ops.mul(operand, coeff)
-        return ops.exp(operand), V.kernel.var_info[operand]
-
+        return ops.exp(operand), OpResult.from_var(operand)
     @staticmethod
     def expm1(operand, *args, **kwargs):
         coeff = ops.constant(1.0, "f32")
         operand = ops.exp(operand)
         operand = ops.sub(operand, coeff)
-        return operand, V.kernel.var_info[operand]
-
+        return operand, OpResult.from_var(operand)
     @staticmethod
     def sqrt(operand, *args, **kwargs):
-        op_type = V.kernel.var_info[operand]
-
+        op_type = (operand.vec_size, operand.mlir_dtype)
         tile_size = op_type[0]
         dtype = op_type[1]
 
@@ -363,14 +348,12 @@ class ExtensionOverrides(common.OpOverrides):
             operand = ops.to_dtype(operand, "f32")
 
         shape = f"vector<{tile_size}x{dtype}>" if tile_size > 1 else dtype
-        return format_mlir_op(f'math.sqrt %{operand}', shape, **kwargs), [tile_size, dtype]
-
+        return format_mlir_op(f'math.sqrt %{operand}', shape, **kwargs), OpResult.from_mlir(tile_size, dtype)
     @staticmethod
     def relu(operand, *args, **kwargs):
-        src_mlir_dtype = V.kernel.var_info[operand][1]
-        tile_size = V.kernel.var_info[operand][0]
-        return ops.maximum(operand, ops.constant(0, src_mlir_dtype)), [tile_size, src_mlir_dtype]
-
+        src_mlir_dtype = operand.mlir_dtype
+        tile_size = operand.vec_size
+        return ops.maximum(operand, ops.constant(0, src_mlir_dtype)), OpResult.from_mlir(tile_size, src_mlir_dtype)
     @staticmethod
     def minimum(operand1, operand2, *args, **kwargs):
         tile_size, ret_type, operand1, operand2 = ExtensionOverrides.binary_elementwise_common(operand1, operand2)
@@ -380,8 +363,7 @@ class ExtensionOverrides(common.OpOverrides):
         else:
             opcode = f'arith.minsi'
         op_str = f'{opcode} %{operand1}, %{operand2}'
-        return format_mlir_op(op_str, shape, **kwargs), [tile_size, ret_type]
-
+        return format_mlir_op(op_str, shape, **kwargs), OpResult.from_mlir(tile_size, ret_type)
     @staticmethod
     def maximum(operand1, operand2, *args, **kwargs):
         tile_size, ret_type, operand1, operand2 = ExtensionOverrides.binary_elementwise_common(operand1, operand2)
@@ -391,20 +373,18 @@ class ExtensionOverrides(common.OpOverrides):
         else:
             opcode = f'arith.maxsi'
         op_str = f'{opcode} %{operand1}, %{operand2}'
-        return format_mlir_op(op_str, shape, **kwargs), [tile_size, ret_type]
-
+        return format_mlir_op(op_str, shape, **kwargs), OpResult.from_mlir(tile_size, ret_type)
     @staticmethod
     def cos(operand, *args, **kwargs):
-        op_type = V.kernel.var_info[operand]
-
+        op_type = (operand.vec_size, operand.mlir_dtype)
         # Check scalar
-        op_type = V.kernel.var_info[operand]
+        op_type = (operand.vec_size, operand.mlir_dtype)
         if op_type[0] == 1:
             operand = ops.broadcast(operand, 4)
             val = ops.cos(operand)
             result = ops.extractelement(val, 0)
-            return result, V.kernel.var_info[result]
-        op_type = V.kernel.var_info[operand]
+            return result, OpResult.from_var(result)
+        op_type = (operand.vec_size, operand.mlir_dtype)
         tile_size = op_type[0]
         dtype = op_type[1]
 
@@ -412,20 +392,18 @@ class ExtensionOverrides(common.OpOverrides):
         if dtype.startswith("f"):
             operand = ops.to_dtype(operand, "f32")
         shape = f"vector<{tile_size}x{dtype}>" if tile_size > 1 else dtype
-        return format_mlir_op(f'math.cos %{operand}', shape, **kwargs), [tile_size, dtype]
-
+        return format_mlir_op(f'math.cos %{operand}', shape, **kwargs), OpResult.from_mlir(tile_size, dtype)
     @staticmethod
     def sin(operand, *args, **kwargs):
-        op_type = V.kernel.var_info[operand]
-
+        op_type = (operand.vec_size, operand.mlir_dtype)
         # Check scalar
-        op_type = V.kernel.var_info[operand]
+        op_type = (operand.vec_size, operand.mlir_dtype)
         if op_type[0] == 1:
             operand = ops.broadcast(operand, 4)
             val = ops.sin(operand)
             result = ops.extractelement(val, 0)
-            return result, V.kernel.var_info[result]
-        op_type = V.kernel.var_info[operand]
+            return result, OpResult.from_var(result)
+        op_type = (operand.vec_size, operand.mlir_dtype)
         tile_size = op_type[0]
         dtype = op_type[1]
 
@@ -433,15 +411,13 @@ class ExtensionOverrides(common.OpOverrides):
         if dtype.startswith("f"):
             operand = ops.to_dtype(operand, "f32")
         shape = f"vector<{tile_size}x{dtype}>" if tile_size > 1 else dtype
-        return format_mlir_op(f'math.sin %{operand}', shape, **kwargs), [tile_size, dtype]
-
+        return format_mlir_op(f'math.sin %{operand}', shape, **kwargs), OpResult.from_mlir(tile_size, dtype)
     @staticmethod
     def tan(operand, *args, **kwargs):
         sin_res = ops.sin(operand)
         cos_res = ops.cos(operand)
         operand = ops.truediv(sin_res, cos_res)
-        return operand, V.kernel.var_info[operand]
-
+        return operand, OpResult.from_var(operand)
     @staticmethod
     def lgamma(operand, *args, **kwargs):
         raise NotImplementedError
@@ -449,18 +425,17 @@ class ExtensionOverrides(common.OpOverrides):
     @staticmethod
     def erf(operand, *args, **kwargs):
         # Check scalar
-        op_type = V.kernel.var_info[operand]
+        op_type = (operand.vec_size, operand.mlir_dtype)
         if op_type[0] == 1:
             operand = ops.broadcast(operand, 4)
             val = ops.erf(operand)
             result = ops.extractelement(val, 0)
-            return result, V.kernel.var_info[result]
-        op_type = V.kernel.var_info[operand]
+            return result, OpResult.from_var(result)
+        op_type = (operand.vec_size, operand.mlir_dtype)
         tile_size = op_type[0]
         dtype = op_type[1]
         shape = f"vector<{tile_size}x{dtype}>" if tile_size > 1 else dtype
-        return format_mlir_op(f'math.erf %{operand}', shape, **kwargs), [tile_size, dtype]
-
+        return format_mlir_op(f'math.erf %{operand}', shape, **kwargs), OpResult.from_mlir(tile_size, dtype)
     @staticmethod
     def cosh(operand, *args, **kwargs):
         raise NotImplementedError
@@ -471,16 +446,15 @@ class ExtensionOverrides(common.OpOverrides):
 
     @staticmethod
     def tanh(operand, *args, **kwargs):
-        op_type = V.kernel.var_info[operand]
-
+        op_type = (operand.vec_size, operand.mlir_dtype)
         # Check scalar
-        op_type = V.kernel.var_info[operand]
+        op_type = (operand.vec_size, operand.mlir_dtype)
         if op_type[0] == 1:
             operand = ops.broadcast(operand, 4)
             val = ops.tanh(operand)
             result = ops.extractelement(val, 0)
-            return result, V.kernel.var_info[result]
-        op_type = V.kernel.var_info[operand]
+            return result, OpResult.from_var(result)
+        op_type = (operand.vec_size, operand.mlir_dtype)
         tile_size = op_type[0]
         dtype = op_type[1]
 
@@ -488,8 +462,7 @@ class ExtensionOverrides(common.OpOverrides):
         if dtype.startswith("f"):
             operand = ops.to_dtype(operand, "f32")
         shape = f"vector<{tile_size}x{dtype}>" if tile_size > 1 else dtype
-        return format_mlir_op(f'math.tanh %{operand}', shape, **kwargs), [tile_size, dtype]
-
+        return format_mlir_op(f'math.tanh %{operand}', shape, **kwargs), OpResult.from_mlir(tile_size, dtype)
     @staticmethod
     def acos(operand, *args, **kwargs):
         raise NotImplementedError
@@ -542,28 +515,26 @@ class ExtensionOverrides(common.OpOverrides):
     def log10(operand, *args, **kwargs):
         val_ln = ops.log(operand)
 
-        tile_size, dtype = V.kernel.var_info[val_ln]
+        tile_size, dtype = val_ln.vec_size, val_ln.mlir_dtype
         inv_ln10 = 1/math.log(10)
         const_op = ops.constant(inv_ln10, dtype)
 
         # Multiply: ln(x) * (1/ln(10))
         result = ops.mul(val_ln, const_op)
-        return result, V.kernel.var_info[result]
-
+        return result, OpResult.from_var(result)
     @staticmethod
     def log2(operand, *args, **kwargs):
         val_ln = ops.log(operand)
-        tile_size, dtype = V.kernel.var_info[val_ln]
+        tile_size, dtype = val_ln.vec_size, val_ln.mlir_dtype
         inv_ln10 = 1/math.log(2)
         const_op = ops.constant(inv_ln10, dtype)
 
         # Multiply: ln(x) * (1/ln(10))
         result = ops.mul(val_ln, const_op)
-        return result, V.kernel.var_info[result]
-
+        return result, OpResult.from_var(result)
     @staticmethod
     def log(operand, *args, **kwargs):
-        op_type = V.kernel.var_info[operand]
+        op_type = (operand.vec_size, operand.mlir_dtype)
         tile_size = op_type[0]
         dtype = op_type[1]
 
@@ -572,92 +543,82 @@ class ExtensionOverrides(common.OpOverrides):
             operand = ops.to_dtype(operand, "f32")
 
         shape = f"vector<{tile_size}x{dtype}>" if tile_size > 1 else dtype
-        return format_mlir_op(f'math.log %{operand}', shape, **kwargs), [tile_size, dtype]
-
+        return format_mlir_op(f'math.log %{operand}', shape, **kwargs), OpResult.from_mlir(tile_size, dtype)
     @staticmethod
     def log1p(operand, *args, **kwargs):
-        tile_size, dtype = V.kernel.var_info[operand]
+        tile_size, dtype = operand.vec_size, operand.mlir_dtype
         const_one = ops.constant(1, dtype)
 
         val_add = ops.add(operand, const_one)
         result = ops.log(val_add)
-        return result, V.kernel.var_info[result]
-
+        return result, OpResult.from_var(result)
     @staticmethod
     def nextafter(operand1, operand2, *args, **kwargs):
         raise NotImplementedError
 
     @staticmethod
     def logical_and(operand1, operand2, *args, **kwargs):
-        if V.kernel.var_info[operand1][1] != "i1":
+        if operand1.dtype != torch.bool:
             operand1 = ops.to_bool(operand1)
-        if V.kernel.var_info[operand2][1] != "i1":
+        if operand2.dtype != torch.bool:
             operand2 = ops.to_bool(operand2)
         result = ops.and_(operand1, operand2)
-        return result, V.kernel.var_info[result]
-
+        return result, OpResult.from_var(result)
     @staticmethod
     def logical_or(operand1, operand2, *args, **kwargs):
-        if V.kernel.var_info[operand1][1] != "i1":
+        if operand1.dtype != torch.bool:
             operand1 = ops.to_bool(operand1)
-        if V.kernel.var_info[operand2][1] != "i1":
+        if operand2.dtype != torch.bool:
             operand2 = ops.to_bool(operand2)
         result = ops.or_(operand1, operand2)
-        return result, V.kernel.var_info[result]
-
+        return result, OpResult.from_var(result)
     @staticmethod
     def logical_xor(operand1, operand2, *args, **kwargs):
-        if V.kernel.var_info[operand1][1] != "i1":
+        if operand1.dtype != torch.bool:
             operand1 = ops.to_bool(operand1)
-        if V.kernel.var_info[operand2][1] != "i1":
+        if operand2.dtype != torch.bool:
             operand2 = ops.to_bool(operand2)
         result = ops.xor(operand1, operand2)
-        return result, V.kernel.var_info[result]
-
+        return result, OpResult.from_var(result)
     @staticmethod
     def logical_not(operand, *args, **kwargs):
-        op_info = V.kernel.var_info[operand]
+        op_info = (operand.vec_size, operand.mlir_dtype)
         tile_size = op_info[0]
         dtype = op_info[1]
         zero_const = ops.constant(0, dtype)
         result = ops.eq(operand, zero_const)
-        return result, V.kernel.var_info[result]
-
+        return result, OpResult.from_var(result)
     @staticmethod
     def bitwise_and(operand1, operand2, *args, **kwargs):
         # Float check
-        if V.kernel.var_info[operand1][1].startswith("f") or V.kernel.var_info[operand2][1].startswith("f"):
+        if operand1.mlir_dtype.startswith("f") or operand2.mlir_dtype.startswith("f"):
             raise ValueError("Bitwise AND not supported for floats")
         result = ops.and_(operand1, operand2)
-        return result, V.kernel.var_info[result]
-
+        return result, OpResult.from_var(result)
     @staticmethod
     def bitwise_not(operand, *args, **kwargs):
-        tile_size, dtype = V.kernel.var_info[operand]
+        tile_size, dtype = operand.vec_size, operand.mlir_dtype
         # Float check
-        if V.kernel.var_info[operand][1].startswith("f"):
+        if operand.mlir_dtype.startswith("f"):
             raise ValueError("Bitwise NOT not supported for floats")
         neg_one = ops.constant(-1, dtype)
         result = ops.xor(operand, neg_one)
-        return result, V.kernel.var_info[result]
-
+        return result, OpResult.from_var(result)
     @staticmethod
     def bitwise_or(operand1, operand2, *args, **kwargs):
         # Float check
-        if V.kernel.var_info[operand1][1].startswith("f") or V.kernel.var_info[operand2][1].startswith("f"):
+        if operand1.mlir_dtype.startswith("f") or operand2.mlir_dtype.startswith("f"):
             raise ValueError("Bitwise AND not supported for floats")
 
         result = ops.or_(operand1, operand2)
-        return result, V.kernel.var_info[result]
-
+        return result, OpResult.from_var(result)
     @staticmethod
     def bitwise_xor(operand1, operand2, *args, **kwargs):
                 # Float check
-        if V.kernel.var_info[operand1][1].startswith("f") or V.kernel.var_info[operand2][1].startswith("f"):
+        if operand1.mlir_dtype.startswith("f") or operand2.mlir_dtype.startswith("f"):
             raise ValueError("Bitwise AND not supported for floats")
         result = ops.xor(operand1, operand2)
-        return result, V.kernel.var_info[result]
-
+        return result, OpResult.from_var(result)
     @staticmethod
     def bitwise_left_shift(operand1, operand2, *args, **kwargs):
         raise NotImplementedError
@@ -668,7 +629,7 @@ class ExtensionOverrides(common.OpOverrides):
 
     @staticmethod
     def rsqrt(operand, *args, **kwargs):
-        op_type = V.kernel.var_info[operand]
+        op_type = (operand.vec_size, operand.mlir_dtype)
         tile_size = op_type[0]
         dtype = op_type[1]
 
@@ -677,16 +638,14 @@ class ExtensionOverrides(common.OpOverrides):
             operand = ops.to_dtype(operand, "f32")
 
         shape = f"vector<{tile_size}x{dtype}>" if tile_size > 1 else dtype
-        return format_mlir_op(f'math.rsqrt %{operand}', shape, **kwargs), [tile_size, dtype]
-
+        return format_mlir_op(f'math.rsqrt %{operand}', shape, **kwargs), OpResult.from_mlir(tile_size, dtype)
     @staticmethod
     def sigmoid(operand, *args, **kwargs):
-        op_type = V.kernel.var_info[operand]
+        op_type = (operand.vec_size, operand.mlir_dtype)
         tile_size = op_type[0]
         dtype = op_type[1]
         one = ops.constant(1, dtype)
-        return ops.truediv(one, ops.add(one, ops.exp(ops.neg(operand)))), [tile_size, dtype]
-
+        return ops.truediv(one, ops.add(one, ops.exp(ops.neg(operand)))), OpResult.from_mlir(tile_size, dtype)
     @staticmethod
     def fmod(operand1, operand2, *args, **kwargs):
         raise NotImplementedError
@@ -701,56 +660,52 @@ class ExtensionOverrides(common.OpOverrides):
 
     @staticmethod
     def round(operand, *args, **kwargs):
-        tile_size, dtype = V.kernel.var_info[operand]
+        tile_size, dtype = operand.vec_size, operand.mlir_dtype
         shape = f"vector<{tile_size}x{dtype}>" if tile_size > 1 else dtype
 
         if dtype.startswith("f"):
             op_str = f"math.roundeven %{operand}"
-            return format_mlir_op(op_str, shape, **kwargs), [tile_size, dtype]
+            return format_mlir_op(op_str, shape, **kwargs), OpResult.from_mlir(tile_size, dtype)
         else:
-            return operand, [tile_size, dtype]
-
+            return operand, OpResult.from_mlir(tile_size, dtype)
     @staticmethod
     def floor(operand, *args, **kwargs):
-        tile_size, dtype = V.kernel.var_info[operand]
+        tile_size, dtype = operand.vec_size, operand.mlir_dtype
         shape = f"vector<{tile_size}x{dtype}>" if tile_size > 1 else dtype
 
         if dtype.startswith("f"):
             op_str = f"math.floor %{operand}"
-            return format_mlir_op(op_str, shape, **kwargs), [tile_size, dtype]
+            return format_mlir_op(op_str, shape, **kwargs), OpResult.from_mlir(tile_size, dtype)
         else:
-            return operand, [tile_size, dtype]
-
+            return operand, OpResult.from_mlir(tile_size, dtype)
     @staticmethod
     def sign(operand, *args, **kwargs):
         raise NotImplementedError
 
     @staticmethod
     def trunc(operand, *args, **kwargs):
-        tile_size, dtype = V.kernel.var_info[operand]
+        tile_size, dtype = operand.vec_size, operand.mlir_dtype
         shape = f"vector<{tile_size}x{dtype}>" if tile_size > 1 else dtype
 
         if dtype.startswith("f"):
             op_str = f"math.trunc %{operand}"
-            return format_mlir_op(op_str, shape, **kwargs), [tile_size, dtype]
+            return format_mlir_op(op_str, shape, **kwargs), OpResult.from_mlir(tile_size, dtype)
         else:
-            return operand, [tile_size, dtype]
-
+            return operand, OpResult.from_mlir(tile_size, dtype)
     @staticmethod
     def ceil(operand, *args, **kwargs):
-        tile_size, dtype = V.kernel.var_info[operand]
+        tile_size, dtype = operand.vec_size, operand.mlir_dtype
         shape = f"vector<{tile_size}x{dtype}>" if tile_size > 1 else dtype
 
         if dtype.startswith("f"):
             op_str = f"math.ceil %{operand}"
-            return format_mlir_op(op_str, shape, **kwargs), [tile_size, dtype]
+            return format_mlir_op(op_str, shape, **kwargs), OpResult.from_mlir(tile_size, dtype)
         else:
-            return operand, [tile_size, dtype]
-
+            return operand, OpResult.from_mlir(tile_size, dtype)
     # Logical operations
     @staticmethod
     def neg(operand, *args, **kwargs):
-        op_type = V.kernel.var_info[operand]
+        op_type = (operand.vec_size, operand.mlir_dtype)
         tile_size = op_type[0]
         dtype = op_type[1]
 
@@ -759,19 +714,17 @@ class ExtensionOverrides(common.OpOverrides):
             operand = ops.to_dtype(operand, "f32")
         op_str = f"arith.negf %{operand}"
         shape = f"vector<{tile_size}x{dtype}>" if tile_size > 1 else dtype
-        return format_mlir_op(op_str, shape, **kwargs), [tile_size, dtype]
-
+        return format_mlir_op(op_str, shape, **kwargs), OpResult.from_mlir(tile_size, dtype)
     @staticmethod
     def reciprocal(operand, *args, **kwargs):
-        op_type = V.kernel.var_info[operand]
+        op_type = (operand.vec_size, operand.mlir_dtype)
         tile_size, dtype = op_type[0], op_type[1]
         if dtype.startswith("i"):
             openand = ops.to_dtype(operand, "f32")
-            op_type = V.kernel.var_info[operand]
+            op_type = (operand.vec_size, operand.mlir_dtype)
             tile_size, dtype = op_type[0], op_type[1]
 
-        return ops.truediv(ops.constant(1.0, dtype), operand), [tile_size, dtype]
-
+        return ops.truediv(ops.constant(1.0, dtype), operand), OpResult.from_mlir(tile_size, dtype)
     @staticmethod
     def eq(operand1, operand2, *args, **kwargs):
         tile_size, ret_type, operand1, operand2 = ExtensionOverrides.binary_elementwise_common(operand1, operand2)
@@ -786,8 +739,7 @@ class ExtensionOverrides(common.OpOverrides):
 
         op_str = f'{op_type} {attribute}, %{operand1}, %{operand2}'
         shape = f"vector<{tile_size}x{ret_type}>" if tile_size > 1 else ret_type
-        return format_mlir_op(op_str, shape, **kwargs), [tile_size, "i1"]
-
+        return format_mlir_op(op_str, shape, **kwargs), OpResult(vec_size=tile_size, dtype=torch.bool, mlir_dtype="i1")
     @staticmethod
     def ne(operand1, operand2, *args, **kwargs):
         tile_size, ret_type, operand1, operand2 = ExtensionOverrides.binary_elementwise_common(operand1, operand2)
@@ -802,8 +754,7 @@ class ExtensionOverrides(common.OpOverrides):
 
         op_str = f'{op_type} {attribute}, %{operand1}, %{operand2}'
         shape = f"vector<{tile_size}x{ret_type}>" if tile_size > 1 else ret_type
-        return format_mlir_op(op_str, shape, **kwargs), [tile_size, "i1"]
-
+        return format_mlir_op(op_str, shape, **kwargs), OpResult(vec_size=tile_size, dtype=torch.bool, mlir_dtype="i1")
     @staticmethod
     def lt(operand1, operand2, *args, **kwargs):
         tile_size, ret_type, operand1, operand2 = ExtensionOverrides.binary_elementwise_common(operand1, operand2)
@@ -818,8 +769,7 @@ class ExtensionOverrides(common.OpOverrides):
 
         op_str = f'{op_type} {attribute}, %{operand1}, %{operand2}'
         shape = f"vector<{tile_size}x{ret_type}>" if tile_size > 1 else ret_type
-        return format_mlir_op(op_str, shape, **kwargs), [tile_size, "i1"]
-
+        return format_mlir_op(op_str, shape, **kwargs), OpResult(vec_size=tile_size, dtype=torch.bool, mlir_dtype="i1")
     @staticmethod
     def gt(operand1, operand2, *args, **kwargs):
         tile_size, ret_type, operand1, operand2 = ExtensionOverrides.binary_elementwise_common(operand1, operand2)
@@ -834,8 +784,7 @@ class ExtensionOverrides(common.OpOverrides):
 
         op_str = f'{op_type} {attribute}, %{operand1}, %{operand2}'
         shape = f"vector<{tile_size}x{ret_type}>" if tile_size > 1 else ret_type
-        return format_mlir_op(op_str, shape, **kwargs), [tile_size, "i1"]
-
+        return format_mlir_op(op_str, shape, **kwargs), OpResult(vec_size=tile_size, dtype=torch.bool, mlir_dtype="i1")
     @staticmethod
     def le(operand1, operand2, *args, **kwargs):
         tile_size, ret_type, operand1, operand2 = ExtensionOverrides.binary_elementwise_common(operand1, operand2)
@@ -850,8 +799,7 @@ class ExtensionOverrides(common.OpOverrides):
 
         op_str = f'{op_type} {attribute}, %{operand1}, %{operand2}'
         shape = f"vector<{tile_size}x{ret_type}>" if tile_size > 1 else ret_type
-        return format_mlir_op(op_str, shape, **kwargs), [tile_size, "i1"]
-
+        return format_mlir_op(op_str, shape, **kwargs), OpResult(vec_size=tile_size, dtype=torch.bool, mlir_dtype="i1")
     @staticmethod
     def ge(operand1, operand2, *args, **kwargs):
         tile_size, ret_type, operand1, operand2 = ExtensionOverrides.binary_elementwise_common(operand1, operand2)
@@ -866,32 +814,28 @@ class ExtensionOverrides(common.OpOverrides):
 
         op_str = f'{op_type} {attribute}, %{operand1}, %{operand2}'
         shape = f"vector<{tile_size}x{ret_type}>" if tile_size > 1 else ret_type
-        return format_mlir_op(op_str, shape, **kwargs), [tile_size, "i1"]
-
+        return format_mlir_op(op_str, shape, **kwargs), OpResult(vec_size=tile_size, dtype=torch.bool, mlir_dtype="i1")
     @staticmethod
     def add(operand1, operand2, *args, **kwargs):
         tile_size, ret_type, operand1, operand2 = ExtensionOverrides.binary_elementwise_common(operand1, operand2)
         shape = f"vector<{tile_size}x{ret_type}>" if tile_size > 1 else ret_type
         opcode = f'arith.add{ret_type[0]}'
         op_str = f'{opcode} %{operand1}, %{operand2}'
-        return format_mlir_op(op_str, shape, **kwargs), [tile_size, ret_type]
-
+        return format_mlir_op(op_str, shape, **kwargs), OpResult.from_mlir(tile_size, ret_type)
     @staticmethod
     def sub(operand1, operand2, *args, **kwargs):
         tile_size, ret_type, operand1, operand2 = ExtensionOverrides.binary_elementwise_common(operand1, operand2)
         shape = f"vector<{tile_size}x{ret_type}>" if tile_size > 1 else ret_type
         opcode = f'arith.sub{ret_type[0]}'
         op_str = f'{opcode} %{operand1}, %{operand2}'
-        return format_mlir_op(op_str, shape, **kwargs), [tile_size, ret_type]
-
+        return format_mlir_op(op_str, shape, **kwargs), OpResult.from_mlir(tile_size, ret_type)
     @staticmethod
     def mul(operand1, operand2, *args, **kwargs):
         tile_size, ret_type, operand1, operand2 = ExtensionOverrides.binary_elementwise_common(operand1, operand2)
         shape = f"vector<{tile_size}x{ret_type}>" if tile_size > 1 else ret_type
         opcode = f'arith.mul{ret_type[0]}'
         op_str = f'{opcode} %{operand1}, %{operand2}'
-        return format_mlir_op(op_str, shape, **kwargs), [tile_size, ret_type]
-
+        return format_mlir_op(op_str, shape, **kwargs), OpResult.from_mlir(tile_size, ret_type)
     @staticmethod
     def pow(operand1, operand2, *args, **kwargs):
         tile_size, ret_type, operand1, operand2 = ExtensionOverrides.binary_elementwise_common(operand1, operand2)
@@ -905,32 +849,28 @@ class ExtensionOverrides(common.OpOverrides):
 
         shape = f"vector<{tile_size}x{ret_type}>" if tile_size > 1 else ret_type
         op_str = f"math.pow{ret_type[0]} %{operand1}, %{operand2}"
-        return format_mlir_op(op_str, shape, **kwargs), [tile_size, ret_type]
-
+        return format_mlir_op(op_str, shape, **kwargs), OpResult.from_mlir(tile_size, ret_type)
     @staticmethod
     def and_(operand1, operand2, *args, **kwargs):
         tile_size, ret_type, operand1, operand2 = ExtensionOverrides.binary_elementwise_common(operand1, operand2)
 
         shape = f"vector<{tile_size}x{ret_type}>" if tile_size > 1 else ret_type
         op_str = f'arith.andi %{operand1}, %{operand2}'
-        return format_mlir_op(op_str, shape, **kwargs), [tile_size, ret_type]
-
+        return format_mlir_op(op_str, shape, **kwargs), OpResult.from_mlir(tile_size, ret_type)
     @staticmethod
     def or_(operand1, operand2, *args, **kwargs):
         tile_size, ret_type, operand1, operand2 = ExtensionOverrides.binary_elementwise_common(operand1, operand2)
 
         shape = f"vector<{tile_size}x{ret_type}>" if tile_size > 1 else ret_type
         op_str = f'arith.ori %{operand1}, %{operand2}'
-        return format_mlir_op(op_str, shape, **kwargs), [tile_size, ret_type]
-
+        return format_mlir_op(op_str, shape, **kwargs), OpResult.from_mlir(tile_size, ret_type)
     @staticmethod
     def xor(operand1, operand2, *args, **kwargs):
         tile_size, ret_type, operand1, operand2 = ExtensionOverrides.binary_elementwise_common(operand1, operand2)
 
         shape = f"vector<{tile_size}x{ret_type}>" if tile_size > 1 else ret_type
         op_str = f'arith.xori %{operand1}, %{operand2}'
-        return format_mlir_op(op_str, shape, **kwargs), [tile_size, ret_type]
-
+        return format_mlir_op(op_str, shape, **kwargs), OpResult.from_mlir(tile_size, ret_type)
     @staticmethod
     def lshift(operand1, operand2, *args, **kwargs):
         raise NotImplementedError
@@ -949,8 +889,7 @@ class ExtensionOverrides(common.OpOverrides):
 
         # arith.divsi: Signed Integer Division (Result is truncated)
         op_str = f'arith.divsi %{operand1}, %{operand2}'
-        return format_mlir_op(op_str, shape, **kwargs), [tile_size, ret_type]
-
+        return format_mlir_op(op_str, shape, **kwargs), OpResult.from_mlir(tile_size, ret_type)
     @staticmethod
     def floordiv(operand1, operand2, *args, **kwargs):
         tile_size, ret_type, operand1, operand2 = ExtensionOverrides.binary_elementwise_common(operand1, operand2)
@@ -962,8 +901,7 @@ class ExtensionOverrides(common.OpOverrides):
 
         # arith.floordivsi: Floor Division for Signed Integers
         op_str = f'arith.floordivsi %{operand1}, %{operand2}'
-        return format_mlir_op(op_str, shape, **kwargs), [tile_size, ret_type]
-
+        return format_mlir_op(op_str, shape, **kwargs), OpResult.from_mlir(tile_size, ret_type)
     @staticmethod
     def truediv(operand1, operand2, *args, **kwargs):
         tile_size, ret_type, operand1, operand2 = ExtensionOverrides.binary_elementwise_common(operand1, operand2)
@@ -973,8 +911,7 @@ class ExtensionOverrides(common.OpOverrides):
             raise ValueError(f"truediv expects float inputs, but got {ret_type}. Use int_truediv for integers.")
 
         op_str = f'arith.divf %{operand1}, %{operand2}'
-        return format_mlir_op(op_str, shape, **kwargs), [tile_size, ret_type]
-
+        return format_mlir_op(op_str, shape, **kwargs), OpResult.from_mlir(tile_size, ret_type)
     @staticmethod
     def int_truediv(operand1, operand2, *args, **kwargs):
         """
@@ -989,8 +926,7 @@ class ExtensionOverrides(common.OpOverrides):
             src_type = target_float_type
 
         result = ops.truediv(operand1, operand2)
-        return result, V.kernel.var_info[result]
-
+        return result, OpResult.from_var(result)
     @staticmethod
     def mod(operand1, operand2, *args, **kwargs):
         tile_size, ret_type, operand1, operand2 = ExtensionOverrides.binary_elementwise_common(operand1, operand2)
@@ -1000,8 +936,7 @@ class ExtensionOverrides(common.OpOverrides):
         else:
             opcode = f'arith.remsi'
         op_str = f'{opcode} %{operand1}, %{operand2}'
-        return format_mlir_op(op_str, shape, **kwargs), [tile_size, ret_type]
-
+        return format_mlir_op(op_str, shape, **kwargs), OpResult.from_mlir(tile_size, ret_type)
     @staticmethod
     def remainder(operand1, operand2, *args, **kwargs):
         tile_size, ret_type, operand1, operand2 = ExtensionOverrides.binary_elementwise_common(operand1, operand2)
@@ -1013,39 +948,34 @@ class ExtensionOverrides(common.OpOverrides):
             opcode = 'arith.remsi' # Signed Integer Remainder (LHS sign)
 
         op_str = f'{opcode} %{operand1}, %{operand2}'
-        return format_mlir_op(op_str, shape, **kwargs), [tile_size, ret_type]
-
+        return format_mlir_op(op_str, shape, **kwargs), OpResult.from_mlir(tile_size, ret_type)
     @staticmethod
     def square(operand, *args, **kwargs):
         result = ops.mul(operand, operand)
-        return result, V.kernel.var_info[result]
-
+        return result, OpResult.from_var(result)
     @staticmethod
     def fma(operand1, operand2, operand3, *args, **kwargs):
         result = ops.mul(operand1, operand2)
         result = ops.add(result, operand3)
-        return result, V.kernel.var_info[result]
-
+        return result, OpResult.from_var(result)
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     # PyTorchSim specific operations
 
     @staticmethod
     def alloc(size, src_type, *args, **kwargs):
-        return f"memref.alloc() : memref<{size}x{src_type}>", [size, src_type]
-
+        return f"memref.alloc() : memref<{size}x{src_type}>", OpResult.from_mlir(size, src_type)
     @staticmethod
     def extractelement(operand, idx, *args, **kwargs):
-        op_type = V.kernel.var_info[operand]
+        op_type = (operand.vec_size, operand.mlir_dtype)
         tile_size = op_type[0]
         dtype = op_type[1]
         shape = f"vector<{tile_size}x{dtype}>" if tile_size > 1 else dtype
         op_str = f"vector.extract %{operand}[{idx}]"
         shape = f"{dtype} from {shape}"
-        return format_mlir_op(op_str, shape, **kwargs), [1, dtype]
-
+        return format_mlir_op(op_str, shape, **kwargs), OpResult.from_mlir(1, dtype)
     @staticmethod
     def ext(operand, dtype, *args, **kwargs):
-        op_type = V.kernel.var_info[operand]
+        op_type = (operand.vec_size, operand.mlir_dtype)
         shape = f"vector<{op_type[0]}x{op_type[1]}>" if op_type[0] > 1 else f"{op_type[1]}"
         target_type = f"vector<{op_type[0]}x{dtype}>" if op_type[0] > 1 else f"{dtype}"
         if dtype[0] == "f":
@@ -1054,44 +984,43 @@ class ExtensionOverrides(common.OpOverrides):
             opcode = f'arith.extui'
         op_str = f'{opcode} %{operand}'
         shape = f"{shape} to {target_type}"
-        return format_mlir_op(op_str, shape, **kwargs), [op_type[0], dtype]
+        return format_mlir_op(op_str, shape, **kwargs), OpResult.from_mlir(op_type[0], dtype)
 
     @staticmethod
     def to_bool(operand, *args, **kwargs):
-        tile_size, ret_type = V.kernel.var_info[operand]
-        if ret_type == "i1":
-            return operand, [tile_size, ret_type]
-
+        """Convert to torch.bool / MLIR i1 via ``ne 0``. Idempotent."""
+        if operand.dtype == torch.bool:
+            return operand, OpResult(vec_size=operand.vec_size, dtype=torch.bool, mlir_dtype="i1")
+        tile_size, ret_type = operand.vec_size, operand.mlir_dtype
         const_zero = ops.constant(0, ret_type)
         if tile_size > 1:
             const_zero = ops.broadcast(const_zero, tile_size)
         ret = ops.ne(operand, const_zero)
-        return ret, [tile_size, "i1"]
+        return ret, OpResult(vec_size=tile_size, dtype=torch.bool, mlir_dtype="i1")
+
     @staticmethod
     def step(size, dtype, *args, **kwargs):
         index_shape = f"vector<{size}x{dtype}>"
         op_str = f"vector.step"
-        return format_mlir_op(op_str, index_shape, **kwargs), [size, dtype]
-
+        return format_mlir_op(op_str, index_shape, **kwargs), OpResult.from_mlir(size, dtype)
     @staticmethod
     def index_cast(operand, target_type, *args, **kwargs):
-        op_type = V.kernel.var_info[operand]
+        op_type = (operand.vec_size, operand.mlir_dtype)
         src_shape = f"vector<{op_type[0]}x{op_type[1]}>" if op_type[0] > 1 else op_type[1]
         des_shape = f"vector<{op_type[0]}x{target_type}>" if op_type[0] > 1 else target_type
         op_str = f"arith.index_cast %{operand}"
         shape = f"{src_shape} to {des_shape}"
-        return format_mlir_op(op_str, shape, **kwargs), [op_type[0], target_type]
+        return format_mlir_op(op_str, shape, **kwargs), OpResult.from_mlir(op_type[0], target_type)
 
     @staticmethod
     def shape_cast(operand, src_shape, dst_shape, *args, **kwargs):
-        operand_type = V.kernel.var_info[operand]
         op_str = f"vector.shape_cast %{operand}"
         shape = f"{src_shape} to {dst_shape}"
-        return format_mlir_op(op_str, shape, **kwargs), operand_type
+        return format_mlir_op(op_str, shape, **kwargs), OpResult.from_var(operand)
 
     @staticmethod
     def extract_strided_slice(operand, target_size, offsets=None, sizes=None, strides=None, *args, **kwargs):
-        op_type = V.kernel.var_info[operand]
+        op_type = (operand.vec_size, operand.mlir_dtype)
         src_size = op_type[0]
         dtype = op_type[1]
 
@@ -1131,16 +1060,14 @@ class ExtensionOverrides(common.OpOverrides):
 
         # Pass merged attributes to format_mlir_op
         updated_kwargs = {**kwargs, 'attributes': merged_attributes}
-        return format_mlir_op(op_str, shape, **updated_kwargs), [target_size, dtype]
-
+        return format_mlir_op(op_str, shape, **updated_kwargs), OpResult.from_mlir(target_size, dtype)
     @staticmethod
     def vlane_offset(operand1, operand2, *args, **kwargs):
         tile_size, ret_type, operand1, operand2 = ExtensionOverrides.binary_elementwise_common(operand1, operand2)
         shape = f"vector<{tile_size}x{ret_type}>" if tile_size > 1 else ret_type
         opcode = f'arith.add{ret_type[0]}'
         op_str = f'{opcode} %{operand1}, %{operand2}'
-        return format_mlir_op(op_str, shape, **kwargs), [tile_size, ret_type]
-
+        return format_mlir_op(op_str, shape, **kwargs), OpResult.from_mlir(tile_size, ret_type)
     @staticmethod
     def multi_reduction(acc, init, vec_size, red_size, red_shape, red_type, type_name, *args, **kwargs):
         if red_size == 1:
@@ -1151,14 +1078,13 @@ class ExtensionOverrides(common.OpOverrides):
             new_vshape= f"vector<{vec_size//red_size}x{red_size}x{type_name}>"
             value = ops.shape_cast(acc, red_shape, new_vshape)
             line = reduction_combine_vec(red_type, value, init, axis=0, shape=new_vshape, reduced_shape=final_reduced_shape)
-        return line, [red_size, type_name]
-
+        return line, OpResult.from_mlir(red_size, type_name)
     @staticmethod
     def vector_shuffle(operand, indices, operand2=None, *args, **kwargs):
-        tile_size1, dtype1 = V.kernel.var_info[operand]
+        tile_size1, dtype1 = operand.vec_size, operand.mlir_dtype
         if operand2 is None:
             operand2 = operand
-        tile_size2, dtype2 = V.kernel.var_info[operand2]
+        tile_size2, dtype2 = operand2.vec_size, operand2.mlir_dtype
         if dtype1 != dtype2:
             raise ValueError(
                 f"vector_shuffle expects same element type, got {dtype1} and {dtype2}"
@@ -1173,14 +1099,12 @@ class ExtensionOverrides(common.OpOverrides):
         vt2 = f"vector<{tile_size2}x{dtype1}>"
         idx_str = ", ".join(str(i) for i in indices)
         op_str = f"vector.shuffle %{operand}, %{operand2} [{idx_str}]"
-        return format_mlir_op(op_str, f"{vt1}, {vt2}", **kwargs), [len(indices), dtype1]
-
+        return format_mlir_op(op_str, f"{vt1}, {vt2}", **kwargs), OpResult.from_mlir(len(indices), dtype1)
     @staticmethod
     def constant_mask(select_min, N, *args, **kwargs):
         vals = ", ".join("true" if x else "false" for x in select_min)
         op_str = f"arith.constant dense<[{vals}]>"
-        return format_mlir_op(op_str, f"vector<{N}xi1>", **kwargs), [N, "i1"]
-
+        return format_mlir_op(op_str, f"vector<{N}xi1>", **kwargs), OpResult(vec_size=N, dtype=torch.bool, mlir_dtype="i1")
     @staticmethod
     def bitonic_sort(operand, descending=False, *args, **kwargs):
         def _compute_bitonic_stages(N: int, descending: bool):
@@ -1217,7 +1141,7 @@ class ExtensionOverrides(common.OpOverrides):
                 size *= 2
             return stages
 
-        tile_size, _ = V.kernel.var_info[operand]
+        tile_size, _ = operand.vec_size, operand.mlir_dtype
         cur = operand
         for stage in _compute_bitonic_stages(tile_size, descending):
             mask     = ops.constant_mask(stage["select_min"], tile_size)
@@ -1225,8 +1149,7 @@ class ExtensionOverrides(common.OpOverrides):
             vmin     = ops.minimum(cur, shuffled)
             vmax     = ops.maximum(cur, shuffled)
             cur      = ops.where(mask, vmin, vmax)
-        return cur, V.kernel.var_info[cur]
-
+        return cur, OpResult.from_var(cur)
     @staticmethod
     def _load(compute_vec_size, mlir_dtype, buffer, indices, buffer_shape, *args, **kwargs):
         if compute_vec_size == 1:
@@ -1239,11 +1162,10 @@ class ExtensionOverrides(common.OpOverrides):
             operation = "affine.vector_load"
             line = f"{operation} %{buffer}[{indices}]"
             shape = f"{buffer_shape}, {vshape}"
-        return format_mlir_op(line, shape, **kwargs), [compute_vec_size, mlir_dtype]
-
+        return format_mlir_op(line, shape, **kwargs), OpResult.from_mlir(compute_vec_size, mlir_dtype)
     @staticmethod
     def _store(operand, buffer, indices, buffer_shape, *args, buffer_name=None, **kwargs):
-        compute_vec_size, mlir_dtype = V.kernel.var_info[operand][0], V.kernel.var_info[operand][1]
+        compute_vec_size, mlir_dtype = operand.vec_size, operand.mlir_dtype
 
         if compute_vec_size == 1:
             vshape = f"{mlir_dtype}"
@@ -1258,10 +1180,9 @@ class ExtensionOverrides(common.OpOverrides):
         line = format_mlir_op(line, shape, **kwargs)
 
         if buffer_name is not None:
-            return common.DeferredLine(buffer_name, line), [None, None]
+            return common.DeferredLine(buffer_name, line), None
         else:
-            return line, [None, None]
-
+            return line, None
     @staticmethod
     def affine_apply(map_var, indices, indirect_dims=None, comment=None, *args, **kwargs):
         # Format indices arguments
@@ -1274,8 +1195,7 @@ class ExtensionOverrides(common.OpOverrides):
             op_str += f"[{indirect_str}] {{indirect_access}}"
         if comment:
             op_str += f" // {comment}"
-        return op_str, [1, "index"]
-
+        return op_str, OpResult(vec_size=1, dtype=mlir_common.INDEX_DTYPE)
     @staticmethod
     def affine_map(dim_names, expr_str, symbol_names=None, comment=None, *args, **kwargs):
         # Handle dim_names as list or string
@@ -1297,4 +1217,4 @@ class ExtensionOverrides(common.OpOverrides):
         if comment:
             map_str += f" // {comment}"
 
-        return map_str, [1, "map"]
+        return map_str, OpResult.from_mlir(1, "map")

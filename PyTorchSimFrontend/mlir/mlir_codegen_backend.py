@@ -170,11 +170,11 @@ class ExtensionWrapperCodegen(wrapper.PythonWrapperCodegen):
 
     def codegen_sram_plan_prefix(self):
         for name, buf in V.graph.graph_inputs.items():
+            if buf is None:
+                continue
             if isinstance(buf, sympy.Expr):
                 continue
             if sympy_product(buf.get_size()) == 0:
-                continue
-            if buf is None:
                 continue
             self.prefix.writeline(f"sram_plan_prefix('{name}', {name})")
 
@@ -907,7 +907,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
             loops = LoopNest([LoopLevel("dummy", 1)])
 
         if len(reductions.loops) > 1:
-            NotImplementedError("Not support multiple reduction axis..")
+            raise NotImplementedError("Not support multiple reduction axis..")
 
         code.splice(self.const_buffer)
         code.splice(self.alloc_buffer)

@@ -22,8 +22,6 @@ import contextlib
 
 from typing import Callable
 
-import sympy
-
 from torch.utils._sympy.value_ranges import ValueRanges
 from torch._inductor.utils import (
     get_sympy_Expr_dtype,
@@ -553,7 +551,7 @@ class MLIRMultiDimTile(TileAdjustMixin):
     def get_tile_size(self): return list(self._tile_size)
     def get_tile_stride(self): return list(self._tile_stride)
     def get_numel(self) -> int :return math.prod(self._tile_size)
-    def get_nr_dim(self) -> str: return len(self._tile_size)
+    def get_nr_dim(self) -> int: return len(self._tile_size)
     def get_reduction_numel(self): return reduce(mul, self.get_tile_size()[-1*self.nr_rdim:], 1)
 
     def set_tile_size(self, tile_size, tile_axis_order=None, constraints=None):

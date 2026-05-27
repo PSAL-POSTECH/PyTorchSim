@@ -906,9 +906,6 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         if (self.reduction_depth==0):
             loops = LoopNest([LoopLevel("dummy", 1)])
 
-        if len(reductions.loops) > 1:
-            raise NotImplementedError("Not support multiple reduction axis..")
-
         code.splice(self.const_buffer)
         code.splice(self.alloc_buffer)
         code.splice(self.spad_buffer)

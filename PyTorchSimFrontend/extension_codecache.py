@@ -44,7 +44,6 @@ def mlir_compile_command(filename, vectorlane_size, vlen=256):
             -test-loop-padding \
             -dma-fine-grained='systolic-array-size={vectorlane_size}' \
             -test-pytorchsim-to-vcix='systolic-array-size={vectorlane_size} vlen={vlen}' \
-            -test-memref-to-gemmini="vectorlane={vectorlane_size}" \
             {'--mlir-print-ir-after-all' if extension_config.CONFIG_TORCHSIM_DUMP_MLIR_IR else ''} \
             {filename}.mlir -o {filename}_custom.mlir
         """,
@@ -81,7 +80,6 @@ def mlir_gem5_compile_command(filename, sample_filename, tog_file, vectorlane_si
             -dma-fine-grained='systolic-array-size={vectorlane_size}' \
             -test-pytorchsim-to-vcix='systolic-array-size={vectorlane_size} vlen={vlen}' \
             -test-tile-operation-graph='vectorlane={vectorlane_size} sample-mode={extension_config.CONFIG_TLS_MODE}' \
-            -test-memref-to-gemmini="vectorlane={vectorlane_size} timing=1" \
             {'--mlir-print-ir-after-all' if extension_config.CONFIG_TORCHSIM_DUMP_MLIR_IR else ''} \
             {filename}.mlir -o {sample_filename}_custom.mlir
         """,
@@ -205,7 +203,7 @@ class MLIRCodeCache:
                 with open(raw_tog_path, "wb") as file:
                     file.write(result)
                 # Standard MLIR -> LLVM-dialect lowering in-process (see functional path).
-                run_standard_lowering(sample_mlir_path + "_custom.mlir", sample_mlir_path + "_llvm.mlir")
+                run_standard_lowering(sample_mlir_path + "_custom.mlir", sample_mlir_path + "_llvm.mlir", timing=True)
                 subprocess.check_call(gem5_translate_cmd)
                 subprocess.check_call(gem5_llc_cmd)
             except subprocess.CalledProcessError as e:

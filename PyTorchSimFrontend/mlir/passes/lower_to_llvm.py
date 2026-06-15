@@ -32,21 +32,31 @@ STANDARD_PIPELINE = (
 )
 
 
-def run_standard_lowering(in_path, out_path=None):
+def run_standard_lowering(in_path, out_path=None, timing=False):
     """Lower the post-custom-pass MLIR at `in_path` to the LLVM dialect.
+
+    Runs the imperative Gemmini lowering (memref.dma_start/dma_wait) then the
+    registered standard MLIR->LLVM passes. `timing` selects the Gemmini behavior:
+    False for the functional/Spike path (emit gemmini asm), True for the gem5
+    cycle path (erase dma_start; the TOG already carries DMA timing) -- this
+    preserves the old test-memref-to-gemmini `timing=1` semantics.
 
     Writes the result to `out_path` (defaults to `in_path`, i.e. in place).
     Requires the MLIR Python bindings on PYTHONPATH.
     """
     if out_path is None:
         out_path = in_path
-    from mlir.ir import Context, Module
+    from mlir.ir import Context, Module, Location
     from mlir.passmanager import PassManager
+    from . import lower_dma_to_gemmini
     ctx = Context()
     ctx.allow_unregistered_dialects = True
-    with ctx:
+    with ctx, Location.unknown():
         with open(in_path) as f:
             module = Module.parse(f.read())
+        # Imperative Python pass: memref.dma_start/dma_wait -> Gemmini asm (replaces
+        # the C++ test-memref-to-gemmini), then the registered standard lowering.
+        lower_dma_to_gemmini.run(module, timing=timing)
         PassManager.parse(STANDARD_PIPELINE, ctx).run(module.operation)
         with open(out_path, "w") as f:
             f.write(str(module))

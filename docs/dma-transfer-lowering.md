@@ -168,21 +168,25 @@ non-divisible remainders.
 
 `memref.dma_start` is the boundary, not the endpoint. The layering is:
 
-    togsim.transfer  --[Python decompose]-->  memref.dma_start  --[C++ memref-to-gemmini]-->  Gemmini ISA
+    togsim.transfer  --[Python decompose]-->  memref.dma_start  --[Python lower_dma_to_gemmini]-->  Gemmini ISA
 
 decompose-transfer stops at `memref.dma_start` and must **not** emit Gemmini
-instructions directly. ISA lowering stays in the C++ `test-memref-to-gemmini` pass.
+instructions directly; the ISA encoding is a separate pass
+(`passes/lower_dma_to_gemmini.py`, which replaced the C++ test-memref-to-gemmini).
 Rationale:
 
 - **Separation of concerns**: decompose does descriptor decomposition (affine
   algebra: rank / peel); gemmini does instruction encoding (hardware). Different
-  axes; merging couples affine logic with ISA detail.
+  axes; merging couples affine logic with ISA detail. They stay distinct passes.
 - **`memref.dma_start` is a shared contract** with multiple consumers
-  (memref-to-gemmini, dma-fine-grained, the TOG pass). Keeping it as the interface
-  lets all of them stay unchanged.
-- **gemmini is a conversion-framework, target-specific, stable lowering** -> it
-  belongs in C++; porting it to Python would be painful and pointless. decompose is
-  under design churn -> Python (fast iteration). Right tool per churn.
+  (lower_dma_to_gemmini, dma-fine-grained, the TOG pass). Keeping it as the
+  interface lets all of them stay unchanged.
+- **gemmini is now a Python out-of-line pass too** -- the conversion-framework
+  coupling (LLVMTypeConverter / getStridedElementPtr) was avoided by working at
+  the memref level (`memref.extract_aligned_pointer_as_index` + arith for
+  addresses, `llvm.inline_asm` for instructions; the existing standard lowering
+  finalizes to LLVM). So both decompose and gemmini live in Python; mlir-opt keeps
+  only the remaining custom passes.
 
 One constraint flows the other way: gemmini's ISA limits (max dims / size per MVIN)
 set decompose's target inner-descriptor shape (the "<=4D" and max-extent bounds).

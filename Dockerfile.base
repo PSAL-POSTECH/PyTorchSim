@@ -76,6 +76,11 @@ RUN curl -L -H "Accept: application/octet-stream" https://api.github.com/repos/P
 
 # Store RISC-V LLVM for TorchSim
 ENV TORCHSIM_LLVM_PATH=/riscv-llvm/bin
+# MLIR Python bindings shipped inside the LLVM release artifact (built by the
+# llvm-project CI with -DMLIR_ENABLE_BINDINGS_PYTHON=ON). Lets PyTorchSim load
+# mlir.ir / dialects for Python-side MLIR passes. The artifact must be built
+# against this image's Python (3.11) or `import mlir` fails on ABI mismatch.
+ENV PYTHONPATH=/riscv-llvm/python_packages/mlir_core:$PYTHONPATH
 ENV TORCHSIM_DIR=/workspace/PyTorchSim
 
 # Download Spike simulator

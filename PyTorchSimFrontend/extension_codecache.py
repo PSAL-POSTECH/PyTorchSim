@@ -43,7 +43,6 @@ def mlir_compile_command(filename, vectorlane_size, vlen=256):
             {extension_config.CONFIG_TORCHSIM_LLVM_PATH}/mlir-opt \
             -test-loop-padding \
             -dma-fine-grained='systolic-array-size={vectorlane_size}' \
-            -global-idx='vlen={vlen}' \
             -test-pytorchsim-to-vcix='systolic-array-size={vectorlane_size} vlen={vlen}' \
             -test-memref-to-gemmini="vectorlane={vectorlane_size}" \
             -convert-linalg-to-loops \
@@ -93,7 +92,6 @@ def mlir_gem5_compile_command(filename, sample_filename, tog_file, vectorlane_si
             {extension_config.CONFIG_TORCHSIM_LLVM_PATH}/mlir-opt \
             -test-loop-padding='timing_mode=1' \
             -dma-fine-grained='systolic-array-size={vectorlane_size}' \
-            -global-idx='vlen={vlen}' \
             -test-pytorchsim-to-vcix='systolic-array-size={vectorlane_size} vlen={vlen}' \
             -test-tile-operation-graph='vectorlane={vectorlane_size} sample-mode={extension_config.CONFIG_TLS_MODE}' \
             -test-memref-to-gemmini="vectorlane={vectorlane_size} timing=1" \
@@ -158,6 +156,11 @@ class MLIRCodeCache:
         vlenb = vlen // 8
         write_path = get_write_path(source_code)
         key, input_path = write(source_code, "mlir", specified_dir=write_path)
+        # Run the Python out-of-line MLIR passes (MLIR bindings) on the kernel
+        # .mlir in place, before mlir-opt. Currently lowers torchsim.vlane_idx
+        # (replaces the old C++ -global-idx pass); add more in passes/__init__.py.
+        from PyTorchSimFrontend.mlir.passes import run_python_passes
+        run_python_passes(input_path)
         new_input_path = os.path.splitext(input_path)[0]
         raw_tog_path = new_input_path + "_tog.py"
         tog_path = os.path.join(write_path, "tile_graph.onnx")

@@ -10,6 +10,7 @@ To add a pass, create a module exposing MARKERS (tuple of op-name strings) and
 run(module) (mutates the Module in place), and append it to PASSES below.
 """
 from . import lower_vlane_idx
+from .lower_to_llvm import run_standard_lowering  # noqa: F401 (re-exported)
 
 # Ordered passes applied to each kernel .mlir before mlir-opt.
 PASSES = [

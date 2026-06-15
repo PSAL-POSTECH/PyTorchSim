@@ -135,16 +135,59 @@ Design choices:
 
 ### Decomposition pass (contract)
 
-Reads `src_map` / `dst_map` / `iter_bounds` / vlane attrs / `peel_plan`.
+The DMA descriptor is an **affine map of rank <= 4 with integer strides**
+(`base + sum_i stride_i * idx_i`). Decide by **rank after linearization**, NOT by
+the presence of floordiv/mod:
 
-- If `src_map` is expressible as <=4D integer stride: emit **one** customized
-  `memref.dma_start` -- identical to today's output (fast path).
-- Else (floor/mod or >4D): peel the excess / non-affine iter dims into an
-  `scf.for`; compute each iteration's base offset with `affine.apply` (floor/mod
-  allowed); emit the residual affine descriptor inside. SRAM destination offsets
-  are computed symmetrically in the same loop.
-- If the estimated descriptor count exceeds a threshold: signal **relayout** (a
-  one-shot copy kernel that makes downstream access affine) instead of peeling.
+1. **Linearize** `src_map`: rewrite each `floordiv c` / `mod c` on an iteration dim
+   into a split pair (`idx = outer*c + inner`), which is purely linear in the new
+   dims. (This is exactly what `apply_divisor("split")` already does.) Let `D` be
+   the resulting affine rank.
+2. **`D <= 4`** -> emit **one** customized `memref.dma_start`; the split dims become
+   the descriptor's <=4D shape/strides. Identical to today's output (fast path).
+   floordiv/mod that still fits in <=4D after splitting stays here -- it is *not* a
+   peel trigger.
+3. **`D > 4`** (not expressible as a single linear combination) -> express it as a
+   **combination of linear combinations**: peel `D - 4` dims into an outer
+   `affine.for`; each iteration computes a base with `affine.apply` (the peeled
+   dims' linear, incl. split-derived, contribution) and issues the inner <=4D
+   affine descriptor. SRAM offsets are computed symmetrically in the same loop.
+4. If the estimated descriptor count is pathological -> fall back to **relayout**.
+
+Genuinely non-affine access (data-dependent / indirect / gather -- an index that
+comes from a loaded value and cannot be linearized by splitting) is **out of scope**
+for this pass; it stays on the indirect-indexing path (or a relayout).
+
+The decision point maps onto existing code: codegen already splits floordiv/mod via
+`apply_divisor` and raises `NotImplementedError` at >4D (`get_dma_info`). That exact
+site becomes "emit `togsim.transfer`" instead of dying, and the recompile/tile
+-forcing dance is unnecessary because the outer peel loop's `ceil` bound absorbs
+non-divisible remainders.
+
+### Relationship to memref-to-gemmini (ISA lowering) -- keep separate
+
+`memref.dma_start` is the boundary, not the endpoint. The layering is:
+
+    togsim.transfer  --[Python decompose]-->  memref.dma_start  --[C++ memref-to-gemmini]-->  Gemmini ISA
+
+decompose-transfer stops at `memref.dma_start` and must **not** emit Gemmini
+instructions directly. ISA lowering stays in the C++ `test-memref-to-gemmini` pass.
+Rationale:
+
+- **Separation of concerns**: decompose does descriptor decomposition (affine
+  algebra: rank / peel); gemmini does instruction encoding (hardware). Different
+  axes; merging couples affine logic with ISA detail.
+- **`memref.dma_start` is a shared contract** with multiple consumers
+  (memref-to-gemmini, dma-fine-grained, the TOG pass). Keeping it as the interface
+  lets all of them stay unchanged.
+- **gemmini is a conversion-framework, target-specific, stable lowering** -> it
+  belongs in C++; porting it to Python would be painful and pointless. decompose is
+  under design churn -> Python (fast iteration). Right tool per churn.
+
+One constraint flows the other way: gemmini's ISA limits (max dims / size per MVIN)
+set decompose's target inner-descriptor shape (the "<=4D" and max-extent bounds).
+decompose must *respect* those limits when it picks what stays inner vs gets peeled
+-- but respecting a constraint is not doing the lowering.
 
 ### Cost-aware peeling (this is a cycle-accurate simulator)
 

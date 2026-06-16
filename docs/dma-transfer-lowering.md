@@ -429,12 +429,30 @@ now emits MVIN/MVOUT `togsim.transfer` with 5D `dram_stride [1,6,30,120,360]` an
 `memref<1x1x2x4x2xf32,1>` tile, instead of crashing in `init_tile_size` or the
 `get_dma_info` >4D branch.
 
-### Deferred (next, on signal): aligned-only peel pass
+### Phase 2: aligned-only peel pass (landed: unit-collapse path)
 
-`passes/decompose_transfer.py`: parse `togsim.transfer`, peel excess (affine) dims
-into a loop of `scf.for` around <=4D `memref.dma_start` (fast path bit-identical for
-<=4D affine). The input is guaranteed per-axis affine by the upstream producers, so
-the pass does **no** floor/mod linearization and **no** relayout -- it **asserts**
-on any non-affine residue (contract guard). Aligned floor/mod removal lives in
-axis-split-at-scheduling (`axis-split-scheduling.md`); misaligned relayout lives in
-graph copy insertion. See "Division of labor" above.
+`passes/decompose_transfer.py` (registered in `passes/__init__.py`, runs before
+`lower_vlane_idx`) lowers each `togsim.transfer` to a customized `memref.dma_start`:
+
+- **Unit-dim collapse (done, validated).** Drop extent-1 tile dims so the
+  descriptor reaches <=4D. The SRAM (spad) memref is collapsed to the effective
+  rank via `memref.collapse_shape` (the customized `dma_start` convention requires
+  SRAM rank == #indices == len(sram_stride)); DRAM stays flat rank-1 with its N-D
+  structure in `dram_stride`. The `vlane_split_axis` is **remapped** from the
+  original tile-dim index to the collapsed-dim index and rematerialized as a const
+  (carried as a value attr precisely so the pass can remap it).
+- Supporting changes: `emit_transfer` now carries the SSA operands a `dma_start`
+  needs (`dma_type`, `vlane_stride`) + the `vlane_split_axis` value attr, so the
+  pass is mechanical. `lower_to_llvm.py` gains `expand-strided-metadata` to lower
+  `collapse_shape`.
+
+Validated end-to-end (Gem5 + Spike + TOGSim, `allclose=True`) on the 5D permute
+`x.permute(4,3,2,1,0).contiguous() + 1.0`; no regression on 2D/3D/elementwise.
+
+**Still TODO (genuine >4 effective rank).** When >4 *non-unit* dims survive, the
+pass raises `NotImplementedError` -- it needs the real peel loop (`affine.for` over
+the outer dims, base index advanced by `stride*iv` per iteration, inner <=4D
+descriptor). The input stays per-axis affine by upstream guarantee, so this remains
+pure mechanical peeling; the pass should **assert** on any non-affine residue
+(aligned floor/mod removal lives in `axis-split-scheduling.md`, misaligned relayout
+in graph copy insertion -- see "Division of labor").

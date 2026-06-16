@@ -19,6 +19,7 @@ STANDARD_PIPELINE = (
     "convert-linalg-to-loops,"
     "convert-vector-to-scf{full-unroll=true},"
     "lower-affine,"
+    "expand-strided-metadata,"   # decompose memref.collapse_shape/subview before LLVM
     "finalize-memref-to-llvm,"
     "func.func(lower-vector-multi-reduction),"
     "convert-vector-to-llvm,"

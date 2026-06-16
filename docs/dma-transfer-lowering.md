@@ -288,3 +288,128 @@ The cost model can migrate into C++ later if desired.
 - **Async / tag management across the peel loop**: double-buffering / compute
   overlap must survive decomposition (e.g. keep the inner large DMA async, sequence
   the outer peel).
+
+## Appendix: alignment theory (when floor/mod is statically decomposable)
+
+This section records the math that decides, for a given DMA access, whether the
+non-affine `FloorDiv`/`ModularIndexing` terms can be peeled into a *static* loop
+of affine descriptors (free) or require a data movement (relayout / copy).
+
+### Setup
+
+A Gemmini-style descriptor addresses an element as
+
+    addr(idx) = base + Σ_k stride_k · idx_k          (integer strides, rank <= 4)
+
+i.e. each loop index `idx_k` contributes a **constant** stride. A DMA is
+statically decomposable iff every index term it reads has constant stride over
+the rectangular tile domain. Inductor index expressions, after fusion/view, carry
+`FloorDiv(x, y)` and `ModularIndexing(x, y, z)` of the *flattened* loop variable
+`x`. The question is when those reduce to constant-stride axes.
+
+### Mixed-radix decomposition
+
+Write the flattened index `x` (extent `E`) in mixed radix. For a `ModularIndexing`
+with inner period `y` and modulus `z`, decompose uniquely as
+
+    x = o·(y·z) + m·y + r,   with 0 <= r < y, 0 <= m < z, o >= 0
+
+Then `FloorDiv(x, y) = o·z + m`, and `ModularIndexing(x, y, z) = m`. Each of
+`o, m, r` is a separate **implicit axis** with a constant per-axis stride —
+*provided the axis boundaries do not move across the tile*. That holds iff the
+period divides the extent it partitions:
+
+- `ModularIndexing(x, y, z)` is a valid rectangular axis  **iff  y·z | E**.
+- `FloorDiv(x, y)` is a valid rectangular axis            **iff  y | E**.
+
+**Aligned** = the divisor (and modular period `y·z`) divides the extent, so the
+wrap point lands on a fixed axis boundary -> constant stride -> peelable for free.
+**Misaligned** = the wrap point falls at a loop-value-dependent position inside the
+descriptor (e.g. uneven `cat`, ragged split) -> the stride is not constant ->
+**not** statically decomposable; only a relayout (physical copy) fixes it.
+
+### One loop axis -> several implicit axes (complex fusion)
+
+When fusion merges many dims into one flattened loop variable, a *single* loop
+axis can expand into **several** implicit axes through nested floor/mod, e.g.
+
+    x in [0, D0·D1·D2):
+        a = FloorDiv(x, D1·D2)              # outer
+        b = ModularIndexing(x, D2, D1)      # middle
+        c = ModularIndexing(x, 1,  D2)      # inner
+
+That is three implicit descriptor axes coming from one loop axis. This is the
+general case the un-flatten must handle: it is **not** limited to splitting one
+axis into two. Key consequences:
+
+1. **The loop's own factorization is always aligned.** When the implicit axes
+   come from re-reading the loop's *own* contiguous factorization (the common
+   fusion case -- Inductor flattens contiguous dims then a consumer reads them
+   back via floor/mod), every period divides by construction (`D1·D2 | D0·D1·D2`,
+   etc.). So these un-flatten splits are **free** -- they just add descriptor
+   axes, never a copy.
+2. **Rank blows past 4 fast.** k implicit axes per loop axis, across multiple
+   operands, means the descriptor rank exceeds the 4D Gemmini limit very quickly.
+   This is exactly why `togsim.transfer` + the peel pass matters *more* under
+   complex fusion, independent of any misalignment. The >4D branch in
+   `get_dma_info` already routes these to `togsim.transfer`.
+3. **Misalignment is still only from non-factor views.** An implicit axis is
+   misaligned only when its period does not divide the extent -- i.e. the view
+   does not factor along the loop's factorization (uneven `cat`, ragged split,
+   group sizes that don't divide the channel count). Those, and only those, need
+   relayout.
+
+### Case-handling summary
+
+| Source of floor/mod                            | Aligned? | Handling                          | Cost |
+|------------------------------------------------|----------|-----------------------------------|------|
+| Broadcast / dim-merge (`[N,1]->[N,M]`, `i//M`) | always   | un-merge (split loop axis back)   | free |
+| Reshape along the loop's own factorization     | yes (`y·z\|E`) | un-flatten split, then peel for rank | free |
+| >4D logical tile from complex fusion           | yes      | `togsim.transfer` -> peel into <=4D loop | free (extra DMA nodes) |
+| Uneven `cat`, ragged split, non-dividing group | no       | relayout (scratch buffer + copy)  | copy = TPU `concatenate` |
+
+The TPU/XLA model is the reference: express only aligned views as
+descriptor/bitcast (free reshape); never put a misaligned access in the
+descriptor -- insert a copy (relayout) instead. Plan A (graph-level
+force-contiguous / pad-to-granule, like XLA copy-insertion) is the upstream lever
+that *reduces how often* the misaligned branch fires, keeping codegen affine-only.
+
+## Implementation status (Phase 1: codegen emission)
+
+Landed on branch `dma-transfer/codegen` (worktree), emission only -- the
+decompose pass is deferred until explicitly signalled. A >4D access now emits a
+`togsim.transfer` instead of hard-failing; without the pass it does not yet run
+end-to-end (expected).
+
+- **`mlir_common.py` `init_tile_size`** generalized to any rank. Logical tile is
+  separated from the physical (<=4D) descriptor: only the innermost dims carry the
+  vectorized tile, all further-outer dims stay 1, and there is no rank cap. The
+  `nr_dim >= 3` formula reproduces the old 3D/4D values exactly (the old `[-4]=1`
+  is subsumed by "outer dims stay 1"); scalar/1D/2D keep their special cases. This
+  removes the old `raise NotImplementedError("dummy tile size fail!")` that
+  conflated logical and physical tile rank.
+- **`mlir_codegen_backend.py`**:
+  - `__init__` adds `self._dma_needs_transfer = False`.
+  - `get_dma_info` >4D `else` branch (was
+    `raise NotImplementedError("Currently not implemented... ;)")`) now builds the
+    full N-D tile (`set_tile_size`, vlane split/stride) and sets
+    `self._dma_needs_transfer = True`.
+  - `emit_transfer(...)` emits the generic-form `"togsim.transfer"(...)` op
+    carrying `dma_kind`, `vlane_split_axis`, `vlane_stride`, `dram_stride`,
+    `tile_stride`, `padding`, with operands `(dram, dram_idx, sram, 0, tag)`.
+    `togsim` is an unregistered dialect, hence generic form.
+  - `load()` (MVIN) and `store()` (MVOUT) check the flag: if set, reset it and
+    call `emit_transfer`; otherwise the existing `get_dma_code` path is unchanged.
+    So aligned <=4D DMAs are **bit-identical** to before; only >4D accesses change.
+
+Validated: the 5D permute smoke test (`x.permute(4,3,2,1,0).contiguous() + 1.0`)
+now emits MVIN/MVOUT `togsim.transfer` with 5D `dram_stride [1,6,30,120,360]` and a
+`memref<1x1x2x4x2xf32,1>` tile, instead of crashing in `init_tile_size` or the
+`get_dma_info` >4D branch.
+
+### Deferred (next, on signal)
+
+`passes/decompose_transfer.py`: parse `togsim.transfer`, peel excess dims / split
+aligned floor-mod axes into a loop of `scf.for` around <=4D `memref.dma_start`
+(fast path bit-identical for <=4D affine), add the relayout fallback for
+misaligned views gated by a descriptor-count cost estimate.

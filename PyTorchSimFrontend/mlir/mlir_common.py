@@ -472,29 +472,25 @@ class TileAdjustMixin():
 
     @staticmethod
     def init_tile_size(ranges, vlane_stride, vector_lane):
+        # Logical tile init for ANY rank. Only the innermost dims carry the
+        # vectorized tile; all further-outer dims stay 1. The physical Gemmini DMA
+        # descriptor is <=4D -- a higher-rank logical tile is mapped onto <=4D
+        # descriptors by togsim.transfer + the decompose pass (logical/physical
+        # tile split), so no rank cap here.
         nr_dim = len(ranges)
+        if nr_dim == 0:                                   # scalar
+            return [1]
         tile_size = [1] * nr_dim
-        if len(tile_size) == 2:
+        if nr_dim == 1:
+            tile_size[0] = 1 if ranges[0] == 1 else 2 * vlane_stride * vector_lane
+        elif nr_dim == 2:
             tile_size[-1] = vlane_stride * vector_lane
             tile_size[-2] = 2 * vector_lane
-        elif len(tile_size) == 0: # Scalar
-            tile_size = [1]
-            ranges = [1]
-        elif len(tile_size) == 1 and ranges[0]==1:
-            tile_size[0] = 1
-        elif len(tile_size) == 1:
-            tile_size[0] = 2 * vlane_stride * vector_lane
-        elif len(tile_size) == 3:
+        else:                                             # 3D and up (general)
             tile_size[-1] = vector_lane
             tile_size[-2] = 4 * vector_lane
             tile_size[-3] = 2
-        elif len(tile_size) == 4:
-            tile_size[-1] = vector_lane
-            tile_size[-2] = 4 * vector_lane
-            tile_size[-3] = 2
-            tile_size[-4] = 1
-        else:
-            raise NotImplementedError("dummy tile size fail!")
+            # tile_size[:-3] stay 1 (subsumes the old 4D [-4]=1 and any higher rank)
         return tile_size
 
     @staticmethod

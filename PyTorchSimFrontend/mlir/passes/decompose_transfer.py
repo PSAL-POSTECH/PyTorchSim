@@ -67,7 +67,7 @@ def run(module):
     import itertools
     from mlir.ir import (InsertionPoint, Operation, MemRefType, ArrayAttr,
                          IntegerAttr, IntegerType, IndexType, DenseI64ArrayAttr,
-                         StridedLayoutAttr)
+                         DenseI32ArrayAttr, StridedLayoutAttr)
     i64 = IntegerType.get_signless(64)
     idx_ty = IndexType.get()
 
@@ -169,7 +169,11 @@ def run(module):
                     attributes={"static_offsets": DenseI64ArrayAttr.get(static_offsets),
                                 "static_sizes": DenseI64ArrayAttr.get(static_sizes),
                                 "static_strides": DenseI64ArrayAttr.get([1] * ndim),
-                                "operandSegmentSizes": DenseI64ArrayAttr.get([1, 0, 0, 0])}
+                                # operandSegmentSizes is an i32 property: [source, offsets,
+                                # sizes, strides] dynamic-operand counts. All static here ->
+                                # only the source operand. Must be i32, not i64 (i64 silently
+                                # zeroes to [0,0,0,0] and fails verification).
+                                "operandSegmentSizes": DenseI32ArrayAttr.get([1, 0, 0, 0])}
                 ).results[0]
                 dram_idx_val = dram_idx if dram_off == 0 else Operation.create(
                     "arith.addi", results=[idx_ty],

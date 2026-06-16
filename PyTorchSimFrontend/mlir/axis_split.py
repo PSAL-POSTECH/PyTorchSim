@@ -30,14 +30,26 @@ def _as_int(x):
 
 
 def find_split_plan(nodes):
-    """Inspect a group of scheduler nodes and return {axis_index: divisor}.
+    """Inspect a group of scheduler nodes and return {axis_index: boundaries}.
 
-    axis_index is positional in the group's iteration space (iter vars), so the
-    same plan applies to every fused node sharing that space. Only aligned,
-    statically-divisible splits are returned; dynamic / non-dividing terms are
-    left for the misaligned (copy) path.
+    `boundaries` is an ascending divisibility chain [1, b1, ..., E] of cut points
+    for that axis: splitting the axis at these boundaries (mixed radix,
+    `v = sum_i d_i * b_i`) makes every FloorDiv/ModularIndexing on it collapse to
+    an affine combination of the split sub-vars. The cut points are gathered from
+    the terms on the axis:
+      - FloorDiv(v, k)            -> boundary k
+      - ModularIndexing(v, k, m)  -> boundaries k and k*m   (the digit lives in [k, k*m))
+    Only aligned terms count (the boundary must divide the extent E). If the
+    collected boundaries for an axis do NOT form a divisibility chain (e.g.
+    floor-by-2 and mod-by-3 on extent 6), the radices are incompatible -> the axis
+    is left unsplit (its floor/mod stays for the misaligned/recompile path).
+
+    axis_index is positional in the group's iteration space, so the same plan
+    applies to every fused node sharing that space.
     """
-    plan = {}
+    import collections
+    bset = collections.defaultdict(set)     # axis -> set of boundary cut points
+    ext_of = {}                             # axis -> extent
     for n in nodes:
         body = getattr(n, "_body", None)
         if body is None:
@@ -48,17 +60,29 @@ def find_split_plan(nodes):
                 base, div = fd.args
                 k = _as_int(div)
                 if base in var_to_axis and k and k > 1:
-                    ext = _as_int(body.var_ranges.get(base))
-                    if ext and ext % k == 0:
-                        plan.setdefault(var_to_axis[base], k)
+                    E = _as_int(body.var_ranges.get(base))
+                    if E and E % k == 0:
+                        bset[var_to_axis[base]].add(k); ext_of[var_to_axis[base]] = E
             for mi in expr.atoms(ModularIndexing):
                 base, div, mod = mi.args
                 k, m = _as_int(div), _as_int(mod)
                 if base in var_to_axis and k and m:
-                    ext = _as_int(body.var_ranges.get(base))
-                    if ext and ext % (k * m) == 0:
-                        # split off the inner block of size k so FloorDiv(.,k)->outer
-                        plan.setdefault(var_to_axis[base], k)
+                    E = _as_int(body.var_ranges.get(base))
+                    if E and E % (k * m) == 0:
+                        ax = var_to_axis[base]
+                        if k > 1:
+                            bset[ax].add(k)
+                        if k * m < E:
+                            bset[ax].add(k * m)
+                        ext_of[ax] = E
+
+    plan = {}
+    for ax, bs in bset.items():
+        E = ext_of[ax]
+        chain = [1] + sorted(b for b in bs if 1 < b < E) + [E]
+        # require a strict divisibility chain (each boundary divides the next).
+        if len(chain) > 2 and all(chain[i + 1] % chain[i] == 0 for i in range(len(chain) - 1)):
+            plan[ax] = chain
     return plan
 
 
@@ -69,8 +93,9 @@ def build_split_body(node, plan, prefix="z"):
     collapsed/reordered) node._body via LoopBody's copy path instead of re-tracing
     from the raw store function: pass the body as `fn` so LoopBody.__init__ takes
     _init_with_copy, which substitutes each original iter var with our expression
-    and runs simplify_with_ranges. For a split axis the substitution v -> outer*k
-    + inner makes FloorDiv(v, k) collapse to `outer` (and ModularIndexing reduce),
+    and runs simplify_with_ranges. For a split axis the substitution
+    v -> sum_i d_i * b_i (mixed radix over the boundary chain) makes every
+    FloorDiv/ModularIndexing on it collapse to an affine combination of the d_i,
     and reindexing the collapsed body keeps already-merged dims merged (no rank
     blow-up). indexing_from_args requires exactly one replacement expr per original
     var (index dims then reduce dims), flattened to len(body.var_ranges).
@@ -88,15 +113,21 @@ def build_split_body(node, plan, prefix="z"):
     for ax, v in enumerate(orig_index_vars):
         ext = body.var_ranges[v]
         if ax in plan:
-            k = plan[ax]
-            ext_i = _as_int(ext)
-            outer = sympy_index_symbol(f"{prefix}{ctr}"); ctr += 1
-            inner = sympy_index_symbol(f"{prefix}{ctr}"); ctr += 1
-            iter_vars += [outer, inner]
-            var_ranges[outer] = sympy.Integer(ext_i // k)
-            var_ranges[inner] = sympy.Integer(k)
-            index_size += [sympy.Integer(ext_i // k), sympy.Integer(k)]
-            index_args.append(outer * k + inner)
+            bounds = plan[ax]                 # ascending chain [1, b1, ..., E]
+            # one sub-var per segment: d_i has extent b_{i+1}/b_i, significance b_i.
+            subs = []                         # (symbol, extent, significance) low->high
+            expr = sympy.Integer(0)
+            for i in range(len(bounds) - 1):
+                seg_ext = bounds[i + 1] // bounds[i]
+                nv = sympy_index_symbol(f"{prefix}{ctr}"); ctr += 1
+                subs.append((nv, seg_ext, bounds[i]))
+                expr = expr + nv * bounds[i]
+            # iteration nest: most-significant (outermost) dim first.
+            for nv, seg_ext, _sig in reversed(subs):
+                iter_vars.append(nv)
+                var_ranges[nv] = sympy.Integer(seg_ext)
+                index_size.append(sympy.Integer(seg_ext))
+            index_args.append(expr)
         else:
             nv = sympy_index_symbol(f"{prefix}{ctr}"); ctr += 1
             iter_vars.append(nv)

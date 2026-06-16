@@ -18,6 +18,7 @@ iteration domain.
 """
 import sympy
 from torch._inductor.ir import LoopBody
+from torch._inductor.utils import sympy_index_symbol
 from torch.utils._sympy.functions import FloorDiv, ModularIndexing
 
 
@@ -61,7 +62,7 @@ def find_split_plan(nodes):
     return plan
 
 
-def build_split_body(node, plan, prefix="s"):
+def build_split_body(node, plan, prefix="z"):
     """Rebuild node._body / sizes for the given split plan.
 
     Returns (body, (index_size, reduce_size)). Reindexes the EXISTING (already
@@ -89,27 +90,30 @@ def build_split_body(node, plan, prefix="s"):
         if ax in plan:
             k = plan[ax]
             ext_i = _as_int(ext)
-            outer = sympy.Symbol(f"{prefix}{ctr}"); ctr += 1
-            inner = sympy.Symbol(f"{prefix}{ctr}"); ctr += 1
+            outer = sympy_index_symbol(f"{prefix}{ctr}"); ctr += 1
+            inner = sympy_index_symbol(f"{prefix}{ctr}"); ctr += 1
             iter_vars += [outer, inner]
             var_ranges[outer] = sympy.Integer(ext_i // k)
             var_ranges[inner] = sympy.Integer(k)
             index_size += [sympy.Integer(ext_i // k), sympy.Integer(k)]
             index_args.append(outer * k + inner)
         else:
-            nv = sympy.Symbol(f"{prefix}{ctr}"); ctr += 1
+            nv = sympy_index_symbol(f"{prefix}{ctr}"); ctr += 1
             iter_vars.append(nv)
             var_ranges[nv] = ext
             index_size.append(ext)
             index_args.append(nv)
 
-    # Reduction dims pass through unchanged (a fresh symbol with the same range).
+    # Reduction dims pass through unchanged (a fresh symbol with the same range),
+    # using the "r" prefix and kept after the index dims so the reduction axis
+    # stays innermost (var_ranges is ordered iter-then-reduce; sizes splits on
+    # len(iter_vars)). We do not split reduction dims here.
     reduce_vars = []
     reduce_size = []
     reduce_args = []
-    for v in orig_reduce_vars:
+    for rctr, v in enumerate(orig_reduce_vars):
         ext = body.var_ranges[v]
-        nv = sympy.Symbol(f"{prefix}{ctr}"); ctr += 1
+        nv = sympy_index_symbol(f"r{rctr}")
         reduce_vars.append(nv)
         var_ranges[nv] = ext
         reduce_size.append(ext)

@@ -91,24 +91,40 @@ The FloorDiv is eliminated. group `(2,6,16) -> (2,3,2,...)`.
 The aligned class is the framework's domain (currently only single-split
 FloorDiv); the misaligned class is structurally a graph-copy problem.
 
-## Known issues in the current prototype
+## Resolved
 
-- **5D blow-up**: `build_split_body` rebuilds from `inode.data.get_size()` (raw
-  `[2,6,4,4]`), un-collapsing spatial and producing a 5D tile that hits the old
-  rank<=4 `init_tile_size` cap ("dummy tile size fail!"). Fix: reindex the
-  already-collapsed `node._body` by passing it as `fn` to `LoopBody` -- this
-  takes the `_init_with_copy` fast path, which also runs `simplify_with_ranges`
-  (cleans `s1//1 -> s1`, keeps spatial collapsed) yielding a 4D `(2,3,2,16)`.
+- **5D blow-up (fixed).** `build_split_body` now reindexes the already-collapsed
+  `node._body` via `LoopBody`'s copy path (pass the body as `fn` ->
+  `_init_with_copy`), instead of re-tracing the raw store function over
+  `inode.data.get_size()`. This keeps merged dims merged (spatial stays `16`),
+  so group_norm goes `(2,6,16) -> (2,3,2,16)` (4D, no cap hit), and
+  `_init_with_copy`'s `simplify_with_ranges` folds the split floor.
+- **`floor//1` residue (fixed).** The fold only happened once the new symbols
+  carried integer/non-negative assumptions: build them with
+  `torch._inductor.utils.sympy_index_symbol` (not bare `sympy.Symbol`), which is
+  also why the index prefix must not be `s` (reserved for shape symbols). With
+  this, `idx1 = 3*p0 + (p1//2)` becomes `3*z0 + z1` -- the channel FloorDiv is
+  gone, not left as `z1//1`.
+- **Symbol conventions.** Index dims use the `z` prefix; reduction dims use the
+  `r` prefix and are kept after the index dims so the reduction axis stays
+  innermost (`var_ranges` is ordered iter-then-reduce; `LoopBody.sizes` splits on
+  `len(iter_vars)`). LoopBody var names are remapped to `index<N>` during MLIR
+  codegen, so the prefix is internal -- but it must not collide with the original
+  body's names (those are `p`/`q`, so `z`/`r` are safe).
+
+## Known issues / not yet exercised
+
 - **ModularIndexing under-split**: a single split by `k` leaves a residual
   `outer % m`; needs the 3-way `high=v//(k*m), mid=(v//k)%m, low=v%k`.
 - **One divisor per axis**: `plan.setdefault(axis, k)` ignores a second radix.
-- The general (any-rank) `init_tile_size` from the `dma-transfer/codegen`
-  worktree is still needed for split results that legitimately exceed 4D.
+- **Reduction-dim split path untested**: reduction dims are passed through
+  unchanged and never split; the pass-through is convention-correct (`r` prefix,
+  innermost) but no available test splits an *index* dim of a *reduction* kernel,
+  so that code path is not yet exercised end-to-end.
 
 ## Next steps
 
-1. Switch `build_split_body` to reindex the collapsed `node._body`
-   (`_init_with_copy`), confirm group norm 4D + allclose.
-2. Extend to ModularIndexing (mixed-radix) and multiple radices per axis.
+1. Extend to ModularIndexing (mixed-radix) and multiple radices per axis.
+2. Find/construct a reduction+index-floor case to exercise the reduce path.
 3. Misaligned cases -> graph-level copy insertion (separate work).
 4. Dynamic shapes -> symbolic divisibility / guards.

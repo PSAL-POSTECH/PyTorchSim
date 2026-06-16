@@ -263,6 +263,13 @@ class MLIRScheduling(BaseScheduling):
         if os.environ.get("TORCHSIM_DEBUG_AXIS_SPLIT"):
             _dump_axis("before")
 
+        if os.environ.get("TORCHSIM_AXIS_LEDGER"):
+            from . import axis_split
+            import sys as _sys
+            _plan = axis_split.find_split_plan(nodes)
+            for _op, _reason, _term in axis_split.ledger(nodes, _plan):
+                print(f"[AXIS_LEDGER] op={_op} reason={_reason} term={_term}", file=_sys.stderr)
+
         if os.environ.get("TORCHSIM_AXIS_SPLIT"):
             from . import axis_split
             plan = axis_split.find_split_plan(nodes)

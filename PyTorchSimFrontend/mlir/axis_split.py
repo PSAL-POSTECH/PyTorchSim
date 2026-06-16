@@ -29,6 +29,53 @@ def _as_int(x):
         return None
 
 
+def ledger(nodes, plan):
+    """Classify every FloorDiv/ModularIndexing in the kernel against `plan`.
+
+    Returns a list of (op_name, reason, term_str) for the terms NOT covered by
+    axis-split, so we can measure how often the graph-copy cases (incompatible
+    radix / non-dividing / multi-axis / dynamic) actually reach codegen. Read-only.
+    Reasons: covered terms are omitted; uncovered ones are
+      multi_axis_arg     - floor/mod argument is not a single iter var (case 7)
+      non_dividing       - divisor (or k*m) does not divide the extent (case 6)
+      incompatible_radix - single var, divides, but boundaries did not form a
+                           divisibility chain so the axis was left unsplit (case 5)
+      dynamic            - symbolic divisor/extent
+    """
+    rows = []
+
+    def classify(base, k, m, var_to_axis, var_ranges):
+        if not (isinstance(base, sympy.Symbol) and base in var_to_axis):
+            return None if False else "multi_axis_arg"
+        ax = var_to_axis[base]
+        E = _as_int(var_ranges.get(base))
+        if k is None or E is None or (m is not None and _as_int(m) is None):
+            return "dynamic"
+        if ax in plan:
+            return "covered"
+        period = k if m is None else k * _as_int(m)
+        if period and E % period != 0:
+            return "non_dividing"
+        return "incompatible_radix"
+
+    for n in nodes:
+        body = getattr(n, "_body", None)
+        if body is None:
+            continue
+        op = n.get_name() if hasattr(n, "get_name") else "?"
+        var_to_axis = {v: i for i, v in enumerate(body.iter_vars)}
+        for expr in body.indexing_exprs.values():
+            for fd in expr.atoms(FloorDiv):
+                r = classify(fd.args[0], _as_int(fd.args[1]), None, var_to_axis, body.var_ranges)
+                if r and r != "covered":
+                    rows.append((op, r, str(fd)))
+            for mi in expr.atoms(ModularIndexing):
+                r = classify(mi.args[0], _as_int(mi.args[1]), mi.args[2], var_to_axis, body.var_ranges)
+                if r and r != "covered":
+                    rows.append((op, r, str(mi)))
+    return rows
+
+
 def find_split_plan(nodes):
     """Inspect a group of scheduler nodes and return {axis_index: boundaries}.
 

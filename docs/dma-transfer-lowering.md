@@ -133,36 +133,54 @@ Design choices:
   lowers to subview+scf, not our descriptors -- so a custom op modeled on linalg's
   design, reusing AffineMap utilities.
 
-### Decomposition pass (contract)
+### Decomposition pass (contract): aligned-only mechanical peel
+
+> **Scope decision (narrowed).** This pass is a **pure mechanical rank peel** of an
+> already-affine access. It does **not** linearize floor/mod and does **not** do
+> relayout. Those two responsibilities moved upstream (see "Division of labor"
+> below): aligned floor/mod is removed by **axis splitting at the Inductor
+> scheduling layer** (`axis-split-scheduling.md`), and misaligned access is
+> resolved by **graph-level copy insertion**. So every `togsim.transfer` that
+> reaches this pass is guaranteed per-axis affine; the only thing left is that its
+> rank may exceed the 4D Gemmini descriptor.
 
 The DMA descriptor is an **affine map of rank <= 4 with integer strides**
-(`base + sum_i stride_i * idx_i`). Decide by **rank after linearization**, NOT by
-the presence of floordiv/mod:
+(`base + sum_i stride_i * idx_i`). The pass sees affine input (rank `D`) and:
 
-1. **Linearize** `src_map`: rewrite each `floordiv c` / `mod c` on an iteration dim
-   into a split pair (`idx = outer*c + inner`), which is purely linear in the new
-   dims. (This is exactly what `apply_divisor("split")` already does.) Let `D` be
-   the resulting affine rank.
-2. **`D <= 4`** -> emit **one** customized `memref.dma_start`; the split dims become
-   the descriptor's <=4D shape/strides. Identical to today's output (fast path).
-   floordiv/mod that still fits in <=4D after splitting stays here -- it is *not* a
-   peel trigger.
-3. **`D > 4`** (not expressible as a single linear combination) -> express it as a
-   **combination of linear combinations**: peel `D - 4` dims into an outer
-   `affine.for`; each iteration computes a base with `affine.apply` (the peeled
-   dims' linear, incl. split-derived, contribution) and issues the inner <=4D
-   affine descriptor. SRAM offsets are computed symmetrically in the same loop.
-4. If the estimated descriptor count is pathological -> fall back to **relayout**.
+1. **`D <= 4`** -> emit **one** customized `memref.dma_start`; the dims become the
+   descriptor's <=4D shape/strides. Identical to today's output (fast path).
+2. **`D > 4`** -> peel `D - 4` dims into an outer `affine.for`; each iteration
+   computes a base with `affine.apply` (the peeled dims' linear contribution) and
+   issues the inner <=4D affine descriptor. SRAM offsets are computed symmetrically
+   in the same loop.
 
-Genuinely non-affine access (data-dependent / indirect / gather -- an index that
-comes from a loaded value and cannot be linearized by splitting) is **out of scope**
-for this pass; it stays on the indirect-indexing path (or a relayout).
+That is the whole pass. There is **no linearization step** (upstream guarantees
+affine) and **no relayout fallback** (upstream graph copy handles misalignment).
 
-The decision point maps onto existing code: codegen already splits floordiv/mod via
-`apply_divisor` and raises `NotImplementedError` at >4D (`get_dma_info`). That exact
-site becomes "emit `togsim.transfer`" instead of dying, and the recompile/tile
--forcing dance is unnecessary because the outer peel loop's `ceil` bound absorbs
+**Fail loud, not silent.** If the pass encounters floor/mod that does not reduce to
+per-axis affine (misaligned), or a genuinely non-affine / indirect / gather index,
+that is a **contract violation** -- upstream did not normalize it. The pass
+**asserts/errors** rather than silently inserting a relayout. A silent in-pass copy
+would be a hidden performance cliff and would duplicate, at the wrong layer, a
+global layout decision only the graph can make correctly.
+
+The decision point maps onto existing code: `get_dma_info` already raises at >4D.
+That exact site becomes "emit `togsim.transfer`" (done, Phase 1), and this pass
+consumes it. The recompile/tile-forcing dance is unnecessary because (a) aligned
+floor/mod is gone before codegen and (b) the outer peel loop's `ceil` bound absorbs
 non-divisible remainders.
+
+### Division of labor (the affine-only contract)
+
+| floor/mod source | handled by | cost | layer |
+|---|---|---|---|
+| aligned (single axis, divisor \| extent; group norm, broadcast) | axis split | free | Inductor scheduling |
+| misaligned (uneven cat, non-factor reshape, multi-axis arg) | copy insertion | copy | FX graph |
+| affine but rank > 4 (e.g. 5D permute) | mechanical peel | free | **this pass** |
+| data-dependent / indirect / gather | indirect-indexing path | -- | out of scope |
+
+Only the third row is this pass. The first two produce the affine-only invariant
+this pass relies on.
 
 ### Relationship to memref-to-gemmini (ISA lowering) -- keep separate
 
@@ -198,7 +216,10 @@ Ramulator). Rules:
    peeled extents).
 2. Keep the inner descriptor **as large and contiguous as possible** (maximize
    bytes per descriptor).
-3. If even the best peel is pathological, fall back to **relayout**.
+
+(A pathological peel is not this pass's problem to fix: it means the operand's
+layout is bad, which is a graph-level layout/copy decision, not an in-pass
+relayout.)
 
 ### Placement: hybrid (least burden)
 
@@ -207,7 +228,7 @@ fast); keep the C++ pass purely mechanical.
 
 | Step | Where |
 |---|---|
-| peel-plan decision (which dims, count estimate, peel vs relayout) | Python |
+| peel-plan decision (which dims to peel, count estimate) | Python |
 | encode plan as op attributes | Python -> MLIR |
 | emit `scf.for { customized dma_start }` per the plan | C++ pass |
 
@@ -240,7 +261,8 @@ The cost model can migrate into C++ later if desired.
   that is actually broken (DMA decomposition) into a lowering pass, without the
   full linalg rewrite.
 - **Cost-aware, so modeled performance is protected.** Peel small/outer, keep inner
-  contiguous, relayout for pathological cases.
+  contiguous. Pathological layouts are fixed upstream (graph copy), not by an
+  in-pass relayout.
 
 ## Migration strategy
 
@@ -250,12 +272,13 @@ The cost model can migrate into C++ later if desired.
    maps and vlane attributes it already computes.
 3. Implement `decompose-transfer` with the fast path first (<=4D affine -> one
    `dma_start`), proving **bit-identical output** to today on a smoke test.
-4. Add the peel path for floor/mod / >4D; validate end-to-end through all three
+4. Add the **affine** peel path for >4D; validate end-to-end through all three
    simulators (the loop-of-descriptors must satisfy the TOG / Spike / gem5
-   contract).
-5. Add the relayout fallback gated by the cost estimate.
-6. Remove the `get_dma_info` recompile branches once the pass covers their cases;
-   use the failure ledger + assert-only `TestLoopPadding` to confirm nothing
+   contract). Make the pass **assert** on any non-affine residue (contract guard).
+5. Land the upstream producers of the affine-only invariant: aligned axis split at
+   scheduling (`axis-split-scheduling.md`) and misaligned graph copy insertion.
+6. Remove the `get_dma_info` recompile branches once the pass + upstream cover their
+   cases; use the failure ledger + assert-only `TestLoopPadding` to confirm nothing
    regresses before deleting.
 
 ## Relationship to Plan A and Plan B
@@ -275,12 +298,15 @@ The cost model can migrate into C++ later if desired.
   Python, pass is mechanical).
 - **TOG / Spike / gem5 contract on a loop of descriptors.** If TOG generation
   assumes "one DMA = one node," the loop form needs handling. Validate at step 4.
-- **Cost model accuracy** for peel-vs-relayout; start with a simple
-  descriptor-count threshold and refine against measured cycles.
-- **Dynamic shapes**: `iter_bounds` as SSA operands and symbolic-divisor floor/mod
-  (semi-affine) must be handled by the pass.
-- **Relayout fallback** needs a scratch buffer and a copy kernel; account for its
-  memory and cycle cost in the decision.
+- **Cost model accuracy** for the peel plan; start with a simple descriptor-count
+  threshold and refine against measured cycles.
+- **Dynamic shapes**: `iter_bounds` as SSA operands; affine peel must handle
+  symbolic outer extents. (Symbolic-divisor floor/mod normalization is an upstream
+  concern, not this pass.)
+- **Upstream completeness.** The pass's fail-loud contract is only safe if the
+  upstream producers (axis split + graph copy) actually normalize every misaligned
+  case. Until they do, the assert may fire on real models -- track which ops trip it
+  as the work-list for the upstream passes.
 - **Async / tag management across the peel loop**: double-buffering / compute
   overlap must survive decomposition (e.g. keep the inner large DMA async, sequence
   the outer peel).
@@ -362,7 +388,7 @@ axis into two. Key consequences:
 | Broadcast / dim-merge (`[N,1]->[N,M]`, `i//M`) | always   | un-merge (split loop axis back)   | free |
 | Reshape along the loop's own factorization     | yes (`y·z\|E`) | un-flatten split, then peel for rank | free |
 | >4D logical tile from complex fusion           | yes      | `togsim.transfer` -> peel into <=4D loop | free (extra DMA nodes) |
-| Uneven `cat`, ragged split, non-dividing group | no       | relayout (scratch buffer + copy)  | copy = TPU `concatenate` |
+| Uneven `cat`, ragged split, non-dividing group | no       | graph copy insertion (relayout, upstream) | copy = TPU `concatenate` |
 
 The TPU/XLA model is the reference: express only aligned views as
 descriptor/bitcast (free reshape); never put a misaligned access in the
@@ -403,9 +429,12 @@ now emits MVIN/MVOUT `togsim.transfer` with 5D `dram_stride [1,6,30,120,360]` an
 `memref<1x1x2x4x2xf32,1>` tile, instead of crashing in `init_tile_size` or the
 `get_dma_info` >4D branch.
 
-### Deferred (next, on signal)
+### Deferred (next, on signal): aligned-only peel pass
 
-`passes/decompose_transfer.py`: parse `togsim.transfer`, peel excess dims / split
-aligned floor-mod axes into a loop of `scf.for` around <=4D `memref.dma_start`
-(fast path bit-identical for <=4D affine), add the relayout fallback for
-misaligned views gated by a descriptor-count cost estimate.
+`passes/decompose_transfer.py`: parse `togsim.transfer`, peel excess (affine) dims
+into a loop of `scf.for` around <=4D `memref.dma_start` (fast path bit-identical for
+<=4D affine). The input is guaranteed per-axis affine by the upstream producers, so
+the pass does **no** floor/mod linearization and **no** relayout -- it **asserts**
+on any non-affine residue (contract guard). Aligned floor/mod removal lives in
+axis-split-at-scheduling (`axis-split-scheduling.md`); misaligned relayout lives in
+graph copy insertion. See "Division of labor" above.

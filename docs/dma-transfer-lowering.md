@@ -449,10 +449,18 @@ now emits MVIN/MVOUT `togsim.transfer` with 5D `dram_stride [1,6,30,120,360]` an
 Validated end-to-end (Gem5 + Spike + TOGSim, `allclose=True`) on the 5D permute
 `x.permute(4,3,2,1,0).contiguous() + 1.0`; no regression on 2D/3D/elementwise.
 
-**Still TODO (genuine >4 effective rank).** When >4 *non-unit* dims survive, the
-pass raises `NotImplementedError` -- it needs the real peel loop (`affine.for` over
-the outer dims, base index advanced by `stride*iv` per iteration, inner <=4D
-descriptor). The input stays per-axis affine by upstream guarantee, so this remains
-pure mechanical peeling; the pass should **assert** on any non-affine residue
-(aligned floor/mod removal lives in `axis-split-scheduling.md`, misaligned relayout
-in graph copy insertion -- see "Division of labor").
+- **Genuine >4 effective rank (done, isolation-validated).** When >4 *non-unit*
+  dims survive, the pass keeps the inner 4 as the <=4D descriptor and peels the
+  outer dims by **full unrolling**: one descriptor per outer-index combo, the SRAM
+  slice a rank-reduced `memref.subview` at the static slice offset, the DRAM base
+  `dram_idx + constant`. Unrolling (vs `scf.for`) keeps slice offsets static, so no
+  per-iteration SRAM index arithmetic is needed. **Currently unreachable**:
+  `init_tile_size` caps non-unit tile dims at 3 (effective rank <= 3 in practice),
+  so this path is exercised only in isolation (`lower_text` / the module CLI), not
+  through the full pipeline. Implemented for completeness and future tilings.
+
+The input stays per-axis affine by upstream guarantee, so both paths are pure
+mechanical peeling. A non-affine residue is a contract violation (aligned floor/mod
+removal lives in `axis-split-scheduling.md`, misaligned relayout in graph copy
+insertion -- see "Division of labor"); a genuinely non-affine / indirect index
+would surface as a build failure here rather than being silently relaid out.

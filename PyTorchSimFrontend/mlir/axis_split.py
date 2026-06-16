@@ -64,21 +64,28 @@ def find_split_plan(nodes):
 def build_split_body(node, plan, prefix="s"):
     """Rebuild node._body / sizes for the given split plan.
 
-    Returns (body, (index_size, reduce_size)). Mirrors revert_group: re-trace the
-    store function with index args where a split output dim `ax` is fed the
-    expression outer*k + inner, and var_ranges carries the two new vars.
+    Returns (body, (index_size, reduce_size)). Reindexes the EXISTING (already
+    collapsed/reordered) node._body via LoopBody's copy path instead of re-tracing
+    from the raw store function: pass the body as `fn` so LoopBody.__init__ takes
+    _init_with_copy, which substitutes each original iter var with our expression
+    and runs simplify_with_ranges. For a split axis the substitution v -> outer*k
+    + inner makes FloorDiv(v, k) collapse to `outer` (and ModularIndexing reduce),
+    and reindexing the collapsed body keeps already-merged dims merged (no rank
+    blow-up). indexing_from_args requires exactly one replacement expr per original
+    var (index dims then reduce dims), flattened to len(body.var_ranges).
     """
-    inode = node.node
-    size = inode.data.get_size()
-    reduction_size = inode.data.get_reduction_size()
+    body = node._body
+    orig_index_vars = list(body.iter_vars)
+    orig_reduce_vars = list(body.reduce_vars)
 
     iter_vars = []
-    fn_index_args = []          # one expr per ORIGINAL output dim
+    index_args = []             # one expr per ORIGINAL index dim (substituted in)
     var_ranges = {}
     index_size = []
     ctr = 0
 
-    for ax, ext in enumerate(size):
+    for ax, v in enumerate(orig_index_vars):
+        ext = body.var_ranges[v]
         if ax in plan:
             k = plan[ax]
             ext_i = _as_int(ext)
@@ -88,23 +95,26 @@ def build_split_body(node, plan, prefix="s"):
             var_ranges[outer] = sympy.Integer(ext_i // k)
             var_ranges[inner] = sympy.Integer(k)
             index_size += [sympy.Integer(ext_i // k), sympy.Integer(k)]
-            fn_index_args.append(outer * k + inner)
+            index_args.append(outer * k + inner)
         else:
-            v = sympy.Symbol(f"{prefix}{ctr}"); ctr += 1
-            iter_vars.append(v)
-            var_ranges[v] = ext
+            nv = sympy.Symbol(f"{prefix}{ctr}"); ctr += 1
+            iter_vars.append(nv)
+            var_ranges[nv] = ext
             index_size.append(ext)
-            fn_index_args.append(v)
+            index_args.append(nv)
 
+    # Reduction dims pass through unchanged (a fresh symbol with the same range).
     reduce_vars = []
     reduce_size = []
-    for ext in reduction_size:
-        v = sympy.Symbol(f"{prefix}{ctr}"); ctr += 1
-        reduce_vars.append(v)
-        var_ranges[v] = ext
+    reduce_args = []
+    for v in orig_reduce_vars:
+        ext = body.var_ranges[v]
+        nv = sympy.Symbol(f"{prefix}{ctr}"); ctr += 1
+        reduce_vars.append(nv)
+        var_ranges[nv] = ext
         reduce_size.append(ext)
+        reduce_args.append(nv)
 
-    store_fn = inode.get_store_function()
-    fn_args = [fn_index_args, reduce_vars] if inode.get_reduction_type() else [fn_index_args]
-    body = LoopBody(store_fn, fn_args, var_ranges, iter_vars, reduce_vars)
-    return body, (index_size, reduce_size)
+    args = [index_args, reduce_args] if orig_reduce_vars else [index_args]
+    new_body = LoopBody(body, args, var_ranges, iter_vars, reduce_vars)
+    return new_body, (index_size, reduce_size)

@@ -64,9 +64,12 @@ def _squeeze_reassociation(shape):
 
 def run(module):
     """Lower every togsim.transfer in `module`, in place. Context must be active."""
+    import itertools
     from mlir.ir import (InsertionPoint, Operation, MemRefType, ArrayAttr,
-                         IntegerAttr, IntegerType, IndexType)
+                         IntegerAttr, IntegerType, IndexType, DenseI64ArrayAttr,
+                         StridedLayoutAttr)
     i64 = IntegerType.get_signless(64)
+    idx_ty = IndexType.get()
 
     targets = []
     for region in module.operation.regions:
@@ -84,54 +87,94 @@ def run(module):
         padding = op.attributes["padding"]
 
         sram_ty = MemRefType(sram.type)
+        elem, space = sram_ty.element_type, sram_ty.memory_space
         tile_shape = list(sram_ty.shape)
         # effective (non-unit) dims carry the descriptor; unit dims drop out.
         eff = [i for i, e in enumerate(tile_shape) if e > 1]
 
-        if len(eff) > 4:
-            raise NotImplementedError(
-                f"{OP_NAME}: effective rank {len(eff)} > 4 needs the peel loop "
-                "(not yet implemented); only unit-dim drop / <=4D is handled")
-
-        # The customized memref.dma_start convention: the SRAM memref rank == number
-        # of SRAM indices == len(sram_stride). To reach a <=4D descriptor we collapse
-        # the unit tile dims away, then index the collapsed memref with one base per
-        # remaining dim. DRAM stays flat rank-1 (its N-D structure is in dram_stride).
-        groups, target = _squeeze_reassociation(tile_shape)
-        rank = len(target)
-        reassoc = ArrayAttr.get(
-            [ArrayAttr.get([IntegerAttr.get(i64, d) for d in g]) for g in groups])
-        collapsed_ty = MemRefType.get(target, sram_ty.element_type,
-                                      memory_space=sram_ty.memory_space)
-
-        # strides for the surviving (effective) dims, aligned with `target`/`groups`.
-        keep = [g[-1] for g in groups]                  # the non-unit dim in each group
-        inner_dram = ArrayAttr.get([IntegerAttr.get(i64, dram_stride[i]) for i in keep])
-        inner_tile = ArrayAttr.get([IntegerAttr.get(i64, tile_stride[i]) for i in keep])
-
-        # Remap the vlane axis from the original tile-dim index to the collapsed-dim
-        # index (the group that contains it), then materialize the new const.
-        new_vlane_axis = next(gi for gi, g in enumerate(groups) if vlane_axis in g)
-        idx_ty = IndexType.get()
-
-        with InsertionPoint(op):
-            vsa = Operation.create(
+        def _const(v):
+            return Operation.create(
                 "arith.constant", results=[idx_ty],
-                attributes={"value": IntegerAttr.get(idx_ty, new_vlane_axis)}).results[0]
-            sram_c = Operation.create(
-                "memref.collapse_shape", results=[collapsed_ty], operands=[sram],
-                attributes={"reassociation": reassoc}).results[0]
-            sram_indices = [sram_idx] * rank
+                attributes={"value": IntegerAttr.get(idx_ty, v)}).results[0]
+
+        def _emit(sram_mem, sram_indices, dram_idx_val, vsa_val, dr_attr, tl_attr):
+            vsa = _const(vsa_val)
             if kind == "MVIN":
-                operands = [dram, dram_idx, sram_c, *sram_indices,
+                operands = [dram, dram_idx_val, sram_mem, *sram_indices,
                             dma_type, tag, sram_idx, vsa, vst]
             else:
-                operands = [sram_c, *sram_indices, dram, dram_idx,
+                operands = [sram_mem, *sram_indices, dram, dram_idx_val,
                             dma_type, tag, sram_idx, vsa, vst]
             Operation.create(
                 "memref.dma_start", results=[], operands=operands,
-                attributes={"dram_stride": inner_dram, "sram_stride": inner_tile,
+                attributes={"dram_stride": dr_attr, "sram_stride": tl_attr,
                             "padding": padding})
+
+        if len(eff) <= 4:
+            # Fast path: drop unit dims so the descriptor reaches <=4D. The customized
+            # dma_start convention requires SRAM rank == #indices == len(sram_stride),
+            # so collapse the unit tile dims away. DRAM stays flat rank-1 (its N-D
+            # structure is in dram_stride).
+            groups, target = _squeeze_reassociation(tile_shape)
+            reassoc = ArrayAttr.get(
+                [ArrayAttr.get([IntegerAttr.get(i64, d) for d in g]) for g in groups])
+            collapsed_ty = MemRefType.get(target, elem, memory_space=space)
+            keep = [g[-1] for g in groups]              # the non-unit dim in each group
+            dr_attr = ArrayAttr.get([IntegerAttr.get(i64, dram_stride[i]) for i in keep])
+            tl_attr = ArrayAttr.get([IntegerAttr.get(i64, tile_stride[i]) for i in keep])
+            # Remap vlane axis to the collapsed-dim index (the group containing it).
+            new_vlane = next(gi for gi, g in enumerate(groups) if vlane_axis in g)
+            with InsertionPoint(op):
+                sram_c = Operation.create(
+                    "memref.collapse_shape", results=[collapsed_ty], operands=[sram],
+                    attributes={"reassociation": reassoc}).results[0]
+                _emit(sram_c, [sram_idx] * len(target), dram_idx, new_vlane,
+                      dr_attr, tl_attr)
+            op.erase()
+            continue
+
+        # Peel path: >4 effective dims. Keep the inner 4 as the <=4D descriptor and
+        # peel the outer (len-4) effective dims into a fully-unrolled set of slices
+        # (one descriptor per outer index combo; base advances by stride*idx). The
+        # SRAM slice is a rank-reduced memref.subview at the slice offset; DRAM base
+        # is dram_idx + constant. Unrolling (vs scf.for) keeps the slice offsets
+        # static so no per-iteration index arithmetic on the SRAM side is needed.
+        #
+        # NOTE: currently unreachable -- init_tile_size caps non-unit tile dims at 3,
+        # so eff <= 3 in practice. Implemented for completeness / future tilings and
+        # validated only in isolation (passes/decompose_transfer.py CLI / lower_text).
+        peeled, inner = eff[:-4], eff[-4:]
+        ndim = len(tile_shape)
+        inner_shape = [tile_shape[d] for d in inner]
+        inner_strides = [tile_stride[d] for d in inner]
+        dr_attr = ArrayAttr.get([IntegerAttr.get(i64, dram_stride[d]) for d in inner])
+        tl_attr = ArrayAttr.get([IntegerAttr.get(i64, tile_stride[d]) for d in inner])
+        # the vlane axis must survive into the inner descriptor (it is the lane dim).
+        new_vlane = inner.index(vlane_axis) if vlane_axis in inner else 0
+        for combo in itertools.product(*[range(tile_shape[d]) for d in peeled]):
+            static_offsets = [0] * ndim
+            static_sizes = [1] * ndim
+            for k, d in enumerate(peeled):
+                static_offsets[d] = combo[k]
+            for d in inner:
+                static_sizes[d] = tile_shape[d]
+            sram_off = sum(combo[k] * tile_stride[peeled[k]] for k in range(len(peeled)))
+            dram_off = sum(combo[k] * dram_stride[peeled[k]] for k in range(len(peeled)))
+            res_ty = MemRefType.get(
+                inner_shape, elem,
+                layout=StridedLayoutAttr.get(sram_off, inner_strides), memory_space=space)
+            with InsertionPoint(op):
+                sub = Operation.create(
+                    "memref.subview", results=[res_ty], operands=[sram],
+                    attributes={"static_offsets": DenseI64ArrayAttr.get(static_offsets),
+                                "static_sizes": DenseI64ArrayAttr.get(static_sizes),
+                                "static_strides": DenseI64ArrayAttr.get([1] * ndim),
+                                "operandSegmentSizes": DenseI64ArrayAttr.get([1, 0, 0, 0])}
+                ).results[0]
+                dram_idx_val = dram_idx if dram_off == 0 else Operation.create(
+                    "arith.addi", results=[idx_ty],
+                    operands=[dram_idx, _const(dram_off)]).results[0]
+                _emit(sub, [sram_idx] * 4, dram_idx_val, new_vlane, dr_attr, tl_attr)
         op.erase()
 
 

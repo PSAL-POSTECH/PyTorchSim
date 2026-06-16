@@ -249,6 +249,36 @@ class MLIRScheduling(BaseScheduling):
             nodes, key=lambda x: int(x.is_reduction())
         ).group
 
+        def _dump_axis(tag):
+            import sys as _sys
+            print(f"\n[AXIS_SPLIT:{tag}] group={group} reduction_group={reduction_group}", file=_sys.stderr)
+            for _n in nodes:
+                _body = getattr(_n, "_body", None)
+                if _body is None:
+                    continue
+                print(f"[AXIS_SPLIT:{tag}]  node={_n.get_name()} var_ranges={getattr(_body, 'var_ranges', None)}", file=_sys.stderr)
+                for _k, _e in getattr(_body, "indexing_exprs", {}).items():
+                    print(f"[AXIS_SPLIT:{tag}]    idx[{_k}] = {_e}", file=_sys.stderr)
+
+        if os.environ.get("TORCHSIM_DEBUG_AXIS_SPLIT"):
+            _dump_axis("before")
+
+        if os.environ.get("TORCHSIM_AXIS_SPLIT"):
+            from . import axis_split
+            plan = axis_split.find_split_plan(nodes)
+            if plan:
+                for _n in nodes:
+                    if getattr(_n, "_body", None) is None:
+                        continue
+                    _body, _ranges = axis_split.build_split_body(_n, plan)
+                    _n._sizes, _n._body, _n.group = _ranges, _body, (_n.get_device(), self.group_fn(_ranges))
+                _, (group, reduction_group) = max(
+                    nodes, key=lambda x: int(x.is_reduction())
+                ).group
+                if os.environ.get("TORCHSIM_DEBUG_AXIS_SPLIT"):
+                    print(f"[AXIS_SPLIT] applied plan={plan}", file=__import__("sys").stderr)
+                    _dump_axis("after")
+
         # Note: We assume that there is at least one loop in the nodes
         # But, inductor simplifies the group, there could be no loop
         # In that case, we add dummy loop(size=1) to the group

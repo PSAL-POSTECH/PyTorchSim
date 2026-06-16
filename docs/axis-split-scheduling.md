@@ -114,17 +114,34 @@ FloorDiv); the misaligned class is structurally a graph-copy problem.
 
 ## Known issues / not yet exercised
 
-- **ModularIndexing under-split**: a single split by `k` leaves a residual
-  `outer % m`; needs the 3-way `high=v//(k*m), mid=(v//k)%m, low=v%k`.
-- **One divisor per axis**: `plan.setdefault(axis, k)` ignores a second radix.
-- **Reduction-dim split path untested**: reduction dims are passed through
-  unchanged and never split; the pass-through is convention-correct (`r` prefix,
-  innermost) but no available test splits an *index* dim of a *reduction* kernel,
-  so that code path is not yet exercised end-to-end.
+- **Incompatible radices**: if an axis carries radices that do not form a
+  divisibility chain (e.g. floor-by-2 and mod-by-3 on extent 6), the axis is left
+  unsplit (its floor/mod falls back to the recompile path). A single mixed-radix
+  split cannot linearize incompatible radices.
+- **High-rank blow-up downstream**: splitting several axes can push the iteration
+  rank past 4 (e.g. pixel_shuffle -> 5D tile), which then exercises the
+  decompose-transfer peel and the TOG serialization on high-rank tiles. The
+  linearization is correct, but those downstream paths are nascent (one peel
+  subview bug fixed here; TOG `loop_idx_list` on high-rank tiles still open).
+
+## Done
+
+- **Mixed-radix (ModularIndexing + multi-radix)**: `find_split_plan` returns a
+  per-axis divisibility-chain of boundaries; `build_split_body` splits into one
+  sub-var per segment (`v = sum_i d_i*b_i`). Validated allclose=True on group_norm
+  (FloorDiv, `[1,2,6]`) and `x.repeat(1,2)` (single-axis ModularIndexing,
+  `[1,8,16]`); pixel_shuffle (floor+mod on two axes) linearizes correctly.
+- **Reduction pass-through**: reduction dims keep the `r` prefix and stay innermost
+  (after the index dims). Exercised via the `TORCHSIM_AXIS_SPLIT_FORCE` validation
+  gate (force-split a reduction kernel's index axis even without floor -- an
+  identity transform, so allclose must hold): layernorm `(512)->(256,2)` and
+  reduce `(68)->(34,2)` keep their reduction groups and pass.
 
 ## Next steps
 
-1. Extend to ModularIndexing (mixed-radix) and multiple radices per axis.
-2. Find/construct a reduction+index-floor case to exercise the reduce path.
-3. Misaligned cases -> graph-level copy insertion (separate work).
-4. Dynamic shapes -> symbolic divisibility / guards.
+1. Misaligned cases -> graph-level copy insertion (separate work).
+2. High-rank interaction: decide whether to cap split-induced rank or harden the
+   decompose-peel + TOG path for high-rank tiles (pixel_shuffle end-to-end).
+3. Dynamic shapes -> symbolic divisibility / guards.
+4. Turn axis-split on by default for covered cases; retire the matching
+   recompile-dance branches; measure coverage.

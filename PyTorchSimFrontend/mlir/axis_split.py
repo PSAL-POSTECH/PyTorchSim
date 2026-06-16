@@ -83,6 +83,22 @@ def find_split_plan(nodes):
         # require a strict divisibility chain (each boundary divides the next).
         if len(chain) > 2 and all(chain[i + 1] % chain[i] == 0 for i in range(len(chain) - 1)):
             plan[ax] = chain
+
+    # Validation aid: force-split the first even index axis even without floor/mod.
+    # A floor-free index split is an identity transformation, so allclose must hold;
+    # used to exercise the reduction pass-through path (no natural op produces a
+    # floor on a reduction kernel's index axis). Off unless TORCHSIM_AXIS_SPLIT_FORCE.
+    import os as _os
+    if _os.environ.get("TORCHSIM_AXIS_SPLIT_FORCE"):
+        for n in nodes:
+            body = getattr(n, "_body", None)
+            if body is None or not body.reduce_vars:
+                continue
+            for ax, v in enumerate(body.iter_vars):
+                E = _as_int(body.var_ranges.get(v))
+                if ax not in plan and E and E % 2 == 0 and E > 2:
+                    plan[ax] = [1, 2, E]
+                    break
     return plan
 
 

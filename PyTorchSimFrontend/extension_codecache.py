@@ -43,24 +43,9 @@ def mlir_compile_command(filename, vectorlane_size, vlen=256):
             {extension_config.CONFIG_TORCHSIM_LLVM_PATH}/mlir-opt \
             -test-loop-padding \
             -dma-fine-grained='systolic-array-size={vectorlane_size}' \
-            -global-idx='vlen={vlen}' \
             -test-pytorchsim-to-vcix='systolic-array-size={vectorlane_size} vlen={vlen}' \
-            -test-memref-to-gemmini="vectorlane={vectorlane_size}" \
-            -convert-linalg-to-loops \
-            -convert-vector-to-scf='full-unroll' \
-            -lower-affine \
-            -finalize-memref-to-llvm \
-            -lower-vector-multi-reduction \
-            -convert-vector-to-llvm \
-            -convert-arith-to-llvm \
-            -convert-math-to-llvm \
-            -convert-scf-to-cf \
-            -convert-cf-to-llvm \
-            -convert-func-to-llvm \
-            -convert-index-to-llvm \
-            -reconcile-unrealized-casts \
             {'--mlir-print-ir-after-all' if extension_config.CONFIG_TORCHSIM_DUMP_MLIR_IR else ''} \
-            {filename}.mlir -o {filename}_llvm.mlir
+            {filename}.mlir -o {filename}_custom.mlir
         """,
     ).strip(),
             re.sub(r"[ \n]+", " ",
@@ -93,25 +78,9 @@ def mlir_gem5_compile_command(filename, sample_filename, tog_file, vectorlane_si
             {extension_config.CONFIG_TORCHSIM_LLVM_PATH}/mlir-opt \
             -test-loop-padding='timing_mode=1' \
             -dma-fine-grained='systolic-array-size={vectorlane_size}' \
-            -global-idx='vlen={vlen}' \
             -test-pytorchsim-to-vcix='systolic-array-size={vectorlane_size} vlen={vlen}' \
-            -test-tile-operation-graph='vectorlane={vectorlane_size} sample-mode={extension_config.CONFIG_TLS_MODE}' \
-            -test-memref-to-gemmini="vectorlane={vectorlane_size} timing=1" \
-            -convert-linalg-to-loops \
-            -convert-vector-to-scf='full-unroll' \
-            -lower-affine \
-            -finalize-memref-to-llvm \
-            -lower-vector-multi-reduction \
-            -convert-vector-to-llvm \
-            -convert-arith-to-llvm \
-            -convert-math-to-llvm \
-            -convert-scf-to-cf \
-            -convert-cf-to-llvm \
-            -convert-func-to-llvm \
-            -convert-index-to-llvm \
-            -reconcile-unrealized-casts \
             {'--mlir-print-ir-after-all' if extension_config.CONFIG_TORCHSIM_DUMP_MLIR_IR else ''} \
-            {filename}.mlir -o {sample_filename}_llvm.mlir
+            {filename}.mlir -o {sample_filename}_postvcix.mlir
         """,
     ).strip(),
             re.sub(r"[ \n]+", " ",
@@ -158,6 +127,11 @@ class MLIRCodeCache:
         vlenb = vlen // 8
         write_path = get_write_path(source_code)
         key, input_path = write(source_code, "mlir", specified_dir=write_path)
+        # Run the Python out-of-line MLIR passes (MLIR bindings) on the kernel
+        # .mlir in place, before mlir-opt. Currently lowers torchsim.vlane_idx
+        # (replaces the old C++ -global-idx pass); add more in passes/__init__.py.
+        from PyTorchSimFrontend.mlir.passes import run_python_passes, run_standard_lowering, run_tog
+        run_python_passes(input_path)
         new_input_path = os.path.splitext(input_path)[0]
         raw_tog_path = new_input_path + "_tog.py"
         tog_path = os.path.join(write_path, "tile_graph.onnx")
@@ -185,6 +159,10 @@ class MLIRCodeCache:
             with lock:
                 try:
                     subprocess.check_call(opt_cmd)
+                    # Standard MLIR -> LLVM-dialect lowering (registered upstream
+                    # passes) runs in-process via the bindings PassManager, picking
+                    # up after the custom mlir-opt passes (memref-to-gemmini).
+                    run_standard_lowering(new_input_path + "_custom.mlir", new_input_path + "_llvm.mlir")
                     subprocess.check_call(translate_cmd)
                     subprocess.check_call(llc_cmd)
                     subprocess.check_call(llc_asm_cmd)
@@ -220,9 +198,18 @@ class MLIRCodeCache:
         lock = FileLock(get_lock_path(write_path), timeout=LOCK_TIMEOUT)
         with lock:
             try:
-                result = subprocess.check_output(gem5_sample_cmd)
-                with open(raw_tog_path, "wb") as file:
-                    file.write(result)
+                # mlir-opt now runs only loop-padding/dma-fine-grained/pytorchsim-to-vcix
+                # and writes the post-vcix IR. The tile-operation-graph pass is ported
+                # to Python: run_tog reads that IR, writes the TOG (_tog.py) and the
+                # mutated IR (_custom.mlir: sample-mode step rewrite + compute markers),
+                # replacing the C++ -test-tile-operation-graph pass.
+                subprocess.check_call(gem5_sample_cmd)
+                run_tog(sample_mlir_path + "_postvcix.mlir", raw_tog_path,
+                        sample_mlir_path + "_custom.mlir",
+                        sample_mode=extension_config.CONFIG_TLS_MODE,
+                        vectorlane=vectorlane_size)
+                # Standard MLIR -> LLVM-dialect lowering in-process (see functional path).
+                run_standard_lowering(sample_mlir_path + "_custom.mlir", sample_mlir_path + "_llvm.mlir", timing=True)
                 subprocess.check_call(gem5_translate_cmd)
                 subprocess.check_call(gem5_llc_cmd)
             except subprocess.CalledProcessError as e:

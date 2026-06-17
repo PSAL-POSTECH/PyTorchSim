@@ -322,6 +322,10 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         self.spad_buffer_dict = dict()
         self.base_vector_initialized = False
         self.loop_size = None
+        # Set by get_dma_info when a DMA access cannot fit one <=4D Gemmini
+        # descriptor; load()/store() then emit a togsim.transfer for the
+        # decompose pass to peel into a loop of <=4D dma_start.
+        self._dma_needs_transfer = False
 
     def reset(self, reason):
         save = self.exit_stack, self._nested_context_depth
@@ -537,9 +541,14 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         compute_index_var = ",".join(sram_index_var.split(",")[:-1] + [f"%{self.compute_idx}"])
 
         # MVIN Encoding
-        attribute = mlir_common.format_dma_op_attributes(dram_stride, tile_stride, int(padding))
-        code = self.get_dma_code("MVIN", vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
-                                 dram_shape, tile_shape, attribute)
+        if self._dma_needs_transfer:
+            self._dma_needs_transfer = False
+            code = self.emit_transfer("MVIN", vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
+                                      dram_shape, tile_shape, dram_stride, tile_stride, int(padding))
+        else:
+            attribute = mlir_common.format_dma_op_attributes(dram_stride, tile_stride, int(padding))
+            code = self.get_dma_code("MVIN", vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
+                                     dram_shape, tile_shape, attribute)
         self.cse.generate(dma_buffer, code, assignment = False) # FIXME: assignment = False does not support caching
 
         if not comptute_depedency:
@@ -608,9 +617,14 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
             sram_index_var = self.spad_buffer_dict[str(value)][3]
 
         # Generate DMA instruction
-        attribute = mlir_common.format_dma_op_attributes(dram_stride, tile_stride, 0)
-        code = self.get_dma_code("MVOUT", vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
-                                 dram_shape, tile_shape, attribute)
+        if self._dma_needs_transfer:
+            self._dma_needs_transfer = False
+            code = self.emit_transfer("MVOUT", vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
+                                      dram_shape, tile_shape, dram_stride, tile_stride, 0)
+        else:
+            attribute = mlir_common.format_dma_op_attributes(dram_stride, tile_stride, 0)
+            code = self.get_dma_code("MVOUT", vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
+                                     dram_shape, tile_shape, attribute)
         self.dma_stores.writeline(common.DeferredLine(name, code))
 
     def reduction(self, dtype, src_dtype, reduction_type, value):
@@ -1243,7 +1257,13 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
             local_tile_desc.vmap.vlane_split_axis = local_vlane_split_axis
             local_tile_desc.vmap.vlane_stride = kg_tile_desc.vmap.vlane_stride
         else:
-            raise NotImplementedError("Currently not implemented... ;)")
+            # >4D access: one Gemmini DMA descriptor (<=4D) cannot represent this.
+            # Build the full N-D tile and flag it for togsim.transfer; the decompose
+            # pass peels the excess dims into a loop of <=4D memref.dma_start.
+            local_tile_desc.set_tile_size([kg_tile_desc.get_dim_size(dim) for dim in local_dims])
+            local_tile_desc.vmap.vlane_split_axis = local_vlane_split_axis
+            local_tile_desc.vmap.vlane_stride = kg_tile_desc.vmap.vlane_stride
+            self._dma_needs_transfer = True
 
         if len(implicit_local_dims)!=0 and len(local_dims) != len(implicit_local_dims) and self.is_modular_indexing(index):
             for axis_constraints in self.kernel_group.tile_desc.implicit_dim_size.values():
@@ -1425,6 +1445,53 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
             src_shape, dst_shape = sram_shape, dram_shape
 
         return f"memref.dma_start {src_operand}, {dst_operand}, %{dma_type}, {tag_var}, {dma_attribute} : {src_shape}, {dst_shape}, {tag_shape} {attribute}"
+
+    def emit_transfer(self, dma_type_name, vlane_split_axis, vlane_stride, mlir_dtype,
+                      dram_var, dram_index_var, sram_var, sram_index_var,
+                      dram_shape, tile_shape, dram_stride, tile_stride, padding):
+        """Emit a generic togsim.transfer op for a DMA whose access exceeds the
+        4D Gemmini descriptor limit. Carries the full N-D access (dram/tile
+        strides + shapes) plus the SSA operands a memref.dma_start needs
+        (dma_type / vlane_split_axis / vlane_stride), so the decompose pass
+        (passes/decompose_transfer.py) is purely mechanical: it peels the excess
+        dims into a loop of <=4D memref.dma_start, reusing these operands.
+
+        The operand prep mirrors get_dma_code (dma_type enum via the read/write
+        cache+counter, vlane consts via CSE) so the transfer is self-contained;
+        togsim is an unregistered dialect -> generic form.
+        """
+        dma_key = (vlane_split_axis, vlane_stride, mlir_dtype)
+        if dma_type_name == "MVIN" and dma_key in self.dma_read_cache:
+            dma_type, vsa, vst = self.dma_read_cache[dma_key]
+        elif dma_type_name == "MVOUT" and dma_key in self.dma_write_cache:
+            dma_type, vsa, vst = self.dma_write_cache[dma_key]
+        else:
+            vsa = self.get_const_cse(vlane_split_axis)
+            vst = self.get_const_cse(vlane_stride)
+            if dma_type_name == "MVIN":
+                dma_type = self.get_const_cse(DMA_TYPE[f"{dma_type_name}{self.dma_read_counter}"])
+                self.dma_read_counter += 1
+                self.dma_read_cache[dma_key] = [dma_type, vsa, vst]
+            else:
+                dma_type = self.get_const_cse(DMA_TYPE[f"{dma_type_name}{self.dma_write_counter}"])
+                self.dma_write_cache[dma_key] = [dma_type, vsa, vst]
+        tag = self.get_tag_cse()
+        zero_cse = self.get_const_cse(0)
+        # vlane_split_axis is carried as a VALUE attr (not an SSA operand) because the
+        # decompose pass must remap it: collapsing unit tile dims renumbers the axes,
+        # so the descriptor's vlane axis index changes and the pass rebuilds the const.
+        attrs = (
+            f'dma_kind = "{dma_type_name}", '
+            f'vlane_split_axis = {int(vlane_split_axis)} : i64, '
+            f'dram_stride = {dram_stride}, tile_stride = {tile_stride}, '
+            f'padding = {int(padding)} : i64'
+        )
+        # operands: dram, dram_idx, sram, sram_idx, tag, dma_type, vlane_stride
+        return (
+            f'"togsim.transfer"(%{dram_var}, %{dram_index_var}, %{sram_var}, %{zero_cse}, '
+            f'%{tag}, %{dma_type}, %{vst}) {{{attrs}}} : '
+            f'({dram_shape}, index, {tile_shape}, index, memref<1xi32>, index, index) -> ()'
+        )
 
     def allocate_sram_buffer(self, dtype, dram_name, tile_desc, raw_index, buffer=None, forced_name=None):
         c_type = mlir_common.DTYPE_TO_C[dtype]

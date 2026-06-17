@@ -45,12 +45,23 @@ export GEM5_PATH="$home/gem5/build/RISCV/gem5.opt"
 cd "$home"
 
 # LLVM + MLIR (RISCV target)
+# MLIR Python bindings are enabled so Python-side MLIR passes can run. The
+# bindings are a native extension: they MUST be built against the same Python
+# that runs PyTorchSim at runtime (the conda 3.11 here) or `import mlir` will
+# fail with an ABI mismatch. nanobind/pybind11/numpy/PyYAML are build-time deps.
+python3 -m pip install --user "pybind11>=2.9.0,<=2.10.3" numpy PyYAML
 git clone --depth 1 --branch "$LLVM_TAG" "https://github.com/${LLVM_REPO}.git"
 cd llvm-project && mkdir -p build && cd build && \
   cmake -DLLVM_ENABLE_PROJECTS=mlir -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX=/riscv-llvm -DLLVM_TARGETS_TO_BUILD=RISCV \
+        -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
+        -DPython3_EXECUTABLE="$(command -v python3)" \
         -G "Unix Makefiles" ../llvm && \
-  make -j && make install
+  make -j && make install && \
+  rm -rf /riscv-llvm/python_packages && \
+  cp -r tools/mlir/python_packages /riscv-llvm/python_packages
+# Make the bindings importable in this shell (also set in .envrc / Dockerfile.base)
+export PYTHONPATH="/riscv-llvm/python_packages/mlir_core:$PYTHONPATH"
 cd "$home"
 
 # Spike Simulator

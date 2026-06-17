@@ -121,24 +121,30 @@ FloorDiv); the misaligned class is structurally a graph-copy problem.
   `_fold_with_ranges` now proves it directly from the split sub-var ranges via
   `bound_sympy`: `FloorDiv(num,d)->0` when `0<=num<d`, `ModularIndexing(num,k,m)->num//k`
   when `0<=num<k*m`. Fixes `rs3factor` (3-level chain `[1,4,12,24]`).
-- **High-rank blow-up regression (guarded).** Splitting several axes can push the
-  index rank past 4 (pixel_shuffle -> 5D), which triggers the nascent
-  decompose-transfer peel + TOG path (see below). `find_split_plan` now has a rank
-  guard: if applying the plan would make the index rank exceed 4, the whole plan is
-  dropped and the kernel falls back to baseline. pixel_shuffle now passes (via
-  baseline); 3D group_norm still splits (rank 4, allowed).
+- **High-rank blow-up (fixed via peel).** Splitting several axes can push the index
+  rank past 4 (pixel_shuffle -> 5D). This now lowers through the decompose-transfer
+  >4D peel (affine.for nest, one <=4D dma_start per iteration), so the earlier
+  `find_split_plan` rank guard was removed (a6b7ebb9): plans are no longer dropped to
+  baseline for exceeding rank 4. pixel_shuffle splits to >4D and passes end-to-end
+  (Gem5+Spike+TOGSim); 3D group_norm still splits (rank 4).
 
 ## Known issues / open
 
-- **decompose-transfer peel <-> TOG incompatibility**: the >4D peel emits
-  `memref.subview` + unrolled constant-offset `dma_start`, which the C++ TOG
-  generation pass cannot read (empty `loop_idx_list`). The rank guard above
-  side-steps it; the real fix is to rewrite the peel as an `affine.for` loop
-  (keeping a loop index TOG can read) instead of unrolling. **Tracked as a GitHub
-  issue + the `dma-transfer-lowering.md` TODO.**
+- None open here. The decompose-transfer peel <-> TOG incompatibility (>4D peel
+  unreadable by TOG) was resolved by rewriting the peel as an affine.for nest -- see
+  Done below.
 
 ## Done
 
+- **>4D peel via affine.for (fixed)** -- a6b7ebb9. The earlier peel emitted
+  `memref.subview` + unrolled constant-offset `dma_start` that the TOG pass could not
+  read (empty `loop_idx_list`) and that aliased one spad slot
+  (extract_aligned_pointer_as_index strips the subview offset -> pixel_shuffle
+  MISMATCH). Rewritten to wrap the outer dims in an `affine.for` nest (marked
+  inner_loop so build_tog registers the induction var), with the lane-banked physical
+  SRAM offset carried as the last SRAM index operand and the DRAM offset folded into
+  one affine.apply (#258). The axis-split rank guard was removed; pixel_shuffle passes
+  end-to-end.
 - **Mixed-radix (ModularIndexing + multi-radix)**: `find_split_plan` returns a
   per-axis divisibility-chain of boundaries; `build_split_body` splits into one
   sub-var per segment (`v = sum_i d_i*b_i`). Validated allclose=True on group_norm
@@ -196,8 +202,9 @@ Measured under default-on (`TORCHSIM_RECOMPILE_LOG=1`), 33 tests, all pass:
 **Full retirement of the dance is deferred** (it is still a real dependency, not
 just a safety net): removing the floor/mod recompile branches would break the
 3-level mixed-radix case (1 recompile) and any case axis-split/graph-copy do not
-yet cover (case 6, >4D rank-guard skips). attention/sdpa families were not run here
-(too slow locally) and need CI validation before retirement.
+yet cover (case 6: non-dividing divisor / uneven cat; reduction-axis floor/mod).
+attention/sdpa families were not run here (too slow locally) and need CI validation
+before retirement.
 
 ## Next steps
 
@@ -206,6 +213,5 @@ yet cover (case 6, >4D rank-guard skips). attention/sdpa families were not run h
    non-floor/mod ones: non-power-of-2 vec size, indirect).
 2. Graph-copy coverage: case 6 (non-dividing divisor / uneven cat -> pad or gather),
    and conflicts internal to templates (gemm/conv/sdpa).
-3. High-rank interaction: cap split-induced rank or harden decompose-peel + TOG for
-   high-rank tiles (pixel_shuffle end-to-end, #258).
+3. Reduction-axis floor/mod (`r//k` inside a reduce): needs reduction-var splitting.
 4. Dynamic shapes -> symbolic divisibility / guards.

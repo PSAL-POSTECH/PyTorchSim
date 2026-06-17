@@ -75,9 +75,9 @@ def test_three_level_mixed_radix(device):
 
 
 def test_pixel_shuffle(device):
-    # splits two spatial axes -> would be 5D; the rank guard skips the split and
-    # falls back to baseline (the >4D decompose-peel/TOG path is #258).
-    _run(device, "pixel_shuffle (rank guard)",
+    # splits two spatial axes -> 5D logical tile; the decompose-transfer pass peels
+    # the outer dims into an affine.for nest with the lane-banked physical SRAM offset.
+    _run(device, "pixel_shuffle (>4D peel)",
          lambda x: F.pixel_shuffle(x, 2) + 1.0, torch.randn(1, 8, 4, 4))
 
 

@@ -167,19 +167,10 @@ def find_split_plan(nodes):
                     plan[ax] = [1, 2, E]
                     break
 
-    # Rank guard: if the split would push the index rank past 4, skip it and fall
-    # back to baseline. The >4D logical tile is *meant* to be peeled into <=4D
-    # physical descriptors by the decompose-transfer pass, and the #258 TOG crash
-    # (arith.addi DRAM offset) is now fixed -- but the peel still has a numerical
-    # correctness bug (pixel_shuffle -> MISMATCH; the peel was only ever isolation-
-    # validated for MLIR structure, never run end-to-end). Keep the guard until the
-    # peel numerics are fixed; then this guard can be removed and the recompile-dance
-    # retired for pixel.
-    base_rank = next((len(b.iter_vars) for n in nodes
-                      for b in (getattr(n, "_body", None),) if b is not None), 0)
-    extra = sum(len(ch) - 2 for ch in plan.values())
-    if base_rank + extra > 4:
-        return {}
+    # A split may push the per-axis index rank past 4. The resulting >4D logical tile
+    # is peeled into <=4D physical descriptors by the decompose-transfer pass (an
+    # affine.for nest carrying the lane-banked physical SRAM offset), so there is no
+    # rank cap here.
     return plan
 
 

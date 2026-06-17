@@ -1,14 +1,17 @@
 """Python out-of-line MLIR pass: decompose togsim.transfer -> <=4D memref.dma_start.
 
 A togsim.transfer carries a per-axis affine DMA whose descriptor rank may exceed
-the 4D Gemmini limit. This pass is a **pure mechanical rank peel** of that
-already-affine access (see docs/dma-transfer-lowering.md, "aligned-only peel"):
+the 4D Gemmini limit. This pass lowers it to <=4D customized memref.dma_start
+(see docs/dma-transfer-lowering.md):
 
   - drop unit (extent-1) tile dims: they contribute no descriptor axis;
   - if the remaining (effective) rank <= 4 -> emit one customized
     memref.dma_start, reusing the transfer's operands (fast path);
-  - if effective rank > 4 -> peel the outer dims into a loop, adjusting the
-    base index by stride*iv per iteration, inner descriptor <=4D.
+  - if effective rank > 4 -> wrap the outer dims in an affine.for nest and emit
+    one <=4D memref.dma_start in the body, mirroring the C++ -dma-fine-grained
+    subtile loop. The slice DRAM/SRAM offsets are affine.apply over the loop vars;
+    the SRAM offset is the lane-banked physical offset (split-outer dims rescaled
+    by the lane coeff) delivered as the last SRAM index operand.
 
 It does NO floor/mod linearization (aligned split happens upstream at the
 scheduling layer) and NO relayout (misaligned access is copy-inserted at the
@@ -43,6 +46,15 @@ def _int_array(attr):
     return [IntegerAttr(a).value for a in ArrayAttr(attr)]
 
 
+def _const_int(value, default=None):
+    """Read an arith.constant index/integer operand's value, else `default`."""
+    from mlir.ir import IntegerAttr
+    try:
+        return IntegerAttr(value.owner.attributes["value"]).value
+    except Exception:
+        return default
+
+
 def _squeeze_reassociation(shape):
     """Group source dims so each group's product is one effective (non-unit) dim;
     unit dims attach to a neighbor. Returns (groups, target_shape)."""
@@ -62,13 +74,18 @@ def _squeeze_reassociation(shape):
     return groups, target
 
 
-def run(module):
-    """Lower every togsim.transfer in `module`, in place. Context must be active."""
-    import itertools
+def run(module, vectorlane=128, **_):
+    """Lower every togsim.transfer in `module`, in place. Context must be active.
+
+    vectorlane (= systolic-array size / number of vector lanes) feeds the lane-banked
+    physical SRAM offset in the >4D peel, matching -dma-fine-grained's
+    systolic-array-size option.
+    """
     from mlir.ir import (InsertionPoint, Operation, MemRefType, ArrayAttr,
                          IntegerAttr, IntegerType, IndexType, DenseI64ArrayAttr,
                          DenseI32ArrayAttr, StridedLayoutAttr, AffineMap, AffineMapAttr,
-                         AffineExpr)
+                         AffineExpr, BoolAttr)
+    from mlir.dialects import affine
     i64 = IntegerType.get_signless(64)
     idx_ty = IndexType.get()
 
@@ -85,6 +102,7 @@ def run(module):
         vlane_axis = IntegerAttr(op.attributes["vlane_split_axis"]).value
         dram_stride = _int_array(op.attributes["dram_stride"])
         tile_stride = _int_array(op.attributes["tile_stride"])
+        vlane_stride = _const_int(vst, 1)
         padding = op.attributes["padding"]
 
         sram_ty = MemRefType(sram.type)
@@ -134,21 +152,20 @@ def run(module):
             op.erase()
             continue
 
-        # Peel path: >4 effective dims. Keep the inner 4 as the <=4D descriptor and
-        # peel the outer (len-4) effective dims into a fully-unrolled set of slices
-        # (one descriptor per outer index combo; base advances by stride*idx). The
-        # SRAM slice is a rank-reduced memref.subview at the slice offset; the DRAM
-        # base advances by a *constant* per slice.
+        # Peel path: >4 effective dims. Wrap the outer (len-4) effective dims in an
+        # affine.for nest (one loop per outer dim, marked inner_loop so build_tog/TOG
+        # registers the induction var) and emit a single <=4D memref.dma_start in the
+        # innermost body -- mirroring the C++ -dma-fine-grained subtile loop.
         #
-        # The constant DRAM offset must be folded into an affine.apply over the
-        # original dram_idx (NOT arith.addi): the TOG pass reads loop_idx_list by
-        # walking the DRAM index via processDramIndices, which understands
-        # affine.apply / block-arg / constant but NOT arith.addi -- an addi yields an
-        # empty loop_idx_list and the kernel fails ONNX serialization (#258). The
-        # peeled dim itself is a fixed constant in each unrolled slice (this DMA does
-        # not iterate it), so it correctly contributes no loop var; the surviving
-        # loop vars come from the original dram_idx affine.apply, into which
-        # processDramIndices recurses.
+        # The slice SRAM offset is the PHYSICAL lane-banked offset: dims outer than the
+        # vlane axis are rescaled by the lane coeff (stride/old_size*new_size, the MVIN
+        # block_stride / buildSramAffineMap rule). It is delivered as the last SRAM index
+        # operand (row-major stride 1), NOT a subview offset -- the gemmini lowering reads
+        # the spad base via extract_aligned_pointer_as_index, which strips the subview
+        # offset, so the slice must be selected through the index. The DRAM offset is the
+        # flat contiguous offset, folded with the original dram_idx into one affine.apply
+        # (an arith.addi would be opaque to processDramIndices -- #258); the affine.for
+        # induction vars feed both maps so TOG reads the loop indices through them.
         peeled, inner = eff[:-4], eff[-4:]
         ndim = len(tile_shape)
         inner_shape = [tile_shape[d] for d in inner]
@@ -157,40 +174,68 @@ def run(module):
         tl_attr = ArrayAttr.get([IntegerAttr.get(i64, tile_stride[d]) for d in inner])
         # the vlane axis must survive into the inner descriptor (it is the lane dim).
         new_vlane = inner.index(vlane_axis) if vlane_axis in inner else 0
-        for combo in itertools.product(*[range(tile_shape[d]) for d in peeled]):
-            static_offsets = [0] * ndim
-            static_sizes = [1] * ndim
-            for k, d in enumerate(peeled):
-                static_offsets[d] = combo[k]
-            for d in inner:
-                static_sizes[d] = tile_shape[d]
-            sram_off = sum(combo[k] * tile_stride[peeled[k]] for k in range(len(peeled)))
-            dram_off = sum(combo[k] * dram_stride[peeled[k]] for k in range(len(peeled)))
-            res_ty = MemRefType.get(
-                inner_shape, elem,
-                layout=StridedLayoutAttr.get(sram_off, inner_strides), memory_space=space)
-            with InsertionPoint(op):
-                sub = Operation.create(
-                    "memref.subview", results=[res_ty], operands=[sram],
-                    attributes={"static_offsets": DenseI64ArrayAttr.get(static_offsets),
-                                "static_sizes": DenseI64ArrayAttr.get(static_sizes),
-                                "static_strides": DenseI64ArrayAttr.get([1] * ndim),
-                                # operandSegmentSizes is an i32 property: [source, offsets,
-                                # sizes, strides] dynamic-operand counts. All static here ->
-                                # only the source operand. Must be i32, not i64 (i64 silently
-                                # zeroes to [0,0,0,0] and fails verification).
-                                "operandSegmentSizes": DenseI32ArrayAttr.get([1, 0, 0, 0])}
-                ).results[0]
-                if dram_off == 0:
-                    dram_idx_val = dram_idx
-                else:
-                    # affine.apply (d0) -> (d0 + dram_off) so TOG's processDramIndices
-                    # recurses through it into the original dram_idx's loop vars.
-                    amap = AffineMap.get(1, 0, [AffineExpr.get_dim(0) + dram_off])
-                    dram_idx_val = Operation.create(
-                        "affine.apply", results=[idx_ty], operands=[dram_idx],
-                        attributes={"map": AffineMapAttr.get(amap)}).results[0]
-                _emit(sub, [sram_idx] * 4, dram_idx_val, new_vlane, dr_attr, tl_attr)
+
+        # Lane-banked physical stride for split-outer dims (vlane_stride defaults to 1).
+        split_extent = tile_shape[vlane_axis]
+        nr_outerloop = max(
+            (split_extent + vectorlane * vlane_stride - 1) // (vectorlane * vlane_stride), 1)
+        new_size = nr_outerloop * vlane_stride
+        target_stride = tile_stride[vlane_axis]
+
+        def _phys(d):
+            s = tile_stride[d]
+            return s // split_extent * new_size if s > target_stride else s
+
+        # subview to the inner <=4D block at the buffer start (offset 0); slice selection
+        # is done through the SRAM index, so the StridedLayout offset stays 0.
+        static_sizes = [1] * ndim
+        for d in inner:
+            static_sizes[d] = tile_shape[d]
+        res_ty = MemRefType.get(
+            inner_shape, elem,
+            layout=StridedLayoutAttr.get(0, inner_strides), memory_space=space)
+
+        # affine.for nest over the peeled (outer) dims.
+        cur_ip = InsertionPoint(op)
+        ivs = []
+        for d in peeled:
+            floop = affine.AffineForOp(0, tile_shape[d], 1, ip=cur_ip)
+            floop.operation.attributes["inner_loop"] = BoolAttr.get(True)
+            ivs.append(floop.induction_variable)
+            with InsertionPoint(floop.body):
+                affine.AffineYieldOp([])
+            cur_ip = InsertionPoint.at_block_terminator(floop.body)
+
+        npeel = len(peeled)
+        with cur_ip:
+            sub = Operation.create(
+                "memref.subview", results=[res_ty], operands=[sram],
+                attributes={"static_offsets": DenseI64ArrayAttr.get([0] * ndim),
+                            "static_sizes": DenseI64ArrayAttr.get(static_sizes),
+                            "static_strides": DenseI64ArrayAttr.get([1] * ndim),
+                            # i32 [source, offsets, sizes, strides] dynamic-operand counts;
+                            # all static -> source only. i64 silently zeroes and fails verify.
+                            "operandSegmentSizes": DenseI32ArrayAttr.get([1, 0, 0, 0])}
+            ).results[0]
+            # physical SRAM offset = sum_k iv_k * phys_stride(peeled[k])
+            sram_expr = AffineExpr.get_dim(0) * _phys(peeled[0])
+            for k in range(1, npeel):
+                sram_expr = sram_expr + AffineExpr.get_dim(k) * _phys(peeled[k])
+            sram_off_val = Operation.create(
+                "affine.apply", results=[idx_ty], operands=list(ivs),
+                attributes={"map": AffineMapAttr.get(AffineMap.get(npeel, 0, [sram_expr]))}
+            ).results[0]
+            # DRAM index = orig dram_idx + sum_k iv_k * dram_stride(peeled[k])
+            dram_expr = AffineExpr.get_dim(0)
+            for k in range(npeel):
+                dram_expr = dram_expr + AffineExpr.get_dim(k + 1) * dram_stride[peeled[k]]
+            dram_idx_val = Operation.create(
+                "affine.apply", results=[idx_ty], operands=[dram_idx, *ivs],
+                attributes={"map": AffineMapAttr.get(AffineMap.get(npeel + 1, 0, [dram_expr]))}
+            ).results[0]
+            zero = _const(0)
+            _emit(sub, [zero, zero, zero, sram_off_val], dram_idx_val, new_vlane,
+                  dr_attr, tl_attr)
         op.erase()
 
 

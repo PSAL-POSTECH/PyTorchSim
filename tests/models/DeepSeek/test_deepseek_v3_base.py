@@ -7,6 +7,37 @@ import torch
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
 from _pytorchsim_utils import test_result
 
+# DeepSeek-V3's remote modeling file (trust_remote_code) imports flash_attn, and
+# transformers' check_imports statically requires it to be installed even though
+# the npu backend never runs flash attention (math-only SDPA). The CI image is
+# CPU-only and has no flash_attn, so register an import shim: it satisfies the
+# static import check and any flash_attn[.submodule] import. It deliberately
+# provides no package metadata, so transformers' is_flash_attn_2_available()
+# stays False and the model selects the eager/sdpa path.
+import importlib.abc
+import importlib.util
+import types
+
+
+class _FlashAttnShim(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+    def find_spec(self, name, path=None, target=None):
+        if name == "flash_attn" or name.startswith("flash_attn."):
+            return importlib.util.spec_from_loader(name, self, is_package=True)
+        return None
+
+    def create_module(self, spec):
+        module = types.ModuleType(spec.name)
+        module.__path__ = []
+        module.__getattr__ = lambda _name: None
+        return module
+
+    def exec_module(self, module):
+        pass
+
+
+if importlib.util.find_spec("flash_attn") is None:
+    sys.meta_path.insert(0, _FlashAttnShim())
+
 # recursive compile for some ops that are caused by graph break
 torch.npu.register_eager_to_compile([
     "aten::zero_",

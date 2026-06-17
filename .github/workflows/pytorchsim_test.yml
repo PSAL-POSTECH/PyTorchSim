@@ -15,10 +15,14 @@ on:
         required: true
         type: number
 
+# Runner policy: the CPU-only CI image is small enough to pull on GitHub-hosted
+# runners, so op and model tests run on ubuntu-latest. The memory/time-intensive
+# jobs stay on self-hosted: test_deepseek (largest model), test_diffusion (UNet2D
+# simulation OOMs the hosted runner), and test_accuracy (accuracy + speedup).
 jobs:
   test_add:
     name: Run test_add.py
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -37,7 +41,7 @@ jobs:
 
   test_transcendental:
     name: Run test_transcendental.py
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -56,7 +60,7 @@ jobs:
 
   test_activation:
     name: Run test_activation.py
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -75,7 +79,7 @@ jobs:
 
   test_batchnorm:
     name: Run test_batchnorm.py
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -94,7 +98,7 @@ jobs:
 
   test_bmm:
     name: Run test_bmm.py
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -113,7 +117,7 @@ jobs:
 
   test_cnn:
     name: Run test_cnn.py
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -132,7 +136,7 @@ jobs:
 
   test_conv2d:
     name: Run test_conv2d.py
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -151,7 +155,7 @@ jobs:
 
   test_cat:
     name: Run test_cat.py
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -170,7 +174,7 @@ jobs:
 
   test_matmul:
     name: Run test_matmul.py
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -189,7 +193,7 @@ jobs:
 
   test_reduce:
     name: Run test_reduce.py
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -208,7 +212,7 @@ jobs:
 
   test_softmax:
     name: Run test_softmax.py
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -227,7 +231,7 @@ jobs:
 
   test_transpose2D:
     name: Run test_transpose2D.py
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -246,7 +250,7 @@ jobs:
 
   test_view3D_2D:
     name: Run test_view3D_2D.py
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -265,7 +269,7 @@ jobs:
 
   test_layernorm:
     name: Run test_layernorm.py
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -284,7 +288,7 @@ jobs:
 
   test_mlp:
     name: Run test_mlp.py
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -303,7 +307,7 @@ jobs:
 
   test_resnet:
     name: Run test_resnet.py
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -330,7 +334,7 @@ jobs:
 
   test_mobilenet:
     name: Run test_mobilenet.py
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -349,7 +353,7 @@ jobs:
 
   test_transformer:
     name: Run test_transformer.py
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -368,7 +372,7 @@ jobs:
 
   test_transpose3D:
     name: Run test_transpose3D.py
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -387,7 +391,7 @@ jobs:
 
   test_sparsity:
     name: Run test_sparsity.py
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -406,7 +410,7 @@ jobs:
 
   test_pool:
     name: Run test_pool.py
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -425,7 +429,7 @@ jobs:
 
   test_perceptron:
     name: Run test_perceptron.py
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -444,7 +448,7 @@ jobs:
 
   test_fusion:
     name: Run test_fusion
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -535,7 +539,7 @@ jobs:
 
   test_moe:
     name: Run test_moe
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -554,7 +558,7 @@ jobs:
 
   test_mistral:
     name: Run test_mistral
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -573,7 +577,7 @@ jobs:
 
   test_vit:
     name: Run test_vit
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -592,6 +596,8 @@ jobs:
 
   test_diffusion:
     name: Run test_diffusion
+    # UNet2DConditionModel simulation exceeds the GitHub-hosted memory limit
+    # (Spike gets OOM-killed), so keep it on a self-hosted runner.
     runs-on: self-hosted
     steps:
       - name: Log in to GitHub Container Registry
@@ -611,7 +617,7 @@ jobs:
 
   test_indirect:
     name: Run test_indirect
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -630,7 +636,7 @@ jobs:
 
   test_scheduler:
     name: Run test_scheduler
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -649,7 +655,7 @@ jobs:
 
   test_llama:
     name: Run test_llama1&2
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -668,7 +674,7 @@ jobs:
 
   test_yolov5:
     name: Run test_yolov5
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -687,6 +693,8 @@ jobs:
 
   test_deepseek:
     name: Run test_deepseek
+    # DeepSeek-V3 is the largest model under test; keep it on a self-hosted
+    # runner to avoid the GitHub-hosted memory limit.
     runs-on: self-hosted
     steps:
       - name: Log in to GitHub Container Registry
@@ -706,7 +714,7 @@ jobs:
 
   test_eager:
     name: Run test_eager.py
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -725,7 +733,7 @@ jobs:
 
   test_exponent:
     name: Run test_exponent.py
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -744,7 +752,7 @@ jobs:
 
   test_sort:
     name: Run test_sort.py
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -763,6 +771,8 @@ jobs:
 
   test_accuracy:
     name: Run test_accuracy and test_speedup
+    # Accuracy + speedup runs many model simulations end to end; it is the most
+    # time- and memory-intensive job, so keep it on a self-hosted runner.
     runs-on: self-hosted
     if: inputs.vector_lane == 128
     steps:

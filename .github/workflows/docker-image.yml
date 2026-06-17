@@ -79,7 +79,9 @@ jobs:
 
   build-and-test:
     needs: ensure-base
-    runs-on: self-hosted
+    # App image build runs on a GitHub-hosted runner: the CPU-only image is small
+    # and ensure-base already builds the heavier base image on ubuntu-latest.
+    runs-on: ubuntu-latest
 
     permissions:
       contents: read

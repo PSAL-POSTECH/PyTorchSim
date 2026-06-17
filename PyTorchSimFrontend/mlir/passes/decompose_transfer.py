@@ -67,7 +67,8 @@ def run(module):
     import itertools
     from mlir.ir import (InsertionPoint, Operation, MemRefType, ArrayAttr,
                          IntegerAttr, IntegerType, IndexType, DenseI64ArrayAttr,
-                         DenseI32ArrayAttr, StridedLayoutAttr)
+                         DenseI32ArrayAttr, StridedLayoutAttr, AffineMap, AffineMapAttr,
+                         AffineExpr)
     i64 = IntegerType.get_signless(64)
     idx_ty = IndexType.get()
 
@@ -136,13 +137,18 @@ def run(module):
         # Peel path: >4 effective dims. Keep the inner 4 as the <=4D descriptor and
         # peel the outer (len-4) effective dims into a fully-unrolled set of slices
         # (one descriptor per outer index combo; base advances by stride*idx). The
-        # SRAM slice is a rank-reduced memref.subview at the slice offset; DRAM base
-        # is dram_idx + constant. Unrolling (vs scf.for) keeps the slice offsets
-        # static so no per-iteration index arithmetic on the SRAM side is needed.
+        # SRAM slice is a rank-reduced memref.subview at the slice offset; the DRAM
+        # base advances by a *constant* per slice.
         #
-        # NOTE: currently unreachable -- init_tile_size caps non-unit tile dims at 3,
-        # so eff <= 3 in practice. Implemented for completeness / future tilings and
-        # validated only in isolation (passes/decompose_transfer.py CLI / lower_text).
+        # The constant DRAM offset must be folded into an affine.apply over the
+        # original dram_idx (NOT arith.addi): the TOG pass reads loop_idx_list by
+        # walking the DRAM index via processDramIndices, which understands
+        # affine.apply / block-arg / constant but NOT arith.addi -- an addi yields an
+        # empty loop_idx_list and the kernel fails ONNX serialization (#258). The
+        # peeled dim itself is a fixed constant in each unrolled slice (this DMA does
+        # not iterate it), so it correctly contributes no loop var; the surviving
+        # loop vars come from the original dram_idx affine.apply, into which
+        # processDramIndices recurses.
         peeled, inner = eff[:-4], eff[-4:]
         ndim = len(tile_shape)
         inner_shape = [tile_shape[d] for d in inner]
@@ -175,9 +181,15 @@ def run(module):
                                 # zeroes to [0,0,0,0] and fails verification).
                                 "operandSegmentSizes": DenseI32ArrayAttr.get([1, 0, 0, 0])}
                 ).results[0]
-                dram_idx_val = dram_idx if dram_off == 0 else Operation.create(
-                    "arith.addi", results=[idx_ty],
-                    operands=[dram_idx, _const(dram_off)]).results[0]
+                if dram_off == 0:
+                    dram_idx_val = dram_idx
+                else:
+                    # affine.apply (d0) -> (d0 + dram_off) so TOG's processDramIndices
+                    # recurses through it into the original dram_idx's loop vars.
+                    amap = AffineMap.get(1, 0, [AffineExpr.get_dim(0) + dram_off])
+                    dram_idx_val = Operation.create(
+                        "affine.apply", results=[idx_ty], operands=[dram_idx],
+                        attributes={"map": AffineMapAttr.get(amap)}).results[0]
                 _emit(sub, [sram_idx] * 4, dram_idx_val, new_vlane, dr_attr, tl_attr)
         op.erase()
 

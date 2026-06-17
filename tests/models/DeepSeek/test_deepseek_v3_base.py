@@ -199,6 +199,11 @@ def run_deepseek_v3_base(
         config.quantization_config = None
     config = _maybe_scale_config(config, scale=scale, max_layers=max_layers)
 
+    # Seed the global RNG so config-random weight init is deterministic. Without
+    # this every run builds a different network, so the worst-element NPU-vs-CPU
+    # error randomly crosses the (loose) allclose threshold and the test is flaky.
+    torch.manual_seed(0)
+
     if init_mode == "config-random":
         model = AutoModelForCausalLM.from_config(
             config=config,

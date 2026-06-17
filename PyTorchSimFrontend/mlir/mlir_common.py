@@ -520,7 +520,6 @@ class MLIRMultiDimTile(TileAdjustMixin):
             vlane_stride=vlane_stride
         )
 
-        self.implicit_dim_size = {}
         self.nr_rdim = 0
         self.offset = sympy.Integer(0) # Dram offset
 
@@ -686,9 +685,6 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
        # generate the code to call this
         wrapper.generate_kernel_call(kernel_name, call_args, triton=False)
 
-    def is_modular_indexing(self, expr):
-        return "ModularIndexing" in str(expr)
-
     def implicit_dim_ops(self, nodes):
         target_patterns = (ModularIndexing, FloorDiv, Mod)
         target_operands = []
@@ -764,7 +760,6 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
         if implicit_ops:
             tile_constraints = self.extract_dividers(implicit_ops)
             self.kernel_group.tile_desc.apply_constraints(tile_constraints, self.ranges)
-            self.kernel_group.tile_desc.implicit_dim_size = tile_constraints
 
         # Check recodegen reason
         if self.recodegen is not None:

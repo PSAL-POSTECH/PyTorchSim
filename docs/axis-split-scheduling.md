@@ -112,17 +112,30 @@ FloorDiv); the misaligned class is structurally a graph-copy problem.
   codegen, so the prefix is internal -- but it must not collide with the original
   body's names (those are `p`/`q`, so `z`/`r` are safe).
 
-## Known issues / not yet exercised
+## Resolved (cont.)
 
-- **Incompatible radices**: if an axis carries radices that do not form a
-  divisibility chain (e.g. floor-by-2 and mod-by-3 on extent 6), the axis is left
-  unsplit (its floor/mod falls back to the recompile path). A single mixed-radix
-  split cannot linearize incompatible radices.
-- **High-rank blow-up downstream**: splitting several axes can push the iteration
-  rank past 4 (e.g. pixel_shuffle -> 5D tile), which then exercises the
-  decompose-transfer peel and the TOG serialization on high-rank tiles. The
-  linearization is correct, but those downstream paths are nascent (one peel
-  subview bug fixed here; TOG `loop_idx_list` on high-rank tiles still open).
+- **`floor//1` / residual floor on multi-level split (fixed).** `simplify_with_ranges`
+  cannot prove a *multi-term* numerator is below the divisor (e.g.
+  `FloorDiv(z1 + 4*z2, 12)` with `z1<4, z2<3`), so a 3-level mixed-radix split left
+  a residual floor that codegen rejected ("Not supporting this view operation").
+  `_fold_with_ranges` now proves it directly from the split sub-var ranges via
+  `bound_sympy`: `FloorDiv(num,d)->0` when `0<=num<d`, `ModularIndexing(num,k,m)->num//k`
+  when `0<=num<k*m`. Fixes `rs3factor` (3-level chain `[1,4,12,24]`).
+- **High-rank blow-up regression (guarded).** Splitting several axes can push the
+  index rank past 4 (pixel_shuffle -> 5D), which triggers the nascent
+  decompose-transfer peel + TOG path (see below). `find_split_plan` now has a rank
+  guard: if applying the plan would make the index rank exceed 4, the whole plan is
+  dropped and the kernel falls back to baseline. pixel_shuffle now passes (via
+  baseline); 3D group_norm still splits (rank 4, allowed).
+
+## Known issues / open
+
+- **decompose-transfer peel <-> TOG incompatibility**: the >4D peel emits
+  `memref.subview` + unrolled constant-offset `dma_start`, which the C++ TOG
+  generation pass cannot read (empty `loop_idx_list`). The rank guard above
+  side-steps it; the real fix is to rewrite the peel as an `affine.for` loop
+  (keeping a loop index TOG can read) instead of unrolling. **Tracked as a GitHub
+  issue + the `dma-transfer-lowering.md` TODO.**
 
 ## Done
 
@@ -136,12 +149,63 @@ FloorDiv); the misaligned class is structurally a graph-copy problem.
   gate (force-split a reduction kernel's index axis even without floor -- an
   identity transform, so allclose must hold): layernorm `(512)->(256,2)` and
   reduce `(68)->(34,2)` keep their reduction groups and pass.
+- **Graph-copy for incompatible radices (case 5)** -- `graph_copy.py`,
+  `TORCHSIM_GRAPH_COPY`. When two operands of an elementwise consumer carry
+  incompatible-radix groupings on a shared axis (e.g. `a[c//2] + b[c%3]`, floor-by-2
+  vs mod-by-3 on extent 6 -- not a divisibility chain), neither axis-split nor the
+  recompile-dance can express it. We wrap the registered lowering entries (the
+  make_pointwise results = every elementwise consumer, one place), trace each
+  operand's loader with `extract_read_writes` to get its read indices, run the same
+  `collect_boundaries` analysis, and if the union is not a chain, `realize()` the
+  cheaper operand. realize() (not clone -- Inductor inlines clone, confirmed) forces
+  a buffer: the consumer then reads it affine and the remaining single grouping is
+  handled by axis-split. Validated: `incompat` (`a.repeat_interleave(2)+b.repeat(2)`)
+  goes ERR -> allclose=True with `GRAPH_COPY+AXIS_SPLIT` (still ERR on default,
+  confirming graph-copy is the fix); no regression on the pattern battery,
+  test_add, resnet (compile overhead negligible).
+- **Graph-copy for cross-axis floor/mod (case 7)** -- same hook. A transpose+reshape
+  feeding a consumer that keeps the output dims separate (broadcast / softmax /
+  layernorm / reduce-one-dim) produces a floor/mod whose argument spans *two* loop
+  vars, e.g. `(3*p0+p1)//4`; axis-split cannot split a multi-var argument. We detect
+  an operand whose read index has a floor/mod argument with >1 free symbol and
+  replace it with `ExternKernel.copy_input` (a realized identity Pointwise). This is
+  why copy_input and not `realize()`: `StorageBox.realize()` is a no-op on a
+  ReinterpretView (a reshape), so it does not materialize view operands; copy_input
+  forces the copy. The copy kernel iterates the operand's own contiguous shape, so
+  its index collapses to single-var for axis-split, and the consumer reads the copy
+  affine. Also covers single-operand consumers (a reduction reading a multi-var
+  view). Validated allclose=True: reshape+broadcast, softmax(reshape),
+  layernorm(reshape) (all ERR on default). NOTE the empirical correction: case 7 is
+  NOT rare -- it is the common attention/norm "reshape then reduce/broadcast"
+  shape; Inductor only avoids it when it can collapse the output to 1D (then the
+  floor is single-var).
+
+## Default-on + recompile-dance status
+
+axis-split and graph-copy are **ON by default** (disable with `TORCHSIM_AXIS_SPLIT=0`
+/ `TORCHSIM_GRAPH_COPY=0`). With them on, the codegen recompile-dance (tile-forcing
+for floor/mod divisibility) is demoted from primary mechanism to a rarely-hit
+fallback.
+
+Measured under default-on (`TORCHSIM_RECOMPILE_LOG=1`), 33 tests, all pass:
+- 16 core (elementwise/gemm/reduce/conv/view/fusion + mlp/resnet/transformer/vit): 0 recompiles.
+- 7 broader families (cnn/pool/group_conv/sort/indirect_access/exponent/conv_fusion): 0 recompiles.
+- 10 floor/mod patterns: 1 recompile total (an unrelated tile-divisibility in the
+  3-level mixed-radix case).
+
+**Full retirement of the dance is deferred** (it is still a real dependency, not
+just a safety net): removing the floor/mod recompile branches would break the
+3-level mixed-radix case (1 recompile) and any case axis-split/graph-copy do not
+yet cover (case 6, >4D rank-guard skips). attention/sdpa families were not run here
+(too slow locally) and need CI validation before retirement.
 
 ## Next steps
 
-1. Misaligned cases -> graph-level copy insertion (separate work).
-2. High-rank interaction: decide whether to cap split-induced rank or harden the
-   decompose-peel + TOG path for high-rank tiles (pixel_shuffle end-to-end).
-3. Dynamic shapes -> symbolic divisibility / guards.
-4. Turn axis-split on by default for covered cases; retire the matching
-   recompile-dance branches; measure coverage.
+1. Eliminate the last recompile dependency (the 3-level mixed-radix sub-kernel) so
+   the dance reaches 0/all -> then retire the floor/mod recompile branches (keep the
+   non-floor/mod ones: non-power-of-2 vec size, indirect).
+2. Graph-copy coverage: case 6 (non-dividing divisor / uneven cat -> pad or gather),
+   and conflicts internal to templates (gemm/conv/sdpa).
+3. High-rank interaction: cap split-induced rank or harden decompose-peel + TOG for
+   high-rank tiles (pixel_shuffle end-to-end, #258).
+4. Dynamic shapes -> symbolic divisibility / guards.

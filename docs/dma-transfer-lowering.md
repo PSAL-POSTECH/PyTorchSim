@@ -453,15 +453,23 @@ now emits MVIN/MVOUT `togsim.transfer` with 5D `dram_stride [1,6,30,120,360]` an
 Validated end-to-end (Gem5 + Spike + TOGSim, `allclose=True`) on the 5D permute
 `x.permute(4,3,2,1,0).contiguous() + 1.0`; no regression on 2D/3D/elementwise.
 
-- **Genuine >4 effective rank (done, isolation-validated).** When >4 *non-unit*
-  dims survive, the pass keeps the inner 4 as the <=4D descriptor and peels the
-  outer dims by **full unrolling**: one descriptor per outer-index combo, the SRAM
-  slice a rank-reduced `memref.subview` at the static slice offset, the DRAM base
-  `dram_idx + constant`. Unrolling (vs `scf.for`) keeps slice offsets static, so no
-  per-iteration SRAM index arithmetic is needed. **Currently unreachable**:
-  `init_tile_size` caps non-unit tile dims at 3 (effective rank <= 3 in practice),
-  so this path is exercised only in isolation (`lower_text` / the module CLI), not
-  through the full pipeline. Implemented for completeness and future tilings.
+- **Genuine >4 effective rank (isolation-only; INCOMPATIBLE with TOG -- see TODO).**
+  When >4 *non-unit* dims survive, the pass keeps the inner 4 as the <=4D descriptor
+  and peels the outer dims by **full unrolling**: one descriptor per outer-index
+  combo, the SRAM slice a rank-reduced `memref.subview` at the static slice offset,
+  the DRAM base `dram_idx + constant`. This passes `lower_text` / mlir-opt in
+  isolation, but **fails the full pipeline**: the C++ TOG generation pass cannot read
+  `memref.subview` + unrolled (constant-offset) DMAs and produces an empty
+  `loop_idx_list` (ValueError in `onnx_utility.py`). Surfaced once aligned axis-split
+  made the path reachable (pixel_shuffle -> 5D); axis-split now has a rank guard that
+  avoids triggering it.
+
+> **TODO (peel rework, tracked as GitHub issue #258).** Rewrite the >4D peel to emit
+> a real `affine.for` over the peeled dims (so each DMA keeps an enclosing loop index
+> the TOG pass can read) and index the spad directly instead of via `memref.subview`.
+> Alternatively teach the C++ TOG pass to handle `subview` + unrolled DMAs. Until
+> then the unroll path is isolation-only and the axis-split rank guard keeps it
+> unreached.
 
 The input stays per-axis affine by upstream guarantee, so both paths are pure
 mechanical peeling. A non-affine residue is a contract violation (aligned floor/mod

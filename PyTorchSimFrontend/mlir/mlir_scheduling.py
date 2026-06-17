@@ -270,7 +270,8 @@ class MLIRScheduling(BaseScheduling):
             for _op, _reason, _term in axis_split.ledger(nodes, _plan):
                 print(f"[AXIS_LEDGER] op={_op} reason={_reason} term={_term}", file=_sys.stderr)
 
-        if os.environ.get("TORCHSIM_AXIS_SPLIT"):
+        # axis-split is ON by default; set TORCHSIM_AXIS_SPLIT=0 to disable.
+        if os.environ.get("TORCHSIM_AXIS_SPLIT", "1") != "0":
             from . import axis_split
             plan = axis_split.find_split_plan(nodes)
             if plan:
@@ -390,3 +391,9 @@ class MLIRScheduling(BaseScheduling):
         if origins:
             _, _, last = max(origins)
             V.graph.wrapper_code.enter_context(last)
+
+
+# Install the graph-copy (incompatible-radix relayout) lowering hook once at import.
+# No-op unless TORCHSIM_GRAPH_COPY is set; see graph_copy.py.
+from . import graph_copy as _graph_copy
+_graph_copy.install()

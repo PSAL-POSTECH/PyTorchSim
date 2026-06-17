@@ -40,6 +40,28 @@ from PyTorchSimFrontend.extension_utils import (
 
 schedule_log = torch._logging.getArtifactLogger(__name__, "schedule")
 
+class _IndexDType:
+    """Sentinel for MLIR ``index`` type values.
+
+    MLIR's ``index`` is a platform-dependent integer with no exact
+    ``torch.dtype`` equivalent (it's not strictly i64 — mapping it to
+    ``torch.int64`` would make ``MLIRCSEVariable.mlir_dtype`` derive to
+    ``"i64"`` and break consumers that expect the literal ``"index"``
+    keyword in MLIR text).
+
+    Use ``INDEX_DTYPE`` (the singleton instance) wherever a csevar's
+    ``dtype`` is the MLIR index type. Compared by identity.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "INDEX_DTYPE"
+
+
+INDEX_DTYPE = _IndexDType()
+
+
 DTYPE_TO_MLIR = {
     torch.float32: "f32",
     torch.float64: "f64",
@@ -49,8 +71,15 @@ DTYPE_TO_MLIR = {
     torch.int16: "i16",
     torch.int8: "i8",
     torch.uint8: "i8",
+    # torch.bool maps to "i8" for *storage* (memref/SRAM), matching the
+    # wrapper-C ABI (uint8_t*, byte-aligned). The `i1` MLIR type is used
+    # only for predicate SSA values (cmp results), where it lowers to
+    # RISC-V V-extension mask registers via `vlm.v`. Predicate-producing
+    # ops set `mlir_dtype="i1"` explicitly on their OpResult; otherwise
+    # bool csevars derive `"i8"` from this table.
     torch.bool: "i8",
     torch.bfloat16: "bf16",
+    INDEX_DTYPE: "index",
 }
 
 MLIR_TO_DTYPE = {
@@ -61,7 +90,11 @@ MLIR_TO_DTYPE = {
     "i32": torch.int32,
     "i16": torch.int16,
     "i8":  torch.int8,
+    # "i1" -> torch.bool: enables `OpResult.from_mlir("i1")` for predicate
+    # ops (cmp/logical) that compose their type as an MLIR string.
+    "i1":  torch.bool,
     "bf16": torch.bfloat16,
+    "index": INDEX_DTYPE,
 }
 
 DTYPE_TO_C = {
@@ -94,7 +127,126 @@ def get_dtype_nbytes(dtype):
     mlir_dtype = DTYPE_TO_MLIR.get(dtype)
     if mlir_dtype is None or mlir_dtype not in MLIR_TO_BIT:
         raise NotImplementedError(f"Unsupported dtype for precision calculation: {dtype}")
-    return MLIR_TO_BIT[mlir_dtype] // 8
+    # MLIR_TO_BIT["i1"] = 1 (semantic bit width). Storage rounds up to
+    # at least 1 byte (the wrapper C ABI is byte-aligned; LLVM lowers i1
+    # storage as a padded byte).
+    return max(1, MLIR_TO_BIT[mlir_dtype] // 8)
+
+
+class MLIRCSEVariable(common.CSEVariable):
+    """An MLIR SSA value with attached vec_size and torch dtype.
+
+    ``dtype`` is one of: a ``torch.dtype``, :data:`INDEX_DTYPE` sentinel
+    (for MLIR ``index``), or ``None`` (not yet typed). ``mlir_dtype`` is
+    normally derived via :data:`DTYPE_TO_MLIR`.
+
+    ``torch.bool`` maps to MLIR ``"i8"`` (storage; wrapper-C ABI is
+    ``uint8_t*``, byte-aligned). Predicate SSA values (cmp/logical
+    results) use MLIR ``"i1"`` instead; they pass ``mlir_dtype="i1"``
+    explicitly so the override below takes effect. ``"i1"`` storage is
+    forbidden because RISC-V V-extension ``vlm.v`` interprets memory as
+    bit-packed, mismatching the wrapper-C 1-byte-per-bool convention.
+    """
+
+    def __init__(self, name, bounds, dtype=None, *, vec_size=1, mlir_dtype=None):
+        super().__init__(name, bounds, dtype=dtype)
+        self.vec_size = vec_size
+        # ``None`` means derive from ``dtype``. Set explicitly only when
+        # the MLIR type differs from the torch-dtype default (the bool
+        # storage-vs-predicate split).
+        self._mlir_dtype_override: Optional[str] = mlir_dtype
+
+    @property
+    def mlir_dtype(self) -> str:
+        if self._mlir_dtype_override is not None:
+            return self._mlir_dtype_override
+        # ``dtype=None`` is treated as MLIR index for defensive backward
+        # compatibility, but new code should pass :data:`INDEX_DTYPE`
+        # explicitly to make intent clear.
+        return DTYPE_TO_MLIR.get(self.dtype, "index")
+
+
+@dataclass(frozen=True)
+class OpResult:
+    """Ops handler return-info payload, replacing the legacy
+    ``[vec_size, mlir_dtype_string]`` list. The proxy uses this to
+    instantiate the resulting :class:`MLIRCSEVariable`. ``dtype=
+    INDEX_DTYPE`` means MLIR ``index`` type; ``None`` means unknown.
+
+    ``mlir_dtype`` overrides the derived value for the storage-vs-
+    predicate bool split: cmp/logical ops set
+    ``OpResult(dtype=torch.bool, mlir_dtype="i1")`` to mark the result
+    as an i1 predicate even though bool storage maps to ``"i8"``.
+    """
+
+    vec_size: int
+    dtype: Optional[torch.dtype]
+    mlir_dtype: Optional[str] = None
+
+    @classmethod
+    def from_var(cls, var) -> "OpResult":
+        """Mirror an existing csevar's type info (vec_size + dtype + mlir_dtype)."""
+        assert isinstance(var, MLIRCSEVariable), \
+            f"OpResult.from_var expects MLIRCSEVariable, got {type(var).__name__}"
+        return cls(vec_size=var.vec_size, dtype=var.dtype,
+                   mlir_dtype=var._mlir_dtype_override)
+
+    @classmethod
+    def from_mlir(cls, vec_size: int, mlir_str: str) -> "OpResult":
+        """Build from an MLIR dtype string. ``"i8"`` maps to ``torch.int8``
+        (legacy default; bool/uint8 callers should construct OpResult
+        directly with the correct torch dtype). ``"i1"`` returns dtype=
+        torch.bool + ``mlir_dtype="i1"`` override (predicate semantics).
+        ``"index"`` maps to :data:`INDEX_DTYPE`.
+        """
+        dtype = MLIR_TO_DTYPE.get(mlir_str)
+        # For "i1" the MLIR text type must be preserved as an override,
+        # because DTYPE_TO_MLIR[torch.bool] = "i8" (storage default).
+        override = "i1" if mlir_str == "i1" else None
+        return cls(vec_size=vec_size, dtype=dtype, mlir_dtype=override)
+
+
+class MLIRCSE(common.CSE):
+    """``common.CSE`` that allocates :class:`MLIRCSEVariable` directly and
+    plumbs a ``vec_size`` axis.
+
+    ``newvar`` / ``namedvar`` construct :class:`MLIRCSEVariable` themselves
+    (bypassing the Inductor ``V.kernel.create_cse_var`` hook), so the
+    kernel doesn't need to override ``create_cse_var``. ``generate`` only
+    needs to thread ``vec_size`` through to the ``newvar`` call, which it
+    does via an instance attribute around a ``super().generate()`` call.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._pending_vec_size = 1
+        self._pending_mlir_dtype: Optional[str] = None
+
+    def newvar(self, bounds=ValueRanges.unknown(), dtype=None):
+        var_name = f"{self.name_prefix}{next(self.iter_buffer_ids)}"
+        var = MLIRCSEVariable(var_name, bounds, dtype=dtype,
+                              vec_size=self._pending_vec_size,
+                              mlir_dtype=self._pending_mlir_dtype)
+        self.varname_map[var_name] = var
+        return var
+
+    def namedvar(self, name, bounds=ValueRanges.unknown(), dtype=None, *,
+                 vec_size=1, mlir_dtype=None):
+        assert name not in self.varname_map, f"duplicate name: {name}"
+        var = MLIRCSEVariable(name, bounds, dtype=dtype, vec_size=vec_size,
+                              mlir_dtype=mlir_dtype)
+        self.varname_map[name] = var
+        return var
+
+    def generate(self, buffer, expr, *, vec_size=1, mlir_dtype=None, **kwargs):
+        self._pending_vec_size = vec_size
+        self._pending_mlir_dtype = mlir_dtype
+        try:
+            return super().generate(buffer, expr, **kwargs)
+        finally:
+            self._pending_vec_size = 1
+            self._pending_mlir_dtype = None
+
 
 DTYPE_LOWP_FP = [
     torch.bfloat16,
@@ -637,12 +789,12 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
         # Code buffer
         self.vector_compute = IndentedBuffer()
         self.reductions_suffix = IndentedBuffer()
-        self.cse = common.CSE(self.newvar_prefix, self.suffix)
-        # MLIR SSA tracker
-        self.var_info = {} # MLIR variable info
+        self.cse = MLIRCSE(self.newvar_prefix, self.suffix)
+        # All MLIR type/size info now lives on MLIRCSEVariable / MaskCSEVariable
+        # attributes (vec_size, mlir_dtype, dtype). No parallel var_info dict.
         self.buffer_types : dict = None # format: dtype, numel, size, stride
         # Create compute idx
-        self.compute_idx = self.register_var_cse("compute_idx", 1, "index")
+        self.compute_idx = self.cse.namedvar("compute_idx", dtype=INDEX_DTYPE)
         self.compute_body_loop = LoopLevel(self.compute_idx, 1)
         self.prologue_compute_body_loop = LoopLevel(self.compute_idx, 1)
         self.recodegen = reason # spad overflow, tile size, vlane stride
@@ -668,7 +820,7 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
                 assert len(index_names) == len(self.ranges), f"Index names length mismatch: {len(index_names)} != {len(self.ranges)}"
                 self.itervars = [sympy.Symbol(str(n)) for n in index_names]
 
-            self.itervar_cses = {str(index) : self.register_var_cse(str(index), 1, "index") for index in self.itervars}
+            self.itervar_cses = {str(index) : self.cse.namedvar(str(index), dtype=INDEX_DTYPE) for index in self.itervars}
             self.reduction_depth = len(lengths)
         return (
             self.itervars[: self.reduction_depth],
@@ -889,14 +1041,6 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
     def roundup_vectorlane(self, size, amp=1):
         return ((size + self.vector_lane - 1) // self.vector_lane) * self.vector_lane * amp
 
-    def register_var_cse(self, name, size, dtype):
-        var = self.create_cse_var(name, ValueRanges.unknown())
-        self.register_var_info(var, [size, dtype])
-        return var
-
-    def register_var_info(self, var, var_info):
-        self.var_info[var] = var_info
-
     def rename_indexing(self, index) -> sympy.Expr:
         # adds the necessary kernel args for index expressions
         # and renames variables in index expressions to kernel arg names
@@ -951,22 +1095,29 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
             @staticmethod
             def __getattr__(name: str) -> Callable[..., common.CSEVariable]:  # type: ignore[misc]
                 def inner(*args, **kwargs):
-                    code, ret_info = getattr(parent_handler, name)(*args, **kwargs)
+                    code, ret = getattr(parent_handler, name)(*args, **kwargs)
                     target_buffer = self.target_buffer_override.get()
                     target_cse = self.target_cse_override.get()
                     if isinstance(code, common.DeferredLine):
                         target_buffer.writeline(code)
                         return None
-                    else:
-                        csevar = target_cse.generate(
-                            target_buffer,
-                            code,
-                            bounds=ValueRanges.unknown(),
-                            assignment=(ret_info[0] is not None)
+                    if ret is None:
+                        # void op (e.g. store)
+                        target_cse.generate(
+                            target_buffer, code,
+                            bounds=ValueRanges.unknown(), assignment=False,
                         )
-                        if ret_info[0] is not None:
-                            self.register_var_info(csevar, ret_info)
-                            csevar.update_on_args(name, args, kwargs)
+                        return None
+                    assert isinstance(ret, OpResult), (
+                        f"op {name!r} must return (code, OpResult|None); got {type(ret).__name__}"
+                    )
+                    csevar = target_cse.generate(
+                        target_buffer, code,
+                        bounds=ValueRanges.unknown(), assignment=True,
+                        dtype=ret.dtype, vec_size=ret.vec_size,
+                        mlir_dtype=ret.mlir_dtype,
+                    )
+                    csevar.update_on_args(name, args, kwargs)
                     return csevar
 
                 return inner

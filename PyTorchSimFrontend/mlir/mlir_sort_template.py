@@ -283,7 +283,7 @@ class MLIRSortTemplate(MLIRTemplate):
         bitonic_body = mlir_common.ParallelLoopBuffer(initial_indent=2)
         bitonic_body.tabwidth = 2
         # 1) Local SIMD sort per chunk.
-        init_cse = common.CSE(kernel.newvar_prefix, kernel.suffix, name_prefix="sort_init")
+        init_cse = mlir_common.MLIRCSE(kernel.newvar_prefix, kernel.suffix, name_prefix="sort_init")
         with kernel, kernel.override_buffer_cse(buffer=bitonic_body, cse=init_cse):
             bitonic_body.writelines(LoopLevel("chunk", num_chunks).lines())
             with bitonic_body.indent(attribute="{inner_loop=true}"):
@@ -295,10 +295,12 @@ class MLIRSortTemplate(MLIRTemplate):
                     "%t_const0, %elem",
                     x_tile_desc.get_mlir_shape(data_stype),
                 )
-                idx_step_index = kernel.register_var_cse("idx_step_index", vector_size, "index")
+                idx_step_index = kernel.cse.namedvar("idx_step_index", dtype=mlir_common.INDEX_DTYPE, vec_size=vector_size)
                 bitonic_body.writeline(f"%{idx_step_index} = vector.step : vector<{vector_size}xindex>")
                 idx_step = ops.index_cast(idx_step_index, idx_stype)
-                idx_base = kernel.register_var_cse("idx_base", 1, idx_stype)
+                idx_base = kernel.cse.namedvar(
+                    "idx_base", vec_size=1, dtype=mlir_common.MLIR_TO_DTYPE.get(idx_stype),
+                )
                 bitonic_body.writeline(f"%{idx_base} = arith.index_cast %elem : index to {idx_stype}")
                 idx_base_vec = ops.broadcast(idx_base, vector_size)
                 idx_chunk = ops.add(idx_base_vec, idx_step)
@@ -328,7 +330,7 @@ class MLIRSortTemplate(MLIRTemplate):
                     if block_start >= num_chunks:
                         continue
                     asc_dir = is_even_block if not self.descending else (not is_even_block)
-                    stage_cse = common.CSE(kernel.newvar_prefix, kernel.suffix, name_prefix=f"sort_stage_{stage}")
+                    stage_cse = mlir_common.MLIRCSE(kernel.newvar_prefix, kernel.suffix, name_prefix=f"sort_stage_{stage}")
                     with kernel, kernel.override_buffer_cse(buffer=bitonic_body, cse=stage_cse):
                         stage_loops = [
                             LoopLevel("base", num_chunks, start=block_start, step=2 * k),

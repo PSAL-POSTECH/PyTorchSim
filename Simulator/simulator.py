@@ -106,7 +106,7 @@ class FunctionalSimulator():
         array_size = []
         file_path = []
         for (arg_name, arg_attribute), arg in zip(arg_attributes, args):
-            size = arg_attribute[2] if arg_attribute[1] != torch.bool else (arg_attribute[2] + 7) // 8
+            size = arg_attribute[2]
             array_size.append(size)
             if MLIRKernelArgs.is_mlir_arg_in(arg_attribute[0]):
                 index = self.write_arg(arg, load_path, arg_name)

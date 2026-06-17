@@ -8,7 +8,7 @@
   },
   "llvm_project": {
     "repository": "PSAL-POSTECH/llvm-project",
-    "release_tag": "v1.0.8",
+    "release_tag": "v1.0.10",
     "asset_name": "riscv-llvm-release.tar.gz"
   },
   "spike": {

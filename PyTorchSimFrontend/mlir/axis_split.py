@@ -29,6 +29,43 @@ def _as_int(x):
         return None
 
 
+def collect_boundaries(exprs, var_to_axis, var_ranges):
+    """{axis_index: set(boundary cut points)} for the given index expressions.
+
+    A FloorDiv(v, k) contributes boundary k; ModularIndexing(v, k, m) contributes
+    k and k*m. Only aligned terms count (boundary divides the var extent). Shared
+    by find_split_plan (fused LoopBody) and graph_copy (operand loaders).
+    """
+    import collections
+    bset = collections.defaultdict(set)
+    for expr in exprs:
+        for fd in expr.atoms(FloorDiv):
+            base, div = fd.args
+            k = _as_int(div)
+            if base in var_to_axis and k and k > 1:
+                E = _as_int(var_ranges.get(base))
+                if E and E % k == 0:
+                    bset[var_to_axis[base]].add(k)
+        for mi in expr.atoms(ModularIndexing):
+            base, div, mod = mi.args
+            k, m = _as_int(div), _as_int(mod)
+            if base in var_to_axis and k and m:
+                E = _as_int(var_ranges.get(base))
+                if E and E % (k * m) == 0:
+                    ax = var_to_axis[base]
+                    if k > 1:
+                        bset[ax].add(k)
+                    if k * m < E:
+                        bset[ax].add(k * m)
+    return bset
+
+
+def _is_chain(boundaries, E):
+    """True iff [1, sorted(boundaries in (1,E)), E] is a divisibility chain."""
+    chain = [1] + sorted(b for b in boundaries if 1 < b < E) + [E]
+    return all(chain[i + 1] % chain[i] == 0 for i in range(len(chain) - 1))
+
+
 def ledger(nodes, plan):
     """Classify every FloorDiv/ModularIndexing in the kernel against `plan`.
 
@@ -102,34 +139,17 @@ def find_split_plan(nodes):
         if body is None:
             continue
         var_to_axis = {v: i for i, v in enumerate(body.iter_vars)}
-        for expr in body.indexing_exprs.values():
-            for fd in expr.atoms(FloorDiv):
-                base, div = fd.args
-                k = _as_int(div)
-                if base in var_to_axis and k and k > 1:
-                    E = _as_int(body.var_ranges.get(base))
-                    if E and E % k == 0:
-                        bset[var_to_axis[base]].add(k); ext_of[var_to_axis[base]] = E
-            for mi in expr.atoms(ModularIndexing):
-                base, div, mod = mi.args
-                k, m = _as_int(div), _as_int(mod)
-                if base in var_to_axis and k and m:
-                    E = _as_int(body.var_ranges.get(base))
-                    if E and E % (k * m) == 0:
-                        ax = var_to_axis[base]
-                        if k > 1:
-                            bset[ax].add(k)
-                        if k * m < E:
-                            bset[ax].add(k * m)
-                        ext_of[ax] = E
+        nb = collect_boundaries(body.indexing_exprs.values(), var_to_axis, body.var_ranges)
+        for ax, bs in nb.items():
+            bset[ax] |= bs
+            ext_of[ax] = _as_int(body.var_ranges[body.iter_vars[ax]])
 
     plan = {}
     for ax, bs in bset.items():
         E = ext_of[ax]
-        chain = [1] + sorted(b for b in bs if 1 < b < E) + [E]
-        # require a strict divisibility chain (each boundary divides the next).
-        if len(chain) > 2 and all(chain[i + 1] % chain[i] == 0 for i in range(len(chain) - 1)):
-            plan[ax] = chain
+        # require a real, divisibility-chain split (incompatible radices -> skip).
+        if E and any(1 < b < E for b in bs) and _is_chain(bs, E):
+            plan[ax] = [1] + sorted(b for b in bs if 1 < b < E) + [E]
 
     # Validation aid: force-split the first even index axis even without floor/mod.
     # A floor-free index split is an identity transformation, so allclose must hold;
@@ -146,6 +166,20 @@ def find_split_plan(nodes):
                 if ax not in plan and E and E % 2 == 0 and E > 2:
                     plan[ax] = [1, 2, E]
                     break
+
+    # Rank guard: if the split would push the index rank past 4, skip it and fall
+    # back to baseline. The >4D logical tile is *meant* to be peeled into <=4D
+    # physical descriptors by the decompose-transfer pass, and the #258 TOG crash
+    # (arith.addi DRAM offset) is now fixed -- but the peel still has a numerical
+    # correctness bug (pixel_shuffle -> MISMATCH; the peel was only ever isolation-
+    # validated for MLIR structure, never run end-to-end). Keep the guard until the
+    # peel numerics are fixed; then this guard can be removed and the recompile-dance
+    # retired for pixel.
+    base_rank = next((len(b.iter_vars) for n in nodes
+                      for b in (getattr(n, "_body", None),) if b is not None), 0)
+    extra = sum(len(ch) - 2 for ch in plan.values())
+    if base_rank + extra > 4:
+        return {}
     return plan
 
 
@@ -215,4 +249,53 @@ def build_split_body(node, plan, prefix="z"):
 
     args = [index_args, reduce_args] if orig_reduce_vars else [index_args]
     new_body = LoopBody(body, args, var_ranges, iter_vars, reduce_vars)
+    new_body.indexing_exprs = {
+        name: _fold_with_ranges(e, var_ranges)
+        for name, e in new_body.indexing_exprs.items()
+    }
     return new_body, (index_size, reduce_size)
+
+
+def _fold_with_ranges(expr, var_ranges):
+    """Fold residual FloorDiv/ModularIndexing that simplify_with_ranges missed.
+
+    A mixed-radix split leaves terms like FloorDiv(z1 + 4*z2, 12); these are 0 by
+    construction (the lower digits sum below the boundary), but the Inductor
+    simplifier cannot prove a multi-term numerator < divisor. We prove it directly
+    from the split sub-var ranges via bound_sympy:
+      FloorDiv(num, d)            -> 0          if 0 <= num < d
+      ModularIndexing(num, k, m)  -> num // k   if 0 <= num < k*m   (mod is a no-op)
+    Iterated to a fixpoint (folding a mod can expose a foldable floor).
+    """
+    from torch.utils._sympy.value_ranges import bound_sympy, ValueRanges
+    ranges = {}
+    for v, sz in var_ranges.items():
+        e = _as_int(sz)
+        if e is not None and e >= 1:
+            ranges[v] = ValueRanges(0, e - 1)
+    if not ranges:
+        return expr
+
+    def vr(num):
+        try:
+            return bound_sympy(num, ranges)
+        except Exception:
+            return None
+
+    for _ in range(8):
+        changed = False
+        for fd in list(expr.atoms(FloorDiv)):
+            num, div = fd.args
+            d = _as_int(div)
+            b = vr(num) if d else None
+            if b is not None and b.lower >= 0 and b.upper < d:
+                expr = expr.subs(fd, sympy.Integer(0)); changed = True
+        for mi in list(expr.atoms(ModularIndexing)):
+            num, k, m = mi.args
+            ki, mi_ = _as_int(k), _as_int(m)
+            b = vr(num) if (ki and mi_) else None
+            if b is not None and b.lower >= 0 and b.upper < ki * mi_:
+                expr = expr.subs(mi, FloorDiv(num, k)); changed = True
+        if not changed:
+            break
+    return expr

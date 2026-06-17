@@ -952,18 +952,9 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
                 zero_cse = self.get_const_cse(0, "index")
                 sram_index_var = ", ".join([f"%{str(zero_cse)}"]*tile_desc.get_nr_dim())
 
-                if subtile_size:
-                    attribute = mlir_common.format_dma_op_attributes(
-                        _dram_stride,
-                        sram_strides,
-                        int(padding),
-                        subtile_size=subtile_size,
-                        async_type=int(async_type) if async_type is not None else None,
-                    )
-                else:
-                    attribute = mlir_common.format_dma_op_attributes(_dram_stride, sram_strides, int(padding))
-                code = self.get_dma_code(dma_type, vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
-                                        dram_shape, tile_shape, attribute)
+                code = self.emit_transfer(dma_type, vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
+                                          dram_shape, tile_shape, _dram_stride, sram_strides, int(padding),
+                                          subtile_size=subtile_size if subtile_size else None, async_type=async_type)
                 local_code.writeline(code)
             return textwrap.indent(local_code.getvalue(), " "*indent_size).strip()
 
@@ -1030,9 +1021,8 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
             # Allocate sram buffer
             dram_shape = mlir_common.MLIRKernelArgs.get_mlir_shape(self.buffer_types[name])
             sram_var, sram_index_var = self.get_scratchpad_buffer(dtype, name, self.kernel_group.tile_desc, index)
-            attribute = mlir_common.format_dma_op_attributes(dram_stride, tile_stride, 0)
-            code = self.get_dma_code("MVIN", vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
-                                     dram_shape, tile_shape, attribute)
+            code = self.emit_transfer("MVIN", vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
+                                      dram_shape, tile_shape, dram_stride, tile_stride, 0)
             self.cse.generate(self.dma_loads, code, assignment = False)
             self.buffer_names[name] = sram_var
         else:
@@ -1098,9 +1088,8 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
             ops._store(value, sram_var, compute_index_var, tile_shape, buffer_name=buffer_name)
 
         # Generate DMA instruction
-        attribute = mlir_common.format_dma_op_attributes(dram_stride, tile_stride, 0)
-        code = self.get_dma_code("MVOUT", vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
-                                 dram_shape, tile_shape, attribute)
+        code = self.emit_transfer("MVOUT", vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
+                                  dram_shape, tile_shape, dram_stride, tile_stride, 0)
         self.dma_stores.writeline(DeferredLine(name, code))
 
     def reduction_epilogue(self, dtype, src_dtype, reduction_type, value):
@@ -1249,9 +1238,8 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
 
         # MVOUT Encoding
         # Generate DMA instruction
-        attribute = mlir_common.format_dma_op_attributes(dram_stride, final_tile_stride, 0)
-        code = self.get_dma_code("MVOUT", vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
-                                dram_shape, final_tile_shape, attribute)
+        code = self.emit_transfer("MVOUT", vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
+                                  dram_shape, final_tile_shape, dram_stride, final_tile_stride, 0)
         self.reductions_suffix.writeline(DeferredLine(name, code))
 
     def set_tile_size(self, template_fusion_info, prologue=False):

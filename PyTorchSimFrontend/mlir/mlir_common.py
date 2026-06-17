@@ -1,5 +1,6 @@
 import dataclasses
 import math
+import os
 import contextvars
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -472,29 +473,25 @@ class TileAdjustMixin():
 
     @staticmethod
     def init_tile_size(ranges, vlane_stride, vector_lane):
+        # Logical tile init for ANY rank. Only the innermost dims carry the
+        # vectorized tile; all further-outer dims stay 1. The physical Gemmini DMA
+        # descriptor is <=4D -- a higher-rank logical tile is mapped onto <=4D
+        # descriptors by togsim.transfer + the decompose pass (logical/physical
+        # tile split), so no rank cap here.
         nr_dim = len(ranges)
+        if nr_dim == 0:                                   # scalar
+            return [1]
         tile_size = [1] * nr_dim
-        if len(tile_size) == 2:
+        if nr_dim == 1:
+            tile_size[0] = 1 if ranges[0] == 1 else 2 * vlane_stride * vector_lane
+        elif nr_dim == 2:
             tile_size[-1] = vlane_stride * vector_lane
             tile_size[-2] = 2 * vector_lane
-        elif len(tile_size) == 0: # Scalar
-            tile_size = [1]
-            ranges = [1]
-        elif len(tile_size) == 1 and ranges[0]==1:
-            tile_size[0] = 1
-        elif len(tile_size) == 1:
-            tile_size[0] = 2 * vlane_stride * vector_lane
-        elif len(tile_size) == 3:
+        else:                                             # 3D and up (general)
             tile_size[-1] = vector_lane
             tile_size[-2] = 4 * vector_lane
             tile_size[-3] = 2
-        elif len(tile_size) == 4:
-            tile_size[-1] = vector_lane
-            tile_size[-2] = 4 * vector_lane
-            tile_size[-3] = 2
-            tile_size[-4] = 1
-        else:
-            raise NotImplementedError("dummy tile size fail!")
+            # tile_size[:-3] stay 1 (subsumes the old 4D [-4]=1 and any higher rank)
         return tile_size
 
     @staticmethod
@@ -840,10 +837,14 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
                         node.run(vars, reduction_vars)
             except RecompileSignal as e:
                 recompile_try += 1
+                # Measure what still depends on the recompile-dance once axis-split +
+                # graph-copy are on by default (set TORCHSIM_RECOMPILE_LOG=1).
+                if os.environ.get("TORCHSIM_RECOMPILE_LOG"):
+                    import sys as _sys
+                    print(f"[RECOMPILE {recompile_try}/{max_retry_compile}] {e}", file=_sys.stderr)
                 if recompile_try > max_retry_compile:
                     raise RuntimeError("Failed to compile kernel after multiple attempts.")
                 # Retry compile nodes
-                #print(f"Try recompile({recompile_try}/{max_retry_compile}). Reason: {e}")
                 continue
             V.graph.removed_buffers |= self.removed_buffers
             # V.graph.inplaced_to_remove |= self.inplaced_to_remove

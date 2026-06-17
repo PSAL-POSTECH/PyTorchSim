@@ -33,7 +33,7 @@ def _iter_ops(block):
                 yield from _iter_ops(b)
 
 
-def run(module):
+def run(module, **_):
     """Lower every torchsim.vlane_idx op in `module`, in place.
 
     Must be called with the module's Context active (the orchestrator provides it).

@@ -44,8 +44,11 @@ PASSES = [
 ]
 
 
-def run_python_passes(mlir_path):
+def run_python_passes(mlir_path, vectorlane=128):
     """Apply all registered Python MLIR passes to the .mlir at `mlir_path`, in place.
+
+    `vectorlane` (systolic-array size / number of vector lanes) is forwarded to passes
+    that need it (e.g. decompose_transfer's lane-banked >4D peel).
 
     Returns True if the file was modified, False otherwise.
     """
@@ -63,7 +66,7 @@ def run_python_passes(mlir_path):
     with ctx, Location.unknown():
         module = Module.parse(text)
         for p in active:
-            p.run(module)
+            p.run(module, vectorlane=vectorlane)
         out = str(module)
 
     with open(mlir_path, "w") as f:

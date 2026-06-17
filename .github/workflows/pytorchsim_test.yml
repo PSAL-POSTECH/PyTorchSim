@@ -172,6 +172,25 @@ jobs:
             -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/ops/view/test_cat.py
 
+  test_floormod_axis_split:
+    name: Run test_floormod_axis_split.py
+    runs-on: ubuntu-latest
+    steps:
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run test_floormod_axis_split.py
+        run: |
+          echo "Running test_floormod_axis_split.py"
+          docker run --rm \
+            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
+            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            ${{ inputs.image_name }} python3 PyTorchSim/tests/ops/view/test_floormod_axis_split.py
+
   test_matmul:
     name: Run test_matmul.py
     runs-on: ubuntu-latest

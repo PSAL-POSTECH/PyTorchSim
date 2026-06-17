@@ -131,7 +131,7 @@ class MLIRCodeCache:
         # .mlir in place, before mlir-opt. Currently lowers torchsim.vlane_idx
         # (replaces the old C++ -global-idx pass); add more in passes/__init__.py.
         from PyTorchSimFrontend.mlir.passes import run_python_passes, run_standard_lowering, run_tog
-        run_python_passes(input_path)
+        run_python_passes(input_path, vectorlane=vectorlane_size)
         new_input_path = os.path.splitext(input_path)[0]
         raw_tog_path = new_input_path + "_tog.py"
         tog_path = os.path.join(write_path, "tile_graph.onnx")

@@ -34,6 +34,7 @@ from . import lower_vlane_idx
 from . import decompose_transfer
 from .lower_to_llvm import run_standard_lowering  # noqa: F401 (re-exported)
 from .build_tog import run_tog  # noqa: F401 (re-exported; replaces C++ test-tile-operation-graph)
+from .dma_fine_grained import run_fine_grained  # noqa: F401 (replaces C++ -dma-fine-grained)
 
 # Ordered passes applied to each kernel .mlir before mlir-opt.
 # decompose_transfer first: it lowers togsim.transfer -> memref.dma_start, which

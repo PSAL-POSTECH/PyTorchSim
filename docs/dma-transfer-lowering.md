@@ -149,10 +149,15 @@ The DMA descriptor is an **affine map of rank <= 4 with integer strides**
 
 1. **`D <= 4`** -> emit **one** customized `memref.dma_start`; the dims become the
    descriptor's <=4D shape/strides. Identical to today's output (fast path).
-2. **`D > 4`** -> peel `D - 4` dims into an outer `affine.for`; each iteration
-   computes a base with `affine.apply` (the peeled dims' linear contribution) and
-   issues the inner <=4D affine descriptor. SRAM offsets are computed symmetrically
-   in the same loop.
+2. **`D > 4`** -> peel `D - 4` dims into an outer `affine.for` (marked `inner_loop`
+   so the TOG pass reads the induction var); each iteration computes the DRAM base
+   with one `affine.apply` (the peeled dims' linear contribution folded with the
+   original index) and the **lane-banked physical** SRAM offset (dims outer than the
+   vlane axis rescaled by the lane coeff -- the MVIN `block_stride` /
+   `-dma-fine-grained` `buildSramAffineMap` rule, which needs the vector-lane count),
+   delivered as the **last SRAM index operand**. The offset must go through the index,
+   not a subview offset: the gemmini lowering reads the spad base via
+   `extract_aligned_pointer_as_index`, which strips a subview offset.
 
 That is the whole pass. There is **no linearization step** (upstream guarantees
 affine) and **no relayout fallback** (upstream graph copy handles misalignment).
@@ -197,8 +202,9 @@ Rationale:
   algebra: rank / peel); gemmini does instruction encoding (hardware). Different
   axes; merging couples affine logic with ISA detail. They stay distinct passes.
 - **`memref.dma_start` is a shared contract** with multiple consumers
-  (lower_dma_to_gemmini, dma-fine-grained, the TOG pass). Keeping it as the
-  interface lets all of them stay unchanged.
+  (`lower_dma_to_gemmini`, `dma_fine_grained`, `build_tog` -- all now Python
+  out-of-line passes; the C++ `-dma-fine-grained` / `-test-tile-operation-graph`
+  are ported). Keeping it as the interface lets all of them stay unchanged.
 - **gemmini is now a Python out-of-line pass too** -- the conversion-framework
   coupling (LLVMTypeConverter / getStridedElementPtr) was avoided by working at
   the memref level (`memref.extract_aligned_pointer_as_index` + arith for
@@ -453,26 +459,26 @@ now emits MVIN/MVOUT `togsim.transfer` with 5D `dram_stride [1,6,30,120,360]` an
 Validated end-to-end (Gem5 + Spike + TOGSim, `allclose=True`) on the 5D permute
 `x.permute(4,3,2,1,0).contiguous() + 1.0`; no regression on 2D/3D/elementwise.
 
-- **Genuine >4 effective rank (isolation-only; INCOMPATIBLE with TOG -- see TODO).**
-  When >4 *non-unit* dims survive, the pass keeps the inner 4 as the <=4D descriptor
-  and peels the outer dims by **full unrolling**: one descriptor per outer-index
-  combo, the SRAM slice a rank-reduced `memref.subview` at the static slice offset,
-  the DRAM base `dram_idx + constant`. This passes `lower_text` / mlir-opt in
-  isolation, but **fails the full pipeline**: the C++ TOG generation pass cannot read
-  `memref.subview` + unrolled (constant-offset) DMAs and produces an empty
-  `loop_idx_list` (ValueError in `onnx_utility.py`). Surfaced once aligned axis-split
-  made the path reachable (pixel_shuffle -> 5D); axis-split now has a rank guard that
-  avoids triggering it.
+- **Genuine >4 effective rank (affine.for peel; #258 resolved).** When >4 *non-unit*
+  dims survive, the pass keeps the inner 4 as the <=4D descriptor and peels the outer
+  dims into an `affine.for` nest (marked `inner_loop`), emitting one inner descriptor
+  per iteration -- mirroring the `-dma-fine-grained` subtile loop. The DRAM base is
+  `affine.apply(dram_idx + sum_k iv_k * dram_stride_k)` (one apply, not `arith.addi`,
+  so the TOG pass walks the loop index through it). The SRAM slice offset is the
+  **lane-banked physical** offset (split-outer dims rescaled by the lane coeff)
+  delivered as the **last SRAM index operand**, *not* a `memref.subview` offset --
+  `extract_aligned_pointer_as_index` in the gemmini lowering strips a subview offset,
+  which is why the earlier full-unroll + subview attempt produced wrong data and the
+  C++ TOG read an empty `loop_idx_list` (#258).
 
-> **TODO (peel rework, tracked as GitHub issue #258).** Rewrite the >4D peel to emit
-> a real `affine.for` over the peeled dims (so each DMA keeps an enclosing loop index
-> the TOG pass can read) and index the spad directly instead of via `memref.subview`.
-> Alternatively teach the C++ TOG pass to handle `subview` + unrolled DMAs. Until
-> then the unroll path is isolation-only and the axis-split rank guard keeps it
-> unreached.
+  The earlier full-unroll + subview form was isolation-only and INCOMPATIBLE with the
+  TOG; the `affine.for` rework (this is exactly the #258 TODO) fixed both the TOG
+  read and the numerics, so the axis-split rank guard was removed. Validated
+  end-to-end (Gem5 + Spike + TOGSim, `allclose=True`) on `pixel_shuffle(x, 2) + 1.0`
+  (5D tile) plus the gemm/bmm/conv/model suite.
 
-The input stays per-axis affine by upstream guarantee, so both paths are pure
-mechanical peeling. A non-affine residue is a contract violation (aligned floor/mod
+The input stays per-axis affine by upstream guarantee. A non-affine residue is a
+contract violation (aligned floor/mod
 removal lives in `axis-split-scheduling.md`, misaligned relayout in graph copy
 insertion -- see "Division of labor"); a genuinely non-affine / indirect index
 would surface as a build failure here rather than being silently relaid out.

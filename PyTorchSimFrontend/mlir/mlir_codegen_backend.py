@@ -1,6 +1,5 @@
 import contextlib
 import sympy
-import sys
 import time
 import re
 import os
@@ -1166,7 +1165,6 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         # Note: index could contain symbols that represent dynamic axies
         # Extract dimension of index(e.g, index0, index1)
         local_dims = [int(str(i)[5:]) for i in index.free_symbols if "index" in str(i)]
-        implicit_local_dims = list(index.args)
         total_dims =  [int(str(i)[5:]) for i in self.itervars]
         local_tile_desc = mlir_common.MLIRMultiDimTile([1], self.vector_lane)
         local_dims.sort() # Assume that smaller index is placed in the outer loop
@@ -1243,14 +1241,6 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
             local_tile_desc.vmap.vlane_split_axis = local_vlane_split_axis
             local_tile_desc.vmap.vlane_stride = kg_tile_desc.vmap.vlane_stride
 
-        if len(implicit_local_dims)!=0 and len(local_dims) != len(implicit_local_dims) and self.is_modular_indexing(index):
-            for axis_constraints in self.kernel_group.tile_desc.implicit_dim_size.values():
-                if len(axis_constraints) <= 1:
-                    continue
-                sorted_constraints = sorted(axis_constraints, key=lambda c: int(c.args[1]))
-                for constraint in sorted_constraints[1:]:
-                    index = index.replace(constraint.original_expr, 0)
-
         # Calculate dram stride in local tile-dim order.
         # This keeps dram/sram stride rank aligned with tile rank.
         local_dim_to_axis = {dim: axis for axis, dim in enumerate(local_dims)}
@@ -1264,19 +1254,12 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         else:
 
             dram_dict = defaultdict(list)
-            implicit_dim_divisors = defaultdict(lambda: sys.maxsize)
-            # Assume that div will have high priority than mod
             for arg in index.as_ordered_terms():
                 coeff, dim = arg.as_coeff_mul()
                 if len(dim) == 0:
                     continue
                 real_dim = list(dim[0].free_symbols)[0]
-                if dim[0].has(ModularIndexing):
-                    if dim[0].args[1] < implicit_dim_divisors[str(real_dim)]:
-                        implicit_dim_divisors[str(real_dim)] = dim[0].args[1]
-                        dram_dict[str(real_dim)] = [coeff]
-                else:
-                    dram_dict[str(real_dim)].append(coeff)
+                dram_dict[str(real_dim)].append(coeff)
 
             # Add missing dims if not added
             max_dim = len(self.ranges) if not store_reduction else len(self.ranges) - 1
@@ -1286,100 +1269,6 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
                     dram_dict[target_dim] = [0]
             sorted_keys = sorted(dram_dict.keys())
             dram_stride = sum((dram_dict[key] for key in sorted_keys), [])
-
-        # Support floordiv pattern
-        # FIXME. How to integrate implicit dims and floordiv?
-        # This was introduced to support GroupNorm
-        if index.has(FloorDiv) and not index.has(ModularIndexing):
-            dim_divisor = [1] * len(local_dims)
-            for sub in sympy.preorder_traversal(index):
-                if isinstance(sub, FloorDiv):
-                    if not str(sub.args[0]).startswith("index"):
-                        continue
-                    dim_idx = int((str(sub.args[0])[5:]))
-                    if dim_idx not in local_dim_to_axis:
-                        continue
-                    local_dim_idx = local_dim_to_axis[dim_idx]
-                    if int(self.kernel_group.tile_desc.get_tile_size()[dim_idx] % sub.args[1]) != 0:
-                        # In this case, need to recompile
-                        original_tile = self.kernel_group.tile_desc.get_tile_size()
-                        original_size = original_tile[dim_idx]
-                        divisor = sub.args[1] * self.kernel_group.tile_desc.vmap.vlane_stride
-                        new_size = ((original_size + divisor - 1) // divisor) * divisor
-                        new_tile_sizes = list(self.kernel_group.tile_desc.get_tile_size())
-                        new_tile_sizes[dim_idx] = new_size
-                        self.kernel_group.tile_desc.set_tile_size(new_tile_sizes)
-                        self.kernel_group.tile_desc.tile_constraint[dim_idx].fixed = True
-
-                        # Can't use dim_idx as vlane_split_axis
-                        if dim_idx == self.kernel_group.tile_desc.vmap.vlane_split_axis:
-                            self.kernel_group.tile_desc.vmap.vlane_split_axis = (dim_idx + 1) % len(original_tile)
-
-                        # Send recompile signal
-                        self.reset("recompile")
-                        raise mlir_common.RecompileSignal(f"Tile size {self.kernel_group.tile_desc.get_tile_size()[dim_idx]} is not divisible by {sub.args[1]}")
-                    dim_divisor[local_dim_idx] = sub.args[1]
-
-            # Update dram_stride, just insert 0 next to target dim
-            offset = 0
-            for dim_idx, divisor in enumerate(dim_divisor):
-                if divisor == 1:
-                    continue
-                dram_stride.insert(dim_idx+offset+1, 0)
-                local_tile_desc.apply_divisor(dim_idx+offset, divisor, "pad")
-                local_tile_desc.apply_divisor(dim_idx+offset, divisor, "split")
-                offset = offset+1
-
-        # Support ModularIndexing pattern
-        # This pattern can be used to broadcast ex) torch.cat([a,a])
-        # ModularIndexing(x, y, z) means (x // y) % z
-        # tile_size must be: multiple of y (floorDiv divisor) and divisor of z (modular divisor)
-        if index.has(ModularIndexing):
-            for sub in sympy.preorder_traversal(index):
-                if isinstance(sub, ModularIndexing):
-                    if not str(sub.args[0]).startswith("index"):
-                        continue
-                    dim_idx = int((str(list(sub.args[0].free_symbols)[0])[5:]))
-                    floor_divisor = sub.args[1]  # y: floorDiv divisor
-                    mod_divisor = sub.args[2]    # z: modular divisor
-                    current_tile_size = self.kernel_group.tile_desc.get_tile_size()[dim_idx]
-
-                    # Check if tile_size is multiple of floorDiv divisor
-                    if int(current_tile_size % floor_divisor) != 0:
-                        original_tile = self.kernel_group.tile_desc.get_tile_size()
-                        original_size = original_tile[dim_idx]
-                        divisor = floor_divisor * self.kernel_group.tile_desc.vmap.vlane_stride
-                        new_size = ((original_size + divisor - 1) // divisor) * divisor
-                        new_tile_sizes = list(self.kernel_group.tile_desc.get_tile_size())
-                        new_tile_sizes[dim_idx] = new_size
-                        self.kernel_group.tile_desc.set_tile_size(new_tile_sizes)
-                        self.kernel_group.tile_desc.tile_constraint[dim_idx].fixed = True
-
-                        self.reset("recompile")
-                        raise mlir_common.RecompileSignal(f"Tile size {current_tile_size} is not a multiple of floorDiv divisor {floor_divisor} in ModularIndexing")
-
-                    # Check if tile_size is a divisor of modular divisor
-                    if int((mod_divisor * floor_divisor) % current_tile_size) != 0:
-                        original_tile = self.kernel_group.tile_desc.get_tile_size()
-                        original_size = original_tile[dim_idx]
-                        # Find the largest divisor of mod_divisor that is <= original_size
-                        # and is a multiple of floor_divisor
-                        new_size = original_size
-                        while new_size > 0:
-                            if mod_divisor % new_size == 0 and new_size % floor_divisor == 0:
-                                break
-                            new_size -= floor_divisor
-
-                        if new_size <= 0:
-                            new_size = mod_divisor * floor_divisor
-
-                        new_tile_sizes = list(self.kernel_group.tile_desc.get_tile_size())
-                        new_tile_sizes[dim_idx] = new_size
-                        self.kernel_group.tile_desc.set_tile_size(new_tile_sizes)
-                        self.kernel_group.tile_desc.tile_constraint[dim_idx].fixed = True
-
-                        self.reset("recompile")
-                        raise mlir_common.RecompileSignal(f"Tile size {current_tile_size} is not a divisor of modular divisor {mod_divisor} in ModularIndexing")
 
         # FIXME. It will be nice to modify node instead of this exception handling...
         if len(self.itervars) == 1 and self.reduction_depth == 0:

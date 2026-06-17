@@ -38,24 +38,16 @@ def dump_metadata(args, arg_attributes, path):
     return
 
 def mlir_compile_command(filename, vectorlane_size, vlen=256):
-    # The C++ -dma-fine-grained pass is ported to Python (passes/dma_fine_grained.py):
-    # it runs in-process between loop-padding and pytorchsim-to-vcix, so the single
-    # mlir-opt invocation is split around it (loop-padding -> _padded.mlir, then the
-    # Python pass in place, then vcix).
+    # The C++ -dma-fine-grained and -test-pytorchsim-to-vcix passes are ported to
+    # Python (passes/dma_fine_grained.py, lower_to_vcix.py), run in-process between
+    # loop-padding and the standard lowering. So mlir-opt now runs only loop-padding
+    # (-> _padded.mlir); the Python fine-grained + vcix passes produce _custom.mlir.
     return [re.sub(r"[ \n]+", " ",
         f"""
             {extension_config.CONFIG_TORCHSIM_LLVM_PATH}/mlir-opt \
             -test-loop-padding \
             {'--mlir-print-ir-after-all' if extension_config.CONFIG_TORCHSIM_DUMP_MLIR_IR else ''} \
             {filename}.mlir -o {filename}_padded.mlir
-        """,
-    ).strip(),
-            re.sub(r"[ \n]+", " ",
-        f"""
-            {extension_config.CONFIG_TORCHSIM_LLVM_PATH}/mlir-opt \
-            -test-pytorchsim-to-vcix='systolic-array-size={vectorlane_size} vlen={vlen}' \
-            {'--mlir-print-ir-after-all' if extension_config.CONFIG_TORCHSIM_DUMP_MLIR_IR else ''} \
-            {filename}_padded.mlir -o {filename}_custom.mlir
         """,
     ).strip(),
             re.sub(r"[ \n]+", " ",
@@ -83,22 +75,14 @@ def mlir_compile_command(filename, vectorlane_size, vlen=256):
     ).strip()]
 
 def mlir_gem5_compile_command(filename, sample_filename, tog_file, vectorlane_size, vlen=256):
-    # See mlir_compile_command: -dma-fine-grained is the Python pass, run in-process
-    # between loop-padding and vcix, so the opt invocation is split around it.
+    # See mlir_compile_command: -dma-fine-grained and -test-pytorchsim-to-vcix are
+    # Python passes run in-process; mlir-opt runs only loop-padding here.
     return [re.sub(r"[ \n]+", " ",
         f"""
             {extension_config.CONFIG_TORCHSIM_LLVM_PATH}/mlir-opt \
             -test-loop-padding='timing_mode=1' \
             {'--mlir-print-ir-after-all' if extension_config.CONFIG_TORCHSIM_DUMP_MLIR_IR else ''} \
             {filename}.mlir -o {sample_filename}_padded.mlir
-        """,
-    ).strip(),
-            re.sub(r"[ \n]+", " ",
-        f"""
-            {extension_config.CONFIG_TORCHSIM_LLVM_PATH}/mlir-opt \
-            -test-pytorchsim-to-vcix='systolic-array-size={vectorlane_size} vlen={vlen}' \
-            {'--mlir-print-ir-after-all' if extension_config.CONFIG_TORCHSIM_DUMP_MLIR_IR else ''} \
-            {sample_filename}_padded.mlir -o {sample_filename}_postvcix.mlir
         """,
     ).strip(),
             re.sub(r"[ \n]+", " ",
@@ -148,7 +132,7 @@ class MLIRCodeCache:
         # Run the Python out-of-line MLIR passes (MLIR bindings) on the kernel
         # .mlir in place, before mlir-opt. Currently lowers torchsim.vlane_idx
         # (replaces the old C++ -global-idx pass); add more in passes/__init__.py.
-        from PyTorchSimFrontend.mlir.passes import run_python_passes, run_standard_lowering, run_tog, run_fine_grained
+        from PyTorchSimFrontend.mlir.passes import run_python_passes, run_standard_lowering, run_tog, run_fine_grained, run_to_vcix
         run_python_passes(input_path, vectorlane=vectorlane_size)
         new_input_path = os.path.splitext(input_path)[0]
         raw_tog_path = new_input_path + "_tog.py"
@@ -171,17 +155,17 @@ class MLIRCodeCache:
             new_link_option = link_option + " -Wl,--wrap=malloc -Wl,--wrap=free"
             cmds = mlir_compile_command(new_input_path, vectorlane_size, vlen=vlen)
             opt_pad_cmd = shlex.split(cmds[0])
-            opt_vcix_cmd = shlex.split(cmds[1])
-            translate_cmd = shlex.split(cmds[2])
-            llc_cmd = shlex.split(cmds[3])
-            llc_asm_cmd = shlex.split(cmds[4])
+            translate_cmd = shlex.split(cmds[1])
+            llc_cmd = shlex.split(cmds[2])
+            llc_asm_cmd = shlex.split(cmds[3])
             with lock:
                 try:
-                    # loop-padding -> Python -dma-fine-grained (in place) -> vcix
+                    # loop-padding (mlir-opt) -> Python fine-grained -> Python vcix
                     subprocess.check_call(opt_pad_cmd)
                     run_fine_grained(new_input_path + "_padded.mlir",
                                      new_input_path + "_padded.mlir", vectorlane_size)
-                    subprocess.check_call(opt_vcix_cmd)
+                    run_to_vcix(new_input_path + "_padded.mlir",
+                                new_input_path + "_custom.mlir", vectorlane_size, vlen)
                     # Standard MLIR -> LLVM-dialect lowering (registered upstream
                     # passes) runs in-process via the bindings PassManager, picking
                     # up after the custom mlir-opt passes (memref-to-gemmini).
@@ -215,9 +199,8 @@ class MLIRCodeCache:
 
         # Launch tile graph generator
         gem5_pad_cmd = shlex.split(gem5_cmds[0])
-        gem5_vcix_cmd = shlex.split(gem5_cmds[1])
-        gem5_translate_cmd = shlex.split(gem5_cmds[2])
-        gem5_llc_cmd = shlex.split(gem5_cmds[3])
+        gem5_translate_cmd = shlex.split(gem5_cmds[1])
+        gem5_llc_cmd = shlex.split(gem5_cmds[2])
 
         lock = FileLock(get_lock_path(write_path), timeout=LOCK_TIMEOUT)
         with lock:
@@ -227,11 +210,12 @@ class MLIRCodeCache:
                 # to Python: run_tog reads that IR, writes the TOG (_tog.py) and the
                 # mutated IR (_custom.mlir: sample-mode step rewrite + compute markers),
                 # replacing the C++ -test-tile-operation-graph pass.
-                # loop-padding(timing) -> Python -dma-fine-grained (in place) -> vcix
+                # loop-padding(timing, mlir-opt) -> Python fine-grained -> Python vcix
                 subprocess.check_call(gem5_pad_cmd)
                 run_fine_grained(sample_mlir_path + "_padded.mlir",
                                  sample_mlir_path + "_padded.mlir", vectorlane_size)
-                subprocess.check_call(gem5_vcix_cmd)
+                run_to_vcix(sample_mlir_path + "_padded.mlir",
+                            sample_mlir_path + "_postvcix.mlir", vectorlane_size, vlen)
                 run_tog(sample_mlir_path + "_postvcix.mlir", raw_tog_path,
                         sample_mlir_path + "_custom.mlir",
                         sample_mode=extension_config.CONFIG_TLS_MODE,

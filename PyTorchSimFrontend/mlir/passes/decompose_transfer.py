@@ -104,6 +104,11 @@ def run(module, vectorlane=128, **_):
         tile_stride = _int_array(op.attributes["tile_stride"])
         vlane_stride = _const_int(vst, 1)
         padding = op.attributes["padding"]
+        try:
+            subtile = _int_array(op.attributes["subtile_size"])
+            async_attr = op.attributes["async"]
+        except KeyError:
+            subtile, async_attr = None, None
 
         sram_ty = MemRefType(sram.type)
         elem, space = sram_ty.element_type, sram_ty.memory_space
@@ -116,7 +121,7 @@ def run(module, vectorlane=128, **_):
                 "arith.constant", results=[idx_ty],
                 attributes={"value": IntegerAttr.get(idx_ty, v)}).results[0]
 
-        def _emit(sram_mem, sram_indices, dram_idx_val, vsa_val, dr_attr, tl_attr):
+        def _emit(sram_mem, sram_indices, dram_idx_val, vsa_val, dr_attr, tl_attr, st_attr=None):
             vsa = _const(vsa_val)
             if kind == "MVIN":
                 operands = [dram, dram_idx_val, sram_mem, *sram_indices,
@@ -124,10 +129,26 @@ def run(module, vectorlane=128, **_):
             else:
                 operands = [sram_mem, *sram_indices, dram, dram_idx_val,
                             dma_type, tag, sram_idx, vsa, vst]
+            attrs = {"dram_stride": dr_attr, "sram_stride": tl_attr, "padding": padding}
+            if st_attr is not None:
+                attrs["subtile_size"] = st_attr
+                attrs["async"] = async_attr
             Operation.create(
-                "memref.dma_start", results=[], operands=operands,
-                attributes={"dram_stride": dr_attr, "sram_stride": tl_attr,
-                            "padding": padding})
+                "memref.dma_start", results=[], operands=operands, attributes=attrs)
+
+        if len(tile_shape) <= 4:
+            # Already <=4D: emit the descriptor directly on the original SRAM, no
+            # collapse_shape. The C++ -dma-fine-grained subtile split walks the SRAM
+            # operand and chokes on a collapse_shape result, so keep it a direct buffer.
+            dr_attr = ArrayAttr.get([IntegerAttr.get(i64, s) for s in dram_stride])
+            tl_attr = ArrayAttr.get([IntegerAttr.get(i64, s) for s in tile_stride])
+            st_attr = (ArrayAttr.get([IntegerAttr.get(i64, s) for s in subtile])
+                       if subtile is not None else None)
+            with InsertionPoint(op):
+                _emit(sram, [sram_idx] * len(tile_shape), dram_idx, vlane_axis,
+                      dr_attr, tl_attr, st_attr)
+            op.erase()
+            continue
 
         if len(eff) <= 4:
             # Fast path: drop unit dims so the descriptor reaches <=4D. The customized
@@ -141,6 +162,8 @@ def run(module, vectorlane=128, **_):
             keep = [g[-1] for g in groups]              # the non-unit dim in each group
             dr_attr = ArrayAttr.get([IntegerAttr.get(i64, dram_stride[i]) for i in keep])
             tl_attr = ArrayAttr.get([IntegerAttr.get(i64, tile_stride[i]) for i in keep])
+            st_attr = (ArrayAttr.get([IntegerAttr.get(i64, subtile[i]) for i in keep])
+                       if subtile is not None else None)
             # Remap vlane axis to the collapsed-dim index (the group containing it).
             new_vlane = next(gi for gi, g in enumerate(groups) if vlane_axis in g)
             with InsertionPoint(op):
@@ -148,7 +171,7 @@ def run(module, vectorlane=128, **_):
                     "memref.collapse_shape", results=[collapsed_ty], operands=[sram],
                     attributes={"reassociation": reassoc}).results[0]
                 _emit(sram_c, [sram_idx] * len(target), dram_idx, new_vlane,
-                      dr_attr, tl_attr)
+                      dr_attr, tl_attr, st_attr)
             op.erase()
             continue
 
@@ -172,6 +195,8 @@ def run(module, vectorlane=128, **_):
         inner_strides = [tile_stride[d] for d in inner]
         dr_attr = ArrayAttr.get([IntegerAttr.get(i64, dram_stride[d]) for d in inner])
         tl_attr = ArrayAttr.get([IntegerAttr.get(i64, tile_stride[d]) for d in inner])
+        st_attr = (ArrayAttr.get([IntegerAttr.get(i64, subtile[d]) for d in inner])
+                   if subtile is not None else None)
         # the vlane axis must survive into the inner descriptor (it is the lane dim).
         new_vlane = inner.index(vlane_axis) if vlane_axis in inner else 0
 
@@ -235,7 +260,7 @@ def run(module, vectorlane=128, **_):
             ).results[0]
             zero = _const(0)
             _emit(sub, [zero, zero, zero, sram_off_val], dram_idx_val, new_vlane,
-                  dr_attr, tl_attr)
+                  dr_attr, tl_attr, st_attr)
         op.erase()
 
 

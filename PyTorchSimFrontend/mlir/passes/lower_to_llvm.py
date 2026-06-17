@@ -2,11 +2,12 @@
 
 Runs the upstream *registered* lowering passes (convert-*-to-llvm, lower-affine,
 reconcile-unrealized-casts, ...) in-process on the post-custom-pass IR, replacing
-the tail of the mlir-opt pipeline. The remaining custom passes (test-loop-padding,
-dma-fine-grained, test-pytorchsim-to-vcix) still run in mlir-opt; the gem5 path's
-test-tile-operation-graph is now the Python build_tog pass, and memref-to-gemmini
-is the Python lower_dma_to_gemmini pass (run inside this lowering). As the custom
-passes migrate to Python, mlir-opt shrinks toward an all-in-process flow.
+the tail of the mlir-opt pipeline. Most custom passes are now Python out-of-line
+passes: dma-fine-grained -> dma_fine_grained, test-pytorchsim-to-vcix ->
+lower_to_vcix, test-tile-operation-graph -> build_tog (gem5 path), memref-to-gemmini
+-> lower_dma_to_gemmini (run inside this lowering), global-idx -> lower_vlane_idx.
+Only test-loop-padding still runs in mlir-opt; once it migrates, mlir-opt drops out
+entirely and the flow is fully in-process.
 
 Validated to produce byte-identical LLVM IR to running the same passes inside
 mlir-opt. Note: only lower-vector-multi-reduction is func.func-scoped (the

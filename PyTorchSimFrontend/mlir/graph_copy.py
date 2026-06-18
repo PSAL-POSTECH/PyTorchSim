@@ -14,8 +14,8 @@ make_pointwise results), so it sees every elementwise consumer in one place. The
 realize() (not a clone, which Inductor inlines) is what actually forces the buffer
 boundary; see the PoC notes in docs.
 
-Gated by TORCHSIM_GRAPH_COPY (install() is a no-op otherwise). Behavior-neutral
-unless a genuine incompatible-radix conflict is detected.
+Default-on; set TORCHSIM_GRAPH_COPY=0 to disable (install() is then a no-op).
+Behavior-neutral unless a genuine incompatible-radix conflict is detected.
 """
 import os
 from torch._inductor import lowering as L
@@ -64,7 +64,14 @@ def _relayout_args(args):
     # multi-var-view input) this is just that operand's shape -- still enough to
     # detect a multi-var floor and copy_input it (case 7); the 2-operand radix
     # conflict (case 5) naturally needs >=2 operands.
-    ranges = max((t.get_size() for t in tbs), key=len)
+    # Per-dim max extent over the max-rank operands (order-independent). Picking a
+    # single operand by rank alone (max key=len) would, for two equal-rank operands
+    # with different per-dim extents, take a broadcast-from operand's smaller shape
+    # and then miss the genuine conflict on the broadcast-to dim.
+    maxrank = max(len(t.get_size()) for t in tbs)
+    full = [t.get_size() for t in tbs if len(t.get_size()) == maxrank]
+    ranges = [max((s[d] for s in full), key=lambda v: (axis_split._as_int(v) or -1))
+              for d in range(maxrank)]
     extents = [axis_split._as_int(s) for s in ranges]
     dbg = os.environ.get("TORCHSIM_GRAPH_COPY_DEBUG")
     if dbg:

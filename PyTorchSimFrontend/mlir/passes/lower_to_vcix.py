@@ -40,8 +40,9 @@ _MATH_VIV = {
 
 
 def _sew(elt_ty):
-    if ir.F16Type.isinstance(elt_ty) or ir.BF16Type.isinstance(elt_ty):
-        return 16
+    # Mirror C++ legalizeVectorType: only F32/F64/integer/index get a sew. F16/BF16
+    # return 0 so transcendental math ops stay unlowered (-convert-math-to-llvm),
+    # matching the validated path -- do NOT emit VCIX for them here.
     if ir.F32Type.isinstance(elt_ty):
         return 32
     if ir.F64Type.isinstance(elt_ty):
@@ -59,6 +60,8 @@ def _log2(x):
 
 def _legalize_vector_type(vt, vlen):
     """Mirror legalizeVectorType: return (n, legal_vector_type) or (0, None)."""
+    if len(vt.shape) != 1:           # C++ guards getRank() != 1
+        return 0, None
     elt_ty = vt.element_type
     sew = _sew(elt_ty)
     if sew == 0:
@@ -337,6 +340,12 @@ def _lower_matmul(op, SS, vlen):
     mtA, mtB = ir.MemRefType(A.type), ir.MemRefType(B.type)
     elt = mtA.element_type
     M, K, N = mtA.shape[0], mtA.shape[1], mtB.shape[1]
+    # Mirror the C++ guard: a dimension > SS must be an exact multiple, else the
+    # N//SS / K//SS loop trip counts below silently drop the tail tile.
+    for _dim, _name in ((M, "M"), (N, "N"), (K, "K")):
+        if _dim > SS and _dim % SS != 0:
+            raise NotImplementedError(
+                f"matmul {_name}={_dim} must be a multiple of systolic size {SS} when > {SS}")
     elen = _elt_bits(elt)
     nr_element = vlen // elen
     i64 = ir.IntegerType.get_signless(64)
@@ -364,6 +373,7 @@ def _lower_matmul(op, SS, vlen):
     AAsync = BAsync = BiasAsync = 0
     BiasIdx = None
     subtileM, subtileN, subtileK = M, N, K
+    a_subk = b_subk = None
     for o in _iter_ops(outer[-1].regions[0].blocks[0]):
         if o.operation.name != "memref.dma_start":
             continue
@@ -382,15 +392,21 @@ def _lower_matmul(op, SS, vlen):
             ATag, AAsync = d.tag, d.is_async()
             if len(sub) >= 2:
                 subtileM, subtileK = sub[-2], sub[-1]
+                a_subk = sub[-1]
         elif argn == idxMap[1]:
             BTag, BAsync = d.tag, d.is_async()
             if len(sub) >= 2:
                 subtileK, subtileN = sub[-2], sub[-1]
+                b_subk = sub[-2]
         elif argn == idxMap[2]:
             BiasTag, BiasAsync = d.tag, d.is_async()
             BiasIdx = d.tag_idx
     if ATag is None or BTag is None:
         return False
+    # A and B must agree on the K subtile (last-writer-wins would otherwise pick one silently).
+    if a_subk is not None and b_subk is not None and a_subk != b_subk:
+        raise NotImplementedError(
+            f"Mismatched subtile K between A ({a_subk}) and B ({b_subk}) matmul operands")
 
     KStep = subtileK
     push_length = min(subtileM, SS)

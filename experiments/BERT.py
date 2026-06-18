@@ -4,6 +4,7 @@ import argparse
 
 base_path = os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim')
 sys.path.insert(0, base_path)
+sys.path.insert(0, os.path.join(base_path, 'tests'))
 
 import torch
 from Simulator.simulator import TOGSimulator
@@ -13,9 +14,9 @@ os.environ['TOGSIM_CONFIG'] = config
 
 # Try Fusion EncoderBlock first, fall back to standard test_transformer
 try:
-    from tests.Fusion.test_transformer_fusion import EncoderBlock
+    from ops.fusion.test_transformer_fusion import EncoderBlock
 except ImportError:
-    from tests.test_transformer import EncoderBlock
+    from models.test_transformer import EncoderBlock
 
 HIDDEN_DIM = {'base': 768, 'large': 1024, 'xlarge': 2048}
 EMBEDDING_SIZE = {'base': 768, 'large': 1024, 'xlarge': 2048}

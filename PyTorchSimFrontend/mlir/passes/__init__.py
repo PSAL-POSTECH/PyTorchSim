@@ -32,34 +32,39 @@ _ensure_mlir_bindings_on_path()
 
 from . import lower_vlane_idx
 from . import decompose_transfer
+from . import dma_fine_grained
+from . import lower_to_vcix
 from .lower_to_llvm import run_standard_lowering  # noqa: F401 (re-exported)
 from .build_tog import run_tog  # noqa: F401 (re-exported; replaces C++ test-tile-operation-graph)
-from .dma_fine_grained import run_fine_grained  # noqa: F401 (replaces C++ -dma-fine-grained)
-from .lower_to_vcix import run_to_vcix  # noqa: F401 (replaces C++ -test-pytorchsim-to-vcix)
+from .dma_fine_grained import run_fine_grained  # noqa: F401 (re-exported; standalone/CLI)
+from .lower_to_vcix import run_to_vcix  # noqa: F401 (re-exported; standalone/CLI)
 
-# Ordered passes applied to each kernel .mlir before mlir-opt.
-# decompose_transfer first: it lowers togsim.transfer -> memref.dma_start, which
-# downstream passes (and the gemmini lowering) expect.
-PASSES = [
+# Module rewrite passes around the one remaining mlir-opt pass (-test-loop-padding).
+# Each exposes MARKERS + run(module, **opts); run_module_passes parses once per phase.
+# decompose_transfer first: togsim.transfer -> memref.dma_start (downstream expects it).
+PRE_OPT_PASSES = [
     decompose_transfer,
     lower_vlane_idx,
 ]
+# fine-grained first: splits the matmul DMAs that the vcix lowering then reads.
+POST_OPT_PASSES = [
+    dma_fine_grained,
+    lower_to_vcix,
+]
 
 
-def run_python_passes(mlir_path, vectorlane=128):
-    """Apply all registered Python MLIR passes to the .mlir at `mlir_path`, in place.
-
-    `vectorlane` (systolic-array size / number of vector lanes) is forwarded to passes
-    that need it (e.g. decompose_transfer's lane-banked >4D peel).
-
-    Returns True if the file was modified, False otherwise.
-    """
-    with open(mlir_path) as f:
+def run_module_passes(in_path, out_path, passes, **opts):
+    """Parse `in_path` once, run each marker-matched pass on the shared Module in
+    order, print once to `out_path` (in place if equal). `opts` forwarded to each
+    run(module, **opts). Returns True if any pass ran."""
+    with open(in_path) as f:
         text = f.read()
 
-    # Fast path: nothing to do if no pass's target op appears in the text.
-    active = [p for p in PASSES if any(mk in text for mk in p.MARKERS)]
+    active = [p for p in passes if any(mk in text for mk in p.MARKERS)]
     if not active:
+        if out_path != in_path:
+            import shutil
+            shutil.copyfile(in_path, out_path)
         return False
 
     from mlir.ir import Context, Module, Location
@@ -68,9 +73,14 @@ def run_python_passes(mlir_path, vectorlane=128):
     with ctx, Location.unknown():
         module = Module.parse(text)
         for p in active:
-            p.run(module, vectorlane=vectorlane)
+            p.run(module, **opts)
         out = str(module)
 
-    with open(mlir_path, "w") as f:
+    with open(out_path, "w") as f:
         f.write(out)
     return True
+
+
+def run_python_passes(mlir_path, vectorlane=128):
+    """Run the pre-mlir-opt Module passes (PRE_OPT_PASSES) on `mlir_path`, in place."""
+    return run_module_passes(mlir_path, mlir_path, PRE_OPT_PASSES, vectorlane=vectorlane)

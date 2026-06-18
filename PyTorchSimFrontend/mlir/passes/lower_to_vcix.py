@@ -116,9 +116,10 @@ def _make_sf_vc_v_iv(vec, op_vt, n, legal_ty, opcode, imm):
     else:
         for i in range(total // elt_count):
             ext = vector.ExtractStridedSliceOp(
+                legal_ty, vec,
                 ir.ArrayAttr.get([_i64(i * elt_count)]),
                 ir.ArrayAttr.get([_i64(elt_count)]),
-                ir.ArrayAttr.get([_i64(1)]), vec).result
+                ir.ArrayAttr.get([_i64(1)])).result
             v = _viv(ext, legal_ty, opcode, imm, rvl)
             res = vector.InsertStridedSliceOp(
                 v, res, ir.ArrayAttr.get([_i64(i * elt_count)]),
@@ -374,7 +375,28 @@ def _lower_matmul(op, SS, vlen):
     BiasIdx = None
     subtileM, subtileN, subtileK = M, N, K
     a_subk = b_subk = None
+    # Mirror the C++ isAInitialized / isBInitialized flags: an operand is
+    # "initialized" either by an MVIN dma_start (tag found below) or by a
+    # preceding affine.vector_store into its root memref (the fused case, e.g.
+    # SDPA scores.V where B is the softmax output produced in-place, not DMAed).
+    isAInit = isBInit = False
+
+    def _root(v):
+        owner = v.owner
+        if not isinstance(owner, ir.Block):
+            nm = owner.name
+            if nm in ("memref.reinterpret_cast", "memref.cast"):
+                return owner.operands[0]
+        return v
+    rootA, rootB = _root(A), _root(B)
     for o in _iter_ops(outer[-1].regions[0].blocks[0]):
+        if o.operation.name == "affine.vector_store":
+            dest = _root(o.operation.operands[1])
+            if dest == rootA:
+                isAInit = True
+            elif dest == rootB:
+                isBInit = True
+            continue
         if o.operation.name != "memref.dma_start":
             continue
         d = _DmaView(o.operation)
@@ -390,18 +412,20 @@ def _lower_matmul(op, SS, vlen):
         sub = d.subtile_size()
         if argn == idxMap[0]:
             ATag, AAsync = d.tag, d.is_async()
+            isAInit = True
             if len(sub) >= 2:
                 subtileM, subtileK = sub[-2], sub[-1]
                 a_subk = sub[-1]
         elif argn == idxMap[1]:
             BTag, BAsync = d.tag, d.is_async()
+            isBInit = True
             if len(sub) >= 2:
                 subtileK, subtileN = sub[-2], sub[-1]
                 b_subk = sub[-2]
         elif argn == idxMap[2]:
             BiasTag, BiasAsync = d.tag, d.is_async()
             BiasIdx = d.tag_idx
-    if ATag is None or BTag is None:
+    if not isAInit or not isBInit:
         return False
     # A and B must agree on the K subtile (last-writer-wins would otherwise pick one silently).
     if a_subk is not None and b_subk is not None and a_subk != b_subk:

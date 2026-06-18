@@ -1172,6 +1172,17 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         index = index.subs({s: 0 for s in indirect_syms}, simultaneous=True)
         indirect_dims = [f"{i}" for i in indirect_syms]
 
+        # axis-split + graph-copy linearize aligned floor/mod upstream. Anything that
+        # reaches here still carrying floor/mod (store-side ModularIndexing,
+        # reduction-axis floor/mod, incompatible-radix views) would be silently
+        # mis-strided in the dram_stride computation below, so fail loudly instead.
+        if index.has(FloorDiv) or index.has(ModularIndexing):
+            raise NotImplementedError(
+                f"Unlinearized floor/mod in DMA index: {index}. axis-split/graph-copy "
+                f"did not eliminate it; this view is unsupported "
+                f"(see docs/axis-split-scheduling.md)."
+            )
+
         # Reduction can have two type of tile size
         if broadcast and (total_dims != local_dims or (self.reduction_depth!=len(total_dims) and total_dims[:self.reduction_depth] == local_dims)):
             local_dims = total_dims # Brodatcast tile shape

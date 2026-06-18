@@ -14,10 +14,8 @@ make_pointwise results), so it sees every elementwise consumer in one place. The
 realize() (not a clone, which Inductor inlines) is what actually forces the buffer
 boundary; see the PoC notes in docs.
 
-Default-on; set TORCHSIM_GRAPH_COPY=0 to disable (install() is then a no-op).
 Behavior-neutral unless a genuine incompatible-radix conflict is detected.
 """
-import os
 from torch._inductor import lowering as L
 from torch._inductor import dependencies
 from torch._inductor import ir
@@ -73,10 +71,6 @@ def _relayout_args(args):
     ranges = [max((s[d] for s in full), key=lambda v: (axis_split._as_int(v) or -1))
               for d in range(maxrank)]
     extents = [axis_split._as_int(s) for s in ranges]
-    dbg = os.environ.get("TORCHSIM_GRAPH_COPY_DEBUG")
-    if dbg:
-        print(f"[GC] consumer ntbs={len(tbs)} ranges={extents} "
-              f"sizes={[[axis_split._as_int(s) for s in t.get_size()] for t in tbs]}")
     if not extents or any(e is None for e in extents):
         return None                              # scalar / dynamic -> skip
 
@@ -100,9 +94,7 @@ def _relayout_args(args):
     for tb in tbs:
         try:
             rw = dependencies.extract_read_writes(tb.make_loader(), list(ranges))
-        except Exception as e:
-            if dbg:
-                print(f"[GC] extract fail {type(e).__name__}: {repr(e)[:60]}")
+        except Exception:
             per_bnd.append({})
             per_mv.append(False)
             continue
@@ -110,8 +102,6 @@ def _relayout_args(args):
         exprs = [r.index for r in rw.reads if hasattr(r, "index")]
         b = axis_split.collect_boundaries(exprs, v2a, rw.var_ranges)
         mv = _has_multivar_floormod(exprs)
-        if dbg:
-            print(f"[GC] operand reads={[str(e) for e in exprs]} boundaries={dict(b)} multivar={mv}")
         per_bnd.append(b)
         per_mv.append(mv)
 
@@ -141,18 +131,13 @@ def _relayout_args(args):
     new = list(args)
     p = pos[victim]
     new[p] = ir.ExternKernel.copy_input(args[p])
-    if dbg:
-        print(f"[GC] relayout: copy_input operand #{victim} (arg {p})")
     return new
 
 
 def install():
-    """Wrap registered lowering entries to insert relayout. Idempotent; ON by
-    default (set TORCHSIM_GRAPH_COPY=0 to disable). Call once at backend import
-    (after torch._inductor.lowering is populated -- make_pointwise runs at import
-    to build the entries, so we wrap the entries, not the factory)."""
-    if os.environ.get("TORCHSIM_GRAPH_COPY", "1") == "0":
-        return
+    """Wrap registered lowering entries to insert relayout. Idempotent. Call once
+    at backend import (after torch._inductor.lowering is populated -- make_pointwise
+    runs at import to build the entries, so we wrap the entries, not the factory)."""
     if getattr(L, "_torchsim_relayout_installed", False):
         return
     for key, fn in list(L.lowerings.items()):

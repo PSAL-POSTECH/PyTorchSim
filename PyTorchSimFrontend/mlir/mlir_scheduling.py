@@ -249,43 +249,18 @@ class MLIRScheduling(BaseScheduling):
             nodes, key=lambda x: int(x.is_reduction())
         ).group
 
-        def _dump_axis(tag):
-            import sys as _sys
-            print(f"\n[AXIS_SPLIT:{tag}] group={group} reduction_group={reduction_group}", file=_sys.stderr)
+        # axis-split: linearize compatible floor/mod radices at the scheduling layer.
+        from . import axis_split
+        plan = axis_split.find_split_plan(nodes)
+        if plan:
             for _n in nodes:
-                _body = getattr(_n, "_body", None)
-                if _body is None:
+                if getattr(_n, "_body", None) is None:
                     continue
-                print(f"[AXIS_SPLIT:{tag}]  node={_n.get_name()} var_ranges={getattr(_body, 'var_ranges', None)}", file=_sys.stderr)
-                for _k, _e in getattr(_body, "indexing_exprs", {}).items():
-                    print(f"[AXIS_SPLIT:{tag}]    idx[{_k}] = {_e}", file=_sys.stderr)
-
-        if os.environ.get("TORCHSIM_DEBUG_AXIS_SPLIT"):
-            _dump_axis("before")
-
-        if os.environ.get("TORCHSIM_AXIS_LEDGER"):
-            from . import axis_split
-            import sys as _sys
-            _plan = axis_split.find_split_plan(nodes)
-            for _op, _reason, _term in axis_split.ledger(nodes, _plan):
-                print(f"[AXIS_LEDGER] op={_op} reason={_reason} term={_term}", file=_sys.stderr)
-
-        # axis-split is ON by default; set TORCHSIM_AXIS_SPLIT=0 to disable.
-        if os.environ.get("TORCHSIM_AXIS_SPLIT", "1") != "0":
-            from . import axis_split
-            plan = axis_split.find_split_plan(nodes)
-            if plan:
-                for _n in nodes:
-                    if getattr(_n, "_body", None) is None:
-                        continue
-                    _body, _ranges = axis_split.build_split_body(_n, plan)
-                    _n._sizes, _n._body, _n.group = _ranges, _body, (_n.get_device(), self.group_fn(_ranges))
-                _, (group, reduction_group) = max(
-                    nodes, key=lambda x: int(x.is_reduction())
-                ).group
-                if os.environ.get("TORCHSIM_DEBUG_AXIS_SPLIT"):
-                    print(f"[AXIS_SPLIT] applied plan={plan}", file=__import__("sys").stderr)
-                    _dump_axis("after")
+                _body, _ranges = axis_split.build_split_body(_n, plan)
+                _n._sizes, _n._body, _n.group = _ranges, _body, (_n.get_device(), self.group_fn(_ranges))
+            _, (group, reduction_group) = max(
+                nodes, key=lambda x: int(x.is_reduction())
+            ).group
 
         # Note: We assume that there is at least one loop in the nodes
         # But, inductor simplifies the group, there could be no loop
@@ -394,6 +369,6 @@ class MLIRScheduling(BaseScheduling):
 
 
 # Install the graph-copy (incompatible-radix relayout) lowering hook once at import.
-# Default-on; set TORCHSIM_GRAPH_COPY=0 to disable. See graph_copy.py.
+# See graph_copy.py.
 from . import graph_copy as _graph_copy
 _graph_copy.install()

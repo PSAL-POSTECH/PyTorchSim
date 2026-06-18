@@ -132,7 +132,10 @@ class MLIRCodeCache:
         # Run the Python out-of-line MLIR passes (MLIR bindings) on the kernel
         # .mlir in place, before mlir-opt. Currently lowers torchsim.vlane_idx
         # (replaces the old C++ -global-idx pass); add more in passes/__init__.py.
-        from PyTorchSimFrontend.mlir.passes import run_python_passes, run_standard_lowering, run_tog, run_fine_grained, run_to_vcix
+        from PyTorchSimFrontend.mlir.passes import (
+            run_python_passes, run_module_passes, POST_OPT_PASSES,
+            run_standard_lowering, run_tog,
+        )
         run_python_passes(input_path, vectorlane=vectorlane_size)
         new_input_path = os.path.splitext(input_path)[0]
         raw_tog_path = new_input_path + "_tog.py"
@@ -160,12 +163,11 @@ class MLIRCodeCache:
             llc_asm_cmd = shlex.split(cmds[3])
             with lock:
                 try:
-                    # loop-padding (mlir-opt) -> Python fine-grained -> Python vcix
+                    # loop-padding (mlir-opt) -> Python fine-grained + vcix (one parse/print)
                     subprocess.check_call(opt_pad_cmd)
-                    run_fine_grained(new_input_path + "_padded.mlir",
-                                     new_input_path + "_padded.mlir", vectorlane_size)
-                    run_to_vcix(new_input_path + "_padded.mlir",
-                                new_input_path + "_custom.mlir", vectorlane_size, vlen)
+                    run_module_passes(new_input_path + "_padded.mlir",
+                                      new_input_path + "_custom.mlir",
+                                      POST_OPT_PASSES, vectorlane=vectorlane_size, vlen=vlen)
                     # Standard MLIR -> LLVM-dialect lowering (registered upstream
                     # passes) runs in-process via the bindings PassManager, picking
                     # up after the custom mlir-opt passes (memref-to-gemmini).
@@ -210,12 +212,11 @@ class MLIRCodeCache:
                 # to Python: run_tog reads that IR, writes the TOG (_tog.py) and the
                 # mutated IR (_custom.mlir: sample-mode step rewrite + compute markers),
                 # replacing the C++ -test-tile-operation-graph pass.
-                # loop-padding(timing, mlir-opt) -> Python fine-grained -> Python vcix
+                # loop-padding(timing, mlir-opt) -> Python fine-grained + vcix (one parse/print)
                 subprocess.check_call(gem5_pad_cmd)
-                run_fine_grained(sample_mlir_path + "_padded.mlir",
-                                 sample_mlir_path + "_padded.mlir", vectorlane_size)
-                run_to_vcix(sample_mlir_path + "_padded.mlir",
-                            sample_mlir_path + "_postvcix.mlir", vectorlane_size, vlen)
+                run_module_passes(sample_mlir_path + "_padded.mlir",
+                                  sample_mlir_path + "_postvcix.mlir",
+                                  POST_OPT_PASSES, vectorlane=vectorlane_size, vlen=vlen)
                 run_tog(sample_mlir_path + "_postvcix.mlir", raw_tog_path,
                         sample_mlir_path + "_custom.mlir",
                         sample_mode=extension_config.CONFIG_TLS_MODE,

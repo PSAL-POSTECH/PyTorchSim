@@ -394,6 +394,6 @@ class MLIRScheduling(BaseScheduling):
 
 
 # Install the graph-copy (incompatible-radix relayout) lowering hook once at import.
-# No-op unless TORCHSIM_GRAPH_COPY is set; see graph_copy.py.
+# Default-on; set TORCHSIM_GRAPH_COPY=0 to disable. See graph_copy.py.
 from . import graph_copy as _graph_copy
 _graph_copy.install()

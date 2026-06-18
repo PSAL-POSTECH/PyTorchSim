@@ -1,5 +1,8 @@
 #!/bin/bash
-set -e
+# pipefail so a failing "python3 ... | tee log" aborts instead of being masked by
+# tee's exit code (otherwise a broken model -- e.g. BERT -- fails silently and the
+# job stays green).
+set -eo pipefail
 
 usage() {
   cat <<'EOF'

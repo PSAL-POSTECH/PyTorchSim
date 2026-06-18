@@ -29,6 +29,8 @@ if os.path.isdir(_DEFAULT_BINDINGS) and _DEFAULT_BINDINGS not in sys.path:
 
 import mlir.ir as ir  # noqa: E402
 
+MARKERS = ("linalg.matmul", "math.exp", "math.erf", "math.tanh", "math.sin", "math.cos")
+
 # math op name -> (opcode, imm) for the vcix.v.iv lowering (mirror Math*ToVCIX).
 _MATH_VIV = {
     "math.exp":  (0b000011, 0),

@@ -30,6 +30,8 @@ if os.path.isdir(_DEFAULT_BINDINGS) and _DEFAULT_BINDINGS not in sys.path:
 
 import mlir.ir as ir  # noqa: E402
 
+MARKERS = ("subtile_size",)   # only subtile DMAs are split
+
 MVIN, MVIN2, MVIN3, MVOUT = 2, 1, 14, 3
 
 # Per-rank subtile loop order and the fused-loop layout (mirror the C++ loopGroups).

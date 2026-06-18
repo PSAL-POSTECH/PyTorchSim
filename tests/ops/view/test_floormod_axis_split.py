@@ -4,20 +4,18 @@ Covers the index-expression shapes that view/reshape/tile/group ops produce and
 how the frontend handles them:
 
   - aligned floor/mod (single iter var, divisor divides extent): removed by
-    axis-split at the scheduling layer (TORCHSIM_AXIS_SPLIT). group_norm, repeat,
-    repeat_interleave, permute+reshape (mixed-radix).
+    axis-split at the scheduling layer. group_norm, repeat, repeat_interleave,
+    permute+reshape (mixed-radix).
   - incompatible radices on a shared axis (case 5, e.g. a[c//2] + b[c%3]): the
-    conflicting operand is realized by graph-copy (TORCHSIM_GRAPH_COPY) so the
-    consumer reads it affine and the remainder is axis-split's.
+    conflicting operand is realized by graph-copy so the consumer reads it affine
+    and the remainder is axis-split's.
   - cross-axis / multi-variable floor/mod argument (case 7, e.g. (3*p0+p1)//4 from
     a transpose+reshape feeding a broadcast/softmax/layernorm that keeps the dims
     separate): graph-copy materializes the multi-var operand with copy_input (which
     forces a copy of a view, unlike realize()); the copy kernel iterates the
     operand's own shape so its index collapses to single-var for axis-split.
 
-The features are env-gated; this test turns them on for itself. axis-split is read
-per kernel from the env; graph-copy installs its lowering hook at import, so we
-re-run install() after setting the flag.
+Both features are always on; graph-copy installs its lowering hook at import.
 
 Not in the CI allowlist (pytorchsim_test.yml) -- local feature/regression test.
 """
@@ -30,8 +28,6 @@ import torch.nn.functional as F
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
 from _pytorchsim_utils import test_result
 
-os.environ.setdefault("TORCHSIM_AXIS_SPLIT", "1")
-os.environ.setdefault("TORCHSIM_GRAPH_COPY", "1")
 from PyTorchSimFrontend.mlir import graph_copy
 graph_copy.install()
 

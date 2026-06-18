@@ -737,13 +737,8 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
                 with self as kernel:
                     for node in nodes:
                         node.run(vars, reduction_vars)
-            except RecompileSignal as e:
+            except RecompileSignal:
                 recompile_try += 1
-                # Measure what still depends on the recompile-dance once axis-split +
-                # graph-copy are on by default (set TORCHSIM_RECOMPILE_LOG=1).
-                if os.environ.get("TORCHSIM_RECOMPILE_LOG"):
-                    import sys as _sys
-                    print(f"[RECOMPILE {recompile_try}/{max_retry_compile}] {e}", file=_sys.stderr)
                 if recompile_try > max_retry_compile:
                     raise RuntimeError("Failed to compile kernel after multiple attempts.")
                 # Retry compile nodes

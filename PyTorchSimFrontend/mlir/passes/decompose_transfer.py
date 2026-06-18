@@ -159,7 +159,9 @@ def run(module, vectorlane=128, **_):
             reassoc = ArrayAttr.get(
                 [ArrayAttr.get([IntegerAttr.get(i64, d) for d in g]) for g in groups])
             collapsed_ty = MemRefType.get(target, elem, memory_space=space)
-            keep = [g[-1] for g in groups]              # the non-unit dim in each group
+            # the non-unit dim in each group (g[-1] is wrong when trailing unit dims
+            # attach after it, e.g. [..,4,1,1] -> the kept dim must be the extent-4 one).
+            keep = [next((d for d in g if tile_shape[d] > 1), g[-1]) for g in groups]
             dr_attr = ArrayAttr.get([IntegerAttr.get(i64, dram_stride[i]) for i in keep])
             tl_attr = ArrayAttr.get([IntegerAttr.get(i64, tile_stride[i]) for i in keep])
             st_attr = (ArrayAttr.get([IntegerAttr.get(i64, subtile[i]) for i in keep])
@@ -198,7 +200,16 @@ def run(module, vectorlane=128, **_):
         st_attr = (ArrayAttr.get([IntegerAttr.get(i64, subtile[d]) for d in inner])
                    if subtile is not None else None)
         # the vlane axis must survive into the inner descriptor (it is the lane dim).
-        new_vlane = inner.index(vlane_axis) if vlane_axis in inner else 0
+        if vlane_axis in inner:
+            new_vlane = inner.index(vlane_axis)
+        elif vlane_axis in peeled:
+            # lane dim peeled into the outer loop nest: it cannot be expressed in the
+            # <=4D descriptor, and _phys's lane-banking assumes it is a real axis.
+            raise NotImplementedError(
+                f"vlane split axis {vlane_axis} peeled into the outer loop nest; "
+                f">4D DMA peel cannot place the lane dim in the <=4D descriptor")
+        else:
+            new_vlane = 0  # vlane axis is a unit dim; lane on the first inner dim
 
         # Lane-banked physical stride for split-outer dims (vlane_stride defaults to 1).
         split_extent = tile_shape[vlane_axis]

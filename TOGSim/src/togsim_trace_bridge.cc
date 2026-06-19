@@ -21,16 +21,15 @@ namespace {
 // unlike a compile-time event_id. `tag_idx` (the subtile slot) is retained for
 // the SRAM double-buffer model.
 //
-// FIXME(semantics): the per-iteration tag is reconstructed HERE from record
-// order; the producer IR still carries one static tag (a single func-entry
-// memref.alloc, CSE'd by mlir_codegen_backend.get_tag_cse), so this bends the
-// "the tag identifies the buffer" semantics. The faithful fix is to make the
-// per-iteration tag explicit in the IR: hoist that tag memref.alloc from the
-// func entry into the reduction-loop body (coarse, pre-fine-grained DMA) so each
-// iteration genuinely allocates a fresh tag, and have build_skeleton emit a
-// matching per-iteration togsim.tag_alloc threaded by SSA to the dma/barrier
-// (then `uniq` here is unnecessary). Legacy-safe: it materializes to a distinct
-// alloc per iteration, making calc_tag's accum component redundant.
+// FIXME(semantics): the per-iteration tag is still reconstructed HERE from the
+// record order. The producer IR now DOES carry a per-iteration tag -- dma_fine_-
+// grained emits a fresh tag memref.alloc just before each coarse load (rewiring
+// its dma_wait), so successive reduction iterations allocate distinct tags -- but
+// build_skeleton collapses that to one static tag_id (it DCEs the alloc and keys
+// togsim.dma by the alloc's static identity), so this bridge still needs `uniq`
+// to tell iterations apart at runtime. The faithful finish is to thread the
+// per-iteration alloc identity through build_skeleton as an SSA tag handle on the
+// togsim.dma / togsim.memory_barrier (then `uniq` here is unnecessary).
 std::shared_ptr<Instruction> make_dma(const togsim::TraceRec& t, int64_t uniq) {
   Opcode op = (t.dir == 1) ? Opcode::MOVOUT : Opcode::MOVIN;
   std::vector<size_t> tile_size(t.dims.begin(), t.dims.end());

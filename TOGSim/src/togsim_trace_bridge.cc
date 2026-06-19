@@ -17,6 +17,22 @@ std::shared_ptr<Instruction> make_dma(const togsim::TraceRec& t) {
   // tag_idx_list / tag_stride_list must match in size; one slot key per dma.
   std::vector<int64_t> tag_idx{(int64_t)t.tag_slot};
   std::vector<int64_t> tag_stride{1};
+  // FIXME(multi-tile-K / conv): the tag key here is [tag_id, accum..., sum(tag_idx
+  // *stride)] with tag_id = the tag memref and accum empty. One static dma op runs
+  // once per reduction iteration; with accum empty, every iteration reuses the same
+  // (tag_id, tag_slot) key. Correct only for a single-tile reduction (this GEMM).
+  // Multi-tile-K (and conv, whose reduction is the kh*kw*C nest) would collide.
+  //
+  // Planned fix (design-sketched, not a coordinate enumeration): hoist the tag
+  // memref alloc from the func entry INTO the reduction-loop body, at the coarse
+  // (pre-fine-grained) DMA. Then each reduction iteration allocates a fresh tag,
+  // so its runtime identity (the alloc) IS the per-iteration tag_id -- no accum
+  // axes to enumerate, works for any reduction depth (conv included). Because that
+  // alloc dominates both the load nest and the wait nest (their common reduction
+  // scope), the dma and its memory_barrier pair by the SSA tag handle directly
+  // (drop the event_id / tag_id-attr pairing); the subtile slot is still the
+  // retained `tag_idx`. Legacy-safe: it materializes to a distinct alloc per
+  // iteration, so calc_tag's accum component becomes redundant there too.
   auto inst = std::make_shared<Instruction>(
       op, /*compute_cycle=*/0, /*num_parents=*/0, /*dram_addr=*/t.addr,
       tile_size, tile_stride, (size_t)t.elem_bits, tag_idx, tag_stride,

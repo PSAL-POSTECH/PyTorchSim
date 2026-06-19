@@ -37,7 +37,7 @@ extern "C" {
 // a producer whose embedded version (a `togsim_producer_abi_version` symbol, or
 // a value passed at the entry point) does not match.
 //   v1 -> v2 (P2): dma takes an event_id and returns void (was: returns a
-//                  handle); togsim_emit shape_args is non-const to match the
+//                  handle); togsim_kernel shape_args is non-const to match the
 //                  emitc/mlir-to-cpp output.
 //   v2 -> v3 (P3): add togsim_dispatch (work-item boundary + core binding) and
 //                  togsim_wait_all (join / barrier).
@@ -150,7 +150,7 @@ void togsim_compute_barrier(EmitCtx* ctx);
 // Entry point the loader resolves in the producer `.so`. `shape_args` carries
 // the runtime values for the kernel's symbolic dimensions (in a kernel-specific
 // order recorded alongside the cached `.so`); `n_shape_args` is their count.
-void togsim_emit(EmitCtx* ctx, int64_t* shape_args, int32_t n_shape_args);
+void togsim_kernel(EmitCtx* ctx, int64_t* shape_args, int32_t n_shape_args);
 
 #ifdef __cplusplus
 }  // extern "C"

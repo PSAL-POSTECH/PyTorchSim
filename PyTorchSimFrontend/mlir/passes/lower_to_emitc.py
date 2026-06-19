@@ -4,12 +4,12 @@ Second stage of the C++ trace pipeline (docs/design/togsim_cpp_trace.md, sec
 5-7). Takes the skeleton+API module from `build_skeleton` (loop nest +
 `togsim.*` ops) and produces an EmitC module whose single entry function
 
-    extern "C" void togsim_emit(EmitCtx* ctx, int64_t* shape_args, int32_t n)
+    extern "C" void togsim_kernel(EmitCtx* ctx, int64_t* shape_args, int32_t n)
 
 mirrors the loop skeleton, with every `togsim.*` op as an `emitc.call_opaque`
 to the matching `togsim_runtime.h` free function (`togsim_ops.EMITC_CALLEE`).
 `mlir-translate --mlir-to-cpp` renders it to C++, compiled to a `.so` that
-exports `togsim_emit` and leaves `togsim_dma/wait/compute/signal` undefined for
+exports `togsim_kernel` and leaves `togsim_dma/wait/compute/signal` undefined for
 the TOGSim loader to resolve at `dlopen`.
 
 How the lowering is done -- it drives the *upstream* EmitC conversion passes and
@@ -49,7 +49,7 @@ from . import togsim_ops as ts
 from ._mlir_util import walk_ops, i32, i64, attr_int, attr_i64_array
 from .build_tog import ir, _find_kernel
 
-#: emitted entry symbol (== ts.ENTRY_SYMBOL == "togsim_emit").
+#: emitted entry symbol (== ts.ENTRY_SYMBOL == "togsim_kernel").
 ENTRY = ts.ENTRY_SYMBOL
 
 #: EmitC type of the opaque EmitCtx* threaded through every call.
@@ -114,7 +114,7 @@ def _strip_aux(module):
 
 def _rewrite_signature(kernel, ctx):
     """Replace @kernel's memref tensor args with the ABI args
-    (EmitCtx*, int64_t* shape_args, int32_t n) and rename it to togsim_emit.
+    (EmitCtx*, int64_t* shape_args, int32_t n) and rename it to togsim_kernel.
     Returns the ctx Value."""
     block = kernel.regions[0].blocks[0]
     for arg in block.arguments:
@@ -335,7 +335,7 @@ def _add_extern_c(module, ctx):
 # ---------------------------------------------------------------------------
 def lower_to_emitc(skeleton_module):
     """Lower a skeleton+API module (in place) to an EmitC module with the
-    `togsim_emit` entry function. Returns the same module."""
+    `togsim_kernel` entry function. Returns the same module."""
     ctx = skeleton_module.context
     kernel = _find_kernel(skeleton_module)
     if kernel is None:

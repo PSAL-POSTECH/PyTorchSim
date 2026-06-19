@@ -67,7 +67,7 @@ EMITC_CALLEE = {
 }
 
 #: producer entry-point symbol the TOGSim loader resolves (see togsim_runtime.h).
-ENTRY_SYMBOL = "togsim_emit"
+ENTRY_SYMBOL = "togsim_kernel"
 
 #: runtime callee emitted directly by lower_to_emitc (not a skeleton op): the
 #: per-work-item core allocation. See togsim_cpp_trace.md sec 9.3. Kept in

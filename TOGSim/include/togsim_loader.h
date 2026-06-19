@@ -3,7 +3,7 @@
 // -----------------------------------------------------------------------------
 // TOGSim-side loader for the compiled trace producer (C6, P3 task 5). NOT part
 // of the producer ABI (togsim_runtime.h) -- this is the TOGSim half that
-// `dlopen`s a producer `.so`, runs its `togsim_emit`, and records the emitted
+// `dlopen`s a producer `.so`, runs its `togsim_kernel`, and records the emitted
 // instruction stream. See docs/design/togsim_cpp_trace.md sec 5.3 / 9.7.
 //
 // This first cut is the "materializing sink": the callbacks resolve each tile's
@@ -50,7 +50,7 @@ struct RunResult {
   std::vector<TraceRec> trace;
 };
 
-// Load `so_path`, run its `togsim_emit(shape_args, n_shape)` against a freshly
+// Load `so_path`, run its `togsim_kernel(shape_args, n_shape)` against a freshly
 // built EmitCtx, and return the recorded trace.
 //   tensor_base[arg_id] : DRAM base address of each kernel tensor argument
 //   cyc[tile_id] / ovl[tile_id] : the cycle table (cycle, overlapping_cycle)

@@ -119,8 +119,8 @@ RunResult run_producer(const char* so_path,
   RunResult res;
   void* lib = dlopen(so_path, RTLD_NOW | RTLD_GLOBAL);
   if (!lib) { fprintf(stderr, "togsim: dlopen failed: %s\n", dlerror()); return res; }
-  auto emit = (void (*)(EmitCtx*, int64_t*, int32_t))dlsym(lib, "togsim_emit");
-  if (!emit) { fprintf(stderr, "togsim: dlsym togsim_emit failed: %s\n", dlerror()); return res; }
+  auto emit = (void (*)(EmitCtx*, int64_t*, int32_t))dlsym(lib, "togsim_kernel");
+  if (!emit) { fprintf(stderr, "togsim: dlsym togsim_kernel failed: %s\n", dlerror()); return res; }
 
   EmitCtx ctx;
   ctx.tensor_base = tensor_base; ctx.n_tensors = n_tensors;

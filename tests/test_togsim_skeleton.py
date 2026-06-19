@@ -40,7 +40,7 @@ def test_togsim_ops_contract():
         assert callee in header, f"{callee} missing from togsim_runtime.h"
 
     # Entry point symbol agrees with the header.
-    assert ts.ENTRY_SYMBOL == "togsim_emit"
+    assert ts.ENTRY_SYMBOL == "togsim_kernel"
     assert ts.ENTRY_SYMBOL in header
 
     # Runtime callee emitted directly by lower_to_emitc (core alloc).

@@ -5,7 +5,7 @@ The pipeline under test (docs/design/togsim_cpp_trace.md, sec 5-7):
     post-vcix .mlir --build_skeleton--> skeleton+API
                     --lower_to_emitc--> EmitC module
                     --mlir-translate--> C++
-                    --g++ -shared----> trace .so  (exports togsim_emit;
+                    --g++ -shared----> trace .so  (exports togsim_kernel;
                                                     togsim_* left undefined)
 
 `test_build_trace_so` builds the .so and checks the EmitC/symbol-table shape.
@@ -72,7 +72,7 @@ void togsim_compute_barrier(EmitCtx*){}
 int main(int argc, char** argv){
   void* h = dlopen(argv[1], RTLD_NOW | RTLD_GLOBAL);
   if(!h){ printf("dlopen failed: %s\n", dlerror()); return 2; }
-  auto emit = (void(*)(EmitCtx*, int64_t*, int32_t))dlsym(h, "togsim_emit");
+  auto emit = (void(*)(EmitCtx*, int64_t*, int32_t))dlsym(h, "togsim_kernel");
   if(!emit){ printf("dlsym failed: %s\n", dlerror()); return 3; }
   emit(nullptr, nullptr, 0);
   printf("TRACE core=%d dma=%d membar=%d compute=%d bad=%d\n",
@@ -106,7 +106,7 @@ def test_build_trace_so():
         nm = subprocess.run(["nm", "-D", so], capture_output=True, text=True).stdout
         syms = {parts[-1]: parts[-2] for parts in
                 (ln.split() for ln in nm.splitlines()) if len(parts) >= 2}
-        assert syms.get("togsim_emit") == "T", nm
+        assert syms.get("togsim_kernel") == "T", nm
         assert syms.get("togsim_dma") == "U", nm
         assert syms.get("togsim_core_alloc") == "U", nm
         assert syms.get("togsim_memory_barrier") == "U", nm

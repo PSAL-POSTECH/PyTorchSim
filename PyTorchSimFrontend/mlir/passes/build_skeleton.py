@@ -147,6 +147,89 @@ def _emit_memory_bar(ctx, anchor_op, tag_id, tag_index, write_bufs):
         loc=ir.Location.unknown(ctx), ip=ir.InsertionPoint(anchor_op))
 
 
+def _flatten_add(expr):
+    """Top-level additive summands of an AffineExpr (`.lhs`/`.rhs` come back typed
+    as the base AffineExpr, so use the `isinstance`/cast pattern, not Python
+    isinstance)."""
+    if ir.AffineAddExpr.isinstance(expr):
+        a = ir.AffineAddExpr(expr)
+        return _flatten_add(a.lhs) + _flatten_add(a.rhs)
+    return [expr]
+
+
+def _neg_coeff_dim(summand):
+    """If `summand` is `dim * c` with a negative constant `c`, return that dim's
+    position; else None. lower_to_vcix tags each accumulation (reduction) loop var
+    with coefficient -1 in the dma_wait tag index -- a SENTINEL marking the
+    reduction axis, not an arithmetic offset (legacy TileGraphParser skips stride
+    -1 for the same reason)."""
+    if not ir.AffineMulExpr.isinstance(summand):
+        return None
+    mul = ir.AffineMulExpr(summand)
+    l, r = mul.lhs, mul.rhs
+    dim = l if ir.AffineDimExpr.isinstance(l) else (r if ir.AffineDimExpr.isinstance(r) else None)
+    con = l if ir.AffineConstantExpr.isinstance(l) else (r if ir.AffineConstantExpr.isinstance(r) else None)
+    if dim is None or con is None or ir.AffineConstantExpr(con).value >= 0:
+        return None
+    return ir.AffineDimExpr(dim).position
+
+
+def _strip_accum_terms(ctx, tag_index, anchor_op):
+    """Return a tag-index Value with the accumulation-marked (-1 coefficient) terms
+    dropped, so a memory_barrier waits on the SAME subtile slot its async load
+    wrote.
+
+    The wait tag index built by lower_to_vcix carries `-acc_iv` for each reduction
+    loop var; the matching load index (dma_fine_grained) is subtile-only. Without
+    this, at reduction iteration > 0 the producer EVALUATES `-acc_iv` to a negative
+    slot, so the recorded barrier slot diverges from the load slot and the runtime
+    tag pairing fails (TOGSim aborts with "Key does not exist in ... tag table").
+    Dropping the -1 terms mirrors legacy TileGraphParser.cc, which skips stride -1
+    and routes the reduction axis to a separate accum tag component; here the
+    per-iteration tag alloc (dma_fine_grained) already separates the reductions, so
+    the barrier only needs the subtile slot.
+
+    Falls through (returns `tag_index` unchanged) for anything that is not an
+    affine.apply whose single result carries such a term -- e.g. the single-tile
+    case, whose index has no reduction term."""
+    if tag_index is None:
+        return None
+    try:
+        apply_op = tag_index.owner
+        if apply_op.name != "affine.apply":
+            return tag_index
+        amap = ir.AffineMapAttr(apply_op.attributes["map"]).value
+    except Exception:
+        return tag_index
+    if amap.n_dims == 0 or amap.n_symbols != 0 or len(amap.results) != 1:
+        return tag_index
+    expr = amap.results[0]
+    dropped = sorted({p for p in (_neg_coeff_dim(s) for s in _flatten_add(expr))
+                      if p is not None})
+    if not dropped:
+        return tag_index
+    n = amap.n_dims
+    kept = [i for i in range(n) if i not in dropped]
+    new_pos = {old: i for i, old in enumerate(kept)}
+    # compose the original expr with a selector that sends each dropped dim to 0
+    # and renumbers the kept dims 0..k-1.
+    sel = [ir.AffineConstantExpr.get(0) if i in dropped
+           else ir.AffineDimExpr.get(new_pos[i]) for i in range(n)]
+    new_expr = expr.compose(ir.AffineMap.get(len(kept), 0, sel))
+    new_map = ir.AffineMap.get(len(kept), 0, [new_expr])
+    operands = list(apply_op.operands)
+    new_operands = [operands[i] for i in kept]
+    new_apply = ir.Operation.create(
+        "affine.apply",
+        results=[ir.IndexType.get(ctx)],
+        operands=new_operands,
+        attributes={"map": ir.AffineMapAttr.get(new_map)},
+        loc=ir.Location.unknown(ctx),
+        ip=ir.InsertionPoint(anchor_op),
+    )
+    return new_apply.results[0]
+
+
 def _emit_compute(ctx, compute_node, tile_id, read_bufs, write_bufs):
     front = compute_node.operations[0]
     attrs = {
@@ -322,6 +405,9 @@ def _emit_one_wait(ctx, op, tags):
     if binding is None:
         return False
     tag_id, buf = binding
+    # honor lower_to_vcix's -1 accumulation marker: strip the reduction terms so
+    # the barrier slot equals the subtile slot the paired async load wrote.
+    tag_index = _strip_accum_terms(ctx, tag_index, op)
     _emit_memory_bar(ctx, op, tag_id, tag_index, [buf])
     return True
 

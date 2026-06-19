@@ -1,3 +1,9 @@
+# DEPRECATED (timing path): legacy ONNX Tile-Operation-Graph producer. Builds
+# the TOG and serializes it to ONNX for the C++ TileGraphParser. Superseded by
+# the C++ trace pipeline (PyTorchSimFrontend/mlir/passes/build_skeleton.py +
+# lower_to_emitc.py + cycle_table.py -> a compiled trace .so). Kept live so the
+# current pipeline does not break; to be retired once the trace pipeline (P3+)
+# stabilizes. See docs/design/togsim_cpp_trace.md.
 import os
 import sys
 import importlib.util

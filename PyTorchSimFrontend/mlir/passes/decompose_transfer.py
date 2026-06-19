@@ -32,13 +32,7 @@ Pass interface (passes/__init__.py): MARKERS + run(module).
 OP_NAME = "togsim.transfer"
 MARKERS = (OP_NAME,)
 
-
-def _iter_ops(block):
-    for op in list(block.operations):
-        yield op
-        for region in op.operation.regions:
-            for b in region.blocks:
-                yield from _iter_ops(b)
+from ._mlir_util import walk_ops
 
 
 def _int_array(attr):
@@ -92,7 +86,7 @@ def run(module, vectorlane=128, **_):
     targets = []
     for region in module.operation.regions:
         for b in region.blocks:
-            for op in _iter_ops(b):
+            for op in walk_ops(b):
                 if op.operation.name == OP_NAME:
                     targets.append(op.operation)
 

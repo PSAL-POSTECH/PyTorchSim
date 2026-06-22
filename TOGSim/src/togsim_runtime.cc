@@ -51,12 +51,16 @@ extern "C" {
 
 int32_t togsim_abi_version(void) { return TOGSIM_ABI_VERSION; }
 
-int32_t togsim_core_alloc(EmitCtx* ctx) {
-  // Round-robin a core from the pool; the producer never sees num_cores. Binds
-  // it as the current core for the ops that follow (the work-item's reduction).
+void togsim_dispatch(EmitCtx* ctx, togsim_tile_fn fn, int64_t* iv, int32_t n_iv) {
+  // Higher-order work-item wrapper (sec 9.3): round-robin a core (the producer
+  // never sees num_cores), bracket the work-item with TILE_BEGIN/TILE_END, and
+  // run its body. The work-item SCOPE is exactly this fn call -- the begin/end
+  // are runtime-owned, so the producer never relies on an implicit "ops until
+  // the next alloc" boundary. The ops fn emits record under ctx->cur_core.
   ctx->cur_core = ctx->num_cores > 0 ? (ctx->rr++ % ctx->num_cores) : 0;
-  ctx->trace.push_back(blank(togsim::TraceRec::DISPATCH, ctx->cur_core));
-  return ctx->cur_core;
+  ctx->trace.push_back(blank(togsim::TraceRec::TILE_BEGIN, ctx->cur_core));
+  fn(ctx, iv, n_iv);
+  ctx->trace.push_back(blank(togsim::TraceRec::TILE_END, ctx->cur_core));
 }
 
 void togsim_dma(EmitCtx* ctx, int32_t dir, int32_t arg_id,
@@ -181,7 +185,8 @@ SimResult simulate(const RunResult& run, const TimingParams& params) {
         out.n_compute++;
         break;
       }
-      case TraceRec::DISPATCH:
+      case TraceRec::TILE_BEGIN:
+      case TraceRec::TILE_END:
       case TraceRec::COMPUTE_BAR:
         break;  // work-item boundary / compute fence: no cost in this reference timer
     }

@@ -69,10 +69,15 @@ EMITC_CALLEE = {
 #: producer entry-point symbol the TOGSim loader resolves (see togsim_runtime.h).
 ENTRY_SYMBOL = "togsim_kernel"
 
-#: runtime callee emitted directly by lower_to_emitc (not a skeleton op): the
-#: per-work-item core allocation. See togsim_cpp_trace.md sec 9.3. Kept in
-#: lockstep with togsim_runtime.h.
-CORE_ALLOC_CALLEE = "togsim_core_alloc"
+#: outlined per-work-item function the dispatcher hands to togsim_dispatch
+#: (uniform signature (ctx, int64* iv, i32 n); see togsim_cpp_trace.md sec 9.3).
+TILE_SYMBOL = "togsim_kernel_tile"
+
+#: runtime callees emitted directly by lower_to_emitc (not skeleton ops), kept in
+#: lockstep with togsim_runtime.h. DISPATCH_CALLEE is the higher-order wrapper the
+#: dispatcher loop calls per work-item (round-robins a core + TILE_BEGIN/END);
+#: TILE_SYMBOL is passed to it as the function pointer.
+DISPATCH_CALLEE = "togsim_dispatch"
 
 # ---- attribute keys -------------------------------------------------------
 ATTR_DIR       = "dir"        # i32: DIR_LOAD | DIR_STORE

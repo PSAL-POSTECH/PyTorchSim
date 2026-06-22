@@ -63,7 +63,7 @@ int main(int argc, char** argv) {
   std::vector<uint64_t> dma_a; std::vector<int> dma_arg, dma_dir;
   std::vector<std::pair<int,uint64_t>> async_tags;  // (tag_id, tag_slot) of async dmas
   for (auto& t : r.trace) {
-    if (t.kind == TraceRec::DISPATCH) ndisp++;
+    if (t.kind == TraceRec::TILE_BEGIN) ndisp++;   // one per work-item
     else if (t.kind == TraceRec::DMA) {
       nd++; dma_a.push_back(t.addr);
       dma_arg.push_back(t.arg_id); dma_dir.push_back(t.dir);

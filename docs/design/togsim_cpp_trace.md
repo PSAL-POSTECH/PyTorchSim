@@ -411,16 +411,20 @@ only `togsim_*` callbacks are visible across the `dlopen` boundary.
   `num_tiles`-style count — not required now).
 - `tile_id -> cycle` table unchanged (num_cores-invariant).
 
-> Implementation status (P3): `lower_to_emitc` inserts the `togsim_core_alloc`
-> marker at the innermost PARALLEL-loop body inside the single `togsim_kernel`
-> function — the emitted *trace* is identical to the two-function form (one
-> core_alloc per work-item, then the work ops). Address arithmetic is wired
-> (approach A): each `togsim_dma` passes `(arg_id, element offset)` with the
-> offset computed from the loop IVs (lowered by `convert-arith-to-emitc`, cast-
-> free thanks to the size_t IV retype); the runtime adds the tensor base.
-> Outlining the work body into a separate `togsim_kernel_tile` is now *meaningful*
-> (the body uses the parallel IVs in the offset) but still deferred — the
-> single-function trace is identical, so the split is cosmetic until needed.
+> Implementation status (P3, ABI v12): `lower_to_emitc` OUTLINES the innermost
+> PARALLEL-loop body into a uniform `togsim_kernel_tile(ctx, iv, n)` func and the
+> dispatcher loop hands it to `togsim_dispatch(ctx, fn, iv, n)` -- a higher-order
+> runtime wrapper that round-robins a core and brackets the call with
+> TILE_BEGIN/TILE_END. The work-item SCOPE is now the function call itself (not an
+> implicit "ops until the next core_alloc" range), and one general dispatcher
+> serves every kernel (uniform iv-array ABI). Earlier this was a single
+> `togsim_kernel` with a bare `togsim_core_alloc` marker; the emitted *trace* is
+> identical (one work-item bracket, then the work ops), so cycles are unchanged --
+> the outline was done to make the boundary explicit, not for timing. Address
+> arithmetic is wired (approach A): each `togsim_dma` passes `(arg_id, element
+> offset)` with the offset computed from the loop IVs (lowered by
+> `convert-arith-to-emitc`, cast-free thanks to the size_t IV retype); the runtime
+> adds the tensor base. The parallel IVs reach the tile fn through the iv array.
 
 ### 9.5 Stance and the split-K exception
 
@@ -563,9 +567,11 @@ single forward-compat requirement is that the callback sink is an interface.
    store, signals its tag at data arrival), `togsim_compute` (cycle-table lookup),
    `togsim_memory_barrier` (waits the matching `(tag_id, tag_slot)`),
    `togsim_compute_barrier`.
-2. DONE (single-buffer). `lower_to_emitc`: inserts `togsim_core_alloc` at the
-   work-item boundary, lowers `togsim.memory_barrier`, and reads `loop_type`.
-   (Two-function outline still deferred; trace identical.)
+2. DONE (single-buffer). `lower_to_emitc`: OUTLINES the work-item body into
+   `togsim_kernel_tile(ctx, iv, n)` + a `togsim_dispatch` call at the work-item
+   boundary (ABI v12; was a bare `togsim_core_alloc` marker), lowers
+   `togsim.memory_barrier`, and reads `loop_type`. (Two-function outline DONE;
+   trace identical.)
 3. DONE. Real tile addresses wired (approach A): build_skeleton keeps the DRAM
    index operand on `togsim.dma`; lower_to_emitc passes `(arg_id, offset)` and
    `convert-arith-to-emitc` lowers the offset (size_t IV retype makes it
@@ -963,7 +969,12 @@ numbers; 2518-vs-2698 is the current real-table figure.
    -> a harmless extra edge.
 6. **P5 op coverage.** Only GEMM is exercised. Extend to conv / SDPA / vector / pool.
 7. **P4.** Symbolic/dynamic shape; streaming sink (coroutine, alloc-blocks).
-8. **Two-function outline** (togsim_kernel_tile) -- deferred (trace identical).
+8. **Two-function outline** (togsim_kernel_tile) -- DONE (ABI v12). The work-item
+   body is outlined into a uniform `togsim_kernel_tile(ctx, iv, n)` and run via the
+   higher-order `togsim_dispatch` wrapper (round-robin core + TILE_BEGIN/TILE_END);
+   the work-item scope is now the function call. Trace/cycles identical to the old
+   single-function `togsim_core_alloc` form. One general dispatcher serves every
+   kernel.
 9. **Retire the legacy ONNX-TOG path** once the trace path is stable.
 
 ### 11.3 Next-session context

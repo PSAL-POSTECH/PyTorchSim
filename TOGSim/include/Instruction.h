@@ -50,6 +50,14 @@ class Instruction : public std::enable_shared_from_this<Instruction> {
   int get_assigned_sa() const { return _assigned_sa; }
   void set_weight_token(const std::shared_ptr<WeightToken>& t) { _weight_token = t; }
   const std::shared_ptr<WeightToken>& get_weight_token() const { return _weight_token; }
+  // Trace-only: which work-item (togsim_dispatch tile) this op belongs to, for
+  // grouping/coloring in the timeline. Set by the bridge per TILE_BEGIN.
+  void set_tile_group(int g) { _tile_group = g; }
+  int get_tile_group() const { return _tile_group; }
+  // COMPUTE_BAR fence: the max finish_cycle of the async computes it gates (its
+  // own dispatch only), so it drains those instead of every SA pipeline.
+  void update_fence_finish(cycle_type c) { if (c > _fence_finish) _fence_finish = c; }
+  cycle_type get_fence_finish() const { return _fence_finish; }
   bool check_ready() { return ready_counter == 0; }
   const Opcode get_opcode() { return opcode; }
   bool is_dma_read() { return opcode == Opcode::MOVIN; }
@@ -165,4 +173,6 @@ class Instruction : public std::enable_shared_from_this<Instruction> {
   // SA weight-buffer model (see the setters above).
   int _assigned_sa = -1;
   std::shared_ptr<WeightToken> _weight_token;
+  int _tile_group = -1;   // trace-only work-item id (see set_tile_group)
+  cycle_type _fence_finish = 0;   // COMPUTE_BAR: drain target (see update_fence_finish)
 };

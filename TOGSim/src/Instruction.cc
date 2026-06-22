@@ -67,7 +67,12 @@ void Instruction::add_pipeline_child(std::shared_ptr<Instruction> child) {
 }
 
 void Instruction::release_pipeline_children() {
-  for (auto& c : _pipeline_children) c->dec_ready_counter();
+  for (auto& c : _pipeline_children) {
+    // a COMPUTE_BAR child fences only its own dispatch -> it drains the max
+    // finish of the computes it gates, fed here as each one issues.
+    if (c->get_opcode() == Opcode::COMPUTE_BAR) c->update_fence_finish(finish_cycle);
+    c->dec_ready_counter();
+  }
   _pipeline_children.clear();
 }
 

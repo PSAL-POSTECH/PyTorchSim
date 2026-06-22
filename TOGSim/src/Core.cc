@@ -356,10 +356,6 @@ void Core::cycle() {
               inst->set_assigned_sa(sa_idx);         // record the SA actually used (for the trace)
             }
             release_sram(inst);   // consumer issued -> free the tiles it read
-            // sec 10.7: this op is now entering the pipeline -> release its
-            // occupancy (pipeline) dependents so a preload/matmul successor
-            // overlaps it instead of waiting its full latency.
-            inst->release_pipeline_children();
             auto& target_pipeline = (ct == VECTOR_UNIT) ? _vu_compute_pipeline
                                                         : _sa_compute_pipeline.at(sa_idx);
             if (target_pipeline.empty()) {
@@ -371,6 +367,10 @@ void Core::cycle() {
               inst->finish_cycle = target_pipeline.back()->finish_cycle + inst->get_compute_cycle() - overlapped_cycle;
               inst->bubble_cycle = bubble_cycle;
             }
+            // sec 10.7: release the occupancy (pipeline) dependents so a successor
+            // overlaps this op. finish_cycle is set first so release can feed it to
+            // a COMPUTE_BAR child's per-dispatch fence (see release_pipeline_children).
+            inst->release_pipeline_children();
 
             // Release this matmul's weight slot at its streaming-end (finish -
             // overlapping), not at full finish (the drain tail does not read it).
@@ -430,16 +430,13 @@ void Core::cycle() {
           break;
         case Opcode::COMPUTE_BAR:
           {
-            // Compute fence (sec 10.7): finish only once ALL compute pipelines
-            // have drained (every systolic array + the VPU empty). Its
-            // ready_counter already gated it until the async computes ISSUED
-            // (pipeline-child release), so by now they are in the pipeline; we
-            // wait for them to drain. If not yet drained, do not issue -- it
-            // stays in the ready queue and is re-checked next cycle.
-            bool drained = _vu_compute_pipeline.empty();
-            for (int s = 0; s < _num_systolic_array_per_core; s++)
-              drained = drained && _sa_compute_pipeline.at(s).empty();
-            if (drained) {
+            // Compute fence (sec 10.7): finish once THIS dispatch's async computes
+            // have drained -- i.e. the current cycle has reached the max finish of
+            // the computes it gates (fed in via update_fence_finish when each
+            // issued). Scoped to its own dispatch, so an unrelated tile's matmuls
+            // sharing the SA pipelines do not delay it (no cross-dispatch
+            // serialization). Not yet drained -> stays in the ready queue.
+            if (_core_cycle >= inst->get_fence_finish()) {
               core_trace_log::trace_instruction_line(_core_cycle, _id,
                   TraceLogTag::pad15(TraceLogTag::kInstructionFinished),
                   inst->get_global_inst_id(),

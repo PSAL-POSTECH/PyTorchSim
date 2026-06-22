@@ -94,7 +94,8 @@ def to_chrome(insts, num_sa=1):
       dma    : MOVIN/MOVOUT -- 1 DMA engine; slice = actual transfer
                (ASYNC_DMA_ISSUE -> data-ready).
       vector : COMP type 0  -- 1 VPU.
-      sa     : COMP type 1/2 -- num_sa systolic arrays, round-robin by issue order.
+      sa     : COMP type 1/2 -- each op on the SA the Core reports (`sa=` field;
+               weight-pinned), so lanes auto-split sa0..; rr fallback if absent.
     A compute slice's width is compute_cycle - overlapping_cycle (its occupancy =
     latency minus the tail that overlaps the next op), starting when the unit
     actually picks it up: start = max(issue, unit_free). num_sa>1 -> lanes sa0.. ."""
@@ -155,17 +156,26 @@ def to_chrome(insts, num_sa=1):
             start = max(r["issued"], free)
             free = start + dur
             add(core, "vector", start, dur, "vector", r)
-        # SA: num_sa servers, round-robin in issue order (mirrors the Core's rr).
-        sa_free = [0] * nsa
-        for i, r in enumerate(sorted(u["sa"], key=issue_key)):
+        # SA: each op runs on the systolic array the Core reports (the `sa=` field
+        # = its weight-pinned / round-robin assignment); fall back to round-robin
+        # by issue order for older logs without the field. Each SA is one server.
+        rows = sorted(u["sa"], key=issue_key)
+
+        def _sa_of(r, i):
+            m = re.search(r"\bsa=(-?\d+)", r["detail"])
+            return int(m.group(1)) if (m and int(m.group(1)) >= 0) else (i % nsa)
+
+        max_sa = max([nsa] + [_sa_of(r, i) + 1 for i, r in enumerate(rows)])
+        sa_free = [0] * max_sa
+        for i, r in enumerate(rows):
             if r["issued"] is None:
                 continue
-            s = i % nsa
+            s = _sa_of(r, i)
             cc, ov = _occ(r["detail"])
             dur = max(cc - ov, 1)
             start = max(r["issued"], sa_free[s])
             sa_free[s] = start + dur
-            lane = "sa" if nsa == 1 else f"sa{s}"
+            lane = "sa" if max_sa == 1 else f"sa{s}"
             add(core, lane, start, dur, _label(r["opcode"], r["detail"]), r)
 
     for c in sorted(cores):

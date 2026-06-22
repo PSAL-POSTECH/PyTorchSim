@@ -52,11 +52,12 @@ std::string format_instruction_detail_line(Instruction& inst) {
   const Opcode op = inst.get_opcode();
   const std::string opname = opcode_to_string(op);
   if (op == Opcode::COMP) {
-    return fmt::format("{} (compute_type={} compute_cycle={} overlapping_cycle={})",
+    return fmt::format("{} (compute_type={} compute_cycle={} overlapping_cycle={} sa={})",
                        opname,
                        inst.get_compute_type(),
                        inst.get_compute_cycle(),
-                       inst.get_overlapping_cycle());
+                       inst.get_overlapping_cycle(),
+                       inst.get_assigned_sa());
   }
   if ((op == Opcode::MOVIN || op == Opcode::MOVOUT) && inst.is_async_dma()) {
     return fmt::format("{} (ASYNC subgraph_id={} addr_name={} tag_id=[{}] tag_idx=[{}] tag_stride=[{}])",

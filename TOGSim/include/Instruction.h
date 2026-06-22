@@ -147,7 +147,8 @@ class Instruction : public std::enable_shared_from_this<Instruction> {
   Opcode opcode;
   cycle_type compute_cycle;
   cycle_type overlapping_cycle;
-  size_t ready_counter;
+  size_t ready_counter = 0;   // parents not yet finished; the minimal Instruction(Opcode)
+                              // ctor (barriers) relies on this default + inc_ready_counter
   std::set<std::shared_ptr<Instruction>> child_inst;
   std::set<std::shared_ptr<Instruction>> _pipeline_children;  // released at issue (sec 10.7)
   std::vector<size_t> tile_size;

@@ -33,6 +33,10 @@ struct SimulationConfig {
   // unset -> gate disabled (unlimited). Only affects trace-path instructions
   // (legacy TileGraphParser insts have alloc id -1 -> never gated).
   uint32_t core_spad_size_kb = 0;
+  // SA weight-buffer depth (sec 10.x): weight tiles a systolic array holds; a
+  // preload stalls until a slot frees (its matmuls finished). 2 = weight
+  // double-buffer (convention default, tunable). 0 = disabled.
+  uint32_t sa_weight_buffer_depth = 2;
 
   /* DRAM config */
   DramType dram_type;

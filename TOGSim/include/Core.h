@@ -1,6 +1,7 @@
 #pragma once
 #include <robin_hood.h>
 #include <unordered_set>
+#include <map>
 #include <memory>
 #include <vector>
 #include <fmt/core.h>
@@ -62,6 +63,13 @@ class Core {
   // SRAM-capacity throttle (sec 10.x): a consumer frees the buffer-versions it
   // read (refcount -> 0 releases the spad bytes). Called when COMP/MOVOUT issue.
   void release_sram(const std::shared_ptr<Instruction>& inst);
+  // SA weight-buffer throttle (sec 10.x): pick a systolic array that has a free
+  // weight slot (round-robin among free); -1 if all full -> the preload stalls.
+  int pick_free_weight_sa();
+  // Free weight slots due this cycle: a matmul releases its slot at its
+  // streaming-end (finish - overlapping, when it stops reading the weight),
+  // scheduled at issue in _weight_release_q. Last consumer frees it.
+  void process_weight_releases();
 
   /* Core id & config file */
   const uint32_t _id;
@@ -117,4 +125,13 @@ class Core {
   size_t _sram_used = 0;
   size_t _sram_capacity = 0;
   std::unordered_map<int64_t, size_t> _sram_allocs;
+
+  // SA weight-buffer throttle (sec 10.x). _weight_slots_used[s] = weights resident
+  // on SA s (loaded by a preload, not yet freed by their last matmul);
+  // _weight_slot_depth = per-SA capacity (0 = disabled -> plain round-robin).
+  std::vector<int> _weight_slots_used;
+  uint32_t _weight_slot_depth = 0;
+  // Pending weight-slot releases keyed by cycle (each matmul's streaming-end);
+  // process_weight_releases() drains those due and decrements the token.
+  std::multimap<cycle_type, std::shared_ptr<WeightToken>> _weight_release_q;
 };

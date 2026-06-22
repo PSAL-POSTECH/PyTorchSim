@@ -18,6 +18,29 @@ Core::Core(uint32_t id, SimulationConfig config)
   _stat_inst_count.resize(static_cast<size_t>(Opcode::COUNT), 0);
   _stat_tot_skipped_inst.resize(static_cast<size_t>(Opcode::COUNT), 0);
   _sram_capacity = (size_t)config.core_spad_size_kb * 1024;  // 0 = throttle disabled
+  _weight_slot_depth = config.sa_weight_buffer_depth;        // 0 = disabled (plain rr)
+  _weight_slots_used.resize(_num_systolic_array_per_core, 0);
+}
+
+// Round-robin a systolic array that still has a free weight slot; -1 if all full
+// (the preload must stall). Advances _systolic_array_rr past the chosen SA.
+int Core::pick_free_weight_sa() {
+  for (uint32_t i = 0; i < _num_systolic_array_per_core; i++) {
+    uint32_t s = (_systolic_array_rr + i) % _num_systolic_array_per_core;
+    if (_weight_slots_used[s] < (int)_weight_slot_depth) {
+      _systolic_array_rr = (s + 1) % _num_systolic_array_per_core;
+      return (int)s;
+    }
+  }
+  return -1;
+}
+
+void Core::process_weight_releases() {
+  while (!_weight_release_q.empty() && _weight_release_q.begin()->first <= _core_cycle) {
+    auto tok = _weight_release_q.begin()->second;
+    _weight_release_q.erase(_weight_release_q.begin());
+    if (--tok->refcount <= 0) _weight_slots_used[tok->sa]--;  // last reader frees the slot
+  }
 }
 
 // The LAST reader of a buffer-version issued (bridge tags only that consumer):
@@ -213,6 +236,8 @@ void Core::cycle() {
   /* Increase core cycle counter */
   _core_cycle++;
 
+  process_weight_releases();  // free weight slots due this cycle before dispatch
+
   /* Iterate tile while an instruction is issued */
   bool issued = false;
 
@@ -295,12 +320,48 @@ void Core::cycle() {
           break;
         case Opcode::COMP:
           {
+            const int ct = inst->get_compute_type();
+            // --- SA selection + weight-buffer gate (sec 10.x) ---
+            // A preload picks a systolic array with a free weight slot and pins
+            // its matmul consumers to that SA (they free the slot on finish). A
+            // matmul runs on the SA its weight was preloaded into. This both
+            // bounds preload run-ahead and keeps matmuls on their weight's SA.
+            int sa_idx = -1;
+            if (ct == MATMUL || ct == PRELOAD) {
+              if (ct == PRELOAD) {
+                int n_consumers = 0;   // matmuls reusing this weight
+                for (auto& c : inst->get_pipeline_children())
+                  if (c->get_compute_type() == MATMUL) n_consumers++;
+                if (_weight_slot_depth > 0 && n_consumers > 0) {
+                  sa_idx = pick_free_weight_sa();
+                  if (sa_idx < 0) break;            // all weight slots full -> stall (retry)
+                  _weight_slots_used[sa_idx]++;
+                  auto tok = std::make_shared<WeightToken>(WeightToken{sa_idx, n_consumers});
+                  for (auto& c : inst->get_pipeline_children())
+                    if (c->get_compute_type() == MATMUL) {
+                      c->set_assigned_sa(sa_idx);
+                      c->set_weight_token(tok);
+                    }
+                } else {                            // disabled / no consumers -> plain rr
+                  sa_idx = _systolic_array_rr;
+                  _systolic_array_rr = (_systolic_array_rr + 1) % _num_systolic_array_per_core;
+                }
+              } else {                              // MATMUL
+                sa_idx = inst->get_assigned_sa();
+                if (sa_idx < 0) {                   // no preload pinned it -> rr fallback
+                  sa_idx = _systolic_array_rr;
+                  _systolic_array_rr = (_systolic_array_rr + 1) % _num_systolic_array_per_core;
+                }
+              }
+              inst->set_assigned_sa(sa_idx);         // record the SA actually used (for the trace)
+            }
             release_sram(inst);   // consumer issued -> free the tiles it read
             // sec 10.7: this op is now entering the pipeline -> release its
             // occupancy (pipeline) dependents so a preload/matmul successor
             // overlaps it instead of waiting its full latency.
             inst->release_pipeline_children();
-            auto& target_pipeline = get_compute_pipeline(inst->get_compute_type());
+            auto& target_pipeline = (ct == VECTOR_UNIT) ? _vu_compute_pipeline
+                                                        : _sa_compute_pipeline.at(sa_idx);
             if (target_pipeline.empty()) {
               inst->finish_cycle = _core_cycle + inst->get_compute_cycle();
               inst->bubble_cycle = inst->get_overlapping_cycle();
@@ -309,6 +370,14 @@ void Core::cycle() {
               int bubble_cycle = inst->get_overlapping_cycle() - overlapped_cycle;
               inst->finish_cycle = target_pipeline.back()->finish_cycle + inst->get_compute_cycle() - overlapped_cycle;
               inst->bubble_cycle = bubble_cycle;
+            }
+
+            // Release this matmul's weight slot at its streaming-end (finish -
+            // overlapping), not at full finish (the drain tail does not read it).
+            if (ct == MATMUL && inst->get_weight_token()) {
+              cycle_type rel = inst->finish_cycle > inst->get_overlapping_cycle()
+                                 ? inst->finish_cycle - inst->get_overlapping_cycle() : _core_cycle;
+              _weight_release_q.emplace(rel, inst->get_weight_token());
             }
 
             if (inst->get_compute_cycle() == 0) {

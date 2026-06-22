@@ -190,6 +190,7 @@ int main(int argc, char** argv) {
     simulator->enqueue_graph(0, std::move(tg));
     simulator->run_simulator();
     spdlog::info("[TOGSim-trace] Total cycles: {}", simulator->get_core_cycle());
+    spdlog::info("Simulation finished");
     simulator->print_core_stat();
     return 0;
   }

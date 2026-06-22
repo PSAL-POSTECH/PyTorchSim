@@ -31,7 +31,7 @@ std::string format_dma_inst_issued_detail(Instruction& inst) {
   }
   return fmt::format(
       "addr_name={} dram=0x{:016x} rank={} elem_bits={} async={} indirect={} tag=0x{:016x} stride=[{}] size=[{}] "
-      "tag_idx=[{}]",
+      "tag_idx=[{}] tile={}",
       inst.get_addr_name(),
       static_cast<uint64_t>(inst.get_base_dram_address()),
       rank,
@@ -41,7 +41,8 @@ std::string format_dma_inst_issued_detail(Instruction& inst) {
       tag_hex,
       fmt::join(inst.get_tile_stride(), ","),
       fmt::join(ts, ","),
-      fmt::join(tidx, ","));
+      fmt::join(tidx, ","),
+      inst.get_tile_group());
 }
 
 std::string format_dma_inst_issued_trace_line(Instruction& inst) {
@@ -52,32 +53,35 @@ std::string format_instruction_detail_line(Instruction& inst) {
   const Opcode op = inst.get_opcode();
   const std::string opname = opcode_to_string(op);
   if (op == Opcode::COMP) {
-    return fmt::format("{} (compute_type={} compute_cycle={} overlapping_cycle={} sa={})",
+    return fmt::format("{} (compute_type={} compute_cycle={} overlapping_cycle={} sa={} tile={})",
                        opname,
                        inst.get_compute_type(),
                        inst.get_compute_cycle(),
                        inst.get_overlapping_cycle(),
-                       inst.get_assigned_sa());
+                       inst.get_assigned_sa(),
+                       inst.get_tile_group());
   }
   if ((op == Opcode::MOVIN || op == Opcode::MOVOUT) && inst.is_async_dma()) {
-    return fmt::format("{} (ASYNC subgraph_id={} addr_name={} tag_id=[{}] tag_idx=[{}] tag_stride=[{}])",
+    return fmt::format("{} (ASYNC subgraph_id={} addr_name={} tag_id=[{}] tag_idx=[{}] tag_stride=[{}] tile={})",
                        opname,
                        inst.subgraph_id,
                        inst.get_addr_name(),
                        format_tag_key_list_hex(inst.get_tag_id()),
                        fmt::join(inst.get_tag_idx_list(), ","),
-                       fmt::join(inst.get_tag_stride_list(), ","));
+                       fmt::join(inst.get_tag_stride_list(), ","),
+                       inst.get_tile_group());
   }
   if (op == Opcode::MOVIN || op == Opcode::MOVOUT) {
-    return fmt::format("{} (addr_name={})", opname, inst.get_addr_name());
+    return fmt::format("{} (addr_name={} tile={})", opname, inst.get_addr_name(), inst.get_tile_group());
   }
   if (op == Opcode::MEMORY_BAR) {
-    return fmt::format("{} (addr_name={} tag_id=[{}] tag_idx=[{}] tag_stride=[{}])",
+    return fmt::format("{} (addr_name={} tag_id=[{}] tag_idx=[{}] tag_stride=[{}] tile={})",
                        opname,
                        inst.get_addr_name(),
                        format_tag_key_list_hex(inst.get_tag_id()),
                        fmt::join(inst.get_tag_idx_list(), ","),
-                       fmt::join(inst.get_tag_stride_list(), ","));
+                       fmt::join(inst.get_tag_stride_list(), ","),
+                       inst.get_tile_group());
   }
   return opname;
 }

@@ -33,14 +33,41 @@ _LANE = {"MOVIN": "dma", "MOVOUT": "dma"}
 _HIDE = {"MEMORY_BAR", "COMPUTE_BAR", "TILE_BEGIN", "TILE_END"}
 _CT_NAME = {0: "vector", 1: "matmul", 2: "preload"}
 
+# Perfetto/catapult reserved color names; slices are tinted by tile (= the
+# togsim_dispatch work-item / output tile) so one tile's ops share a color across
+# lanes/cores. 16 names so a core's tiles (which stride by num_cores) stay
+# distinct -- an 8-name palette collapsed to 4 colors per core under 2-core
+# even/odd assignment.
+_TILE_PALETTE = ["good", "bad", "terrible", "yellow", "olive", "rail_response",
+                 "rail_load", "rail_animation", "rail_idle", "thread_state_running",
+                 "thread_state_runnable", "thread_state_iowait",
+                 "thread_state_uninterruptible", "generic_work", "startup",
+                 "vsync_highlight_color"]
+
+
+def _tile_color(detail):
+    m = re.search(r"\btile=(\d+)", detail or "")
+    return _TILE_PALETTE[int(m.group(1)) % len(_TILE_PALETTE)] if m else None
+
+
+_DMA_SHORT = {"MOVIN": "MVIN", "MOVOUT": "MVOUT"}
+
+
+def _tile_of(detail):
+    m = re.search(r"\btile=(-?\d+)", detail or "")
+    return m.group(1) if m else "?"
+
 
 def _label(opcode, detail):
     if opcode == "COMP":
         m = re.search(r"compute_type=(\d+)", detail)
         ct = int(m.group(1)) if m else -1
-        return _CT_NAME.get(ct, "comp")
-    m = re.search(r"addr_name=(\w+)", detail)
-    return f"{opcode} {m.group(1)}" if m else opcode
+        return f"T{_tile_of(detail)} {_CT_NAME.get(ct, 'comp')}"
+    # DMA: keep each load's OWN identity (addr_name) so the input/weight/K-panel
+    # loads stay distinct; tile is conveyed by color (and args), not the name.
+    m = re.search(r"addr_name=(\w+)", detail or "")
+    who = m.group(1) if m else "?"
+    return f"{who} (T{_tile_of(detail)} {_DMA_SHORT.get(opcode, opcode)})"
 
 
 def _lane(opcode, detail):
@@ -117,10 +144,18 @@ def to_chrome(insts, num_sa=1):
     def add(core, lane, ts, dur, name, r):
         lanes.add((core, lane))
         cores.add(core)
-        events.append({"name": name, "cat": lane, "ph": "X", "ts": ts,
-                       "dur": max(dur, 1), "pid": core, "tid": lane,
-                       "args": {"inst_id": r["iid"], "issued": r["issued"],
-                                "finished": r["finished"], "data_ready": r["resp"]}})
+        args = {"inst_id": r["iid"], "tile": _tile_of(r["detail"]),
+                "issued": r["issued"], "finished": r["finished"],
+                "data_ready": r["resp"]}
+        am = re.search(r"addr_name=(\w+)", r["detail"] or "")
+        if am:
+            args["addr"] = am.group(1)
+        ev = {"name": name, "cat": lane, "ph": "X", "ts": ts,
+              "dur": max(dur, 1), "pid": core, "tid": lane, "args": args}
+        cname = _tile_color(r["detail"])
+        if cname:
+            ev["cname"] = cname
+        events.append(ev)
 
     def issue_key(r):
         return r["issued"] if r["issued"] is not None else 0
@@ -133,19 +168,33 @@ def to_chrome(insts, num_sa=1):
         # data-ready (which would mask gaps). When a load is blocked from issuing
         # (spad full), its INST_ISSUED is delayed past the engine-free time, so a
         # real idle gap appears = the SRAM throttle stalling the DMA.
-        free = 0
+        # DMA split into 4 lanes: direction (mvin/mvout) x phase.
+        #   mvin / mvout       : injection [issued, async_issue] -- the per-core
+        #                        DMA engine pushing requests (independent engines,
+        #                        so this looks identical across cores).
+        #   mvin-r / mvout-r   : response [async_issue, data-ready] -- data in
+        #                        flight from the SHARED DRAM; cross-core bandwidth
+        #                        contention shows here, not in the injection.
+        # A store with no async marker draws its injection up to finish/resp.
+        free = 0   # one DMA engine per core: mvin + mvout serialize on it
         for r in sorted(u["dma"], key=issue_key):
-            start = r["issued"] if r["issued"] is not None else r["dma_issue"]
-            end = r["dma_issue"]
-            if end is None:  # sync dma / store: no async-issue marker
-                end = r["resp"] if r["resp"] is not None else r["finished"]
-            if start is None:
+            d = "mvin" if r["opcode"] == "MOVIN" else "mvout"
+            iss, asy, rsp, fin = r["issued"], r["dma_issue"], r["resp"], r["finished"]
+            if iss is None:
                 continue
-            if end is None or end < start:
-                end = start + 1
-            start = max(start, free)
-            free = max(end, start + 1)
-            add(core, "dma", start, free - start, _label(r["opcode"], r["detail"]), r)
+            inj_end = asy if asy is not None else (rsp if rsp is not None else fin)
+            if inj_end is None or inj_end < iss:
+                inj_end = iss + 1
+            # injection serialized on the engine: the bar is the time the engine
+            # actually spends on this load, NOT [iss, async] (which would fold in
+            # the queue wait when many loads are prefetched at once -> giant bars).
+            start = max(iss, free)
+            free = max(inj_end, start + 1)
+            add(core, d, start, free - start, _label(r["opcode"], r["detail"]), r)
+            # response: data in flight from DRAM, drawn as-is (overlap = parallel
+            # channels). Long bars here are real bandwidth congestion.
+            if asy is not None and rsp is not None and rsp > asy:
+                add(core, d + "-r", asy, rsp - asy, _label(r["opcode"], r["detail"]), r)
         # VPU: one server; slice = occupancy (compute_cycle - overlapping_cycle).
         free = 0
         for r in sorted(u["vector"], key=issue_key):
@@ -181,7 +230,8 @@ def to_chrome(insts, num_sa=1):
     for c in sorted(cores):
         events.append({"name": "process_name", "ph": "M", "pid": c, "tid": 0,
                        "args": {"name": f"Core {c}"}})
-    order = {"dma": 0, "sa": 1, "sa0": 1, "sa1": 2, "sa2": 3, "sa3": 4, "vector": 8}
+    order = {"mvin": 0, "mvin-r": 1, "mvout": 2, "mvout-r": 3,
+             "sa": 4, "sa0": 4, "sa1": 5, "sa2": 6, "sa3": 7, "vector": 9}
     for c, lane in sorted(lanes, key=lambda x: (x[0], order.get(x[1], 5))):
         events.append({"name": "thread_name", "ph": "M", "pid": c, "tid": lane,
                        "args": {"name": lane}})

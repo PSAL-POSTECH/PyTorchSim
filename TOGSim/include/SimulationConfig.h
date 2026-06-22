@@ -27,6 +27,12 @@ struct SimulationConfig {
   uint32_t num_systolic_array_per_core = 1;
   uint32_t num_stonne_per_core = 1;
   uint32_t num_stonne_port = 1;
+  // Per-core VMEM/spad capacity (KB) for the trace-path DMA throttle (sec 10.x):
+  // a load that would overflow the spad does not issue until a consumer frees a
+  // tile. Provided by the config (the TPU configs set 16384 = 16 MB VMEM). 0 =
+  // unset -> gate disabled (unlimited). Only affects trace-path instructions
+  // (legacy TileGraphParser insts have alloc id -1 -> never gated).
+  uint32_t core_spad_size_kb = 0;
 
   /* DRAM config */
   DramType dram_type;

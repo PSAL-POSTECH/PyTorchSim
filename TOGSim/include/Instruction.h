@@ -95,6 +95,20 @@ class Instruction : public std::enable_shared_from_this<Instruction> {
   std::set<std::shared_ptr<Instruction>>& get_child_inst() { return child_inst; }
   uint64_t get_global_inst_id() const { return _global_inst_id; }
 
+  // SRAM-capacity model (sec 10.x). A load contributes its footprint to a
+  // buffer-version allocation; the version is freed when its LAST consumer (the
+  // program-order-last reader, tagged by the bridge) issues. The bridge fills
+  // these; Core enforces them.
+  //   _sram_alloc_id      : which buffer-version this load fills (-1 = untracked)
+  //   _sram_release_allocs: versions this consumer frees on issue (tagged only on
+  //                         each version's last reader)
+  void set_sram_alloc(int64_t id) { _sram_alloc_id = id; }
+  int64_t get_sram_alloc() const { return _sram_alloc_id; }
+  void add_sram_release(int64_t id) { _sram_release_allocs.push_back(id); }
+  const std::vector<int64_t>& get_sram_release() const { return _sram_release_allocs; }
+  // bytes this load occupies in the spad (from the tile it moves in).
+  size_t sram_footprint() const { return _tile_numel * (_elem_bits / 8); }
+
   cycle_type start_cycle;
   cycle_type finish_cycle;
   cycle_type bubble_cycle=0;
@@ -133,4 +147,7 @@ class Instruction : public std::enable_shared_from_this<Instruction> {
   bool _is_indirect_mode=false;
   bool _is_sparse_inst=false;
   std::string _indirect_index_path="";
+  // SRAM-capacity model (see the setters above).
+  int64_t _sram_alloc_id = -1;
+  std::vector<int64_t> _sram_release_allocs;
 };

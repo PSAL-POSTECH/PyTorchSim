@@ -17,6 +17,19 @@ Core::Core(uint32_t id, SimulationConfig config)
   _stat_sa_compute_idle_cycle.resize(_num_systolic_array_per_core);
   _stat_inst_count.resize(static_cast<size_t>(Opcode::COUNT), 0);
   _stat_tot_skipped_inst.resize(static_cast<size_t>(Opcode::COUNT), 0);
+  _sram_capacity = (size_t)config.core_spad_size_kb * 1024;  // 0 = throttle disabled
+}
+
+// The LAST reader of a buffer-version issued (bridge tags only that consumer):
+// free the version's bytes back to the per-core spad.
+void Core::release_sram(const std::shared_ptr<Instruction>& inst) {
+  if (!_sram_capacity) return;
+  for (int64_t id : inst->get_sram_release()) {
+    auto it = _sram_allocs.find(id);
+    if (it == _sram_allocs.end()) continue;
+    _sram_used -= it->second;
+    _sram_allocs.erase(it);
+  }
 }
 
 bool Core::can_issue(const std::shared_ptr<Tile>& op) {
@@ -240,6 +253,22 @@ void Core::cycle() {
               _stat_tot_skipped_inst.at(static_cast<size_t>(inst->get_opcode()))++;
               break;
             } else {
+              // SRAM-capacity gate (sec 10.x): a load that would overflow the
+              // per-core spad does not issue this cycle -- leave it in the ready
+              // queue (it++ retries next cycle) until a consumer frees a tile. On
+              // issue, occupy its bytes under its buffer-version allocation.
+              if (_sram_capacity && inst->get_sram_alloc() >= 0) {
+                size_t F = inst->sram_footprint();
+                // Stall if the tile does not fit in the free spad right now. If
+                // it can never fit (the kernel's working set exceeds the whole
+                // spad), the sim wedges -- Simulator::cycle() detects that frozen
+                // state and exits with a "spad too small" error rather than
+                // looping forever.
+                if (_sram_used + F > _sram_capacity)
+                  break;                                       // not issued -> retry next cycle
+                _sram_used += F;
+                _sram_allocs[inst->get_sram_alloc()] += F;     // accumulate version footprint
+              }
               core_trace_log::trace_instruction_line(_core_cycle,
                                                        _id,
                                                        TraceLogTag::pad15(
@@ -254,6 +283,7 @@ void Core::cycle() {
             }
           }
         case Opcode::MOVOUT:
+          release_sram(inst);   // store issued -> free the tiles it drained
           core_trace_log::trace_instruction_line(_core_cycle,
                                                    _id,
                                                    TraceLogTag::pad15(TraceLogTag::kInstructionIssued),
@@ -265,6 +295,7 @@ void Core::cycle() {
           break;
         case Opcode::COMP:
           {
+            release_sram(inst);   // consumer issued -> free the tiles it read
             // sec 10.7: this op is now entering the pipeline -> release its
             // occupancy (pipeline) dependents so a preload/matmul successor
             // overlaps it instead of waiting its full latency.
@@ -410,6 +441,19 @@ void Core::finish_instruction(std::shared_ptr<Instruction>& inst, InstFinishTrac
                                            TraceLogTag::pad15(trace_tag),
                                            inst->get_global_inst_id(),
                                            core_trace_log::format_instruction_detail_line(*inst));
+}
+
+bool Core::has_inflight() {
+  // running() without the "_tiles.size() > 0" term: work that will produce a
+  // finish event on its own (so the sim is NOT frozen). If this is false but
+  // tiles remain, only stalled ready instructions are left.
+  if (!_vu_compute_pipeline.empty()) return true;
+  for (int i = 0; i < _num_systolic_array_per_core; i++)
+    if (!_sa_compute_pipeline.at(i).empty()) return true;
+  if (!_dma_waiting_queue.empty() || !_dma_finished_queue.empty()) return true;
+  if (!_dma.empty()) return true;
+  if (!_ld_inst_queue.empty() || !_st_inst_queue.empty()) return true;
+  return false;
 }
 
 bool Core::running() {

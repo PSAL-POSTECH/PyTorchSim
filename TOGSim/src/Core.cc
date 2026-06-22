@@ -547,6 +547,13 @@ void Core::push_memory_response(mem_fetch* response) {
   Instruction* owner_inst = static_cast<Instruction*>(response->get_custom_data());
   assert(owner_inst->get_waiting_request());
 
+  if (!owner_inst->got_first_response()) {   // first data of this load arrived
+    owner_inst->mark_first_response();
+    core_trace_log::trace_instruction_line(_core_cycle, _id,
+        TraceLogTag::pad15(TraceLogTag::kFirstDramResponse),
+        owner_inst->get_global_inst_id(),
+        core_trace_log::format_instruction_detail_line(*owner_inst));
+  }
   owner_inst->dec_waiting_request();
   if (!owner_inst->get_waiting_request()) {
     auto it = _dma_waiting_queue.find(owner_inst);

@@ -80,6 +80,9 @@ class Instruction : public std::enable_shared_from_this<Instruction> {
   void inc_waiting_request();
   void dec_waiting_request();
   size_t get_waiting_request() { return _nr_waiting_request; }
+  // trace: log only the FIRST DRAM response of a load (when data starts arriving).
+  bool got_first_response() const { return _got_first_response; }
+  void mark_first_response() { _got_first_response = true; }
   std::vector<size_t>& get_tile_size() { return tile_size; }
   std::vector<int>& get_tile_stride() { return tile_stride; }
   void set_overlapping_cycle(cycle_type cycle) { overlapping_cycle = cycle; }
@@ -151,6 +154,7 @@ class Instruction : public std::enable_shared_from_this<Instruction> {
   std::vector<int> tile_stride;
   size_t _tile_numel;
   size_t _nr_waiting_request=0;
+  bool _got_first_response=false;
   size_t _elem_bits = 0;
   addr_type dram_addr;
   uint32_t _numa_id = 0; // For DMA instruction

@@ -42,42 +42,82 @@ def _global_of(memref_val):
     return None
 
 
-def _read_buffers_of_compute(cn):
-    """SRAM buffers a compute node reads: (a) each vcix.iv input traced to its
-    vector.transfer_read source (activations/weights streamed into the SA), and
-    (b) any direct vector.transfer_read in the node (the epilogue's accumulator
-    read-modify-write of Y_spad)."""
-    bufs = set()
-    for op in cn.operations:
-        if op.name == "vector.transfer_read" and list(op.operands):
-            b = _global_of(op.operands[0])
-            if b:
-                bufs.add(b)
-        elif op.name == "vcix.iv" and list(op.operands):
-            v = op.operands[0]
-            defop = v.owner if isinstance(v.owner, ir.Operation) else getattr(v.owner, "operation", None)
-            if defop is not None and defop.name == "vector.transfer_read" and list(defop.operands):
-                b = _global_of(defop.operands[0])
-                if b:
-                    bufs.add(b)
-    return bufs
+# Ops that touch SRAM-buffer DATA, by category. A view op (subview/reinterpret_cast)
+# instead PRODUCES a memref -- pure address computation, skipped here; the real access
+# is the load/store using it, whose memref operand _global_of traces back through the
+# view to the @global. Anything else carrying a memref operand raises, so a NEW fusion
+# pattern is caught at compile time rather than as a silent runtime deadlock.
+_LOAD_OPS = {"vector.transfer_read", "affine.vector_load", "vector.load",
+             "memref.load", "affine.load"}
+_STORE_OPS = {"vector.transfer_write", "affine.vector_store", "vector.store",
+              "memref.store", "affine.store"}
+_IGNORE_OPS = {"memref.dealloc"}   # lifetime, not a data access
 
 
-def _write_buffers_of_compute(cn):
-    """SRAM buffers a compute node writes: vector.transfer_write / vector_store target."""
-    bufs = set()
-    for op in cn.operations:
-        if op.name in ("vector.transfer_write", "affine.vector_store", "vector.store"):
-            # target memref is the last memref operand
-            for v in op.operands:
-                try:
-                    if ir.MemRefType.isinstance(v.type):
-                        b = _global_of(v)
-                        if b:
-                            bufs.add(b)
-                except Exception:
-                    pass
-    return bufs
+def _is_memref(v):
+    try:
+        return ir.MemRefType.isinstance(v.type)
+    except Exception:
+        return False
+
+
+def _walk_compute_ops(cn):
+    """Every op in the compute node, recursing into nested regions (loop bodies). A
+    fused epilogue (BatchNorm/ReLU) keeps its ops inside an un-unrolled affine.for, so
+    a top-level-only scan (cn.operations) sees just the loop and misses every access."""
+    for top in cn.operations:
+        stack = [top]
+        while stack:
+            op = stack.pop()
+            yield op
+            for region in op.operation.regions:
+                for block in region.blocks:
+                    stack.extend(block.operations)
+
+
+def _rw_buffers_of_compute(cn):
+    """(reads, writes): the @global SRAM buffers a compute node reads/writes, walking
+    nested regions and classifying each op that touches a memref."""
+    reads, writes = set(), set()
+    def rd(v):
+        b = _global_of(v)
+        if b:
+            reads.add(b)
+    def wr(v):
+        b = _global_of(v)
+        if b:
+            writes.add(b)
+    for op in _walk_compute_ops(cn):
+        if any(_is_memref(r) for r in op.results):
+            continue                                   # view/cast/alloc -- address only
+        mrefs = [v for v in op.operands if _is_memref(v)]
+        if not mrefs:
+            continue
+        name = op.name
+        if name in _LOAD_OPS:
+            for v in mrefs:
+                rd(v)
+        elif name in _STORE_OPS:
+            for v in mrefs:
+                wr(v)                                  # the store target memref
+        elif name == "memref.copy":
+            rd(mrefs[0])
+            wr(mrefs[-1])
+        elif name.startswith("linalg."):               # DPS: ins read, outs read+write
+            for v in op.inputs:
+                if _is_memref(v):
+                    rd(v)
+            for v in op.outputs:
+                if _is_memref(v):
+                    rd(v)
+                    wr(v)
+        elif name in _IGNORE_OPS:
+            continue
+        else:
+            raise RuntimeError(
+                f"dep_analysis: unclassified memref op '{name}' in a compute node -- "
+                f"it touches an SRAM buffer; classify it in _LOAD_OPS/_STORE_OPS")
+    return reads, writes
 
 
 def _dma_buffer(builder, dma_node):
@@ -99,8 +139,7 @@ SA_WEIGHTS = "__SA_WEIGHTS__"
 def compute_buffers(cn):
     """(read_buffers, write_buffers) for one compute node, including the virtual
     SA_WEIGHTS edge (preload writes it, matmul reads it)."""
-    reads = set(_read_buffers_of_compute(cn))
-    writes = set(_write_buffers_of_compute(cn))
+    reads, writes = _rw_buffers_of_compute(cn)
     if cn.compute_type == 1:      # MATMUL consumes the preloaded weights
         reads.add(SA_WEIGHTS)
     elif cn.compute_type == 2:    # PRELOAD loads them
@@ -132,10 +171,11 @@ def analyze(module):
         if not cn.operations:
             continue
         ct = {0: "VECTOR", 1: "MATMUL", 2: "PRELOAD"}.get(cn.compute_type, f"c{cn.compute_type}")
+        creads, cwrites = _rw_buffers_of_compute(cn)
         nodes.append({
             "kind": ct,
-            "reads": _read_buffers_of_compute(cn),
-            "writes": _write_buffers_of_compute(cn),
+            "reads": creads,
+            "writes": cwrites,
             "node": cn,
             "compute_type": cn.compute_type,
         })

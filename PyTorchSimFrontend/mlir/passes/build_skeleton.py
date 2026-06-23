@@ -271,6 +271,74 @@ def _results_unused(op):
     return True
 
 
+def _strip_loop_iter_args(block):
+    """Drop loop-carried values (iter_args) from every affine.for/scf.for.
+
+    The skeleton only needs the loop STRUCTURE (iteration counts) and the
+    togsim.* markers -- not the data flowing through the loop. Reduction kernels
+    carry a *vector* accumulator as an iter_arg; EmitC/C++ cannot represent a
+    loop carrying a vector, so the trace .so emission fails. Since the trace is
+    timing-only (values come from the recorded run), we rebuild each loop without
+    iter_args: body uses of an iter_arg become its init value, the loop result
+    becomes its init, and the now-orphaned accumulate ops are removed by _dce.
+    """
+    # Only strip a loop whose RESULTS are unused (dead for the trace): the carried
+    # value goes nowhere live, so dropping it is safe. A loop whose result still
+    # feeds a kept op (e.g. an index accumulator consumed by a togsim.dma address)
+    # is left untouched. Run after _dce so the result store is already gone; then
+    # nested reductions free up inner results round by round (outer stripped first).
+    while True:
+        tgt = None
+        for op in walk_ops(block):
+            n = op.operation.name
+            if (n in ("affine.for", "scf.for") and len(op.operation.results) > 0
+                    and _results_unused(op)):
+                tgt = op
+                break
+        if tgt is None:
+            return
+        _rebuild_loop_no_iter(tgt)
+
+
+def _rebuild_loop_no_iter(op):
+    o = op.operation
+    nres = len(o.results)
+    n_in = len(o.operands)
+    inits = [o.operands[n_in - nres + i] for i in range(nres)]
+    keep_operands = [o.operands[i] for i in range(n_in - nres)]  # bound operands only
+    old_block = o.regions[0].blocks[0]
+    oargs = list(old_block.arguments)  # [iv, *iter_args]
+
+    attrs = {na.name: na.attr for na in o.attributes}
+    # affine.for tags its operand groups; zero the iter-arg group (last entry).
+    if "operandSegmentSizes" in attrs:
+        seg = [int(x) for x in str(attrs["operandSegmentSizes"]).split(":")[1].strip(" >").split(",")]
+        seg[-1] = 0
+        attrs["operandSegmentSizes"] = ir.Attribute.parse(
+            "array<i32: " + ", ".join(str(s) for s in seg) + ">")
+
+    loc = ir.Location.unknown(o.context)
+    with loc:                                                  # default loc for new block args
+        new = ir.Operation.create(o.name, results=[], operands=keep_operands,
+                                  attributes=attrs, regions=1, loc=loc,
+                                  ip=ir.InsertionPoint(o))
+        nb = new.regions[0].blocks.append(oargs[0].type)      # block with the iv arg only
+
+        oargs[0].replace_all_uses_with(nb.arguments[0])       # iv
+        for ba, ini in zip(oargs[1:], inits):                 # iter-arg uses -> init
+            ba.replace_all_uses_with(ini)
+        for res, ini in zip(o.results, inits):                # loop result -> init
+            res.replace_all_uses_with(ini)
+
+        term_name = "affine.yield" if o.name == "affine.for" else "scf.yield"
+        with ir.InsertionPoint(nb):
+            ir.Operation.create(term_name, results=[], operands=[], loc=loc)
+        new_term = list(nb.operations)[0]
+        for bop in list(old_block.operations)[:-1]:           # move body (drop old yield)
+            bop.operation.move_before(new_term)
+        o.erase()
+
+
 def _dce(block):
     """Erase non-kept ops with no used results, to a fixed point. Safe: an op
     with live SSA uses is never touched."""
@@ -466,7 +534,9 @@ def build_skeleton(module):
             op.operation.erase()
         except Exception:
             pass
-    _dce(block)
+    _dce(block)                    # drop dead consumers (e.g. the result store) first,
+    _strip_loop_iter_args(block)   # so a now-unused loop result lets us strip its iter_args
+    _dce(block)                    # then clean the orphaned accumulate ops
 
     return ("skeleton: compute=%d dma=%d wait=%d (unpaired waits dropped)"
             % (n_compute, n_dma, n_wait))

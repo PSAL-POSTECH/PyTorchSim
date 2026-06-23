@@ -161,6 +161,15 @@ int main(int argc, char** argv) {
   if (!trace_so_path.empty()) {
     const auto& cfg = simulator->get_hardware_config_yaml();
     int num_cores = cfg["num_cores"] ? cfg["num_cores"].as<int>() : 1;
+    // This trace kernel is enqueued to partition 0 (below); round-robin its work-
+    // items only over partition 0's cores -- partitions are independent, so a work-
+    // item must not land on another partition's core (its subgraph would never be
+    // scheduled there). Other partitions stay idle, which is correct.
+    const int kTargetPartition = 0;
+    std::vector<int32_t> partition_cores;
+    for (int c = 0; c < num_cores; c++)
+      if (simulator->get_partition_id(c) == kTargetPartition) partition_cores.push_back(c);
+    if (partition_cores.empty()) partition_cores.push_back(0);
     // First cut: stub tensor bases (real per-tensor addresses come later).
     std::vector<uint64_t> bases(16);
     for (size_t i = 0; i < bases.size(); ++i) bases[i] = 0x100000ull * (i + 1);
@@ -181,7 +190,7 @@ int main(int argc, char** argv) {
     auto run = togsim::run_producer(trace_so_path.c_str(), nullptr, 0,
                                     bases.data(), (int)bases.size(),
                                     cyc.data(), ovl.data(), (int)cyc.size(),
-                                    num_cores);
+                                    partition_cores.data(), (int32_t)partition_cores.size());
     if (!run.ok) { spdlog::error("[TOGSim] trace producer run failed"); exit(1); }
     spdlog::info("[TOGSim-trace] recorded {} instructions", run.trace.size());
     auto tg = trace_to_tilegraph(run, "trace_kernel");

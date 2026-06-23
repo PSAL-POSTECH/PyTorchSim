@@ -147,6 +147,17 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(const togsim::RunResult& run,
                   const std::vector<int64_t>& reads,
                   const std::vector<int64_t>& writes) {
     for (int64_t b : reads) {
+      // A matmul reading its own accumulator (a buffer it also WRITES) imposes NO
+      // producer order: Y += X@W is commutative. Chaining matmuls through the
+      // accumulator (M_k <- M_{k-1}) needlessly serializes them and DEADLOCKS the SA
+      // weight-slot pipeline -- a later iteration's preload can grab the last weight
+      // slot while the in-order head matmul is starved of one, and that head can never
+      // run to release a slot. The store still waits every matmul via the COMPUTE_BAR
+      // fence, so dropping this edge is safe (TOGSim is timing-only; values come from
+      // the recorded trace).
+      bool is_accum = false;
+      for (int64_t w : writes) if (w == b) { is_accum = true; break; }
+      if (inst->get_compute_type() == MATMUL_CT && is_accum) continue;
       auto it = last_writer.find(b);
       if (it == last_writer.end()) continue;
       int pct = it->second->get_compute_type();

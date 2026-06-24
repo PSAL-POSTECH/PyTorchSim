@@ -167,9 +167,9 @@ given MLIR (affine/scf.for + memref.dma_start/dma_wait + vcix/vector compute)
         • run through existing sample-mode → tile_id → cycle table
 
 TOGSim (C6):
-  dlopen(trace.so) → resolve togsim_emit
+  dlopen(trace.so) → resolve togsim_kernel
   inject EmitCtx { tag table; record sink; cost = cycle_table[tile_id] }
-  togsim_emit(ctx, runtime_shape_args...)   // producer runs, emits stream
+  togsim_kernel(ctx, runtime_shape_args...)   // producer runs, emits stream
   → existing timing core consumes the recorded Instruction stream
 ```
 
@@ -197,7 +197,7 @@ TOGSim (C6):
 - **C6 — TOGSim runtime + loader.** `togsim_runtime.h/.cc`: `EmitCtx` and the
   `togsim_dma/compute/memory_barrier/compute_barrier/core_alloc`
   implementations (compute looks up the cycle table). Loader `dlopen`s the
-  `.so`, calls `togsim_emit` with runtime shape args, records the stream, feeds
+  `.so`, calls `togsim_kernel` with runtime shape args, records the stream, feeds
   the existing timing core. An async DMA and its `memory_barrier` are paired at
   runtime by `(tag_id, tag_slot)` through the existing Core tag table.
 
@@ -222,7 +222,7 @@ void togsim_compute_barrier(EmitCtx*);
 int32_t togsim_core_alloc(EmitCtx*);
 
 // entry point the loader resolves:
-void togsim_emit(EmitCtx*, int64_t* shape_args, int32_t n_shape_args);
+void togsim_kernel(EmitCtx*, int64_t* shape_args, int32_t n_shape_args);
 ```
 
 `togsim_dma` returns void (no handle). An async DMA carries `(tag_id, tag_slot)`;
@@ -342,7 +342,7 @@ The producer is two functions, split at the PARALLEL/ACCUMULATION boundary:
 // PARALLEL indices directly, names no core. Reduction (k) is program order ->
 // the dependency is implicit (the accumulator is core-local). An async load is
 // synced to its consumer by an explicit memory_barrier on the same tag slot.
-void togsim_emit_tile(EmitCtx* ctx, int64_t mi, int64_t ni, int64_t* shape) {
+void togsim_kernel_tile(EmitCtx* ctx, int64_t mi, int64_t ni, int64_t* shape) {
   togsim_core_alloc(ctx);                // first line: new work-item + pick core
   togsim_compute(ctx, /*tile_id=*/0, ...);            // acc init
   for (size_t ki = 0; ki < KT; ++ki) {                // REDUCTION = program order
@@ -355,17 +355,17 @@ void togsim_emit_tile(EmitCtx* ctx, int64_t mi, int64_t ni, int64_t* shape) {
 }
 
 // DISPATCH: enumerate the PARALLEL domain, one call per work-item.
-extern "C" void togsim_emit(EmitCtx* ctx, int64_t* shape, int32_t n) {
+extern "C" void togsim_kernel(EmitCtx* ctx, int64_t* shape, int32_t n) {
   size_t MT = shape[0]/256, NT = shape[1]/256;
   for (size_t mi = 0; mi < MT; ++mi)
     for (size_t ni = 0; ni < NT; ++ni)
-      togsim_emit_tile(ctx, mi, ni, shape);
+      togsim_kernel_tile(ctx, mi, ni, shape);
 }
 ```
 
 Reduced to two orthogonal concepts:
 
-- **Parallel** = each `togsim_emit_tile` call is an independent work-item (no
+- **Parallel** = each `togsim_kernel_tile` call is an independent work-item (no
   tags shared across calls). TOGSim is free to place it on any core.
 - **Reduction** = ordering *inside* one work-item: program order on its core
   (no explicit barrier). The `memory_barrier`/tag-slot mechanism is only the
@@ -393,24 +393,24 @@ only `togsim_*` callbacks are visible across the `dlopen` boundary.
 ### 9.4 Codegen (lower_to_emitc) and ABI deltas
 
 - `lower_to_emitc` splits the loop nest at the PARALLEL/ACCUMULATION boundary
-  into two `emitc.func`: the PARALLEL loops become `togsim_emit` (dispatcher,
+  into two `emitc.func`: the PARALLEL loops become `togsim_kernel` (dispatcher,
   passing the loop indices as args); the ACCUMULATION+INNER body becomes
-  `togsim_emit_tile`, with `togsim_core_alloc(ctx)` inserted at its entry.
+  `togsim_kernel_tile`, with `togsim_core_alloc(ctx)` inserted at its entry.
 - ABI additions in `togsim_runtime.h`: `int32_t togsim_core_alloc(EmitCtx*)`
   (runtime owns the core pool; no `num_cores` in the producer; no free).
-  `togsim_emit_tile` may stay internal (`static`) for now; export it only if a
+  `togsim_kernel_tile` may stay internal (`static`) for now; export it only if a
   future loader wants to own the parallel enumeration (which would also need a
   `num_tiles`-style count — not required now).
 - `tile_id -> cycle` table unchanged (num_cores-invariant).
 
 > Implementation status (P3): `lower_to_emitc` inserts the `togsim_core_alloc`
-> marker at the innermost PARALLEL-loop body inside the single `togsim_emit`
+> marker at the innermost PARALLEL-loop body inside the single `togsim_kernel`
 > function — the emitted *trace* is identical to the two-function form (one
 > core_alloc per work-item, then the work ops). Address arithmetic is wired
 > (approach A): each `togsim_dma` passes `(arg_id, element offset)` with the
 > offset computed from the loop IVs (lowered by `convert-arith-to-emitc`, cast-
 > free thanks to the size_t IV retype); the runtime adds the tensor base.
-> Outlining the work body into a separate `togsim_emit_tile` is now *meaningful*
+> Outlining the work body into a separate `togsim_kernel_tile` is now *meaningful*
 > (the body uses the parallel IVs in the offset) but still deferred — the
 > single-function trace is identical, so the split is cosmetic until needed.
 
@@ -572,7 +572,7 @@ single forward-compat requirement is that the callback sink is an interface.
    overlapping_cycle on the Instruction.
 5. PARTIAL. C6 runtime + loader: `TOGSim/src/togsim_runtime.cc` +
    `togsim_loader.h` implement the producer ABI and `run_producer` -- dlopen the
-   `.so`, run `togsim_emit` against an `EmitCtx`, and record a `TraceRec` stream
+   `.so`, run `togsim_kernel` against an `EmitCtx`, and record a `TraceRec` stream
    (the materializing sink): each dma resolves `base[arg_id] + offset*elem_bytes`
    and signals its tag at data arrival, each compute looks up the cycle table,
    core_alloc round-robins the core. Verified standalone on the 256^3 GEMM:
@@ -955,7 +955,7 @@ numbers; 2518-vs-2698 is the current real-table figure.
    -> a harmless extra edge.
 6. **P5 op coverage.** Only GEMM is exercised. Extend to conv / SDPA / vector / pool.
 7. **P4.** Symbolic/dynamic shape; streaming sink (coroutine, alloc-blocks).
-8. **Two-function outline** (togsim_emit_tile) -- deferred (trace identical).
+8. **Two-function outline** (togsim_kernel_tile) -- deferred (trace identical).
 9. **Retire the legacy ONNX-TOG path** once the trace path is stable.
 
 ### 11.3 Next-session context

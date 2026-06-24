@@ -22,6 +22,8 @@ OP_NAME = "memref.dma_start"
 WAIT_NAME = "memref.dma_wait"
 MARKERS = (OP_NAME, WAIT_NAME)
 
+from ._mlir_util import attr_i64_array
+
 # func7 instruction codes (CustomDMAAttribute.h)
 CONFIG, CONFIG2, CONFIG3, CONFIG4 = 0, 4, 5, 6
 MVIN, MVIN2, MVIN3, MVOUT = 2, 1, 14, 3
@@ -124,8 +126,8 @@ def run(module, timing=False):
         tile_shape = _subtile(op)
         if tile_shape is None:
             tile_shape = list(dst_ty.shape) if is_mvin else list(src_ty.shape)
-        dram_strides = _int_array(op, "dram_stride")
-        spad_strides = _int_array(op, "sram_stride")
+        dram_strides = attr_i64_array(op, "dram_stride")
+        spad_strides = attr_i64_array(op, "sram_stride")
         assert len(tile_shape) == len(dram_strides) == len(spad_strides), \
             f"shape/stride rank mismatch: {tile_shape} {dram_strides} {spad_strides}"
 
@@ -178,11 +180,6 @@ def _subtile(op):
     if "subtile_size" not in op.attributes:
         return None
     return [IntegerAttr(a).value for a in ArrayAttr(op.attributes["subtile_size"])]
-
-
-def _int_array(op, name):
-    from mlir.ir import ArrayAttr, IntegerAttr
-    return [IntegerAttr(a).value for a in ArrayAttr(op.attributes[name])]
 
 
 def _elem_bytes(elem_type):

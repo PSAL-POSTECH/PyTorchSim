@@ -117,7 +117,7 @@ differently than legacy's per-iteration BARs).
 - `cycle_table.py` — `tile_id -> (cycle, overlapping)`, overlapping
   `= max(cycle - offset[type], 0)` (legacy formula); JSON sidecar.
 - `TOGSim/src/togsim_runtime.cc` + `TOGSim/include/togsim_loader.h` — C6 runtime
-  and `run_producer` (dlopen -> togsim_emit -> records TraceRec). dma resolves
+  and `run_producer` (dlopen -> togsim_kernel -> records TraceRec). dma resolves
   `base[arg] + offset*elem_bytes` and signals its tag at data arrival; the
   matching memory_barrier waits the `(tag_id, tag_slot)`; compute looks up the
   cycle table; core_alloc round-robins a runtime core pool.

@@ -12,7 +12,11 @@
 #include <memory>
 #include <vector>
 
-enum class Opcode { MOVIN, MOVOUT, COMP, BAR, COUNT};
+// MEMORY_BAR: the DMA/memory barrier (waits a DMA tag in the tag table).
+// COMPUTE_BAR: the compute barrier -- waits the systolic-array compute pipeline(s)
+//              to drain (all SAs empty), then finishes. Used as the explicit
+//              fence before a store consumes async matmul results (sec 10.7).
+enum class Opcode { MOVIN, MOVOUT, COMP, MEMORY_BAR, COMPUTE_BAR, COUNT};
 
 typedef uint64_t addr_type;
 typedef uint64_t cycle_type;
@@ -29,6 +33,11 @@ class Instruction : public std::enable_shared_from_this<Instruction> {
   Instruction(Opcode opcode);
   void finish_instruction();
   void add_child(std::shared_ptr<Instruction> child);
+  // Occupancy (SA-pipeline) dependency: the child is released when THIS op is
+  // ISSUED (enters the pipeline), not when it finishes -- so a preload/matmul
+  // successor overlaps it instead of waiting its full latency (sec 10.7).
+  void add_pipeline_child(std::shared_ptr<Instruction> child);
+  void release_pipeline_children();
   bool check_ready() { return ready_counter == 0; }
   const Opcode get_opcode() { return opcode; }
   bool is_dma_read() { return opcode == Opcode::MOVIN; }
@@ -103,6 +112,7 @@ class Instruction : public std::enable_shared_from_this<Instruction> {
   cycle_type overlapping_cycle;
   size_t ready_counter;
   std::set<std::shared_ptr<Instruction>> child_inst;
+  std::set<std::shared_ptr<Instruction>> _pipeline_children;  // released at issue (sec 10.7)
   std::vector<size_t> tile_size;
   std::vector<int> tile_stride;
   size_t _tile_numel;

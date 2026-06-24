@@ -30,6 +30,8 @@ if os.path.isdir(_DEFAULT_BINDINGS) and _DEFAULT_BINDINGS not in sys.path:
 
 import mlir.ir as ir  # noqa: E402
 
+from ._mlir_util import walk_ops, attr_i64_array
+
 MARKERS = ("subtile_size",)   # only subtile DMAs are split
 
 MVIN, MVIN2, MVIN3, MVOUT = 2, 1, 14, 3
@@ -52,12 +54,6 @@ def _const_int(value, default=-1):
         return ir.IntegerAttr(value.owner.attributes["value"]).value
     except Exception:
         return default
-
-
-def _int_array_attr(op, key):
-    if key not in op.attributes:
-        return []
-    return [ir.IntegerAttr(a).value for a in ir.ArrayAttr(op.attributes[key])]
 
 
 def _is_block_arg(v):
@@ -106,13 +102,13 @@ class _Dma:
         return list(mt.shape)
 
     def subtile_size(self):
-        return _int_array_attr(self.op, "subtile_size")
+        return attr_i64_array(self.op, "subtile_size", default=[])
 
     def sram_stride(self):
-        return _int_array_attr(self.op, "sram_stride")
+        return attr_i64_array(self.op, "sram_stride", default=[])
 
     def dram_stride(self):
-        return _int_array_attr(self.op, "dram_stride")
+        return attr_i64_array(self.op, "dram_stride", default=[])
 
     def is_async(self):
         a = self.op.attributes
@@ -293,20 +289,12 @@ def _reaches(value, target):
 # ---------------------------------------------------------------------------
 # Pass driver
 # ---------------------------------------------------------------------------
-def _iter_ops(block):
-    for op in list(block.operations):
-        yield op
-        for region in op.operation.regions:
-            for b in region.blocks:
-                yield from _iter_ops(b)
-
-
 def _run_func(func, vectorlane):
     from mlir.dialects import linalg
     # First matmul only.
     matmul = None
     dmas = []
-    for op in _iter_ops(func.regions[0].blocks[0]):
+    for op in walk_ops(func.regions[0].blocks[0]):
         name = op.operation.name
         if name == "linalg.matmul" and matmul is None:
             matmul = op

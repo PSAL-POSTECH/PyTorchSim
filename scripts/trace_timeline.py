@@ -3,14 +3,16 @@
 opens in Perfetto (https://ui.perfetto.dev) or chrome://tracing as an interactive
 timeline (Gantt).
 
-Each instruction becomes one duration slice on one of 3 per-core lanes:
-  dma     -- MOVIN / MOVOUT
-  sa      -- COMP compute_type 1 (matmul) / 2 (preload)
+Each instruction becomes one duration slice, grouped per core (pid). Lanes:
+  dram-rd -- loads crossing the DRAM bus (read bandwidth)
+  dram-wr -- stores crossing the DRAM bus (write bandwidth)
+  sa / sa0.. -- COMP compute_type 1 (matmul) / 2 (preload)
   vector  -- COMP compute_type 0 (vector)
-grouped per core (pid). Time unit = core cycles. Barriers (MEMORY_BAR/COMPUTE_BAR)
-are not drawn. A compute slice's width is its compute_cycle (the op's own latency),
-not issue->finish (which balloons under pipeline backlog); a DMA slice is the
-actual transfer ASYNC_DMA_ISSUE -> data-ready.
+Time unit = core cycles. Barriers (MEMORY_BAR/COMPUTE_BAR) are not drawn. A DMA bar
+runs from the op's first DRAM response (DRAM_RESP_FIRST, logged by the Core -- so it
+captures data moving even while still injecting) to its completion (load: data-ready;
+store: finished), serialized per direction so each is one visible bar (packed row =
+saturated bus). A compute slice's width is its occupancy (compute_cycle - overlapping).
 
 Usage:
   bin/Simulator --config <yml> --trace_so <so> --cycle_table <tsv> --log_level trace \
@@ -33,14 +35,41 @@ _LANE = {"MOVIN": "dma", "MOVOUT": "dma"}
 _HIDE = {"MEMORY_BAR", "COMPUTE_BAR", "TILE_BEGIN", "TILE_END"}
 _CT_NAME = {0: "vector", 1: "matmul", 2: "preload"}
 
+# Perfetto/catapult reserved color names; slices are tinted by tile (= the
+# togsim_dispatch work-item / output tile) so one tile's ops share a color across
+# lanes/cores. 16 names so a core's tiles (which stride by num_cores) stay
+# distinct -- an 8-name palette collapsed to 4 colors per core under 2-core
+# even/odd assignment.
+_TILE_PALETTE = ["good", "bad", "terrible", "yellow", "olive", "rail_response",
+                 "rail_load", "rail_animation", "rail_idle", "thread_state_running",
+                 "thread_state_runnable", "thread_state_iowait",
+                 "thread_state_uninterruptible", "generic_work", "startup",
+                 "vsync_highlight_color"]
+
+
+def _tile_color(detail):
+    m = re.search(r"\btile=(\d+)", detail or "")
+    return _TILE_PALETTE[int(m.group(1)) % len(_TILE_PALETTE)] if m else None
+
+
+_DMA_SHORT = {"MOVIN": "MVIN", "MOVOUT": "MVOUT"}
+
+
+def _tile_of(detail):
+    m = re.search(r"\btile=(-?\d+)", detail or "")
+    return m.group(1) if m else "?"
+
 
 def _label(opcode, detail):
     if opcode == "COMP":
         m = re.search(r"compute_type=(\d+)", detail)
         ct = int(m.group(1)) if m else -1
-        return _CT_NAME.get(ct, "comp")
-    m = re.search(r"addr_name=(\w+)", detail)
-    return f"{opcode} {m.group(1)}" if m else opcode
+        return f"T{_tile_of(detail)} {_CT_NAME.get(ct, 'comp')}"
+    # DMA: keep each load's OWN identity (addr_name) so the input/weight/K-panel
+    # loads stay distinct; tile is conveyed by color (and args), not the name.
+    m = re.search(r"addr_name=(\w+)", detail or "")
+    who = m.group(1) if m else "?"
+    return f"{who} (T{_tile_of(detail)} {_DMA_SHORT.get(opcode, opcode)})"
 
 
 def _lane(opcode, detail):
@@ -65,7 +94,8 @@ def parse(lines):
         key = (core, iid)
         r = insts.setdefault(key, {
             "core": core, "iid": iid, "opcode": opcode, "detail": detail,
-            "issued": None, "finished": None, "resp": None, "dma_issue": None})
+            "issued": None, "finished": None, "resp": None, "dma_issue": None,
+            "first_resp": None})
         if not r["opcode"] or r["opcode"] == opcode:
             r["opcode"] = opcode
             if detail.strip():
@@ -76,7 +106,9 @@ def parse(lines):
             r["finished"] = cyc
         elif tag == "DRAM_RESP_DONE":
             r["resp"] = cyc
-        elif tag == "ASYNC_DMA_ISSUE":   # actual transfer start (DMA engine busy)
+        elif tag == "DRAM_RESP_FIRST" and r["first_resp"] is None:  # first data arrived
+            r["first_resp"] = cyc
+        elif tag == "ASYNC_DMA_ISSUE":   # all requests injected (engine done)
             r["dma_issue"] = cyc
     return insts
 
@@ -94,7 +126,8 @@ def to_chrome(insts, num_sa=1):
       dma    : MOVIN/MOVOUT -- 1 DMA engine; slice = actual transfer
                (ASYNC_DMA_ISSUE -> data-ready).
       vector : COMP type 0  -- 1 VPU.
-      sa     : COMP type 1/2 -- num_sa systolic arrays, round-robin by issue order.
+      sa     : COMP type 1/2 -- each op on the SA the Core reports (`sa=` field;
+               weight-pinned), so lanes auto-split sa0..; rr fallback if absent.
     A compute slice's width is compute_cycle - overlapping_cycle (its occupancy =
     latency minus the tail that overlaps the next op), starting when the unit
     actually picks it up: start = max(issue, unit_free). num_sa>1 -> lanes sa0.. ."""
@@ -116,35 +149,39 @@ def to_chrome(insts, num_sa=1):
     def add(core, lane, ts, dur, name, r):
         lanes.add((core, lane))
         cores.add(core)
-        events.append({"name": name, "cat": lane, "ph": "X", "ts": ts,
-                       "dur": max(dur, 1), "pid": core, "tid": lane,
-                       "args": {"inst_id": r["iid"], "issued": r["issued"],
-                                "finished": r["finished"], "data_ready": r["resp"]}})
+        args = {"inst_id": r["iid"], "tile": _tile_of(r["detail"]),
+                "issued": r["issued"], "first_data": r["first_resp"],
+                "finished": r["finished"], "data_ready": r["resp"]}
+        am = re.search(r"addr_name=(\w+)", r["detail"] or "")
+        if am:
+            args["addr"] = am.group(1)
+        ev = {"name": name, "cat": lane, "ph": "X", "ts": ts,
+              "dur": max(dur, 1), "pid": core, "tid": lane, "args": args}
+        cname = _tile_color(r["detail"])
+        if cname:
+            ev["cname"] = cname
+        events.append(ev)
 
     def issue_key(r):
         return r["issued"] if r["issued"] is not None else 0
 
     nsa = max(num_sa, 1)
     for core, u in sorted(by_core.items()):
-        # DMA engine: one server, serialized. A load occupies the engine while it
-        # INJECTS its requests -- [INST_ISSUED, ASYNC_DMA_ISSUE] -- not the response
-        # tail [ASYNC_DMA_ISSUE, resp] (engine is free during that) and not up to
-        # data-ready (which would mask gaps). When a load is blocked from issuing
-        # (spad full), its INST_ISSUED is delayed past the engine-free time, so a
-        # real idle gap appears = the SRAM throttle stalling the DMA.
-        free = 0
-        for r in sorted(u["dma"], key=issue_key):
-            start = r["issued"] if r["issued"] is not None else r["dma_issue"]
-            end = r["dma_issue"]
-            if end is None:  # sync dma / store: no async-issue marker
-                end = r["resp"] if r["resp"] is not None else r["finished"]
-            if start is None:
-                continue
-            if end is None or end < start:
-                end = start + 1
-            start = max(start, free)
-            free = max(end, start + 1)
-            add(core, "dma", start, free - start, _label(r["opcode"], r["detail"]), r)
+        # DMA data crossing the DRAM bus, split by direction (reads and writes are
+        # asymmetric). A LOAD's data comes back on the response, so its bar runs
+        # [first DRAM response, data-ready]. A STORE's data goes out with the
+        # request (fire-and-forget; its acks arrive after it has finished), so its
+        # bar runs [issued, finished]. Serialized per direction so each op is one
+        # visible bar: a packed row = the bus is saturated, gaps = it is idle.
+        for lane, op, sk, ek in (("dram-rd", "MOVIN", "first_resp", "resp"),
+                                 ("dram-wr", "MOVOUT", "issued", "finished")):
+            free = 0
+            rows = [r for r in u["dma"] if r["opcode"] == op
+                    and r[sk] is not None and r[ek] is not None and r[ek] > r[sk]]
+            for r in sorted(rows, key=lambda r: r[ek]):
+                start = max(r[sk], free)
+                free = max(r[ek], start + 1)
+                add(core, lane, start, free - start, _label(r["opcode"], r["detail"]), r)
         # VPU: one server; slice = occupancy (compute_cycle - overlapping_cycle).
         free = 0
         for r in sorted(u["vector"], key=issue_key):
@@ -155,23 +192,33 @@ def to_chrome(insts, num_sa=1):
             start = max(r["issued"], free)
             free = start + dur
             add(core, "vector", start, dur, "vector", r)
-        # SA: num_sa servers, round-robin in issue order (mirrors the Core's rr).
-        sa_free = [0] * nsa
-        for i, r in enumerate(sorted(u["sa"], key=issue_key)):
+        # SA: each op runs on the systolic array the Core reports (the `sa=` field
+        # = its weight-pinned / round-robin assignment); fall back to round-robin
+        # by issue order for older logs without the field. Each SA is one server.
+        rows = sorted(u["sa"], key=issue_key)
+
+        def _sa_of(r, i):
+            m = re.search(r"\bsa=(-?\d+)", r["detail"])
+            return int(m.group(1)) if (m and int(m.group(1)) >= 0) else (i % nsa)
+
+        max_sa = max([nsa] + [_sa_of(r, i) + 1 for i, r in enumerate(rows)])
+        sa_free = [0] * max_sa
+        for i, r in enumerate(rows):
             if r["issued"] is None:
                 continue
-            s = i % nsa
+            s = _sa_of(r, i)
             cc, ov = _occ(r["detail"])
             dur = max(cc - ov, 1)
             start = max(r["issued"], sa_free[s])
             sa_free[s] = start + dur
-            lane = "sa" if nsa == 1 else f"sa{s}"
+            lane = "sa" if max_sa == 1 else f"sa{s}"
             add(core, lane, start, dur, _label(r["opcode"], r["detail"]), r)
 
     for c in sorted(cores):
         events.append({"name": "process_name", "ph": "M", "pid": c, "tid": 0,
                        "args": {"name": f"Core {c}"}})
-    order = {"dma": 0, "sa": 1, "sa0": 1, "sa1": 2, "sa2": 3, "sa3": 4, "vector": 8}
+    order = {"dram-rd": 0, "dram-wr": 1,
+             "sa": 2, "sa0": 2, "sa1": 3, "sa2": 4, "sa3": 5, "vector": 7}
     for c, lane in sorted(lanes, key=lambda x: (x[0], order.get(x[1], 5))):
         events.append({"name": "thread_name", "ph": "M", "pid": c, "tid": lane,
                        "args": {"name": lane}})

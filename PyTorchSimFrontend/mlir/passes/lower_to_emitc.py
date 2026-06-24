@@ -57,7 +57,9 @@ CTX_TYPE = '!emitc.ptr<!emitc.opaque<"EmitCtx">>'
 
 #: upstream EmitC conversion pipeline (the infrastructure this pass drives).
 _PIPELINE = ("builtin.module("
+             "convert-vector-to-scf{full-unroll=true},"
              "func.func(lower-affine),"
+             "func.func(lower-vector-multi-reduction),"
              "convert-scf-to-emitc,"
              "convert-arith-to-emitc,"
              "convert-func-to-emitc)")

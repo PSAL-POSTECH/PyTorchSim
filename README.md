@@ -385,6 +385,7 @@ num_cores: 1
 core_freq_mhz: 940
 core_stats_print_period_cycles: 10000
 num_systolic_array_per_core: 2
+sa_weight_buffer_depth: 2   # per-SA resident weight slots; must be > 0 (default 2). Raise to loosen the preload throttle.
 # Optional: one entry per core, default ws_mesh
 # core_type: [ws_mesh, ws_mesh]
 # Optional STONNE cores: stonne_config_path, num_stonne_per_core, num_stonne_port
@@ -453,7 +454,7 @@ codegen_compiler_optimization: all    # all | none | list of option names
 
 One-line meaning for each group (details in the YAML block above).
 
-- **Core (`num_cores`, `core_freq_mhz`, `core_stats_print_period_cycles`, `num_systolic_array_per_core`, optional `core_type`, STONNE keys)**: how many cores, their clock, stats cadence, systolic count per core, and optional non-default mesh vs STONNE mix.
+- **Core (`num_cores`, `core_freq_mhz`, `core_stats_print_period_cycles`, `num_systolic_array_per_core`, `sa_weight_buffer_depth`, optional `core_type`, STONNE keys)**: how many cores, their clock, stats cadence, systolic count per core, the per-SA resident weight-slot count (must be > 0; bounds preload run-ahead—raise it to loosen the throttle), and optional non-default mesh vs STONNE mix.
 - **VPU (`vpu_*`)**: vector lane count, per-lane scratchpad (KB), and vector register width—**compiler** uses these for tiling/codegen.
 - **DRAM (`dram_type`, `dram_channels`, …)**: `ramulator2` uses `ramulator_config_path`; `simple` uses fixed latency and optional bandwidth caps (`dram_bandwidth_gbps_*`, `dram_freq_mhz` when capped). `dram_num_partitions` splits channels for NUMA-style addressing.
 - **Interconnect (`icnt_*`, `booksim_config_path`)**: `simple` adds fixed hop latency (`icnt_latency_cycles`); `booksim2` points at a BookSim2 topology file.

@@ -6,6 +6,7 @@
 #include <list>
 #include <numeric>
 
+#include <array>
 #include <set>
 #include <cassert>
 #include <cstdint>
@@ -13,10 +14,12 @@
 #include <vector>
 
 // MEMORY_BAR: the DMA/memory barrier (waits a DMA tag in the tag table).
-// COMPUTE_BAR: the compute barrier -- waits the systolic-array compute pipeline(s)
-//              to drain (all SAs empty), then finishes. Used as the explicit
-//              fence before a store consumes async matmul results (sec 10.7).
-enum class Opcode { MOVIN, MOVOUT, COMP, MEMORY_BAR, COMPUTE_BAR, COUNT};
+enum class Opcode { MOVIN, MOVOUT, COMP, MEMORY_BAR, COUNT};
+
+// A dependency edge releases its consumer on one of the producer's lifecycle
+// events: ISSUE (occupancy -- the consumer overlaps the producer on the SA
+// pipeline) or DONE (latency -- the consumer needs the producer's result).
+enum class DepEvent : uint8_t { ISSUE = 0, DONE = 1, COUNT = 2 };
 
 // One weight slot on systolic array `sa` (sec 10.x). A preload sets refcount =
 // the matmuls reusing the weight; each frees it at its streaming-end, the last
@@ -37,15 +40,20 @@ class Instruction : public std::enable_shared_from_this<Instruction> {
               std::vector<int64_t> accum_tag_idx_list);
   Instruction(Opcode opcode);
   void finish_instruction();
-  void add_child(std::shared_ptr<Instruction> child);
-  // Occupancy (SA-pipeline) dependency: the child is released when THIS op is
-  // ISSUED (enters the pipeline), not when it finishes -- so a preload/matmul
-  // successor overlaps it instead of waiting its full latency (sec 10.7).
-  void add_pipeline_child(std::shared_ptr<Instruction> child);
-  void release_pipeline_children();
-  // SA weight-buffer model: the SA this op is pinned to (a preload picks it, its
-  // matmul consumers inherit it) and the shared weight slot the matmuls release.
-  const std::set<std::shared_ptr<Instruction>>& get_pipeline_children() { return _pipeline_children; }
+  // Subscribe `c` to this op's `on` event (ISSUE=occupancy, DONE=latency). The set
+  // dedups, so ready_counter is bumped only on a new edge (a producer writing
+  // several buffers one consumer reads links the pair once per buffer).
+  void add_dep(std::shared_ptr<Instruction> c, DepEvent on) {
+    if (_deps[static_cast<size_t>(on)].insert(c).second) c->inc_ready_counter();
+  }
+  // Release every subscriber of `e` (decrement its ready_counter) and clear.
+  void fire(DepEvent e) {
+    for (auto& c : _deps[static_cast<size_t>(e)]) c->dec_ready_counter();
+    _deps[static_cast<size_t>(e)].clear();
+  }
+  const std::set<std::shared_ptr<Instruction>>& get_deps(DepEvent e) {
+    return _deps[static_cast<size_t>(e)];
+  }
   void set_assigned_sa(int s) { _assigned_sa = s; }
   int get_assigned_sa() const { return _assigned_sa; }
   void set_weight_token(const std::shared_ptr<WeightToken>& t) { _weight_token = t; }
@@ -54,10 +62,6 @@ class Instruction : public std::enable_shared_from_this<Instruction> {
   // grouping/coloring in the timeline. Set by the bridge per TILE_BEGIN.
   void set_tile_group(int g) { _tile_group = g; }
   int get_tile_group() const { return _tile_group; }
-  // COMPUTE_BAR fence: the max finish_cycle of the async computes it gates (its
-  // own dispatch only), so it drains those instead of every SA pipeline.
-  void update_fence_finish(cycle_type c) { if (c > _fence_finish) _fence_finish = c; }
-  cycle_type get_fence_finish() const { return _fence_finish; }
   bool check_ready() { return ready_counter == 0; }
   const Opcode get_opcode() { return opcode; }
   bool is_dma_read() { return opcode == Opcode::MOVIN; }
@@ -115,7 +119,6 @@ class Instruction : public std::enable_shared_from_this<Instruction> {
   void prepare_tag_key();
   bool is_sparse_inst() { return _is_sparse_inst; }
   void set_sparse_state(bool state) { _is_sparse_inst = state; }
-  std::set<std::shared_ptr<Instruction>>& get_child_inst() { return child_inst; }
   uint64_t get_global_inst_id() const { return _global_inst_id; }
 
   // SRAM-capacity model (sec 10.x). A load contributes its footprint to a
@@ -129,10 +132,15 @@ class Instruction : public std::enable_shared_from_this<Instruction> {
   int64_t get_sram_alloc() const { return _sram_alloc_id; }
   void add_sram_release(int64_t id) { _sram_release_allocs.push_back(id); }
   const std::vector<int64_t>& get_sram_release() const { return _sram_release_allocs; }
-  // bytes this load occupies in the spad (from the tile it moves in).
-  size_t sram_footprint() const { return _tile_numel * (_elem_bits / 8); }
+  // bytes this instruction's buffer occupies in the spad. A DMA derives it from
+  // the tile it moves; a compute output gets it set explicitly by the bridge (the
+  // buffer's size is known from the DMA records that touch the same buffer).
+  void set_sram_footprint(size_t b) { _sram_footprint_override = b; }
+  size_t sram_footprint() const {
+    return _sram_footprint_override ? _sram_footprint_override
+                                    : _tile_numel * (_elem_bits / 8);
+  }
 
-  cycle_type start_cycle = 0;
   cycle_type finish_cycle = 0;
   cycle_type bubble_cycle=0;
 
@@ -149,8 +157,11 @@ class Instruction : public std::enable_shared_from_this<Instruction> {
   cycle_type overlapping_cycle = 0;
   size_t ready_counter = 0;   // parents not yet finished; the minimal Instruction(Opcode)
                               // ctor (barriers) relies on this default + inc_ready_counter
-  std::set<std::shared_ptr<Instruction>> child_inst;
-  std::set<std::shared_ptr<Instruction>> _pipeline_children;  // released at issue (sec 10.7)
+  // Per-event subscriber sets: _deps[ISSUE] released at issue (occupancy),
+  // _deps[DONE] released at finish (latency). std::set dedups + keeps a stable
+  // iteration order (byte-identical release order).
+  std::array<std::set<std::shared_ptr<Instruction>>,
+             static_cast<size_t>(DepEvent::COUNT)> _deps;
   std::vector<size_t> tile_size;
   std::vector<int> tile_stride;
   size_t _tile_numel = 0;
@@ -175,9 +186,9 @@ class Instruction : public std::enable_shared_from_this<Instruction> {
   // SRAM-capacity model (see the setters above).
   int64_t _sram_alloc_id = -1;
   std::vector<int64_t> _sram_release_allocs;
+  size_t _sram_footprint_override = 0;
   // SA weight-buffer model (see the setters above).
   int _assigned_sa = -1;
   std::shared_ptr<WeightToken> _weight_token;
   int _tile_group = -1;   // trace-only work-item id (see set_tile_group)
-  cycle_type _fence_finish = 0;   // COMPUTE_BAR: drain target (see update_fence_finish)
 };

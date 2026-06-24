@@ -149,6 +149,46 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(const togsim::RunResult& run,
     tile->append_instuction(inst);
   };
 
+  // --- SRAM-capacity tracking (buffer-version allocations, sec 10.x) ---
+  // A coarse tile = one version of its buffer; the fine DMAs that fill it share
+  // one allocation, freed once all the version's consumers have issued (refcount
+  // -> 0). NOT reset in flush(): the spad is one physical per-core resource, so a
+  // buffer reused by the next reduction iter / work-item is a NEW version that
+  // must wait for the old one to free (WAR / double-buffer). Tracked buffers are
+  // the DMA-loaded ones; the accumulator / virtual SA-weights are never written
+  // by a load, so cur_alloc has no entry and they are skipped. (v1: single-core;
+  // multi-core would key cur_alloc/vers by (core, buf).)
+  int64_t next_alloc = 0;
+  std::map<int64_t, int64_t> cur_alloc;   // buf -> current version id
+  std::map<int64_t, bool> open_ver;       // buf -> version still accepting loads
+  struct Ver { std::vector<std::shared_ptr<Instruction>> loads, readers; };
+  std::map<int64_t, Ver> vers;
+  auto sram_on_load = [&](int64_t b, const std::shared_ptr<Instruction>& ld) {
+    if (!cur_alloc.count(b) || !open_ver[b]) {   // a read closed it -> new version
+      cur_alloc[b] = next_alloc++;
+      open_ver[b] = true;
+      vers[cur_alloc[b]] = {};
+    }
+    ld->set_sram_alloc(cur_alloc[b]);
+    vers[cur_alloc[b]].loads.push_back(ld);
+  };
+  auto sram_on_read = [&](int64_t b, const std::shared_ptr<Instruction>& rd) {
+    auto it = cur_alloc.find(b);
+    if (it == cur_alloc.end()) return;           // not a load buffer -> untracked
+    vers[it->second].readers.push_back(rd);
+    open_ver[b] = false;                          // next write starts a new version
+  };
+  auto sram_finalize = [&]() {                    // tag only each version's LAST reader
+    for (auto& kv : vers) {
+      auto& v = kv.second;
+      if (v.readers.empty()) {                    // no consumer -> never freed: untrack
+        for (auto& ld : v.loads) ld->set_sram_alloc(-1);
+        continue;
+      }
+      v.readers.back()->add_sram_release(kv.first);  // it frees the whole version on issue
+    }
+  };
+
   for (const auto& t : run.trace) {
     if (t.kind == TraceRec::TILE_BEGIN) {
       // togsim_dispatch opened a work-item -> new subgraph (bound to its core) +
@@ -183,6 +223,7 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(const togsim::RunResult& run,
         } else {
           link(inst, t.read_bufs, t.write_bufs);
         }
+        for (int64_t b : t.read_bufs) sram_on_read(b, inst);  // store frees what it drains
       } else {                                           // LOAD
         tile->append_instuction(inst);
         // async load: record it as the CURRENT load for this (tag_id, tag_slot)
@@ -193,6 +234,7 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(const togsim::RunResult& run,
         // has no barrier and blocks to arrival itself.
         if (t.is_async) current_dma[{t.tag_id, t.tag_slot}] = {uniq, inst};
         for (int64_t b : t.write_bufs) last_writer[b] = inst;
+        for (int64_t b : t.write_bufs) sram_on_load(b, inst);   // occupy spad
       }
     } else if (t.kind == TraceRec::MEMORY_BAR) {
       // the explicit async-DMA sync (the original dma_wait). Pair with the CURRENT
@@ -211,6 +253,7 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(const togsim::RunResult& run,
     } else if (t.kind == TraceRec::COMPUTE) {
       auto inst = make_compute(t);
       link(inst, t.read_bufs, t.write_bufs);
+      for (int64_t b : t.read_bufs) sram_on_read(b, inst);     // frees the tiles it consumes
       if (is_async_compute(t.compute_type)) outstanding_async.push_back(inst);
     } else if (t.kind == TraceRec::COMPUTE_BAR) {
       // explicit compute fence: ready once all outstanding async compute have
@@ -224,5 +267,6 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(const togsim::RunResult& run,
     }
   }
   flush();
+  sram_finalize();   // readers per version are now final -> set each version's refcount
   return tg;
 }

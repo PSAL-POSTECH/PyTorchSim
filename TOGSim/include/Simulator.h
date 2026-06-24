@@ -48,6 +48,9 @@ class Simulator {
   void dram_cycle();
   void icnt_cycle();
   bool running();
+  // Spad-too-small guard: if the sim stays frozen (running() but nothing in
+  // flight) past kWedgeThreshold cycles, error out and exit. Called each cycle.
+  void check_frozen();
   void set_cycle_mask();
   uint32_t get_dest_node(mem_fetch *access);
   SimulationConfig _config;

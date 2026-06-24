@@ -10,11 +10,30 @@
 
 namespace {
 
-std::shared_ptr<Instruction> make_dma(const togsim::TraceRec& t) {
+// `uniq` is a per-DMA-record unique tag-key id minted by the caller. The Core
+// tag table keys completion on [addr_id, ..., sum(tag_idx*stride)]; using `uniq`
+// as addr_id makes every reduction iteration of one static dma get a DISTINCT
+// key -- so multi-tile-K (and conv, whose reduction is the kh*kw*C nest) do not
+// collide, with no coordinate enumeration. The matching memory_barrier reuses
+// the same `uniq` (current-load map per (tag_id, tag_slot), see
+// trace_to_tilegraph), so the table still pairs them. This works because the
+// recorded stream is already per-iteration (the producer ran the loops) --
+// unlike a compile-time event_id. `tag_idx` (the subtile slot) is retained for
+// the SRAM double-buffer model.
+//
+// FIXME(semantics): the per-iteration tag is still reconstructed HERE from the
+// record order. The producer IR now DOES carry a per-iteration tag -- dma_fine_-
+// grained emits a fresh tag memref.alloc just before each coarse load (rewiring
+// its dma_wait), so successive reduction iterations allocate distinct tags -- but
+// build_skeleton collapses that to one static tag_id (it DCEs the alloc and keys
+// togsim.dma by the alloc's static identity), so this bridge still needs `uniq`
+// to tell iterations apart at runtime. The faithful finish is to thread the
+// per-iteration alloc identity through build_skeleton as an SSA tag handle on the
+// togsim.dma / togsim.memory_barrier (then `uniq` here is unnecessary).
+std::shared_ptr<Instruction> make_dma(const togsim::TraceRec& t, int64_t uniq) {
   Opcode op = (t.dir == 1) ? Opcode::MOVOUT : Opcode::MOVIN;
   std::vector<size_t> tile_size(t.dims.begin(), t.dims.end());
   std::vector<int> tile_stride(t.strides.begin(), t.strides.end());
-  // tag_idx_list / tag_stride_list must match in size; one slot key per dma.
   std::vector<int64_t> tag_idx{(int64_t)t.tag_slot};
   std::vector<int64_t> tag_stride{1};
   auto inst = std::make_shared<Instruction>(
@@ -22,26 +41,21 @@ std::shared_ptr<Instruction> make_dma(const togsim::TraceRec& t) {
       tile_size, tile_stride, (size_t)t.elem_bits, tag_idx, tag_stride,
       /*accum_tag_idx_list=*/std::vector<int64_t>{});
   inst->set_is_async(t.is_async != 0);
-  // The tag key is [addr_id, ..., sum(tag_idx*tag_stride)]. addr_id is the tag
-  // memref identity (tag_id): an async dma and its memory_barrier share a tag
-  // memref, so the same (tag_id, tag_slot) keys both and the Core's tag table
-  // pairs them. (Distinct tag memrefs -> distinct tag_id, so no false collision.)
-  inst->set_addr_name("tag" + std::to_string(t.tag_id), t.tag_id);
+  inst->set_addr_name("tag" + std::to_string(uniq), uniq);
   inst->prepare_tag_key();
   return inst;
 }
 
-// A MEMORY_BAR carrying the SAME tag key as the async dma it gates -- the Core's
-// tag table signals it at the dma's DATA-ready (resp-complete), unlike a raw
-// add_child which the async dma releases at issue-complete. Tag inputs match
-// make_dma (tag_idx={tag_slot}, stride={1}, addr_id=tag_id) so the keys collide.
-std::shared_ptr<Instruction> make_mem_bar(const togsim::TraceRec& t) {
+// A MEMORY_BAR carrying the SAME `uniq` tag key as the async dma it gates -- the
+// Core's tag table signals it at the dma's DATA-ready (resp-complete), unlike a
+// raw add_child which the async dma releases at issue-complete.
+std::shared_ptr<Instruction> make_mem_bar(const togsim::TraceRec& t, int64_t uniq) {
   auto bar = std::make_shared<Instruction>(
       Opcode::MEMORY_BAR, 0, 0, 0,
       std::vector<size_t>{}, std::vector<int>{}, 0,
       std::vector<int64_t>{(int64_t)t.tag_slot}, std::vector<int64_t>{1},
       std::vector<int64_t>{});
-  bar->set_addr_name("tag" + std::to_string(t.tag_id), t.tag_id);
+  bar->set_addr_name("tag" + std::to_string(uniq), uniq);
   bar->prepare_tag_key();
   return bar;
 }
@@ -73,10 +87,18 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(const togsim::RunResult& run,
   // SRAM buffer it reads. Scoped per work-item (reset at each dispatch) -- buffers
   // are work-item-local, so distinct work-items are independent (-> parallel).
   std::map<int64_t, std::shared_ptr<Instruction>> last_writer;  // buffer id -> producer
-  // An async dma is paired with its explicit memory_barrier by the RUNTIME tag
-  // (tag_id, tag_slot): the dma records itself here so the later barrier can find
-  // it and depend on it. Scoped per work-item (the tag table is per subgraph).
-  std::map<std::pair<int32_t, uint64_t>, std::shared_ptr<Instruction>> tag_to_dma;
+  // An async dma is paired with its explicit memory_barrier(s) by the runtime tag
+  // (tag_id, tag_slot). It is 1 load : N barriers (the load happens once per
+  // reduction iteration; each consumer in that iteration is preceded by a wait on
+  // the same tag), so we track the CURRENT (most recent) load per (tag_id,
+  // tag_slot) -- like last_writer for a buffer -- not a FIFO. Each load gets a
+  // fresh `uniq` Core key, so successive reduction iterations (multi-tile-K, conv)
+  // never collide in the tag table; the iteration's barriers reuse that load's
+  // uniq. Correct because the load nest and its consumer nest run in order within
+  // the reduction body (no cross-iteration prefetch). Scoped per work-item.
+  std::map<std::pair<int32_t, uint64_t>,
+           std::pair<int64_t, std::shared_ptr<Instruction>>> current_dma;
+  int64_t next_tag = 0;   // mints a unique Core tag key per dma record
   // Async compute (matmul/preload): issued and pipelined on the systolic array;
   // they do not block each other. A store then needs the drained result, so it
   // FLUSHes -- waits all outstanding async compute before running (like a fence
@@ -94,7 +116,8 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(const togsim::RunResult& run,
     sg.reset();
     tile.reset();
     last_writer.clear();
-    tag_to_dma.clear();
+    current_dma.clear();
+    next_tag = 0;
     outstanding_async.clear();
     pending_bar.reset();
   };
@@ -138,7 +161,8 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(const togsim::RunResult& run,
     if (!tile) continue;  // defensive: ops before the first core_alloc
 
     if (t.kind == TraceRec::DMA) {
-      auto inst = make_dma(t);
+      int64_t uniq = next_tag++;                         // fresh Core tag key per dma record
+      auto inst = make_dma(t, uniq);
       size_t numel = 1;                                  // SRAM footprint (ready-tile ordering)
       for (auto d : t.dims) numel *= (size_t)d;
       tile->inc_required_sram_size(numel * (t.elem_bits / 8));
@@ -155,21 +179,27 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(const togsim::RunResult& run,
         }
       } else {                                           // LOAD
         tile->append_instuction(inst);
-        // Record the dma under its runtime tag so the explicit memory_barrier
-        // (the original dma_wait) can pair with it. last_writer = the dma for now;
-        // for an async load the barrier overwrites it (consumers gate on data
-        // arrival), for a sync load the dma itself blocks to data arrival.
-        if (t.is_async) tag_to_dma[{t.tag_id, t.tag_slot}] = inst;
+        // async load: record it as the CURRENT load for this (tag_id, tag_slot)
+        // with its fresh uniq; the barriers in this reduction iteration reuse that
+        // uniq (1 load : N barriers). A new iteration's load overwrites it with a
+        // new uniq -> distinct tag key, no collision. last_writer = the dma for now;
+        // the barrier overwrites it so consumers gate on data arrival. A sync load
+        // has no barrier and blocks to arrival itself.
+        if (t.is_async) current_dma[{t.tag_id, t.tag_slot}] = {uniq, inst};
         for (int64_t b : t.write_bufs) last_writer[b] = inst;
       }
     } else if (t.kind == TraceRec::MEMORY_BAR) {
-      // the explicit async-DMA sync (the original dma_wait). Pair with its dma by
-      // the runtime tag; the dma releases the bar at issue-complete (add_child),
-      // then the bar parks on the tag table until the data arrives (resp-complete,
+      // the explicit async-DMA sync (the original dma_wait). Pair with the CURRENT
+      // load for this (tag_id, tag_slot), reusing its uniq Core key so the dma and
+      // bar pair in the tag table; the dma releases the bar at issue-complete
+      // (add_child), then the bar parks on the tag until data-ready (resp-complete,
       // set_tag_finish). Consumers of the loaded buffer then gate on the bar.
-      auto bar = make_mem_bar(t);
-      auto it = tag_to_dma.find({t.tag_id, t.tag_slot});
-      if (it != tag_to_dma.end()) it->second->add_child(bar);
+      auto it = current_dma.find({t.tag_id, t.tag_slot});
+      int64_t uniq = next_tag++;                         // fallback if unpaired
+      std::shared_ptr<Instruction> dma_inst;
+      if (it != current_dma.end()) { uniq = it->second.first; dma_inst = it->second.second; }
+      auto bar = make_mem_bar(t, uniq);
+      if (dma_inst) dma_inst->add_child(bar);
       tile->append_instuction(bar);
       for (int64_t b : t.write_bufs) last_writer[b] = bar;
     } else if (t.kind == TraceRec::COMPUTE) {

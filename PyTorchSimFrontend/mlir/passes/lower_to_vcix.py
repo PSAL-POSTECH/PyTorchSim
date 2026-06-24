@@ -469,6 +469,14 @@ def _lower_matmul(op, SS, vlen):
         # --- B dma_wait ---
         nacc = len(acc)
         acc_ivs = [_loop_iv(l) for l in acc]
+        # LEGACY behavior: coefficient -1 on each accumulation (reduction) loop var
+        # is a SENTINEL marking "this tag dim is the reduction axis", not an
+        # arithmetic offset. The legacy TOG path (TileGraphParser.cc) honors it by
+        # routing those vars to a separate accum tag component and skipping stride
+        # -1. The C++ trace path does NOT honor it: build_skeleton._strip_accum_terms
+        # drops these -1 terms so the memory_barrier slot stays subtile-only and
+        # pairs with its async load. Kept here for byte-identity with the C++
+        # -test-pytorchsim-to-vcix pass; remove (do not flag) once legacy retires.
         bexpr = ir.AffineDimExpr.get(0) * -1
         for i in range(1, nacc):
             bexpr = bexpr + ir.AffineDimExpr.get(i) * -1
@@ -525,6 +533,10 @@ def _lower_matmul(op, SS, vlen):
 
     with body_ip:
         # --- A dma_wait ---
+        # LEGACY behavior (see the B dma_wait above): the -1 coefficients mark the
+        # reduction axis for the legacy TOG path; the trace path strips them in
+        # build_skeleton._strip_accum_terms. Kept for byte-identity with the C++
+        # -test-pytorchsim-to-vcix pass; remove once legacy retires.
         aexpr = ir.AffineDimExpr.get(0) * -1
         for i in range(1, nacc):
             aexpr = aexpr + ir.AffineDimExpr.get(i) * -1

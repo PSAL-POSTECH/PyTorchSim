@@ -207,12 +207,9 @@ class MLIRCodeCache:
         lock = FileLock(get_lock_path(write_path), timeout=LOCK_TIMEOUT)
         with lock:
             try:
-                # mlir-opt now runs only loop-padding/dma-fine-grained/pytorchsim-to-vcix
-                # and writes the post-vcix IR. The tile-operation-graph pass is ported
-                # to Python: run_tog reads that IR, writes the TOG (_tog.py) and the
-                # mutated IR (_custom.mlir: sample-mode step rewrite + compute markers),
-                # replacing the C++ -test-tile-operation-graph pass.
-                # loop-padding(timing, mlir-opt) -> Python fine-grained + vcix (one parse/print)
+                # mlir-opt now runs only loop-padding and writes the post-vcix IR; the
+                # tile-operation-graph pass is ported to Python. run_tog reads that IR and
+                # writes the TOG plus the mutated IR (step rewrite + compute markers).
                 subprocess.check_call(gem5_pad_cmd)
                 run_module_passes(sample_mlir_path + "_padded.mlir",
                                   sample_mlir_path + "_postvcix.mlir",

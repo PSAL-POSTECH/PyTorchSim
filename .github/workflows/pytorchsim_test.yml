@@ -6,14 +6,15 @@ on:
       image_name:
         required: true
         type: string
-      vector_lane:
-        description: "Vector lane size (use empty string for server TPU)"
+      togsim_config:
+        description: "TOGSim hardware config YAML (single source of truth; drives both codegen and the cycle sim)"
         required: true
-        type: number
-      spad_size:
-        description: "SPAD size (use empty string for server TPU)"
-        required: true
-        type: number
+        type: string
+      run_accuracy:
+        description: "Run the accuracy + speedup artifact job (only meaningful for the 128x128 config)"
+        required: false
+        default: false
+        type: boolean
 
 # Runner policy: the CPU-only CI image is small enough to pull on GitHub-hosted
 # runners, so op and model tests run on ubuntu-latest. The memory/time-intensive
@@ -35,8 +36,7 @@ jobs:
         run: |
           echo "Running test_add.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/ops/elementwise/test_add.py
 
   test_transcendental:
@@ -54,8 +54,7 @@ jobs:
         run: |
           echo "Running test_transcendental.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/ops/elementwise/test_transcendental.py
 
   test_activation:
@@ -73,8 +72,7 @@ jobs:
         run: |
           echo "Running test_activation.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/ops/elementwise/test_activation.py
 
   test_batchnorm:
@@ -92,8 +90,7 @@ jobs:
         run: |
           echo "Running test_batchnorm.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/ops/reduce/test_batchnorm.py
 
   test_bmm:
@@ -111,8 +108,7 @@ jobs:
         run: |
           echo "Running test_bmm.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/ops/gemm/test_bmm.py
 
   test_cnn:
@@ -130,8 +126,7 @@ jobs:
         run: |
           echo "Running test_cnn.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/ops/conv/test_cnn.py
 
   test_conv2d:
@@ -149,8 +144,7 @@ jobs:
         run: |
           echo "Running test_conv2d.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/ops/conv/test_conv2d.py
 
   test_cat:
@@ -168,8 +162,7 @@ jobs:
         run: |
           echo "Running test_cat.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/ops/view/test_cat.py
 
   test_floormod_axis_split:
@@ -187,8 +180,7 @@ jobs:
         run: |
           echo "Running test_floormod_axis_split.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/ops/view/test_floormod_axis_split.py
 
   test_widen_dtype:
@@ -206,8 +198,7 @@ jobs:
         run: |
           echo "Running test_widen_dtype.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/ops/misc/test_widen_dtype.py
 
   test_matmul:
@@ -225,8 +216,7 @@ jobs:
         run: |
           echo "Running test_matmul.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/ops/gemm/test_matmul.py
 
   test_reduce:
@@ -244,8 +234,7 @@ jobs:
         run: |
           echo "Running test_reduce.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/ops/reduce/test_reduce.py
 
   test_softmax:
@@ -263,8 +252,7 @@ jobs:
         run: |
           echo "Running test_softmax.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/ops/reduce/test_softmax.py
 
   test_transpose2D:
@@ -282,8 +270,7 @@ jobs:
         run: |
           echo "Running test_transpose2D.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/ops/view/test_transpose2D.py
 
   test_view3D_2D:
@@ -301,8 +288,7 @@ jobs:
         run: |
           echo "Running test_view3D_2D.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/ops/view/test_view3D_2D.py
 
   test_layernorm:
@@ -320,8 +306,7 @@ jobs:
         run: |
           echo "Running test_layernorm.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/ops/reduce/test_layernorm.py
 
   test_mlp:
@@ -339,8 +324,7 @@ jobs:
         run: |
           echo "Running test_mlp.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/models/test_mlp.py
 
   test_resnet:
@@ -358,16 +342,14 @@ jobs:
         run: |
           echo "Running test_resnet.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/models/test_resnet.py
 
       - name: Run test_resnet50.py
         run: |
           echo "Running test_resnet.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/models/test_resnet.py --model_type resnet50
 
   test_mobilenet:
@@ -385,8 +367,7 @@ jobs:
         run: |
           echo "Running test_mobilenet.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/models/MobileNet/test_mobilenet.py
 
   test_transformer:
@@ -404,8 +385,7 @@ jobs:
         run: |
           echo "Running test_transformer.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/models/test_transformer.py
 
   test_transpose3D:
@@ -423,8 +403,7 @@ jobs:
         run: |
           echo "Running test_transpose3D.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/ops/view/test_transpose3D.py
 
   test_sparsity:
@@ -442,8 +421,7 @@ jobs:
         run: |
           echo "Running test_sparsity.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/ops/sparsity/test_sparsity.py
 
   test_pool:
@@ -461,8 +439,7 @@ jobs:
         run: |
           echo "Running test_pool.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/ops/conv/test_pool.py
 
   test_perceptron:
@@ -480,8 +457,7 @@ jobs:
         run: |
           echo "Running test_single_perceptron.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/models/test_single_perceptron.py
 
   test_fusion:
@@ -499,80 +475,70 @@ jobs:
         run: |
           echo "Running test_addmm_residual.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/ops/fusion/test_addmm_residual.py
 
       - name: Run test_matmul_activation.py
         run: |
           echo "Running test_matmul_activation.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/ops/fusion/test_matmul_activation.py
 
       - name: Run test_matmul_scalar.py
         run: |
           echo "Running test_matmul_scalar.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/ops/fusion/test_matmul_scalar.py
 
       - name: Run test_matmul_reduction.py
         run: |
           echo "Running test_matmul_reduction.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/ops/fusion/test_matmul_reduction.py
 
       - name: Run test_bmm_reduction.py
         run: |
           echo "Running test_bmm_reduction.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/ops/fusion/test_bmm_reduction.py
 
       - name: Run test_prologue_fusion.py
         run: |
           echo "Running test_prologue_fusion.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/ops/fusion/test_prologue_fusion.py
 
       - name: Run test_transformer_fusion.py
         run: |
           echo "Running test_transformer_fusion.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/ops/fusion/test_transformer_fusion.py
 
       - name: Run test_conv_fusion.py
         run: |
           echo "Running test_conv_fusion.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/ops/fusion/test_conv_fusion.py
 
       - name: Run test_attention_fusion.py
         run: |
           echo "Running test_attention_fusion.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/ops/fusion/test_attention_fusion.py
 
       - name: Run test_matmul_vector.py
         run: |
           echo "Running test_matmul_vector.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/ops/fusion/test_matmul_vector.py
 
   test_moe:
@@ -590,8 +556,7 @@ jobs:
         run: |
           echo "Running test_moe.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/models/MoE/test_moe.py
 
   test_mistral:
@@ -609,8 +574,7 @@ jobs:
         run: |
           echo "Running test_mistral.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/models/Mixtral8x7B/test_attention.py
 
   test_vit:
@@ -628,8 +592,7 @@ jobs:
         run: |
           echo "Running test_vit.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/models/test_vit.py
 
   test_diffusion:
@@ -649,8 +612,7 @@ jobs:
         run: |
           echo "Running test_diffusion.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/models/Diffusion/test_diffusion.py
 
   test_indirect:
@@ -668,8 +630,7 @@ jobs:
         run: |
           echo "Running test_indirect.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/ops/misc/test_indirect_access.py
 
   test_scheduler:
@@ -687,8 +648,7 @@ jobs:
         run: |
           echo "Running test_scheduler.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/system/test_scheduler.py
 
   test_llama:
@@ -706,8 +666,7 @@ jobs:
         run: |
           echo "Running test_llama.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/models/Llama/test_llama.py
 
   test_yolov5:
@@ -725,8 +684,7 @@ jobs:
         run: |
           echo "Running test_yolov5.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/models/Yolov5/test_yolov5.py
 
   test_deepseek:
@@ -746,8 +704,7 @@ jobs:
         run: |
           echo "Running test_deepseek_v3_base.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/models/DeepSeek/test_deepseek_v3_base.py
 
   test_eager:
@@ -765,8 +722,7 @@ jobs:
         run: |
           echo "Running test_eager.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/system/test_eager.py
 
   test_exponent:
@@ -784,8 +740,7 @@ jobs:
         run: |
           echo "Running test_exponent.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/ops/elementwise/test_exponent.py
 
   test_sort:
@@ -803,8 +758,7 @@ jobs:
         run: |
           echo "Running test_sort.py"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/ops/sort/test_sort.py
 
   test_accuracy:
@@ -812,7 +766,7 @@ jobs:
     # Accuracy + speedup runs many model simulations end to end; it is the most
     # time- and memory-intensive job, so keep it on a self-hosted runner.
     runs-on: self-hosted
-    if: inputs.vector_lane == 128
+    if: inputs.run_accuracy
     steps:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -830,8 +784,7 @@ jobs:
           set -o pipefail
           mkdir -p "$ART_DIR"
           docker run --rm \
-            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
-            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             -e SKIP_ILS=1 \
             -e SPEEDUP_ITERS=2 \
             -v "$ART_DIR:/artifacts" \

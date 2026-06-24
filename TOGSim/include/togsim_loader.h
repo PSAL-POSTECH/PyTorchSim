@@ -23,8 +23,8 @@ namespace togsim {
 
 // One modeled instruction recorded by the runtime callbacks.
 struct TraceRec {
-  enum Kind { DISPATCH, DMA, COMPUTE, MEMORY_BAR, COMPUTE_BAR } kind;
-  int32_t  core;          // work-item -> core binding (set by togsim_core_alloc)
+  enum Kind { TILE_BEGIN, TILE_END, DMA, COMPUTE, MEMORY_BAR, COMPUTE_BAR } kind;
+  int32_t  core;          // work-item -> core binding (set by togsim_dispatch)
   // DMA / MEMORY_BAR
   int32_t  dir;           // togsim_dma_dir
   int32_t  arg_id;        // tensor

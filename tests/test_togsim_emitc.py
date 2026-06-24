@@ -66,7 +66,8 @@ void togsim_compute(EmitCtx*, uint64_t, int32_t, int32_t, const int64_t*,
                     const int64_t*, int32_t, const int64_t*, int32_t){ ++n_compute; }
 void togsim_memory_barrier(EmitCtx*, int32_t tag_id, uint64_t, const int64_t*, int32_t){
   ++n_membar; if(tag_id<0) ++bad; }   // tag_id pairs it with its async dma
-int32_t togsim_core_alloc(EmitCtx*){ return n_core++; }   // count + assign a core
+void togsim_dispatch(EmitCtx* ctx, togsim_tile_fn fn, int64_t* iv, int32_t n){
+  ++n_core; fn(ctx, iv, n); }   // count a work-item + run its (outlined) body
 void togsim_compute_barrier(EmitCtx*){}
 }
 int main(int argc, char** argv){
@@ -108,10 +109,10 @@ def test_build_trace_so():
                 (ln.split() for ln in nm.splitlines()) if len(parts) >= 2}
         assert syms.get("togsim_kernel") == "T", nm
         assert syms.get("togsim_dma") == "U", nm
-        assert syms.get("togsim_core_alloc") == "U", nm
+        assert syms.get("togsim_dispatch") == "U", nm
         assert syms.get("togsim_memory_barrier") == "U", nm
-        # The per-work-item core alloc is emitted.
-        assert 'emitc.call_opaque "togsim_core_alloc"' in emitc_text
+        # The per-work-item dispatch wrapper is emitted (outlined tile fn).
+        assert 'emitc.call_opaque "togsim_dispatch"' in emitc_text
 
 
 @pytest.mark.skipif(not _tools_ready(),

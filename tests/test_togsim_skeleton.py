@@ -43,8 +43,9 @@ def test_togsim_ops_contract():
     assert ts.ENTRY_SYMBOL == "togsim_kernel"
     assert ts.ENTRY_SYMBOL in header
 
-    # Runtime callee emitted directly by lower_to_emitc (core alloc).
-    assert ts.CORE_ALLOC_CALLEE in header
+    # Runtime callee emitted directly by lower_to_emitc: the work-item dispatch
+    # wrapper. (The outlined tile fn TILE_SYMBOL is producer-generated.)
+    assert ts.DISPATCH_CALLEE in header
 
     # Direction enum agrees with the header's togsim_dma_dir.
     assert (ts.DIR_LOAD, ts.DIR_STORE) == (0, 1)

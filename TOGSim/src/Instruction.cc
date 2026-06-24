@@ -23,7 +23,8 @@ std::string opcode_to_string(Opcode opcode) {
         case Opcode::MOVIN:        return "MOVIN";
         case Opcode::MOVOUT:       return "MOVOUT";
         case Opcode::COMP:         return "COMP";
-        case Opcode::BAR:          return "BAR";
+        case Opcode::MEMORY_BAR:   return "MEMORY_BAR";
+        case Opcode::COMPUTE_BAR:  return "COMPUTE_BAR";
         default:                   return "Unknown";
     }
 }
@@ -58,6 +59,16 @@ void Instruction::finish_instruction() {
 void Instruction::add_child(std::shared_ptr<Instruction> child) {
   child->inc_ready_counter();
   child_inst.insert(child);
+}
+
+void Instruction::add_pipeline_child(std::shared_ptr<Instruction> child) {
+  child->inc_ready_counter();
+  _pipeline_children.insert(child);
+}
+
+void Instruction::release_pipeline_children() {
+  for (auto& c : _pipeline_children) c->dec_ready_counter();
+  _pipeline_children.clear();
 }
 
 void Instruction::inc_waiting_request() {

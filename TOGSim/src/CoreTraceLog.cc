@@ -70,7 +70,7 @@ std::string format_instruction_detail_line(Instruction& inst) {
   if (op == Opcode::MOVIN || op == Opcode::MOVOUT) {
     return fmt::format("{} (addr_name={})", opname, inst.get_addr_name());
   }
-  if (op == Opcode::BAR) {
+  if (op == Opcode::MEMORY_BAR) {
     return fmt::format("{} (addr_name={} tag_id=[{}] tag_idx=[{}] tag_stride=[{}])",
                        opname,
                        inst.get_addr_name(),

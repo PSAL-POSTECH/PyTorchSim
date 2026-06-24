@@ -12,3 +12,8 @@ file(GLOB_RECURSE SRC_FILES
 
 # build
 add_executable(${LIB_NAME} ${SRC_FILES})
+
+# Export the executable's dynamic symbols (-rdynamic) so a dlopen'd trace
+# producer .so resolves the togsim_* runtime callbacks back into this binary
+# (P3 trace pipeline).
+set_target_properties(${LIB_NAME} PROPERTIES ENABLE_EXPORTS ON)

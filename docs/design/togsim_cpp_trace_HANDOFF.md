@@ -89,7 +89,7 @@ the compute fence before a store — marked FIXME to become explicit later.)
 
 - `TOGSim/include/togsim_runtime.h` — extern "C" ABI v11 (`togsim_dma`,
   `togsim_memory_barrier`, `togsim_compute`, `togsim_compute_barrier`,
-  `togsim_core_alloc`, `togsim_emit` entry, `TOGSIM_ABI_VERSION`, opaque
+  `togsim_core_alloc`, `togsim_kernel` entry, `TOGSIM_ABI_VERSION`, opaque
   `EmitCtx`).
 - `PyTorchSimFrontend/mlir/passes/togsim_ops.py` — single source of truth for the
   skeleton+API MLIR vocabulary (op names, attr keys, op->callee map).
@@ -103,7 +103,7 @@ the compute fence before a store — marked FIXME to become explicit later.)
 - `tests/test_togsim_skeleton.py` — `test_togsim_ops_contract` (runs anywhere) +
   `test_build_skeleton_on_fixture` (gated on bindings + a fixture).
 - `PyTorchSimFrontend/mlir/passes/lower_to_emitc.py` — the P2/C4 pass: skeleton
-  module -> EmitC `togsim_emit` -> C++ (`mlir-translate`) -> `.so` (`g++`).
+  module -> EmitC `togsim_kernel` -> C++ (`mlir-translate`) -> `.so` (`g++`).
   Entry points: `lower_to_emitc(module)`, `build_trace_so(postvcix_path, so)`,
   and a `__main__` CLI (`--so`, `--emit-cpp`, `--include-dir`).
 - `tests/test_togsim_emitc.py` — `test_build_trace_so` (EmitC + symbol checks) +
@@ -127,7 +127,7 @@ python -m PyTorchSimFrontend.mlir.passes.build_skeleton "$FIX" --out /tmp/skel.m
 # 3. P2: skeleton -> EmitC -> C++ -> .so (reads skel from $FIX via build_skeleton).
 python -m PyTorchSimFrontend.mlir.passes.lower_to_emitc "$FIX" \
     --so /tmp/trace.so --emit-cpp /tmp/trace.cpp
-nm -D /tmp/trace.so | grep togsim     # togsim_emit = T; togsim_dma/memory_barrier/compute = U
+nm -D /tmp/trace.so | grep togsim     # togsim_kernel = T; togsim_dma/memory_barrier/compute = U
 
 # 4. tests
 TOGSIM_SKELETON_FIXTURE="$FIX" python -m pytest \

@@ -543,7 +543,7 @@ std::vector<std::shared_ptr<Tile>> TileLoopNode::get_tiles_from_iter(TileGraphPa
              fmt::join(new_tag_stride_list, ", "));
 
       std::shared_ptr<Instruction> inst = std::make_shared<Instruction>(
-        Opcode::BAR, 0,
+        Opcode::MEMORY_BAR, 0,
         0, base_addr,
         std::vector<size_t>(), std::vector<int>(), 0,
         tag_list, new_tag_stride_list, accum_tag_list

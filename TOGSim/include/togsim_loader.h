@@ -54,12 +54,15 @@ struct RunResult {
 // built EmitCtx, and return the recorded trace.
 //   tensor_base[arg_id] : DRAM base address of each kernel tensor argument
 //   cyc[tile_id] / ovl[tile_id] : the cycle table (cycle, overlapping_cycle)
-//   num_cores : dispatch round-robins work-items across this many cores
+//   partition_cores : the core ids of the partition this kernel is enqueued to;
+//                     dispatch round-robins work-items only over THESE cores (a
+//                     kernel stays within its partition -- other partitions are
+//                     independent). Empty/null -> core 0.
 RunResult run_producer(const char* so_path,
                        const int64_t* shape_args, int32_t n_shape,
                        const uint64_t* tensor_base, int32_t n_tensors,
                        const int64_t* cyc, const int64_t* ovl, int32_t n_tiles,
-                       int32_t num_cores);
+                       const int32_t* partition_cores, int32_t n_partition_cores);
 
 // First-order reference timing over a recorded trace, to validate that the
 // stream carries enough to be scheduled (it is NOT the production Core -- no

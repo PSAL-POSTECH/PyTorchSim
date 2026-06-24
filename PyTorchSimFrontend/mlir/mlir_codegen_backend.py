@@ -1120,9 +1120,13 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         src_code, meta_code = super().codegen_nodes(nodes, kernel_name)
         self._prepare_simulator_headers(src_code)
         if "autotune" in extension_config.codegen_mapping_strategy and extension_config.pytorchsim_timing_mode:
-            optimal_src_code, meta_code = self.autotune(nodes, kernel_name)[:2]
+            # Use temporaries: autotune returns [None, None, None] when it cannot
+            # autotune (e.g. a size-1 pointwise kernel with ranges == [1]), and
+            # unpacking into meta_code would clobber the valid arg_attributes that
+            # the fall-through below returns.
+            optimal_src_code, optimal_meta_code = self.autotune(nodes, kernel_name)[:2]
             if optimal_src_code is not None:
-                return optimal_src_code, meta_code
+                return optimal_src_code, optimal_meta_code
         return src_code, meta_code
 
     def _prepare_simulator_headers(self, src_code):

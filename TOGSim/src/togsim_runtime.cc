@@ -108,10 +108,6 @@ void togsim_memory_barrier(EmitCtx* ctx, int32_t tag_id, uint64_t tag_slot,
   ctx->trace.push_back(r);
 }
 
-void togsim_compute_barrier(EmitCtx* ctx) {
-  ctx->trace.push_back(blank(togsim::TraceRec::COMPUTE_BAR, ctx->cur_core));
-}
-
 }  // extern "C"
 
 namespace togsim {
@@ -189,8 +185,7 @@ SimResult simulate(const RunResult& run, const TimingParams& params) {
       }
       case TraceRec::TILE_BEGIN:
       case TraceRec::TILE_END:
-      case TraceRec::COMPUTE_BAR:
-        break;  // work-item boundary / compute fence: no cost in this reference timer
+        break;  // work-item boundary: no cost in this reference timer
     }
   }
   for (auto& kv : dma_free) out.total_cycle = std::max(out.total_cycle, kv.second);

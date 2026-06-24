@@ -32,8 +32,6 @@ Grammar (each op lowers 1:1 to a `togsim_runtime.h` free function):
             tag_id = i32, write_bufs = [..]             tag_id, tag_slot, write_bufs)
          } : (index) -> ()
 
-    "togsim.compute_barrier"() : () -> ()       -> togsim_compute_barrier(ctx)
-
 How an async dma pairs with its sync point: NOT by a compile-time id. One static
 `togsim.dma` op runs once per loop iteration, each with a different RUNTIME tag
 slot `%tag[%idx]`, so the pairing must be a runtime key. `togsim.dma` carries a
@@ -52,17 +50,15 @@ Keep this in lockstep with TOGSim/include/togsim_runtime.h (TOGSIM_ABI_VERSION).
 # ---- op names -------------------------------------------------------------
 DMA    = "togsim.dma"
 COMPUTE = "togsim.compute"
-COMPUTE_BAR = "togsim.compute_barrier"  # fence: drain async compute before a consumer (sec 10.7)
 MEMORY_BAR = "togsim.memory_barrier"    # explicit async-DMA sync (the original dma_wait); tag-keyed
 
 #: every op this module owns (for matchers / DCE roots in C2).
-OP_NAMES = (DMA, COMPUTE, COMPUTE_BAR, MEMORY_BAR)
+OP_NAMES = (DMA, COMPUTE, MEMORY_BAR)
 
 #: op name -> the togsim_runtime.h symbol C4 lowers it to.
 EMITC_CALLEE = {
     DMA:     "togsim_dma",
     COMPUTE: "togsim_compute",
-    COMPUTE_BAR: "togsim_compute_barrier",
     MEMORY_BAR: "togsim_memory_barrier",
 }
 

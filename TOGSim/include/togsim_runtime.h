@@ -162,11 +162,6 @@ typedef void (*togsim_tile_fn)(EmitCtx* ctx, int64_t* iv, int32_t n_iv);
 void togsim_dispatch(EmitCtx* ctx, togsim_tile_fn fn,
                      int64_t* iv, int32_t n_iv);
 
-// Compute fence: drain in-flight async compute (the systolic-array matmuls)
-// before the following op (a store) consumes their result. Explicit barrier in
-// the trace; the loader turns it into a COMPUTE_BAR instruction (sec 10.7).
-void togsim_compute_barrier(EmitCtx* ctx);
-
 // Entry point the loader resolves in the producer `.so`. `shape_args` carries
 // the runtime values for the kernel's symbolic dimensions (in a kernel-specific
 // order recorded alongside the cached `.so`); `n_shape_args` is their count.

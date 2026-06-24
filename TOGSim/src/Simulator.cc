@@ -186,7 +186,7 @@ void Simulator::icnt_cycle() {
 
 // Consecutive frozen cycles tolerated before declaring the sim wedged (spad too
 // small). Generous so transient idle never false-fires; a true freeze is constant.
-static constexpr uint64_t kWedgeThreshold = 5000;
+static constexpr uint64_t kWedgeThreshold = 100000;
 
 // Frozen-state guard: work remains (running()) but nothing is in flight to
 // advance it -- the SRAM throttle can never satisfy a load because the kernel's

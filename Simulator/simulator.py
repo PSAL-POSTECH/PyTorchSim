@@ -560,7 +560,21 @@ class TOGSimulator():
             os.fsync(trace_file.fileno())
 
         try:
-            cmd = f"{TOGSimulator.get_togsim_command(config_path, togsim_path)} --models_list {trace_file_path}"
+            # The C++ TOG (trace) path is the DEFAULT: drive the simulation from the
+            # emitted trace.so. The legacy ONNX TOG is the opt-in fallback via
+            # TORCHSIM_LEGACY_TOG=1. Each autotune candidate compiles to its own
+            # write_path (keyed by its retiled source), so its trace.so/cycle_table sit
+            # next to its tile_graph.onnx -- benchmark it through the trace path too.
+            # Fall back to legacy only if the .so was not emitted.
+            trace_so = os.path.join(os.path.dirname(str(model_path)), "trace.so")
+            cycle_tsv = os.path.join(os.path.dirname(str(model_path)), "trace_cycles.tsv")
+            base_cmd = TOGSimulator.get_togsim_command(config_path, togsim_path)
+            use_trace = (os.environ.get("TORCHSIM_LEGACY_TOG") != "1"
+                         and os.path.exists(trace_so))
+            if use_trace:
+                cmd = f"{base_cmd} --trace_so {trace_so} --cycle_table {cycle_tsv}"
+            else:
+                cmd = f"{base_cmd} --models_list {trace_file_path}"
             if extension_config.CONFIG_TOGSIM_DEBUG_LEVEL:
                 cmd += f" --log_level {extension_config.CONFIG_TOGSIM_DEBUG_LEVEL}"
 

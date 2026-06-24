@@ -68,7 +68,17 @@ extern "C" {
 //                  %tag[%idx], so only a runtime key can pair them. Drops
 //                  togsim_wait/signal/wait_all/event_alloc/event_free + the
 //                  togsim_event handle (no compile-time pairing token).
-#define TOGSIM_ABI_VERSION 11
+//   v11 -> v12 (P3 sec9.3): replace the bare togsim_core_alloc marker with a
+//                  higher-order togsim_dispatch(ctx, tile_fn, iv, n_iv) wrapper.
+//                  The producer outlines each parallel work-item into a uniform
+//                  togsim_kernel_tile(ctx, iv, n) and the dispatcher loop hands it
+//                  to togsim_dispatch, which round-robins a core and brackets the
+//                  call with TILE_BEGIN/TILE_END. The work-item scope is now the
+//                  function call itself (no implicit "until the next core_alloc"
+//                  range); one general dispatcher serves every kernel (uniform
+//                  iv-array ABI). Core alloc + the begin/end boundary are
+//                  runtime-owned.
+#define TOGSIM_ABI_VERSION 12
 int32_t togsim_abi_version(void);
 
 // Opaque per-invocation context owned by TOGSim. Holds the record sink and the
@@ -132,15 +142,25 @@ void togsim_compute(EmitCtx* ctx, uint64_t tile_id, int32_t compute_type,
 void togsim_memory_barrier(EmitCtx* ctx, int32_t tag_id, uint64_t tag_slot,
                            const int64_t* write_bufs, int32_t n_write);
 
-// Core allocation (sec 9.3). The producer calls togsim_core_alloc at the start
-// of each parallel work-item (output tile); the ops that follow are bound to the
-// returned core until the next togsim_core_alloc. No free: a core is just an
-// assignment, not a held resource. The producer is core-count transparent: it
-// NEVER names num_cores or a physical core -- the runtime owns the pool and the
-// policy (round-robin etc.). A work-item's whole reduction sits after one alloc,
-// so it stays on the same core; different work-items get different cores ->
-// multi-core.
-int32_t togsim_core_alloc(EmitCtx* ctx);
+// A parallel work-item body, outlined by the producer (sec 9.3). Uniform across
+// kernels: it takes the EmitCtx, the packed parallel loop indices `iv` (iv[0..
+// n_iv) -- e.g. the (m,n) output-tile indices) and their count. The body emits
+// the work-item's ops (init / reduction / store). One signature => one general
+// dispatcher serves every kernel.
+// (iv is non-const to match the `int64_t*` the EmitC producer emits; the runtime
+// only reads it.)
+typedef void (*togsim_tile_fn)(EmitCtx* ctx, int64_t* iv, int32_t n_iv);
+
+// Dispatch one work-item (sec 9.3). The runtime round-robins a core from the
+// pool, brackets the call with TILE_BEGIN/TILE_END (the work-item boundary), and
+// invokes `fn(ctx, iv, n_iv)` -- so the work-item SCOPE is exactly the function
+// call, not an implicit "ops until the next alloc" range. Core alloc + boundary
+// are runtime-owned; the producer is core-count transparent (never names
+// num_cores or a physical core). Independent work-items land on different cores
+// -> multi-core. A general (kernel-independent) wrapper: it only forwards the
+// opaque iv array to fn.
+void togsim_dispatch(EmitCtx* ctx, togsim_tile_fn fn,
+                     int64_t* iv, int32_t n_iv);
 
 // Compute fence: drain in-flight async compute (the systolic-array matmuls)
 // before the following op (a store) consumes their result. Explicit barrier in

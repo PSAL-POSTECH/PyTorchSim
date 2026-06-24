@@ -170,22 +170,181 @@ def _innermost_outer_loop(block):
     return found[0]
 
 
-def _insert_core_alloc(ctx, kernel, ctx_val):
-    """Insert `togsim_core_alloc(ctx)` at the start of each parallel work-item:
-    the first op of the innermost PARALLEL loop body (or the kernel entry if the
-    kernel has no parallel loop -> a single work-item). The runtime binds the
-    following ops to the returned core (sec 9.3); the producer never names
-    num_cores. The return value is discarded (no free -- a core is an assignment,
-    not a held resource)."""
-    block = kernel.regions[0].blocks[0]
-    target = _innermost_outer_loop(block)
-    body = target.operation.regions[0].blocks[0] if target is not None else block
-    ir.Operation.create(
-        "emitc.call_opaque", results=[], operands=[ctx_val],
-        attributes={"callee": ir.StringAttr.get(ts.CORE_ALLOC_CALLEE),
-                    "args": ir.ArrayAttr.get([_idx(0)])},
-        loc=ir.Location.unknown(ctx),
-        ip=ir.InsertionPoint.at_block_begin(body))
+def _is_outer(forop):
+    a = forop.operation.attributes
+    return "outer_loop" in a and ir.BoolAttr(a["outer_loop"]).value
+
+
+def _parallel_loop_chain(block):
+    """The nested chain of `affine.for {outer_loop}` from `block` inward (one
+    work-item's parallel indices). Empty if the kernel has no parallel loop."""
+    chain = []
+    cur = block
+    while True:
+        nxt = None
+        for op in cur.operations:
+            if op.operation.name == "affine.for" and _is_outer(op):
+                nxt = op
+                break
+        if nxt is None:
+            break
+        chain.append(nxt)
+        cur = nxt.operation.regions[0].blocks[0]
+    return chain
+
+
+def _const_op(value):
+    """The defining arith/emitc constant Operation if `value` is a constant
+    result, else None (block args / other ops)."""
+    owner = value.owner
+    if isinstance(owner, ir.Block):
+        return None
+    return owner if owner.name in ("arith.constant", "emitc.constant") else None
+
+
+def _outline_work_item(ctx, kernel, ctx_val):
+    """Outline the innermost parallel work-item body into a uniform
+    `togsim_kernel_tile(ctx, iv, n)` func, replacing it with a
+    `togsim_dispatch(ctx, togsim_kernel_tile, iv, n)` call (sec 9.3). The
+    work-item SCOPE becomes the function body; the runtime wrapper owns the
+    core-alloc + the TILE_BEGIN/TILE_END boundary (a decorator). One uniform tile
+    signature -> a single general dispatcher serves every kernel.
+
+    Runs after `_rewrite_togsim_ops`, so the moved body holds emitc.call_opaque
+    (not togsim.* ops). The only values captured from outside the body are ctx,
+    the enclosing parallel induction vars, and constants -- threaded via the iv
+    array (parallel IVs) / cloned (constants); anything else is unsupported
+    (dynamic shape -> P4)."""
+    kblk = kernel.regions[0].blocks[0]
+    chain = _parallel_loop_chain(kblk)
+    if chain:
+        L = chain[-1]
+        Lbody = L.operation.regions[0].blocks[0]
+        ivs = [c.operation.regions[0].blocks[0].arguments[0] for c in chain]
+    else:                       # no parallel loop -> the whole kernel body is one work-item
+        L = None
+        Lbody = kblk
+        ivs = []
+
+    i64 = ir.IntegerType.get_signless(64)
+    i32 = ir.IntegerType.get_signless(32)
+    idxty = ir.IndexType.get()
+    ctxty = ir.Type.parse(CTX_TYPE, ctx)
+    i64ptr = ir.Type.parse("!emitc.ptr<i64>", ctx)
+    loc = ir.Location.unknown(ctx)
+
+    # --- the outlined tile function (before the kernel so C defines it first) ---
+    tile = ir.Operation.create(
+        "func.func", results=[], regions=1,
+        attributes={
+            "function_type": ir.TypeAttr.get(ir.FunctionType.get([ctxty, i64ptr, i32], [])),
+            "sym_name": ir.StringAttr.get(ts.TILE_SYMBOL),
+            "sym_visibility": ir.StringAttr.get("private")},
+        loc=loc, ip=ir.InsertionPoint(kernel))
+    with loc:
+        tblk = tile.regions[0].blocks.append(ctxty, i64ptr, i32)
+    ctx2, iv2, _n2 = tblk.arguments
+    with ir.InsertionPoint(tblk):
+        tret = ir.Operation.create("func.return", results=[], operands=[], loc=loc)
+
+    # in the tile fn: recover each parallel index = index_cast(iv[k]).
+    idx_vals = []
+    with ir.InsertionPoint(tret):
+        for k in range(len(ivs)):
+            kc = ir.Operation.create("emitc.constant", results=[i64],
+                    attributes={"value": ir.IntegerAttr.get(i64, k)}, loc=loc).results[0]
+            elem = ir.Operation.create("emitc.subscript", results=[i64],
+                    operands=[iv2, kc], loc=loc).results[0]
+            idx_vals.append(ir.Operation.create("arith.index_cast", results=[idxty],
+                    operands=[elem], loc=loc).results[0])
+
+    # move the work-item body into the tile fn (terminators stay behind).
+    for op in [o for o in Lbody.operations
+               if o.operation.name not in ("affine.yield", "func.return")]:
+        op.operation.move_before(tret)
+
+    # remap captures (Value `==` is identity): ctx -> ctx2, each parallel IV ->
+    # its index_cast, each external constant -> a clone inside the tile fn. A
+    # constant defined inside the tile fn (moved/read) is internal -> left alone.
+    caps = [(ctx_val, ctx2)] + list(zip(ivs, idx_vals))
+    internal_consts = []
+    def _collect_internal(block):
+        for op in block.operations:
+            c = _const_op(op.operation.results[0]) if len(op.operation.results) == 1 else None
+            if c is not None:
+                internal_consts.append(op.operation.results[0])
+            for rg in op.operation.regions:
+                for b in rg.blocks:
+                    _collect_internal(b)
+    _collect_internal(tblk)
+    const_clones = []
+    ext_consts = []
+    def _find_ext_consts(block):
+        for op in block.operations:
+            for opnd in op.operation.operands:
+                if _const_op(opnd) is None:
+                    continue
+                if any(opnd == ic for ic in internal_consts):
+                    continue
+                if any(opnd == e for e in ext_consts):
+                    continue
+                ext_consts.append(opnd)
+            for rg in op.operation.regions:
+                for b in rg.blocks:
+                    _find_ext_consts(b)
+    _find_ext_consts(tblk)
+    top = ir.InsertionPoint(tblk.operations[0])
+    for e in ext_consts:
+        c = _const_op(e)
+        clone = ir.Operation.create(c.name, results=[e.type],
+                    attributes={"value": c.attributes["value"]}, loc=loc, ip=top).results[0]
+        const_clones.append((e, clone))
+
+    allcaps = caps + const_clones
+    def _remap(block):
+        for op in block.operations:
+            for i in range(len(op.operation.operands)):
+                cur = op.operation.operands[i]
+                for orig, new in allcaps:
+                    if cur == orig:
+                        op.operation.operands[i] = new
+                        break
+            for rg in op.operation.regions:
+                for b in rg.blocks:
+                    _remap(b)
+    _remap(tblk)
+
+    # --- the dispatcher: marshal the IVs and hand the tile fn to togsim_dispatch ---
+    term = [o for o in Lbody.operations
+            if o.operation.name in ("affine.yield", "func.return")][0]
+    fn_ref = _opaque(ctx, ts.TILE_SYMBOL)   # function name -> verbatim pointer in C
+    with ir.InsertionPoint(term):
+        if ivs:
+            arrty = ir.Type.parse("!emitc.array<%dxi64>" % len(ivs), ctx)
+            arr = ir.Operation.create("emitc.variable", results=[arrty],
+                    attributes={"value": _opaque(ctx, "")}, loc=loc).results[0]
+            for k, iv in enumerate(ivs):
+                kc = ir.Operation.create("emitc.constant", results=[i64],
+                        attributes={"value": ir.IntegerAttr.get(i64, k)}, loc=loc).results[0]
+                v64 = ir.Operation.create("arith.index_cast", results=[i64],
+                        operands=[iv], loc=loc).results[0]
+                sub = ir.Operation.create("emitc.subscript", results=[i64],
+                        operands=[arr, kc], loc=loc).results[0]
+                # emitc.assign operands are (lvalue dest, value).
+                ir.Operation.create("emitc.assign", results=[], operands=[sub, v64], loc=loc)
+            ir.Operation.create(
+                "emitc.call_opaque", results=[], operands=[ctx_val, arr],
+                attributes={"callee": ir.StringAttr.get(ts.DISPATCH_CALLEE),
+                            "args": ir.ArrayAttr.get(
+                                [_idx(0), fn_ref, _idx(1), ir.IntegerAttr.get(i32, len(ivs))])},
+                loc=loc)
+        else:
+            ir.Operation.create(
+                "emitc.call_opaque", results=[], operands=[ctx_val],
+                attributes={"callee": ir.StringAttr.get(ts.DISPATCH_CALLEE),
+                            "args": ir.ArrayAttr.get(
+                                [_idx(0), fn_ref, _opaque(ctx, "nullptr"), ir.IntegerAttr.get(i32, 0)])},
+                loc=loc)
 
 
 def _rewrite_togsim_ops(ctx, kernel, ctx_val):
@@ -343,8 +502,8 @@ def lower_to_emitc(skeleton_module):
 
     _strip_aux(skeleton_module)
     ctx_val = _rewrite_signature(kernel, ctx)
-    _insert_core_alloc(ctx, kernel, ctx_val)          # core_alloc per work-item
-    _rewrite_togsim_ops(ctx, kernel, ctx_val)
+    _rewrite_togsim_ops(ctx, kernel, ctx_val)         # togsim.* -> emitc.call_opaque
+    _outline_work_item(ctx, kernel, ctx_val)          # work-item body -> togsim_kernel_tile + dispatch
 
     PassManager.parse(_PIPELINE, ctx).run(skeleton_module.operation)
 

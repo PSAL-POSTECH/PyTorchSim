@@ -21,6 +21,7 @@ stride(=vlane_split_axis), num_elements_per_stride(=vlane_stride). MVIN dma_type
 
 Pipeline entry point: run_fine_grained(in_path, out_path, vectorlane).
 """
+import itertools
 import os
 import sys
 
@@ -383,11 +384,19 @@ def _run_func(func, vectorlane):
     # dominate the nest. Codegen emits input before weight, matching the C++ pass
     # which fuses after the weight subtile loop.
     ip = ir.InsertionPoint(mvin_weight.op)
-    fused_ivs, body_ip = _build_for_nest(bounds, ip)
-    in_ivs = [fused_ivs[fuse["in_to_fused"][d]] for d in range(rank)]
-    w_ivs = [fused_ivs[fuse["w_to_fused"][d]] for d in range(rank)]
-    _emit_dma(mvin_input, in_ivs, vectorlane, body_ip)
-    _emit_dma(mvin_weight, w_ivs, vectorlane, body_ip)
+    # Unroll the fused nest, emitting each distinct input/weight subtile ONCE (a load
+    # is invariant to the other operand's dims, so the cross-product re-emits it
+    # identically). Dedup by the operand's own coords; keep the fused issue order.
+    seen_in, seen_w = set(), set()
+    for it in itertools.product(*[range(b) for b in bounds]):
+        in_key = tuple(it[fuse["in_to_fused"][d]] for d in range(rank))
+        if in_key not in seen_in:
+            seen_in.add(in_key)
+            _emit_dma(mvin_input, [_const_index(c, ip) for c in in_key], vectorlane, ip)
+        w_key = tuple(it[fuse["w_to_fused"][d]] for d in range(rank))
+        if w_key not in seen_w:
+            seen_w.add(w_key)
+            _emit_dma(mvin_weight, [_const_index(c, ip) for c in w_key], vectorlane, ip)
     mvin_input.op.erase()
     mvin_weight.op.erase()
 

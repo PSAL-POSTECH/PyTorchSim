@@ -57,13 +57,18 @@ void Instruction::finish_instruction() {
 }
 
 void Instruction::add_child(std::shared_ptr<Instruction> child) {
-  child->inc_ready_counter();
-  child_inst.insert(child);
+  // child_inst is a set (each child released exactly once at finish), so the
+  // ready_counter must be bumped only when the edge is NEW -- a producer that
+  // writes several buffers a single consumer reads (e.g. a sort tile reading the
+  // value+index buffers its predecessor wrote) links the same pair once per shared
+  // buffer; double-counting would leave ready_counter stuck above 0 -> deadlock.
+  if (child_inst.insert(child).second)
+    child->inc_ready_counter();
 }
 
 void Instruction::add_pipeline_child(std::shared_ptr<Instruction> child) {
-  child->inc_ready_counter();
-  _pipeline_children.insert(child);
+  if (_pipeline_children.insert(child).second)
+    child->inc_ready_counter();
 }
 
 void Instruction::release_pipeline_children() {

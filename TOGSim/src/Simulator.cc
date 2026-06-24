@@ -186,7 +186,7 @@ void Simulator::icnt_cycle() {
 
 // Consecutive frozen cycles tolerated before declaring the sim wedged (spad too
 // small). Generous so transient idle never false-fires; a true freeze is constant.
-static constexpr uint64_t kWedgeThreshold = 5000;
+static constexpr uint64_t kWedgeThreshold = 100000;
 
 // Frozen-state guard: work remains but nothing is in flight to advance it, because
 // the kernel's working set exceeds the whole per-core spad (core_spad_size_kb too

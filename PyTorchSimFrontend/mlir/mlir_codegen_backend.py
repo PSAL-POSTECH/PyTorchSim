@@ -17,7 +17,6 @@ from torch._dynamo.utils import dynamo_timed
 from torch._inductor.codegen import cpp, wrapper, common, memory_planning
 from torch._inductor.ir import GraphPartitionSignature
 from torch._inductor.virtualized import V, _ops as ops
-from torch._inductor.codecache import write_atomic
 from torch._inductor.utils import (
     IndentedBuffer,
     is_welford_reduction,
@@ -1120,28 +1119,22 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         src_code, meta_code = super().codegen_nodes(nodes, kernel_name)
         self._prepare_simulator_headers(src_code)
         if "autotune" in extension_config.codegen_mapping_strategy and extension_config.pytorchsim_timing_mode:
-            optimal_src_code, meta_code = self.autotune(nodes, kernel_name)[:2]
+            # Use temporaries: autotune returns [None, None, None] when it cannot autotune
+            # (a size-1 pointwise kernel with ranges == [1]), and unpacking into meta_code
+            # would clobber the valid arg_attributes the fall-through below returns.
+            optimal_src_code, optimal_meta_code = self.autotune(nodes, kernel_name)[:2]
             if optimal_src_code is not None:
-                return optimal_src_code, meta_code
+                return optimal_src_code, optimal_meta_code
         return src_code, meta_code
 
     def _prepare_simulator_headers(self, src_code):
-        from filelock import FileLock
-
-        write_path = extension_codecache.get_write_path(src_code)
-        os.makedirs(write_path, exist_ok=True)
-
-        spike_write_path = os.path.join(write_path, "global_var.h")
-        gem5_write_path = os.path.join(write_path, "gem5_global_var.h")
-
         spad_end_symbol = "int spad_end[0] __attribute__ ((section(\".spad\")));\n"
         spad_section_end_symbol = (
             f"int spad_section_end[0] __attribute__ ((section(\".spad\"), aligned({self.spad_info['spad_size']*self.vector_lane})));"
         )
-        lock = FileLock(extension_codecache.get_lock_path(write_path), timeout=extension_codecache.LOCK_TIMEOUT)
-        with lock:
-            write_atomic(spike_write_path, self.header.getvalue() + spad_end_symbol + spad_section_end_symbol)
-            write_atomic(gem5_write_path, self.gem5_header.getvalue())
+        spike_content = self.header.getvalue() + spad_end_symbol + spad_section_end_symbol
+        gem5_content = self.gem5_header.getvalue()
+        extension_codecache.store_header(src_code, spike_content, gem5_content)
 
     def get_arg_info(self, name):
         arg_info = dict()

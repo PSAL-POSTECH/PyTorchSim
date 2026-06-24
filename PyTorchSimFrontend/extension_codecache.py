@@ -5,7 +5,7 @@ import subprocess
 import torch
 
 from PyTorchSimFrontend import extension_config
-from torch._inductor.codecache import get_hash, write
+from torch._inductor.codecache import get_hash, write, write_atomic
 from torch._inductor.async_compile import AsyncCompile
 from AsmParser.tog_generator import tog_generator
 from PyTorchSimFrontend.mlir.mlir_caller_codegen import MLIRKernelCallerCodeGen
@@ -21,6 +21,13 @@ def hash_prefix(hash_value):
 
 def get_write_path(src_code):
     return os.path.join(extension_config.get_dump_path(), hash_prefix(get_hash(src_code.strip())))
+
+
+_HEADER_BY_HASH = {}
+def store_header(src_code, spike_header, gem5_header):
+    _HEADER_BY_HASH[get_hash(src_code.strip())] = (spike_header, gem5_header)
+def get_header(src_code):
+    return _HEADER_BY_HASH.get(get_hash(src_code.strip()))
 
 
 def get_lock_path(write_path):
@@ -128,40 +135,50 @@ class MLIRCodeCache:
         vlen = kwargs['vlen']
         vlenb = vlen // 8
         write_path = get_write_path(source_code)
-        key, input_path = write(source_code, "mlir", specified_dir=write_path)
-        # Run the Python out-of-line MLIR passes (MLIR bindings) on the kernel
-        # .mlir in place, before mlir-opt. Currently lowers torchsim.vlane_idx
-        # (replaces the old C++ -global-idx pass); add more in passes/__init__.py.
+        os.makedirs(write_path, exist_ok=True)
+        global_var_header = kwargs.get("global_var_header")
+        if global_var_header is not None:
+            write_atomic(os.path.join(write_path, "global_var.h"), global_var_header)
+        gem5_global_var_header = kwargs.get("gem5_global_var_header")
+        if gem5_global_var_header is not None:
+            write_atomic(os.path.join(write_path, "gem5_global_var.h"), gem5_global_var_header)
+        # The compile rewrites the kernel .mlir in place and reads it back, and two
+        # compiles of the same source share a write_path. Hold the per-path lock across
+        # the build, and skip it when a prior build finished (its tile_graph.onnx exists).
+        from filelock import FileLock
         from PyTorchSimFrontend.mlir.passes import (
             run_python_passes, run_module_passes, POST_OPT_PASSES,
             run_standard_lowering, run_tog,
         )
-        run_python_passes(input_path, vectorlane=vectorlane_size)
-        new_input_path = os.path.splitext(input_path)[0]
-        raw_tog_path = new_input_path + "_tog.py"
         tog_path = os.path.join(write_path, "tile_graph.onnx")
-        sample_mlir_path = new_input_path + "_sample"
-        validation_binary_path = os.path.join(write_path, validation_binary_name)
-        gem5_cmds = mlir_gem5_compile_command(new_input_path, sample_mlir_path, raw_tog_path, vectorlane_size)
-
-        from filelock import FileLock
-        os.makedirs(write_path, exist_ok=True)
         lock = FileLock(get_lock_path(write_path), timeout=LOCK_TIMEOUT)
+        with lock:
+            key, input_path = write(source_code, "mlir", specified_dir=write_path)
+            if os.path.isfile(tog_path):
+                return key
+            # Run the Python out-of-line MLIR passes (MLIR bindings) on the kernel
+            # .mlir in place, before mlir-opt. Currently lowers torchsim.vlane_idx
+            # (replaces the old C++ -global-idx pass); add more in passes/__init__.py.
+            run_python_passes(input_path, vectorlane=vectorlane_size)
+            new_input_path = os.path.splitext(input_path)[0]
+            raw_tog_path = new_input_path + "_tog.py"
+            sample_mlir_path = new_input_path + "_sample"
+            validation_binary_path = os.path.join(write_path, validation_binary_name)
+            gem5_cmds = mlir_gem5_compile_command(new_input_path, sample_mlir_path, raw_tog_path, vectorlane_size)
 
-        if spad_info is not None:
-            link_option = f"-Wl,--section-start=.spad=0x{spad_info['spad_vaddr']:x}"
-        else:
-            link_option = ""
-        # Generate LLVM kernel calller and binary for validation
-        if extension_config.pytorchsim_functional_mode:
-            # Use custom malloc to avoid size error
-            new_link_option = link_option + " -Wl,--wrap=malloc -Wl,--wrap=free"
-            cmds = mlir_compile_command(new_input_path, vectorlane_size, vlen=vlen)
-            opt_pad_cmd = shlex.split(cmds[0])
-            translate_cmd = shlex.split(cmds[1])
-            llc_cmd = shlex.split(cmds[2])
-            llc_asm_cmd = shlex.split(cmds[3])
-            with lock:
+            if spad_info is not None:
+                link_option = f"-Wl,--section-start=.spad=0x{spad_info['spad_vaddr']:x}"
+            else:
+                link_option = ""
+            # Generate LLVM kernel calller and binary for validation
+            if extension_config.pytorchsim_functional_mode:
+                # Use custom malloc to avoid size error
+                new_link_option = link_option + " -Wl,--wrap=malloc -Wl,--wrap=free"
+                cmds = mlir_compile_command(new_input_path, vectorlane_size, vlen=vlen)
+                opt_pad_cmd = shlex.split(cmds[0])
+                translate_cmd = shlex.split(cmds[1])
+                llc_cmd = shlex.split(cmds[2])
+                llc_asm_cmd = shlex.split(cmds[3])
                 try:
                     # loop-padding (mlir-opt) -> Python fine-grained + vcix (one parse/print)
                     subprocess.check_call(opt_pad_cmd)
@@ -195,17 +212,11 @@ class MLIRCodeCache:
                     )
                     raise SpadOverflowError()
 
-        # Skip if TOG file already exists
-        if os.path.isfile(tog_path):
-            return key
+            # Launch tile graph generator
+            gem5_pad_cmd = shlex.split(gem5_cmds[0])
+            gem5_translate_cmd = shlex.split(gem5_cmds[1])
+            gem5_llc_cmd = shlex.split(gem5_cmds[2])
 
-        # Launch tile graph generator
-        gem5_pad_cmd = shlex.split(gem5_cmds[0])
-        gem5_translate_cmd = shlex.split(gem5_cmds[1])
-        gem5_llc_cmd = shlex.split(gem5_cmds[2])
-
-        lock = FileLock(get_lock_path(write_path), timeout=LOCK_TIMEOUT)
-        with lock:
             try:
                 # mlir-opt now runs only loop-padding and writes the post-vcix IR; the
                 # tile-operation-graph pass is ported to Python. run_tog reads that IR and
@@ -261,10 +272,10 @@ class MLIRCodeCache:
                 vector_lane=vectorlane_size
             )
 
-            # Trace pipeline (opt-in, TORCHSIM_DUMP_TRACE_SO=1): also emit the trace
-            # producer .so + cycle-table TSV from the SAME post-vcix IR and gem5 cycles,
-            # so it can be compared cycle-consistently. Best-effort: never breaks the build.
-            if os.environ.get("TORCHSIM_DUMP_TRACE_SO") == "1":
+            # Trace pipeline (DEFAULT): emit the trace producer .so + cycle-table TSV
+            # from the post-vcix IR and gem5 cycles. TORCHSIM_LEGACY_TOG=1 opts back into
+            # the ONNX TOG, in which case the .so is unused. Never breaks the compile.
+            if os.environ.get("TORCHSIM_LEGACY_TOG") != "1":
                 try:
                     import mlir.ir as ir
                     from PyTorchSimFrontend.mlir.passes import (
@@ -280,12 +291,9 @@ class MLIRCodeCache:
                         _cl = list(cycle_list_for_trace)
                         if _cl and len(_cl) != _ntiles:
                             _cl = (_cl + [_cl[-1]] * _ntiles)[:_ntiles]
-                        logger.info(f"[P3-trace] cycle_list={cycle_list_for_trace} -> {_cl} "
-                                    f"(#tiles={_ntiles}, x_off={x_offset}, w_off={w_offset})")
                         _tbl = _ct.build_cycle_table(_mod, _cl, x_offset, w_offset)
                     _ct.dump_cycle_table_tsv(_tbl, os.path.join(write_path, "trace_cycles.tsv"))
                     _l2e.build_trace_so(pv, os.path.join(write_path, "trace.so"))
-                    logger.info(f"[P3-trace] wrote trace.so + trace_cycles.tsv in {write_path}")
                 except Exception as e:
                     logger.warning(f"[P3-trace] trace .so/sidecar dump skipped: {e}")
         return key

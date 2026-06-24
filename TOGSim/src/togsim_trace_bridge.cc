@@ -79,6 +79,11 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(const togsim::RunResult& run,
   // it. Correct only because a load nest and its consumers run in order. Per work-item.
   std::map<std::pair<int32_t, uint64_t>,
            std::pair<int64_t, std::shared_ptr<Instruction>>> current_dma;
+  // Dedup barriers on the CURRENT load of a (tag_id, tag_slot): a conv reads one
+  // loaded subtile from many matmuls, so its per-consumer waits collapse to one bar.
+  // A new load bumps uniq, so a genuine new wait still gets its own bar.
+  std::map<std::pair<int32_t, uint64_t>,
+           std::pair<int64_t, std::shared_ptr<Instruction>>> bar_for_load;
   int64_t next_tag = 0;   // mints a unique Core tag key per dma record
   int cur_tile_group = -1;   // work-item index, bumped per TILE_BEGIN (trace grouping)
   // Async compute (matmul/preload) pipelines on the systolic array. A store needs the
@@ -98,6 +103,7 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(const togsim::RunResult& run,
     tile.reset();
     last_writer.clear();
     current_dma.clear();
+    bar_for_load.clear();
     next_tag = 0;
     outstanding_async.clear();
     pending_bar.reset();
@@ -111,6 +117,12 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(const togsim::RunResult& run,
                   const std::vector<int64_t>& reads,
                   const std::vector<int64_t>& writes) {
     for (int64_t b : reads) {
+      // A matmul reading its own accumulator imposes NO producer order: Y += X@W is
+      // commutative. Chaining them serializes the SA and DEADLOCKS the weight-slot
+      // pipeline. The store still waits every matmul via the COMPUTE_BAR fence.
+      bool is_accum = false;
+      for (int64_t w : writes) if (w == b) { is_accum = true; break; }
+      if (inst->get_compute_type() == MATMUL_CT && is_accum) continue;
       auto it = last_writer.find(b);
       if (it == last_writer.end()) continue;
       int pct = it->second->get_compute_type();
@@ -211,11 +223,19 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(const togsim::RunResult& run,
       int64_t uniq = next_tag++;                         // fallback if unpaired
       std::shared_ptr<Instruction> dma_inst;
       if (it != current_dma.end()) { uniq = it->second.first; dma_inst = it->second.second; }
+      // Identical wait (same slot, same load instance) already has a barrier -> reuse it
+      // so the buffer's consumers gate on it, instead of emitting a redundant barrier.
+      auto bf = bar_for_load.find({t.tag_id, t.tag_slot});
+      if (bf != bar_for_load.end() && bf->second.first == uniq) {
+        for (int64_t b : t.write_bufs) last_writer[b] = bf->second.second;
+        continue;
+      }
       auto bar = make_mem_bar(t, uniq);
       bar->set_tile_group(cur_tile_group);
       if (dma_inst) dma_inst->add_child(bar);
       tile->append_instuction(bar);
       for (int64_t b : t.write_bufs) last_writer[b] = bar;
+      bar_for_load[{t.tag_id, t.tag_slot}] = {uniq, bar};
     } else if (t.kind == TraceRec::COMPUTE) {
       auto inst = make_compute(t);
       inst->set_tile_group(cur_tile_group);

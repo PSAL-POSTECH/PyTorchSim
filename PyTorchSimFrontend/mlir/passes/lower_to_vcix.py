@@ -29,6 +29,8 @@ if os.path.isdir(_DEFAULT_BINDINGS) and _DEFAULT_BINDINGS not in sys.path:
 
 import mlir.ir as ir  # noqa: E402
 
+from ._mlir_util import walk_ops, i32, i64, attr_bool
+
 MARKERS = ("linalg.matmul", "math.exp", "math.erf", "math.tanh", "math.sin", "math.cos")
 
 # math op name -> (opcode, imm) for the vcix.v.iv lowering (mirror Math*ToVCIX).
@@ -80,20 +82,12 @@ def _legalize_vector_type(vt, vlen):
     return n, ir.VectorType.get([elt_count >> (n - 1)], elt_ty, scalable=[True])
 
 
-def _i64(v):
-    return ir.IntegerAttr.get(ir.IntegerType.get_signless(64), v)
-
-
-def _i32(v):
-    return ir.IntegerAttr.get(ir.IntegerType.get_signless(32), v)
-
-
 def _viv(operand, result_ty, opcode, imm, rvl=None):
     """Create an unregistered vcix.v.iv (vcix::BinaryImmOp) op at the current IP."""
     operands = [operand] if rvl is None else [operand, rvl]
     return ir.Operation.create(
         "vcix.v.iv", results=[result_ty], operands=operands,
-        attributes={"opcode": _i64(opcode), "imm": _i32(imm)}).results[0]
+        attributes={"opcode": i64(opcode), "imm": i32(imm)}).results[0]
 
 
 def _make_sf_vc_v_iv(vec, op_vt, n, legal_ty, opcode, imm):
@@ -104,7 +98,7 @@ def _make_sf_vc_v_iv(vec, op_vt, n, legal_ty, opcode, imm):
     scalable = legal_ty.scalable
     rvl = None
     if scalable:
-        rvl = arith.ConstantOp(ir.IntegerType.get_signless(64), _i64(9)).result
+        rvl = arith.ConstantOp(ir.IntegerType.get_signless(64), i64(9)).result
     if n == 1:
         return _viv(vec, legal_ty, opcode, imm, rvl)
     elt_ty = legal_ty.element_type
@@ -119,22 +113,14 @@ def _make_sf_vc_v_iv(vec, op_vt, n, legal_ty, opcode, imm):
         for i in range(total // elt_count):
             ext = vector.ExtractStridedSliceOp(
                 legal_ty, vec,
-                ir.ArrayAttr.get([_i64(i * elt_count)]),
-                ir.ArrayAttr.get([_i64(elt_count)]),
-                ir.ArrayAttr.get([_i64(1)])).result
+                ir.ArrayAttr.get([i64(i * elt_count)]),
+                ir.ArrayAttr.get([i64(elt_count)]),
+                ir.ArrayAttr.get([i64(1)])).result
             v = _viv(ext, legal_ty, opcode, imm, rvl)
             res = vector.InsertStridedSliceOp(
-                v, res, ir.ArrayAttr.get([_i64(i * elt_count)]),
-                ir.ArrayAttr.get([_i64(1)])).result
+                v, res, ir.ArrayAttr.get([i64(i * elt_count)]),
+                ir.ArrayAttr.get([i64(1)])).result
     return res
-
-
-def _iter_ops(block):
-    for op in list(block.operations):
-        yield op
-        for region in op.operation.regions:
-            for b in region.blocks:
-                yield from _iter_ops(b)
 
 
 # ---------------------------------------------------------------------------
@@ -146,11 +132,6 @@ def _elt_bits(elt_ty):
     return ir.FloatType(elt_ty).width
 
 
-def _bool_attr_true(op, key):
-    a = op.attributes
-    return key in a and ir.BoolAttr(a[key]).value
-
-
 def _enclosing_loops(op):
     """Walk ancestor ops; return (accumulation, outer, inner) affine.for lists,
     outermost-first (mirror the C++ insert-at-begin)."""
@@ -158,11 +139,11 @@ def _enclosing_loops(op):
     parent = op.operation.parent
     while parent is not None:
         if parent.name == "affine.for":
-            if _bool_attr_true(parent, "accumulation_loop"):
+            if attr_bool(parent, "accumulation_loop"):
                 acc.insert(0, parent)
-            if _bool_attr_true(parent, "outer_loop"):
+            if attr_bool(parent, "outer_loop"):
                 outer.insert(0, parent)
-            if _bool_attr_true(parent, "inner_loop"):
+            if attr_bool(parent, "inner_loop"):
                 inner.insert(0, parent)
         parent = parent.parent
     return acc, outer, inner
@@ -200,7 +181,7 @@ def _scan_conv_offsets(ow_loop, o_h, k_h, o_w, k_w):
     """Mirror the heuristic offset scan: find affine.apply(o_h,k_h)/(o_w,k_w) in the
     o_w loop and read the constant in its map (default 1)."""
     offset_h = offset_w = 1
-    for o in _iter_ops(ow_loop.regions[0].blocks[0]):
+    for o in walk_ops(ow_loop.regions[0].blocks[0]):
         if o.operation.name != "affine.apply":
             continue
         ops = list(o.operation.operands)
@@ -391,7 +372,7 @@ def _lower_matmul(op, SS, vlen):
                 return owner.operands[0]
         return v
     rootA, rootB = _root(A), _root(B)
-    for o in _iter_ops(outer[-1].regions[0].blocks[0]):
+    for o in walk_ops(outer[-1].regions[0].blocks[0]):
         if o.operation.name == "affine.vector_store":
             dest = _root(o.operation.operands[1])
             if dest == rootA:
@@ -617,7 +598,7 @@ def run(module, vectorlane=128, vlen=128, **_):
     mms = []
     for region in module.operation.regions:
         for b in region.blocks:
-            for o in _iter_ops(b):
+            for o in walk_ops(b):
                 if o.operation.name == "linalg.matmul":
                     mms.append(o.operation)
     for o in mms:
@@ -625,7 +606,7 @@ def run(module, vectorlane=128, vlen=128, **_):
     targets = []
     for region in module.operation.regions:
         for b in region.blocks:
-            for op in _iter_ops(b):
+            for op in walk_ops(b):
                 if op.operation.name in _MATH_VIV:
                     targets.append(op.operation)
     for op in targets:

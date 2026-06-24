@@ -8,6 +8,8 @@
 #include "Simulator.h"
 #include "TileGraphParser.h"
 #include "helper/CommandLineParser.h"
+#include "togsim_loader.h"        // P3 trace pipeline: run a compiled producer .so
+#include "togsim_trace_bridge.h"  // ... and bridge its trace to a TileGraph
 
 namespace fs = std::filesystem;
 namespace po = boost::program_options;
@@ -104,6 +106,11 @@ int main(int argc, char** argv) {
       "models_list", "Path for the trace file (.trace)");
   cmd_parser.add_command_line_option<std::string>(
       "log_level", "Set for log level [trace, debug, info], default = info");
+  cmd_parser.add_command_line_option<std::string>(
+      "trace_so", "Path to a compiled trace producer .so (P3 trace pipeline)");
+  cmd_parser.add_command_line_option<std::string>(
+      "cycle_table", "Path to a 'cycle<TAB>overlapping' per-tile_id sidecar (TSV) "
+                     "for --trace_so; falls back to a flat stub if omitted");
   try {
     cmd_parser.parse(argc, argv);
   } catch (const CommandLineParser::ParsingError& e) {
@@ -145,6 +152,46 @@ int main(int argc, char** argv) {
   if (!simulator) {
     spdlog::error("[TOGSim] Failed to load config file: {}", config_path);
     exit(1);
+  }
+
+  // P3 trace pipeline: if a compiled producer .so is given, run it, bridge the
+  // recorded trace to a TileGraph, and run the existing Simulator on it.
+  std::string trace_so_path;
+  cmd_parser.set_if_defined("trace_so", &trace_so_path);
+  if (!trace_so_path.empty()) {
+    const auto& cfg = simulator->get_hardware_config_yaml();
+    int num_cores = cfg["num_cores"] ? cfg["num_cores"].as<int>() : 1;
+    // First cut: stub tensor bases (real per-tensor addresses come later).
+    std::vector<uint64_t> bases(16);
+    for (size_t i = 0; i < bases.size(); ++i) bases[i] = 0x100000ull * (i + 1);
+    // Cycle table: load the per-tile_id TSV sidecar if given, else a flat stub.
+    std::vector<int64_t> cyc, ovl;
+    std::string cycle_table_path;
+    cmd_parser.set_if_defined("cycle_table", &cycle_table_path);
+    if (!cycle_table_path.empty()) {
+      std::ifstream ct(cycle_table_path);
+      if (!ct.is_open()) { spdlog::error("[TOGSim] cannot open cycle_table {}", cycle_table_path); exit(1); }
+      int64_t c, o;
+      while (ct >> c >> o) { cyc.push_back(c); ovl.push_back(o); }
+      spdlog::info("[TOGSim-trace] loaded cycle table: {} tiles from {}", cyc.size(), cycle_table_path);
+    } else {
+      cyc.assign(256, 128);
+      ovl.assign(256, 0);
+    }
+    auto run = togsim::run_producer(trace_so_path.c_str(), nullptr, 0,
+                                    bases.data(), (int)bases.size(),
+                                    cyc.data(), ovl.data(), (int)cyc.size(),
+                                    num_cores);
+    if (!run.ok) { spdlog::error("[TOGSim] trace producer run failed"); exit(1); }
+    spdlog::info("[TOGSim-trace] recorded {} instructions", run.trace.size());
+    auto tg = trace_to_tilegraph(run, "trace_kernel");
+    tg->set_arrival_time(simulator->get_core_cycle());
+    tg->set_kernel_id(0);
+    simulator->enqueue_graph(0, std::move(tg));
+    simulator->run_simulator();
+    spdlog::info("[TOGSim-trace] Total cycles: {}", simulator->get_core_cycle());
+    simulator->print_core_stat();
+    return 0;
   }
 
   // Get trace file path

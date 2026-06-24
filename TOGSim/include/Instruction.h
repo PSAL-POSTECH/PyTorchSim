@@ -17,6 +17,11 @@
 // results of async matmuls.
 enum class Opcode { MOVIN, MOVOUT, COMP, MEMORY_BAR, COMPUTE_BAR, COUNT};
 
+// One weight slot on systolic array `sa` (sec 10.4). A preload sets refcount =
+// the matmuls reusing the weight; each frees it at its streaming-end, the last
+// one releases the slot. Shared (shared_ptr) by the preload's matmul consumers.
+struct WeightToken { int sa; int refcount; };
+
 typedef uint64_t addr_type;
 typedef uint64_t cycle_type;
 
@@ -37,6 +42,13 @@ class Instruction : public std::enable_shared_from_this<Instruction> {
   // successor overlaps it instead of waiting its full latency (sec 10.7).
   void add_pipeline_child(std::shared_ptr<Instruction> child);
   void release_pipeline_children();
+  // SA weight-buffer model: the SA this op is pinned to (a preload picks it, its
+  // matmul consumers inherit it) and the shared weight slot the matmuls release.
+  const std::set<std::shared_ptr<Instruction>>& get_pipeline_children() { return _pipeline_children; }
+  void set_assigned_sa(int s) { _assigned_sa = s; }
+  int get_assigned_sa() const { return _assigned_sa; }
+  void set_weight_token(const std::shared_ptr<WeightToken>& t) { _weight_token = t; }
+  const std::shared_ptr<WeightToken>& get_weight_token() const { return _weight_token; }
   bool check_ready() { return ready_counter == 0; }
   const Opcode get_opcode() { return opcode; }
   bool is_dma_read() { return opcode == Opcode::MOVIN; }
@@ -94,6 +106,16 @@ class Instruction : public std::enable_shared_from_this<Instruction> {
   std::set<std::shared_ptr<Instruction>>& get_child_inst() { return child_inst; }
   uint64_t get_global_inst_id() const { return _global_inst_id; }
 
+  // SRAM-capacity model (sec 10.4), filled by the bridge and enforced by Core: a
+  // load fills buffer-version `_sram_alloc_id` (-1 = untracked), and a version's
+  // last reader frees it on issue via `_sram_release_allocs`.
+  void set_sram_alloc(int64_t id) { _sram_alloc_id = id; }
+  int64_t get_sram_alloc() const { return _sram_alloc_id; }
+  void add_sram_release(int64_t id) { _sram_release_allocs.push_back(id); }
+  const std::vector<int64_t>& get_sram_release() const { return _sram_release_allocs; }
+  // bytes this load occupies in the spad (from the tile it moves in).
+  size_t sram_footprint() const { return _tile_numel * (_elem_bits / 8); }
+
   cycle_type start_cycle;
   cycle_type finish_cycle;
   cycle_type bubble_cycle=0;
@@ -132,4 +154,10 @@ class Instruction : public std::enable_shared_from_this<Instruction> {
   bool _is_indirect_mode=false;
   bool _is_sparse_inst=false;
   std::string _indirect_index_path="";
+  // SRAM-capacity model (see the setters above).
+  int64_t _sram_alloc_id = -1;
+  std::vector<int64_t> _sram_release_allocs;
+  // SA weight-buffer model (see the setters above).
+  int _assigned_sa = -1;
+  std::shared_ptr<WeightToken> _weight_token;
 };

@@ -184,6 +184,35 @@ void Simulator::icnt_cycle() {
   _icnt->cycle();
 }
 
+// Consecutive frozen cycles tolerated before declaring the sim wedged (spad too
+// small). Generous so transient idle never false-fires; a true freeze is constant.
+static constexpr uint64_t kWedgeThreshold = 5000;
+
+// Frozen-state guard: work remains but nothing is in flight to advance it, because
+// the kernel's working set exceeds the whole per-core spad (core_spad_size_kb too
+// small). The state repeats every cycle, so error out instead of looping forever.
+void Simulator::check_frozen() {
+  static uint64_t stuck = 0;
+  // In flight = anything that will produce a future state change: icnt/dram busy,
+  // a core with DMA/compute pending, or a tile still schedulable.
+  bool inflight = _icnt->running() || _dram->running();
+  for (int id = 0; id < _n_cores && !inflight; id++) {
+    if (_cores[id]->has_inflight()) inflight = true;
+    else if (!get_partition_scheduler(id)->empty(id)) inflight = true;
+  }
+  if (running() && !inflight) {
+    if (++stuck > kWedgeThreshold) {
+      spdlog::error("[Simulator] simulation wedged at cycle {}: work remains but "
+                    "nothing is in flight -- the per-core spad (core_spad_size_kb) "
+                    "is too small to hold a kernel's working set. Increase it.",
+                    _core_cycles);
+      exit(EXIT_FAILURE);
+    }
+  } else {
+    stuck = 0;
+  }
+}
+
 void Simulator::cycle() {
   while (running() || _core_cycles < 1) {
     set_cycle_mask();
@@ -198,6 +227,8 @@ void Simulator::cycle() {
     // Interconnect cycle
     if (IS_ICNT_CYCLE(_cycle_mask))
       icnt_cycle();
+
+    check_frozen();   // spad-too-small guard (errors out if wedged)
   }
   for (auto &core: _cores) {
     core->check_tag();

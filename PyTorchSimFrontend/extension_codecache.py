@@ -305,12 +305,9 @@ class MLIRCodeCache:
                         _cl = list(cycle_list_for_trace)
                         if _cl and len(_cl) != _ntiles:
                             _cl = (_cl + [_cl[-1]] * _ntiles)[:_ntiles]
-                        logger.info(f"[P3-trace] cycle_list={cycle_list_for_trace} -> {_cl} "
-                                    f"(#tiles={_ntiles}, x_off={x_offset}, w_off={w_offset})")
                         _tbl = _ct.build_cycle_table(_mod, _cl, x_offset, w_offset)
                     _ct.dump_cycle_table_tsv(_tbl, os.path.join(write_path, "trace_cycles.tsv"))
                     _l2e.build_trace_so(pv, os.path.join(write_path, "trace.so"))
-                    logger.info(f"[P3-trace] wrote trace.so + trace_cycles.tsv in {write_path}")
                 except Exception as e:
                     logger.warning(f"[P3-trace] trace .so/sidecar dump skipped: {e}")
         return key

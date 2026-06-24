@@ -142,40 +142,45 @@ class MLIRCodeCache:
         gem5_global_var_header = kwargs.get("gem5_global_var_header")
         if gem5_global_var_header is not None:
             write_atomic(os.path.join(write_path, "gem5_global_var.h"), gem5_global_var_header)
-        key, input_path = write(source_code, "mlir", specified_dir=write_path)
-        # Run the Python out-of-line MLIR passes (MLIR bindings) on the kernel
-        # .mlir in place, before mlir-opt. Currently lowers torchsim.vlane_idx
-        # (replaces the old C++ -global-idx pass); add more in passes/__init__.py.
+        # The compile rewrites the kernel .mlir in place (run_python_passes) and reads
+        # it back (mlir-opt). Two compiles of the same source -- the autotune's chosen
+        # candidate and the final kernel -- share a write_path, so hold the per-path
+        # lock across the whole build to keep them from interleaving, and skip the
+        # rebuild when a prior build already finished (its tile_graph.onnx exists).
+        from filelock import FileLock
         from PyTorchSimFrontend.mlir.passes import (
             run_python_passes, run_module_passes, POST_OPT_PASSES,
             run_standard_lowering, run_tog,
         )
-        run_python_passes(input_path, vectorlane=vectorlane_size)
-        new_input_path = os.path.splitext(input_path)[0]
-        raw_tog_path = new_input_path + "_tog.py"
         tog_path = os.path.join(write_path, "tile_graph.onnx")
-        sample_mlir_path = new_input_path + "_sample"
-        validation_binary_path = os.path.join(write_path, validation_binary_name)
-        gem5_cmds = mlir_gem5_compile_command(new_input_path, sample_mlir_path, raw_tog_path, vectorlane_size)
-
-        from filelock import FileLock
-        os.makedirs(write_path, exist_ok=True)
         lock = FileLock(get_lock_path(write_path), timeout=LOCK_TIMEOUT)
+        with lock:
+            key, input_path = write(source_code, "mlir", specified_dir=write_path)
+            if os.path.isfile(tog_path):
+                return key
+            # Run the Python out-of-line MLIR passes (MLIR bindings) on the kernel
+            # .mlir in place, before mlir-opt. Currently lowers torchsim.vlane_idx
+            # (replaces the old C++ -global-idx pass); add more in passes/__init__.py.
+            run_python_passes(input_path, vectorlane=vectorlane_size)
+            new_input_path = os.path.splitext(input_path)[0]
+            raw_tog_path = new_input_path + "_tog.py"
+            sample_mlir_path = new_input_path + "_sample"
+            validation_binary_path = os.path.join(write_path, validation_binary_name)
+            gem5_cmds = mlir_gem5_compile_command(new_input_path, sample_mlir_path, raw_tog_path, vectorlane_size)
 
-        if spad_info is not None:
-            link_option = f"-Wl,--section-start=.spad=0x{spad_info['spad_vaddr']:x}"
-        else:
-            link_option = ""
-        # Generate LLVM kernel calller and binary for validation
-        if extension_config.pytorchsim_functional_mode:
-            # Use custom malloc to avoid size error
-            new_link_option = link_option + " -Wl,--wrap=malloc -Wl,--wrap=free"
-            cmds = mlir_compile_command(new_input_path, vectorlane_size, vlen=vlen)
-            opt_pad_cmd = shlex.split(cmds[0])
-            translate_cmd = shlex.split(cmds[1])
-            llc_cmd = shlex.split(cmds[2])
-            llc_asm_cmd = shlex.split(cmds[3])
-            with lock:
+            if spad_info is not None:
+                link_option = f"-Wl,--section-start=.spad=0x{spad_info['spad_vaddr']:x}"
+            else:
+                link_option = ""
+            # Generate LLVM kernel calller and binary for validation
+            if extension_config.pytorchsim_functional_mode:
+                # Use custom malloc to avoid size error
+                new_link_option = link_option + " -Wl,--wrap=malloc -Wl,--wrap=free"
+                cmds = mlir_compile_command(new_input_path, vectorlane_size, vlen=vlen)
+                opt_pad_cmd = shlex.split(cmds[0])
+                translate_cmd = shlex.split(cmds[1])
+                llc_cmd = shlex.split(cmds[2])
+                llc_asm_cmd = shlex.split(cmds[3])
                 try:
                     # loop-padding (mlir-opt) -> Python fine-grained + vcix (one parse/print)
                     subprocess.check_call(opt_pad_cmd)
@@ -209,17 +214,11 @@ class MLIRCodeCache:
                     )
                     raise SpadOverflowError()
 
-        # Skip if TOG file already exists
-        if os.path.isfile(tog_path):
-            return key
+            # Launch tile graph generator
+            gem5_pad_cmd = shlex.split(gem5_cmds[0])
+            gem5_translate_cmd = shlex.split(gem5_cmds[1])
+            gem5_llc_cmd = shlex.split(gem5_cmds[2])
 
-        # Launch tile graph generator
-        gem5_pad_cmd = shlex.split(gem5_cmds[0])
-        gem5_translate_cmd = shlex.split(gem5_cmds[1])
-        gem5_llc_cmd = shlex.split(gem5_cmds[2])
-
-        lock = FileLock(get_lock_path(write_path), timeout=LOCK_TIMEOUT)
-        with lock:
             try:
                 # mlir-opt now runs only loop-padding/dma-fine-grained/pytorchsim-to-vcix
                 # and writes the post-vcix IR. The tile-operation-graph pass is ported

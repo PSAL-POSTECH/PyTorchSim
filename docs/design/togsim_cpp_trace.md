@@ -113,7 +113,15 @@ as the dma↔barrier pairing key:
   `tag_slot` index identifies which async DMA a `memory_barrier` is waiting on.
 - **`tag_slot`** — the SRAM tile slot the loaded tile occupies (the
   double-buffer / SRAM-capacity index). It is *also* part of the pairing key
-  because each load's tile maps to its own slot.
+  because each load's tile maps to its own slot. The slot is **subtile-only**:
+  `lower_to_vcix` writes the dma_wait tag index with a `-acc_iv` term for each
+  accumulation (reduction) loop var — a sentinel marking the reduction axis, not
+  an arithmetic offset — and `build_skeleton` strips those terms so a
+  `memory_barrier` waits on the same slot its async load wrote. (Mirrors legacy
+  `TileGraphParser`, which skips stride -1; reduction iterations are told apart
+  by the per-iteration tag alloc + a fresh per-record Core key in the bridge, not
+  by the slot.) Without the strip, the producer evaluates `-acc_iv` to a negative
+  slot at reduction iteration > 0 and the pairing fails on subtile + multi-tile-K.
 
 Pairing is done at runtime by the existing TOGSim Core tag table: the async DMA
 calls `prepare_tag_key` and `set_tag_finish` (signal at data arrival), the

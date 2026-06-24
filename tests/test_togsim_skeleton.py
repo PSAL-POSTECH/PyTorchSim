@@ -87,6 +87,70 @@ def test_build_skeleton_on_fixture():
 
 
 @pytest.mark.skipif(not _mlir_available(), reason="MLIR Python bindings not installed")
+def test_strip_accum_terms_drops_reduction_marker():
+    """Regression: the dma_wait tag index built by lower_to_vcix carries a `-d_i`
+    term for each accumulation (reduction) loop var -- a sentinel marker, not an
+    offset. build_skeleton must drop those so a memory_barrier waits on the same
+    subtile slot the async load wrote; otherwise the producer evaluates `-acc_iv`
+    to a negative slot at reduction iteration > 0, the recorded barrier slot
+    diverges from the load slot, and TOGSim aborts with "Key does not exist in ...
+    tag table" on subtile + multi-tile-K. See docs/design/togsim_cpp_trace.md and
+    legacy TileGraphParser.cc (which skips stride -1 for the same reason)."""
+    import sys
+    sys.path.insert(0, str(_ROOT))
+    from PyTorchSimFrontend.mlir.passes import build_skeleton as bs
+
+    import mlir.ir as ir
+    ctx = ir.Context()
+    ctx.allow_unregistered_dialects = True
+    with ctx, ir.Location.unknown(ctx):
+        module = ir.Module.parse(
+            "func.func @k() {\n"
+            "  %r = arith.constant 1 : index\n"   # stand-in reduction iv
+            "  %a = arith.constant 0 : index\n"   # subtile dim 1
+            "  %b = arith.constant 0 : index\n"   # subtile dim 2
+            "  return\n"
+            "}", ctx)
+        block = module.body.operations[0].regions[0].blocks[0]
+        consts = [op.results[0] for op in block.operations if op.name == "arith.constant"]
+        anchor = [op for op in block.operations if op.name == "func.return"][0]
+        r, a, b = consts
+
+        def neg_dims(val):
+            amap = ir.AffineMapAttr(val.owner.attributes["map"]).value
+            return [p for p in (bs._neg_coeff_dim(s) for s in bs._flatten_add(amap.results[0]))
+                    if p is not None]
+
+        # #map8-style: -d0 (reduction) + d1 + d2 floordiv 2.
+        d0, d1, d2 = (ir.AffineDimExpr.get(i) for i in range(3))
+        expr = d0 * -1 + d1 + ir.AffineExpr.get_floor_div(d2, 2)
+        with ir.InsertionPoint(anchor):
+            apply = ir.Operation.create(
+                "affine.apply", results=[ir.IndexType.get()], operands=[r, a, b],
+                attributes={"map": ir.AffineMapAttr.get(ir.AffineMap.get(3, 0, [expr]))})
+        tag_in = apply.results[0]
+        assert neg_dims(tag_in) == [0]                       # the reduction marker is present
+
+        tag_out = bs._strip_accum_terms(ctx, tag_in, anchor)
+        assert tag_out is not tag_in                         # a new, reduced apply was emitted
+        out_map = ir.AffineMapAttr(tag_out.owner.attributes["map"]).value
+        assert out_map.n_dims == 2                           # the reduction dim was dropped
+        assert neg_dims(tag_out) == []                       # no reduction marker remains
+        assert list(tag_out.owner.operands) == [a, b]        # only the subtile operands survive
+
+        # No-op: an index with no reduction marker is returned unchanged.
+        plain = d0 + d1
+        with ir.InsertionPoint(anchor):
+            papply = ir.Operation.create(
+                "affine.apply", results=[ir.IndexType.get()], operands=[a, b],
+                attributes={"map": ir.AffineMapAttr.get(ir.AffineMap.get(2, 0, [plain]))})
+        pin = papply.results[0]
+        assert bs._strip_accum_terms(ctx, pin, anchor) is pin
+
+        assert module.operation.verify()
+
+
+@pytest.mark.skipif(not _mlir_available(), reason="MLIR Python bindings not installed")
 def test_cycle_table_on_fixture():
     fixture = os.environ.get("TOGSIM_SKELETON_FIXTURE")
     if not fixture or not os.path.isfile(fixture):

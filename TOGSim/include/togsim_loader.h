@@ -41,11 +41,11 @@ struct RunResult {
 
 // Load `so_path`, run its `togsim_kernel`, and return the recorded trace.
 // `tensor_base` gives each tensor argument's DRAM base, `cyc`/`ovl` the cycle table.
-// Work-items round-robin across `num_cores`.
+// Work-items round-robin only over `partition_cores` (empty/null -> core 0).
 RunResult run_producer(const char* so_path,
                        const int64_t* shape_args, int32_t n_shape,
                        const uint64_t* tensor_base, int32_t n_tensors,
                        const int64_t* cyc, const int64_t* ovl, int32_t n_tiles,
-                       int32_t num_cores);
+                       const int32_t* partition_cores, int32_t n_partition_cores);
 
 }  // namespace togsim

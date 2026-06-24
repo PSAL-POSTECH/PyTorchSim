@@ -19,9 +19,9 @@ struct EmitCtx {
   const int64_t*  cyc = nullptr;   // tile_id -> cycle
   const int64_t*  ovl = nullptr;   // tile_id -> overlapping_cycle
   int32_t         n_tiles = 0;
-  int32_t         num_cores = 1;
+  std::vector<int32_t> cores{0};   // the partition's core ids; dispatch round-robins over these
   // mutable run state
-  int32_t  rr = 0;            // round-robin core cursor
+  int32_t  rr = 0;            // round-robin cursor into `cores`
   int32_t  cur_core = -1;     // current work-item's core
   std::vector<togsim::TraceRec> trace;
 };
@@ -40,10 +40,11 @@ extern "C" {
 int32_t togsim_abi_version(void) { return TOGSIM_ABI_VERSION; }
 
 void togsim_dispatch(EmitCtx* ctx, togsim_tile_fn fn, int64_t* iv, int32_t n_iv) {
-  // Work-item wrapper (sec 9.3): round-robin a core (the producer never sees
-  // num_cores), bracket the work-item with TILE_BEGIN/TILE_END, and run its body. The
-  // work-item scope is exactly this call; ops emit records under ctx->cur_core.
-  ctx->cur_core = ctx->num_cores > 0 ? (ctx->rr++ % ctx->num_cores) : 0;
+  // Work-item wrapper (sec 9.3): round-robin over THIS partition's cores only --
+  // a work-item on another partition's core would sit in this partition's scheduler
+  // forever. TILE_BEGIN/TILE_END bracket the ops `fn` emits under ctx->cur_core.
+  ctx->cur_core = ctx->cores.empty() ? 0
+                : ctx->cores[ctx->rr++ % (int32_t)ctx->cores.size()];
   ctx->trace.push_back(blank(togsim::TraceRec::TILE_BEGIN, ctx->cur_core));
   fn(ctx, iv, n_iv);
   ctx->trace.push_back(blank(togsim::TraceRec::TILE_END, ctx->cur_core));
@@ -105,7 +106,7 @@ RunResult run_producer(const char* so_path,
                        const int64_t* shape_args, int32_t n_shape,
                        const uint64_t* tensor_base, int32_t n_tensors,
                        const int64_t* cyc, const int64_t* ovl, int32_t n_tiles,
-                       int32_t num_cores) {
+                       const int32_t* partition_cores, int32_t n_partition_cores) {
   RunResult res;
   void* lib = dlopen(so_path, RTLD_NOW | RTLD_GLOBAL);
   if (!lib) { fprintf(stderr, "togsim: dlopen failed: %s\n", dlerror()); return res; }
@@ -115,7 +116,8 @@ RunResult run_producer(const char* so_path,
   EmitCtx ctx;
   ctx.tensor_base = tensor_base; ctx.n_tensors = n_tensors;
   ctx.cyc = cyc; ctx.ovl = ovl; ctx.n_tiles = n_tiles;
-  ctx.num_cores = num_cores > 0 ? num_cores : 1;
+  ctx.cores.assign(partition_cores, partition_cores + (n_partition_cores > 0 ? n_partition_cores : 0));
+  if (ctx.cores.empty()) ctx.cores.push_back(0);
   emit(&ctx, (int64_t*)shape_args, n_shape);
 
   res.ok = true;

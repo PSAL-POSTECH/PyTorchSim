@@ -76,8 +76,11 @@ def run_module_passes(in_path, out_path, passes, **opts):
             p.run(module, **opts)
         out = str(module)
 
-    with open(out_path, "w") as f:
-        f.write(out)
+    # Atomic write: this rewrites the kernel .mlir in place outside load()'s FileLock,
+    # and a concurrent compile must never see a truncated file -- mlir-opt would parse
+    # it to an empty module and silently drop the kernel.
+    from torch._inductor.codecache import write_atomic
+    write_atomic(out_path, out)
     return True
 
 

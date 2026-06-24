@@ -240,6 +240,27 @@ def _const_index(v, ip):
                             ir.IntegerAttr.get(ir.IndexType.get(), v), ip=ip).result
 
 
+def _fresh_tag(dma):
+    """Give this DMA a fresh tag memref.alloc right BEFORE the (pre-split) coarse
+    dma_start, and rewire every use of the old tag -- the dma_start re-emitted
+    below AND its dma_wait -- to it. The coarse dma sits at the reduction-loop body
+    level (it has not been wrapped in a subtile load nest yet), so the alloc there
+    dominates both the load nest fine-grained is about to build and the sibling
+    wait nest. Each reduction iteration thus allocates its own tag -> successive
+    iterations are distinct (multi-tile-K / conv) and the per-iteration tag
+    semantics is in the IR, not reconstructed downstream. Old alloc becomes dead."""
+    old = dma.tag
+    new_tag = ir.Operation.create("memref.alloc", results=[old.type],
+                                  operands=[], ip=ir.InsertionPoint(dma.op)).results[0]
+    old.replace_all_uses_with(new_tag)
+    dma.tag = new_tag
+    # the old (func-entry, per-tensor unique) alloc is now dead -- erase it.
+    try:
+        old.owner.erase()
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Loop-nest construction
 # ---------------------------------------------------------------------------
@@ -350,6 +371,12 @@ def _run_func(func, vectorlane):
         bounds[f] = in_counts[d]
     for d, f in enumerate(fuse["w_to_fused"]):
         bounds[f] = w_counts[d]
+
+    # Give each load a fresh per-iteration tag alloc just before its coarse dma
+    # (rewiring its dma_wait via the old tag's uses), so the tag is distinct per
+    # reduction iteration -- positioned to match the per-iteration tag semantics.
+    _fresh_tag(mvin_input)
+    _fresh_tag(mvin_weight)
 
     # Insert the fused nest at the weight DMA (the later of the two): both DMAs'
     # original DRAM base indices (src_idx[0], computed in the enclosing loops) must

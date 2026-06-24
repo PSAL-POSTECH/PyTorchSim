@@ -23,3 +23,6 @@ codegen_external_mapping_file: ''
 codegen_autotune_max_retry: 10
 codegen_autotune_template_topk: 4
 codegen_compiler_optimization: all
+
+# Per-core spad: 8x8 array, 128 KB x 8 = 1 MB.
+core_spad_size_kb: 1024

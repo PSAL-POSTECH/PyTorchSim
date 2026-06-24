@@ -29,3 +29,6 @@ codegen_external_mapping_file: ''
 codegen_autotune_max_retry: 10
 codegen_autotune_template_topk: 4
 codegen_compiler_optimization: all
+
+# Per-core VMEM (vector/scratchpad) size: TPUv2/v3/v4 = 16 MB.
+core_spad_size_kb: 16384

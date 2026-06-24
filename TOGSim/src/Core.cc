@@ -154,7 +154,7 @@ void Core::dma_cycle() {
       } else if(!finished_inst->is_dma_read()) {
         core_trace_log::log_error_dma_instruction_invalid(_core_cycle, _id);
         exit(EXIT_FAILURE);
-      } else if (finished_inst->get_opcode() == Opcode::BAR) {
+      } else if (finished_inst->get_opcode() == Opcode::MEMORY_BAR) {
         core_trace_log::trace_instruction_line(_core_cycle,
                                                _id,
                                                TraceLogTag::pad15(TraceLogTag::kInstructionFinished),
@@ -265,6 +265,10 @@ void Core::cycle() {
           break;
         case Opcode::COMP:
           {
+            // sec 10.7: this op is now entering the pipeline -> release its
+            // occupancy (pipeline) dependents so a preload/matmul successor
+            // overlaps it instead of waiting its full latency.
+            inst->release_pipeline_children();
             auto& target_pipeline = get_compute_pipeline(inst->get_compute_type());
             if (target_pipeline.empty()) {
               inst->finish_cycle = _core_cycle + inst->get_compute_cycle();
@@ -297,7 +301,7 @@ void Core::cycle() {
             }
           }
           break;
-        case Opcode::BAR:
+        case Opcode::MEMORY_BAR:
           {
             auto& key = inst->get_tag_id();
             uint32_t finished = _dma.get_tag_finish(inst->subgraph_id, key);
@@ -322,6 +326,24 @@ void Core::cycle() {
                                                      core_trace_log::format_instruction_detail_line(
                                                          *inst));
             issued = true;
+          }
+          break;
+        case Opcode::COMPUTE_BAR:
+          {
+            // Compute fence: finish only once ALL compute pipelines have drained
+            // (every systolic array + the VPU empty). Until then it does not issue --
+            // it stays in the ready queue and is re-checked next cycle.
+            bool drained = _vu_compute_pipeline.empty();
+            for (int s = 0; s < _num_systolic_array_per_core; s++)
+              drained = drained && _sa_compute_pipeline.at(s).empty();
+            if (drained) {
+              core_trace_log::trace_instruction_line(_core_cycle, _id,
+                  TraceLogTag::pad15(TraceLogTag::kInstructionFinished),
+                  inst->get_global_inst_id(),
+                  core_trace_log::format_instruction_detail_line(*inst));
+              finish_instruction(inst);
+              issued = true;
+            }
           }
           break;
         default:

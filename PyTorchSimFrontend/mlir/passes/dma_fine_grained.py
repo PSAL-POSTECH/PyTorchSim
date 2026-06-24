@@ -30,6 +30,8 @@ if os.path.isdir(_DEFAULT_BINDINGS) and _DEFAULT_BINDINGS not in sys.path:
 
 import mlir.ir as ir  # noqa: E402
 
+from ._mlir_util import walk_ops, attr_i64_array
+
 MARKERS = ("subtile_size",)   # only subtile DMAs are split
 
 MVIN, MVIN2, MVIN3, MVOUT = 2, 1, 14, 3
@@ -52,12 +54,6 @@ def _const_int(value, default=-1):
         return ir.IntegerAttr(value.owner.attributes["value"]).value
     except Exception:
         return default
-
-
-def _int_array_attr(op, key):
-    if key not in op.attributes:
-        return []
-    return [ir.IntegerAttr(a).value for a in ir.ArrayAttr(op.attributes[key])]
 
 
 def _is_block_arg(v):
@@ -106,13 +102,13 @@ class _Dma:
         return list(mt.shape)
 
     def subtile_size(self):
-        return _int_array_attr(self.op, "subtile_size")
+        return attr_i64_array(self.op, "subtile_size", default=[])
 
     def sram_stride(self):
-        return _int_array_attr(self.op, "sram_stride")
+        return attr_i64_array(self.op, "sram_stride", default=[])
 
     def dram_stride(self):
-        return _int_array_attr(self.op, "dram_stride")
+        return attr_i64_array(self.op, "dram_stride", default=[])
 
     def is_async(self):
         a = self.op.attributes
@@ -244,6 +240,27 @@ def _const_index(v, ip):
                             ir.IntegerAttr.get(ir.IndexType.get(), v), ip=ip).result
 
 
+def _fresh_tag(dma):
+    """Give this DMA a fresh tag memref.alloc right BEFORE the (pre-split) coarse
+    dma_start, and rewire every use of the old tag -- the dma_start re-emitted
+    below AND its dma_wait -- to it. The coarse dma sits at the reduction-loop body
+    level (it has not been wrapped in a subtile load nest yet), so the alloc there
+    dominates both the load nest fine-grained is about to build and the sibling
+    wait nest. Each reduction iteration thus allocates its own tag -> successive
+    iterations are distinct (multi-tile-K / conv) and the per-iteration tag
+    semantics is in the IR, not reconstructed downstream. Old alloc becomes dead."""
+    old = dma.tag
+    new_tag = ir.Operation.create("memref.alloc", results=[old.type],
+                                  operands=[], ip=ir.InsertionPoint(dma.op)).results[0]
+    old.replace_all_uses_with(new_tag)
+    dma.tag = new_tag
+    # the old (func-entry, per-tensor unique) alloc is now dead -- erase it.
+    try:
+        old.owner.erase()
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Loop-nest construction
 # ---------------------------------------------------------------------------
@@ -293,20 +310,12 @@ def _reaches(value, target):
 # ---------------------------------------------------------------------------
 # Pass driver
 # ---------------------------------------------------------------------------
-def _iter_ops(block):
-    for op in list(block.operations):
-        yield op
-        for region in op.operation.regions:
-            for b in region.blocks:
-                yield from _iter_ops(b)
-
-
 def _run_func(func, vectorlane):
     from mlir.dialects import linalg
     # First matmul only.
     matmul = None
     dmas = []
-    for op in _iter_ops(func.regions[0].blocks[0]):
+    for op in walk_ops(func.regions[0].blocks[0]):
         name = op.operation.name
         if name == "linalg.matmul" and matmul is None:
             matmul = op
@@ -362,6 +371,12 @@ def _run_func(func, vectorlane):
         bounds[f] = in_counts[d]
     for d, f in enumerate(fuse["w_to_fused"]):
         bounds[f] = w_counts[d]
+
+    # Give each load a fresh per-iteration tag alloc just before its coarse dma
+    # (rewiring its dma_wait via the old tag's uses), so the tag is distinct per
+    # reduction iteration -- positioned to match the per-iteration tag semantics.
+    _fresh_tag(mvin_input)
+    _fresh_tag(mvin_weight)
 
     # Insert the fused nest at the weight DMA (the later of the two): both DMAs'
     # original DRAM base indices (src_idx[0], computed in the enclosing loops) must

@@ -99,6 +99,7 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(const togsim::RunResult& run,
   std::map<std::pair<int32_t, uint64_t>,
            std::pair<int64_t, std::shared_ptr<Instruction>>> current_dma;
   int64_t next_tag = 0;   // mints a unique Core tag key per dma record
+  int cur_tile_group = -1;   // work-item index, bumped per TILE_BEGIN (trace grouping)
   // Async compute (matmul/preload): issued and pipelined on the systolic array;
   // they do not block each other. A store then needs the drained result, so it
   // FLUSHes -- waits all outstanding async compute before running (like a fence
@@ -198,6 +199,7 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(const togsim::RunResult& run,
       sg = std::make_shared<TileSubGraph>();
       sg->set_core_id(t.core);
       tile = std::make_shared<Tile>(Tile::Status::INITIALIZED);
+      cur_tile_group++;
       continue;
     }
     if (t.kind == TraceRec::TILE_END) {
@@ -209,6 +211,7 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(const togsim::RunResult& run,
     if (t.kind == TraceRec::DMA) {
       int64_t uniq = next_tag++;                         // fresh Core tag key per dma record
       auto inst = make_dma(t, uniq);
+      inst->set_tile_group(cur_tile_group);
       size_t numel = 1;                                  // SRAM footprint (ready-tile ordering)
       for (auto d : t.dims) numel *= (size_t)d;
       tile->inc_required_sram_size(numel * (t.elem_bits / 8));
@@ -247,11 +250,13 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(const togsim::RunResult& run,
       std::shared_ptr<Instruction> dma_inst;
       if (it != current_dma.end()) { uniq = it->second.first; dma_inst = it->second.second; }
       auto bar = make_mem_bar(t, uniq);
+      bar->set_tile_group(cur_tile_group);
       if (dma_inst) dma_inst->add_child(bar);
       tile->append_instuction(bar);
       for (int64_t b : t.write_bufs) last_writer[b] = bar;
     } else if (t.kind == TraceRec::COMPUTE) {
       auto inst = make_compute(t);
+      inst->set_tile_group(cur_tile_group);
       link(inst, t.read_bufs, t.write_bufs);
       for (int64_t b : t.read_bufs) sram_on_read(b, inst);     // frees the tiles it consumes
       if (is_async_compute(t.compute_type)) outstanding_async.push_back(inst);
@@ -260,6 +265,7 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(const togsim::RunResult& run,
       // ISSUED (pipeline-child release); the Core then waits the SA pipelines to
       // drain before it finishes (-> the store it gates).
       auto bar = std::make_shared<Instruction>(Opcode::COMPUTE_BAR);
+      bar->set_tile_group(cur_tile_group);
       for (auto& a : outstanding_async) a->add_pipeline_child(bar);
       outstanding_async.clear();
       tile->append_instuction(bar);

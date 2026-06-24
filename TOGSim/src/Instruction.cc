@@ -24,7 +24,6 @@ std::string opcode_to_string(Opcode opcode) {
         case Opcode::MOVOUT:       return "MOVOUT";
         case Opcode::COMP:         return "COMP";
         case Opcode::MEMORY_BAR:   return "MEMORY_BAR";
-        case Opcode::COMPUTE_BAR:  return "COMPUTE_BAR";
         default:                   return "Unknown";
     }
 }
@@ -51,34 +50,8 @@ Instruction::Instruction(Opcode opcode)
 }
 
 void Instruction::finish_instruction() {
-  for (auto& counter : child_inst)
-    counter->dec_ready_counter();
+  fire(DepEvent::DONE);   // latency consumers
   finished = true;
-}
-
-void Instruction::add_child(std::shared_ptr<Instruction> child) {
-  // child_inst is a set (each child released exactly once at finish), so the
-  // ready_counter must be bumped only when the edge is NEW -- a producer that
-  // writes several buffers a single consumer reads (e.g. a sort tile reading the
-  // value+index buffers its predecessor wrote) links the same pair once per shared
-  // buffer; double-counting would leave ready_counter stuck above 0 -> deadlock.
-  if (child_inst.insert(child).second)
-    child->inc_ready_counter();
-}
-
-void Instruction::add_pipeline_child(std::shared_ptr<Instruction> child) {
-  if (_pipeline_children.insert(child).second)
-    child->inc_ready_counter();
-}
-
-void Instruction::release_pipeline_children() {
-  for (auto& c : _pipeline_children) {
-    // a COMPUTE_BAR child fences only its own dispatch -> it drains the max
-    // finish of the computes it gates, fed here as each one issues.
-    if (c->get_opcode() == Opcode::COMPUTE_BAR) c->update_fence_finish(finish_cycle);
-    c->dec_ready_counter();
-  }
-  _pipeline_children.clear();
 }
 
 void Instruction::inc_waiting_request() {

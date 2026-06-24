@@ -18,7 +18,11 @@ Core::Core(uint32_t id, SimulationConfig config)
   _stat_inst_count.resize(static_cast<size_t>(Opcode::COUNT), 0);
   _stat_tot_skipped_inst.resize(static_cast<size_t>(Opcode::COUNT), 0);
   _sram_capacity = (size_t)config.core_spad_size_kb * 1024;  // 0 = throttle disabled
-  _weight_slot_depth = config.sa_weight_buffer_depth;        // 0 = disabled (plain rr)
+  _weight_slot_depth = config.sa_weight_buffer_depth;        // per-SA weight slots (>0)
+  if (_weight_slot_depth == 0) {
+    spdlog::error("sa_weight_buffer_depth must be > 0 (raise it to loosen the preload throttle)");
+    exit(EXIT_FAILURE);
+  }
   _weight_slots_used.resize(_num_systolic_array_per_core, 0);
 }
 
@@ -35,11 +39,23 @@ int Core::pick_free_weight_sa() {
   return -1;
 }
 
-void Core::process_weight_releases() {
-  while (!_weight_release_q.empty() && _weight_release_q.begin()->first <= _core_cycle) {
-    auto tok = _weight_release_q.begin()->second;
-    _weight_release_q.erase(_weight_release_q.begin());
-    if (--tok->refcount <= 0) _weight_slots_used[tok->sa]--;  // last reader frees the slot
+void Core::apply_due(const DueAction& a) {
+  switch (a.kind) {
+    case DueAction::FreeWeightSlot:
+      if (--a.token->refcount <= 0) _weight_slots_used[a.token->sa]--;  // last reader frees the slot
+      break;
+    case DueAction::WakeBar: {
+      auto bar = a.bar;            // async load data arrived -> fire its MEMORY_BAR
+      finish_instruction(bar);
+      break;
+    }
+  }
+}
+
+void Core::process_due_events() {
+  while (!_due_events.empty() && _due_events.begin()->first <= _core_cycle) {
+    apply_due(_due_events.begin()->second);
+    _due_events.erase(_due_events.begin());
   }
 }
 
@@ -53,6 +69,15 @@ void Core::release_sram(const std::shared_ptr<Instruction>& inst) {
     _sram_used -= it->second;
     _sram_allocs.erase(it);
   }
+}
+
+bool Core::try_occupy_sram(const std::shared_ptr<Instruction>& inst) {
+  if (!_sram_capacity || inst->get_sram_alloc() < 0) return true;   // untracked
+  size_t F = inst->sram_footprint();
+  if (_sram_used + F > _sram_capacity) return false;                // would overflow -> stall
+  _sram_used += F;
+  _sram_allocs[inst->get_sram_alloc()] += F;                        // accumulate version footprint
+  return true;
 }
 
 bool Core::can_issue(const std::shared_ptr<Tile>& op) {
@@ -174,7 +199,7 @@ void Core::dma_cycle() {
       finish_instruction(instruction, InstFinishTraceTag::DmaRespComplete);
       for (auto & wait_inst : _dma.get_tag_waiter(instruction->subgraph_id, key)) {
         _dma.mark_tag_used(instruction->subgraph_id, key);
-        finish_instruction(wait_inst);
+        _due_events.emplace(_core_cycle, DueAction{DueAction::WakeBar, nullptr, wait_inst});
       }
     }
     _dma_finished_queue.erase(_dma_finished_queue.begin());
@@ -239,7 +264,7 @@ void Core::cycle() {
   /* Increase core cycle counter */
   _core_cycle++;
 
-  process_weight_releases();  // free weight slots due this cycle before dispatch
+  process_due_events();  // weight-slot frees + DMA-arrival wakeups due this cycle
 
   /* Iterate tile while an instruction is issued */
   bool issued = false;
@@ -248,9 +273,6 @@ void Core::cycle() {
     auto& instructions = _tiles[i]->get_ready_instructions();
     for (auto it=instructions.begin(); it!=instructions.end();) {
       auto& inst = *it;
-      /* Skip instruction is not ready  */
-      //if (!inst->is_ready())
-      //  continue;
 
       switch (inst->get_opcode()) {
         case Opcode::MOVIN:
@@ -281,22 +303,8 @@ void Core::cycle() {
               _stat_tot_skipped_inst.at(static_cast<size_t>(inst->get_opcode()))++;
               break;
             } else {
-              // SRAM-capacity gate (sec 10.x): a load that would overflow the
-              // per-core spad does not issue this cycle -- leave it in the ready
-              // queue (it++ retries next cycle) until a consumer frees a tile. On
-              // issue, occupy its bytes under its buffer-version allocation.
-              if (_sram_capacity && inst->get_sram_alloc() >= 0) {
-                size_t F = inst->sram_footprint();
-                // Stall if the tile does not fit in the free spad right now. If
-                // it can never fit (the kernel's working set exceeds the whole
-                // spad), the sim wedges -- Simulator::cycle() detects that frozen
-                // state and exits with a "spad too small" error rather than
-                // looping forever.
-                if (_sram_used + F > _sram_capacity)
-                  break;                                       // not issued -> retry next cycle
-                _sram_used += F;
-                _sram_allocs[inst->get_sram_alloc()] += F;     // accumulate version footprint
-              }
+              // load occupies its spad bytes on issue; stall (retry next cycle) if full.
+              if (!try_occupy_sram(inst)) break;
               core_trace_log::trace_instruction_line(_core_cycle,
                                                        _id,
                                                        TraceLogTag::pad15(
@@ -324,41 +332,38 @@ void Core::cycle() {
         case Opcode::COMP:
           {
             const int ct = inst->get_compute_type();
-            // --- SA selection + weight-buffer gate (sec 10.x) ---
-            // A preload picks a systolic array with a free weight slot and pins
-            // its matmul consumers to that SA (they free the slot on finish). A
-            // matmul runs on the SA its weight was preloaded into. This both
-            // bounds preload run-ahead and keeps matmuls on their weight's SA.
+            // a fresh-output compute occupies its spad bytes on issue; stall if full.
+            if (!try_occupy_sram(inst)) break;
+            // SA selection (sec 10.x): a preload picks an SA with a free weight slot
+            // and pins its matmul consumers there; a matmul runs on its pinned SA.
             int sa_idx = -1;
             if (ct == MATMUL || ct == PRELOAD) {
               if (ct == PRELOAD) {
                 int n_consumers = 0;   // matmuls reusing this weight
-                for (auto& c : inst->get_pipeline_children())
+                for (auto& c : inst->get_deps(DepEvent::ISSUE))
                   if (c->get_compute_type() == MATMUL) n_consumers++;
-                if (_weight_slot_depth > 0 && n_consumers > 0) {
-                  sa_idx = pick_free_weight_sa();
-                  if (sa_idx < 0) break;            // all weight slots full -> stall (retry)
-                  _weight_slots_used[sa_idx]++;
-                  auto tok = std::make_shared<WeightToken>(WeightToken{sa_idx, n_consumers});
-                  for (auto& c : inst->get_pipeline_children())
-                    if (c->get_compute_type() == MATMUL) {
-                      c->set_assigned_sa(sa_idx);
-                      c->set_weight_token(tok);
-                    }
-                } else {                            // disabled / no consumers -> plain rr
-                  sa_idx = _systolic_array_rr;
-                  _systolic_array_rr = (_systolic_array_rr + 1) % _num_systolic_array_per_core;
+                if (n_consumers == 0) {            // weight-slot model needs >=1 consumer
+                  spdlog::error("preload has no matmul consumer (weight-slot model invariant)");
+                  exit(EXIT_FAILURE);
                 }
+                sa_idx = pick_free_weight_sa();
+                if (sa_idx < 0) break;              // all weight slots full -> stall (retry)
+                _weight_slots_used[sa_idx]++;
+                auto tok = std::make_shared<WeightToken>(WeightToken{sa_idx, n_consumers});
+                for (auto& c : inst->get_deps(DepEvent::ISSUE))
+                  if (c->get_compute_type() == MATMUL) {
+                    c->set_assigned_sa(sa_idx);
+                    c->set_weight_token(tok);
+                  }
               } else {                              // MATMUL
-                sa_idx = inst->get_assigned_sa();
-                if (sa_idx < 0) {                   // no preload pinned it -> rr fallback
-                  sa_idx = _systolic_array_rr;
-                  _systolic_array_rr = (_systolic_array_rr + 1) % _num_systolic_array_per_core;
+                sa_idx = inst->get_assigned_sa();   // pinned by its preload
+                if (sa_idx < 0) {                   // unpinned -> no preload set its SA
+                  spdlog::error("matmul was not pinned to an SA by a preload (weight-slot model invariant)");
+                  exit(EXIT_FAILURE);
                 }
               }
               inst->set_assigned_sa(sa_idx);         // record the SA actually used (for the trace)
             }
-            release_sram(inst);   // consumer issued -> free the tiles it read
             auto& target_pipeline = (ct == VECTOR_UNIT) ? _vu_compute_pipeline
                                                         : _sa_compute_pipeline.at(sa_idx);
             if (target_pipeline.empty()) {
@@ -370,19 +375,19 @@ void Core::cycle() {
               inst->finish_cycle = target_pipeline.back()->finish_cycle + inst->get_compute_cycle() - overlapped_cycle;
               inst->bubble_cycle = bubble_cycle;
             }
-            // sec 10.7: release the occupancy (pipeline) dependents so a successor
-            // overlaps this op. finish_cycle is set first so release can feed it to
-            // a COMPUTE_BAR child's per-dispatch fence (see release_pipeline_children).
-            inst->release_pipeline_children();
+            // release the occupancy (ISSUE) dependents so a successor overlaps this op.
+            inst->fire(DepEvent::ISSUE);
 
             // Release this matmul's weight slot at its streaming-end (finish -
             // overlapping), not at full finish (the drain tail does not read it).
             if (ct == MATMUL && inst->get_weight_token()) {
               cycle_type rel = inst->finish_cycle > inst->get_overlapping_cycle()
                                  ? inst->finish_cycle - inst->get_overlapping_cycle() : _core_cycle;
-              _weight_release_q.emplace(rel, inst->get_weight_token());
+              _due_events.emplace(rel, DueAction{DueAction::FreeWeightSlot,
+                                                 inst->get_weight_token(), nullptr});
             }
 
+            release_sram(inst);   // free the tiles it read (before the skip path)
             if (inst->get_compute_cycle() == 0) {
               inst->finish_instruction();
               static_cast<Tile*>(inst->get_owner())->inc_finished_inst();
@@ -409,7 +414,7 @@ void Core::cycle() {
             auto& key = inst->get_tag_id();
             uint32_t finished = _dma.get_tag_finish(inst->subgraph_id, key);
             if (finished == -1) {
-              for (auto child_inst : inst->get_child_inst()) {
+              for (auto child_inst : inst->get_deps(DepEvent::DONE)) {
                 if (child_inst->get_opcode() == Opcode::COMP && child_inst->get_compute_type() == MATMUL) {
                   child_inst->set_compute_cycle(0);
                 }
@@ -429,24 +434,6 @@ void Core::cycle() {
                                                      core_trace_log::format_instruction_detail_line(
                                                          *inst));
             issued = true;
-          }
-          break;
-        case Opcode::COMPUTE_BAR:
-          {
-            // Compute fence (sec 10.7): finish once THIS dispatch's async computes
-            // have drained -- i.e. the current cycle has reached the max finish of
-            // the computes it gates (fed in via update_fence_finish when each
-            // issued). Scoped to its own dispatch, so an unrelated tile's matmuls
-            // sharing the SA pipelines do not delay it (no cross-dispatch
-            // serialization). Not yet drained -> stays in the ready queue.
-            if (_core_cycle >= inst->get_fence_finish()) {
-              core_trace_log::trace_instruction_line(_core_cycle, _id,
-                  TraceLogTag::pad15(TraceLogTag::kInstructionFinished),
-                  inst->get_global_inst_id(),
-                  core_trace_log::format_instruction_detail_line(*inst));
-              finish_instruction(inst);
-              issued = true;
-            }
           }
           break;
         default:

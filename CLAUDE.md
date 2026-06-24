@@ -85,6 +85,7 @@ Note: `TOGSIM_CONFIG` is **overwritten** while inside a `with TOGSimulator(confi
 Located under `configs/*.yml`:
 
 - `num_cores`, `core_freq_mhz`, `num_systolic_array_per_core`
+- `sa_weight_buffer_depth` (per-SA resident weight slots; **must be > 0** — the simulator errors on 0. Raise it to effectively disable the preload run-ahead throttle. Defaults to 2 if the key is absent.)
 - `vpu_num_lanes`, `vpu_spad_size_kb_per_lane`, `vpu_vector_length_bits`
 - `dram_type` (`ramulator2` | `simple`), `dram_channels`, `dram_freq_mhz`, `ramulator_config_path`
 - `icnt_type` (`simple` | `booksim`), `icnt_latency_cycles`, `icnt_freq_mhz`, `icnt_config_path`

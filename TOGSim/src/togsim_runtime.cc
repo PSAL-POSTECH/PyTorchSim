@@ -94,10 +94,6 @@ void togsim_memory_barrier(EmitCtx* ctx, int32_t tag_id, uint64_t tag_slot,
   ctx->trace.push_back(r);
 }
 
-void togsim_compute_barrier(EmitCtx* ctx) {
-  ctx->trace.push_back(blank(togsim::TraceRec::COMPUTE_BAR, ctx->cur_core));
-}
-
 }  // extern "C"
 
 namespace togsim {
@@ -123,65 +119,6 @@ RunResult run_producer(const char* so_path,
   res.ok = true;
   res.trace = std::move(ctx.trace);
   return res;
-}
-
-SimResult simulate(const RunResult& run, const TimingParams& params) {
-  SimResult out;
-  std::unordered_map<int, uint64_t> dma_free;     // DMA-engine free time, per core
-  std::unordered_map<int, uint64_t> comp_free;    // compute free time, per core
-  std::unordered_map<int, uint64_t> prev_comp;    // prev compute finish (overlap), per core
-  std::map<std::pair<int32_t, uint64_t>, uint64_t> tag_finish;  // (tag_id,tag_slot) -> finish
-  std::vector<uint64_t> pending;                    // barrier-resolved deps since last compute
-
-  for (const auto& t : run.trace) {
-    const int c = t.core;
-    switch (t.kind) {
-      case TraceRec::DMA: {
-        // DMAs serialize on the core's DMA engine (overlap compute -> separate
-        // timeline). finish = issue + latency, recorded under the runtime tag.
-        uint64_t start = dma_free[c];
-        uint64_t fin = start + params.dma_latency;
-        dma_free[c] = fin;
-        tag_finish[{t.tag_id, t.tag_slot}] = fin;
-        out.n_dma++;
-        break;
-      }
-      case TraceRec::MEMORY_BAR: {
-        // the explicit async-DMA sync: gate the next compute on the paired dma's
-        // data-arrival, found by the runtime tag (tag_id, tag_slot).
-        auto it = tag_finish.find({t.tag_id, t.tag_slot});
-        if (it != tag_finish.end()) pending.push_back(it->second);
-        break;
-      }
-      case TraceRec::COMPUTE: {
-        uint64_t deps = 0;
-        for (uint64_t f : pending) deps = std::max(deps, f);
-        pending.clear();
-        uint64_t start = std::max(comp_free[c], deps);
-        uint64_t fin;
-        auto pit = prev_comp.find(c);
-        if (pit != prev_comp.end()) {
-          uint64_t prev = pit->second;
-          uint64_t tail = prev > start ? prev - start : 0;     // prev still running
-          uint64_t overlapped = std::min<uint64_t>(tail, (uint64_t)t.overlapping);
-          fin = std::max(start, prev) + (uint64_t)t.cycle - overlapped;
-        } else {
-          fin = start + (uint64_t)t.cycle;
-        }
-        comp_free[c] = fin;
-        prev_comp[c] = fin;
-        out.n_compute++;
-        break;
-      }
-      case TraceRec::TILE_BEGIN:
-      case TraceRec::TILE_END:
-      case TraceRec::COMPUTE_BAR:
-        break;  // work-item boundary / compute fence: no cost in this reference timer
-    }
-  }
-  for (auto& kv : dma_free) out.total_cycle = std::max(out.total_cycle, kv.second);
-  for (auto& kv : comp_free) out.total_cycle = std::max(out.total_cycle, kv.second);
-  return out;
 }
 
 }  // namespace togsim

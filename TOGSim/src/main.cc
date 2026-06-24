@@ -51,9 +51,9 @@ std::unique_ptr<TileGraph> build_trace_tilegraph(Simulator* simulator,
 void launchKernel(Simulator* simulator, unsigned int kernel_id, std::string onnx_path, std::string attribute_path, const YAML::Node& config_yaml, cycle_type request_time=0, int partition_id=0, int device_id=0) {
   std::unique_ptr<TileGraph> tile_graph;
   std::string tog_path = onnx_path;  // for the log line
-  // Prefer the C++ trace path: the kernel's trace.so / trace_cycles.tsv sit next to its
-  // tile_graph.onnx. Opt out with TORCHSIM_LEGACY_TOG=1, and fall back to the legacy ONNX
-  // parser when the .so is absent or fails to run.
+  // The C++ trace path is the supported one: the kernel's trace.so / trace_cycles.tsv
+  // sit next to its tile_graph.onnx (same write_path). The legacy ONNX parser below is
+  // DEPRECATED -- only used via TORCHSIM_LEGACY_TOG=1 or when the .so is absent / fails.
   const char* legacy = std::getenv("TORCHSIM_LEGACY_TOG");
   std::string dir = fs::path(onnx_path).parent_path().string();
   std::string trace_so = dir + "/trace.so";
@@ -64,6 +64,7 @@ void launchKernel(Simulator* simulator, unsigned int kernel_id, std::string onnx
     else spdlog::warn("[TOGSim] trace.so run failed for {}; falling back to ONNX", trace_so);
   }
   if (!tile_graph) {
+    spdlog::warn("[TOGSim] using the DEPRECATED legacy ONNX TOG path for {}", onnx_path);
     auto graph_praser = TileGraphParser(onnx_path, attribute_path, config_yaml);
     tile_graph = std::move(graph_praser.get_tile_graph());
   }

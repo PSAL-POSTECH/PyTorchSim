@@ -423,14 +423,6 @@ def _rewrite_togsim_ops(ctx, kernel, ctx_val):
                    i32(0), _opaque(ctx, "nullptr"),
                    _arr(ctx, _rb), i32(len(_rb)), _arr(ctx, _wb), i32(len(_wb))])
             victims.append(op)
-        elif name == ts.COMPUTE_BAR:
-            # explicit compute fence -> togsim_compute_barrier(ctx) (sec 10.7).
-            ir.Operation.create(
-                "emitc.call_opaque", results=[], operands=[ctx_val],
-                attributes={"callee": ir.StringAttr.get(ts.EMITC_CALLEE[ts.COMPUTE_BAR]),
-                            "args": ir.ArrayAttr.get([_idx(0)])},
-                loc=ir.Location.unknown(ctx), ip=ipo)
-            victims.append(op)
     for op in victims:
         op.operation.erase()
 

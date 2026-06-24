@@ -584,7 +584,7 @@ std::vector<std::shared_ptr<Tile>> TileLoopNode::get_tiles_from_iter(TileGraphPa
         for (const auto& child_node: node->get_child()) {
           if (link_map.find(child_node) != link_map.end()) {
             std::shared_ptr<Instruction> child_inst = link_map[child_node];
-            inst->add_child(child_inst);
+            inst->add_dep(child_inst, DepEvent::DONE);
           }
         }
       }
@@ -606,7 +606,7 @@ std::vector<std::shared_ptr<Tile>> TileLoopNode::get_tiles_from_iter(TileGraphPa
             for (auto& inner_inst : inner_tile->get_instructions()) {
               tile_vec.back()->append_instuction(inner_inst);
               if (nr_inst) {
-                last_instruction->add_child(inner_inst);
+                last_instruction->add_dep(inner_inst, DepEvent::DONE);
               }
             }
           }
@@ -662,7 +662,7 @@ std::vector<std::shared_ptr<Tile>> TileLoopNode::get_tiles_from_iter(TileGraphPa
     for (const auto& child_node: node->get_child()) {
       if (link_map.find(child_node) != link_map.end()) {
         std::shared_ptr<Instruction> child_inst = link_map[child_node];
-        inst->add_child(child_inst);
+        inst->add_dep(child_inst, DepEvent::DONE);
       }
     }
   }

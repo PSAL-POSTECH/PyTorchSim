@@ -273,8 +273,8 @@ class MLIRCodeCache:
             )
 
             # Trace pipeline (DEFAULT): emit the trace producer .so + cycle-table TSV
-            # from the post-vcix IR and gem5 cycles. TORCHSIM_LEGACY_TOG=1 opts back into
-            # the ONNX TOG, in which case the .so is unused. Never breaks the compile.
+            # from the post-vcix IR and gem5 cycles. The legacy ONNX TOG is DEPRECATED,
+            # an opt-in fallback via TORCHSIM_LEGACY_TOG=1. Never breaks the compile.
             if os.environ.get("TORCHSIM_LEGACY_TOG") != "1":
                 try:
                     import mlir.ir as ir

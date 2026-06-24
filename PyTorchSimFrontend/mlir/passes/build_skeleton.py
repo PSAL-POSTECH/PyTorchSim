@@ -53,7 +53,7 @@ MARKERS = ("memref.dma_start", "memref.dma_wait")
 _KEEP = {
     "affine.for", "scf.for", "scf.while",
     "affine.yield", "scf.yield", "func.return",
-    ts.DMA, ts.COMPUTE, ts.COMPUTE_BAR, ts.MEMORY_BAR,
+    ts.DMA, ts.COMPUTE, ts.MEMORY_BAR,
 }
 
 
@@ -115,20 +115,6 @@ def _emit_dma(ctx, dma_node, tag_id, dram_index, tag_index, read_bufs, write_buf
         loc=ir.Location.unknown(ctx),
         ip=ir.InsertionPoint(op),
     )
-
-
-def _emit_compute_bar(ctx, anchor_op):
-    """Insert a `togsim.compute_barrier` before `anchor_op` -- the fence that
-    drains in-flight async compute (the systolic-array matmuls) before a store
-    consumes their result (sec 10.7).
-
-    FIXME: this is the one barrier still synthesized here rather than read from
-    the IR. Like the async-load memory barrier (now mapped 1:1 from the explicit
-    dma_wait), the compute fence should eventually appear explicitly in the input
-    MLIR and be mapped through, not auto-inserted -- no surprising insertion."""
-    ir.Operation.create(
-        ts.COMPUTE_BAR, results=[], operands=[], attributes={},
-        loc=ir.Location.unknown(ctx), ip=ir.InsertionPoint(anchor_op))
 
 
 def _emit_memory_bar(ctx, anchor_op, tag_id, tag_index, write_bufs):
@@ -456,8 +442,6 @@ def _emit_one_dma(ctx, op, node, builder, bufs, tags):
     read_bufs = [spad_id] if node.is_write else []
     write_bufs = [] if node.is_write else [spad_id]
     tag_id = tags.bind(_value_key(f["tag"]), spad_id)
-    if node.is_write:
-        _emit_compute_bar(ctx, op)   # FIXME(sec10.7): auto-inserted; should be explicit in the IR.
     _emit_dma(ctx, node, tag_id, dram_index, tag_index, read_bufs, write_bufs)
 
 

@@ -11,7 +11,7 @@ extern "C" {
 
 // Producer/runtime ABI version. TOGSim refuses to load a producer whose
 // embedded togsim_abi_version() does not match TOGSIM_ABI_VERSION.
-#define TOGSIM_ABI_VERSION 11
+#define TOGSIM_ABI_VERSION 12
 int32_t togsim_abi_version(void);
 
 // Opaque per-invocation context owned by TOGSim. Holds the record sink and the
@@ -49,10 +49,16 @@ void togsim_compute(EmitCtx* ctx, uint64_t tile_id, int32_t compute_type,
 void togsim_memory_barrier(EmitCtx* ctx, int32_t tag_id, uint64_t tag_slot,
                            const int64_t* write_bufs, int32_t n_write);
 
-// Core allocation (sec 9.3): the producer calls this at each parallel work-item's
-// start, and the ops that follow bind to the returned core. No free -- a core is an
-// assignment. The producer never names num_cores; the runtime owns the pool.
-int32_t togsim_core_alloc(EmitCtx* ctx);
+// A parallel work-item body, outlined by the producer (sec 9.3): `iv` holds the
+// packed parallel loop indices (e.g. the (m,n) output-tile indices). One uniform
+// signature => one general dispatcher serves every kernel. The runtime only reads iv.
+typedef void (*togsim_tile_fn)(EmitCtx* ctx, int64_t* iv, int32_t n_iv);
+
+// Dispatch one work-item (sec 9.3): round-robin a core, bracket `fn` with
+// TILE_BEGIN/TILE_END, and invoke it -- so the work-item scope IS the call. Core
+// choice is runtime-owned; the producer never names num_cores or a core.
+void togsim_dispatch(EmitCtx* ctx, togsim_tile_fn fn,
+                     int64_t* iv, int32_t n_iv);
 
 // Compute fence: drain in-flight async compute (the systolic-array matmuls)
 // before the following op (a store) consumes their result. Explicit barrier in

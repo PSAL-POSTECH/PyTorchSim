@@ -123,15 +123,21 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(const togsim::RunResult& run,
   };
 
   for (const auto& t : run.trace) {
-    if (t.kind == TraceRec::DISPATCH) {
-      // new work-item -> new subgraph (bound to its core) + tile.
+    if (t.kind == TraceRec::TILE_BEGIN) {
+      // togsim_dispatch opened a work-item -> new subgraph (bound to its core) +
+      // tile. The scope runs until the matching TILE_END (the dispatch wrapper
+      // brackets the tile fn call), not until the next begin.
       flush();
       sg = std::make_shared<TileSubGraph>();
       sg->set_core_id(t.core);
       tile = std::make_shared<Tile>(Tile::Status::INITIALIZED);
       continue;
     }
-    if (!tile) continue;  // defensive: ops before the first core_alloc
+    if (t.kind == TraceRec::TILE_END) {
+      flush();   // close the work-item explicitly (scope = the tile fn call)
+      continue;
+    }
+    if (!tile) continue;  // defensive: ops before the first TILE_BEGIN
 
     if (t.kind == TraceRec::DMA) {
       int64_t uniq = next_tag++;                         // fresh Core tag key per dma record

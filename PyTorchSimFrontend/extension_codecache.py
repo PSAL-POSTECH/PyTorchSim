@@ -270,12 +270,12 @@ class MLIRCodeCache:
                 vector_lane=vectorlane_size
             )
 
-            # P3 trace pipeline (opt-in, TORCHSIM_DUMP_TRACE_SO=1): also emit the
-            # compiled trace producer .so + the cycle-table TSV from the SAME
-            # post-vcix IR and gem5 cycle_list/offsets, so the trace path can be
-            # run and compared cycle-consistently against this legacy path.
-            # Best-effort: never breaks the legacy compile.
-            if os.environ.get("TORCHSIM_DUMP_TRACE_SO") == "1":
+            # Trace pipeline (DEFAULT): emit the compiled trace producer .so + the
+            # cycle-table TSV from the post-vcix IR and gem5 cycle_list/offsets. This
+            # is the default simulation path (the C++ TOG); the legacy ONNX TOG is the
+            # opt-in fallback via TORCHSIM_LEGACY_TOG=1, in which case the .so is unused
+            # so skip emitting it. Best-effort: never breaks the compile.
+            if os.environ.get("TORCHSIM_LEGACY_TOG") != "1":
                 try:
                     import mlir.ir as ir
                     from PyTorchSimFrontend.mlir.passes import (

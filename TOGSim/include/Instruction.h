@@ -132,12 +132,12 @@ class Instruction : public std::enable_shared_from_this<Instruction> {
   // bytes this load occupies in the spad (from the tile it moves in).
   size_t sram_footprint() const { return _tile_numel * (_elem_bits / 8); }
 
-  cycle_type start_cycle;
-  cycle_type finish_cycle;
+  cycle_type start_cycle = 0;
+  cycle_type finish_cycle = 0;
   cycle_type bubble_cycle=0;
 
   bool finished=false;
-  int subgraph_id;
+  int subgraph_id = 0;
  private:
   uint64_t _global_inst_id = 0;
   static uint64_t _next_global_inst_id;
@@ -145,18 +145,19 @@ class Instruction : public std::enable_shared_from_this<Instruction> {
   void *_owner = nullptr;
   std::list<std::shared_ptr<Instruction>>* _owner_ready_queue_ref = nullptr;
   Opcode opcode;
-  cycle_type compute_cycle;
-  cycle_type overlapping_cycle;
-  size_t ready_counter;
+  cycle_type compute_cycle = 0;
+  cycle_type overlapping_cycle = 0;
+  size_t ready_counter = 0;   // parents not yet finished; the minimal Instruction(Opcode)
+                              // ctor (barriers) relies on this default + inc_ready_counter
   std::set<std::shared_ptr<Instruction>> child_inst;
   std::set<std::shared_ptr<Instruction>> _pipeline_children;  // released at issue (sec 10.7)
   std::vector<size_t> tile_size;
   std::vector<int> tile_stride;
-  size_t _tile_numel;
+  size_t _tile_numel = 0;
   size_t _nr_waiting_request=0;
   bool _got_first_response=false;
   size_t _elem_bits = 0;
-  addr_type dram_addr;
+  addr_type dram_addr = 0;
   uint32_t _numa_id = 0; // For DMA instruction
   int _compute_type = 0;
   std::vector<int64_t> _tag_idx_list;

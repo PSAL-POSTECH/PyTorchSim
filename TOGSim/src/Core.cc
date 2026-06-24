@@ -56,8 +56,11 @@ void Core::release_sram(const std::shared_ptr<Instruction>& inst) {
 }
 
 bool Core::can_issue(const std::shared_ptr<Tile>& op) {
-  /* Check SRAM is enough to run tile */
-  return _tiles.size() < 4  && !op->is_stonne_tile();
+  /* Bound concurrent dispatches so their combined spad working set fits: with the
+   * global @buffers each in-flight dispatch piles its own load versions, and too
+   * many at once overflow the spad (versions never free -> wedge). 2 keeps double-
+   * buffering overlap while leaving headroom. */
+  return _tiles.size() < 2  && !op->is_stonne_tile();
 }
 
 void Core::issue(std::shared_ptr<Tile> op) {

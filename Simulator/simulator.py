@@ -571,9 +571,11 @@ class TOGSimulator():
             base_cmd = TOGSimulator.get_togsim_command(config_path, togsim_path)
             use_trace = (os.environ.get("TORCHSIM_LEGACY_TOG") != "1"
                          and os.path.exists(trace_so))
+            if os.environ.get("TORCHSIM_LEGACY_TOG") == "1":
+                logger.warning("TORCHSIM_LEGACY_TOG=1 selects the DEPRECATED legacy ONNX TOG path")
             if use_trace:
                 cmd = f"{base_cmd} --trace_so {trace_so} --cycle_table {cycle_tsv}"
-            else:
+            else:  # DEPRECATED: legacy ONNX TOG path
                 cmd = f"{base_cmd} --models_list {trace_file_path}"
             if extension_config.CONFIG_TOGSIM_DEBUG_LEVEL:
                 cmd += f" --log_level {extension_config.CONFIG_TOGSIM_DEBUG_LEVEL}"

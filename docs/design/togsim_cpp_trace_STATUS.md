@@ -103,6 +103,13 @@ work and DRAM traffic match; the remaining difference is scheduling (the
 explicit dataflow DAG plus the occupancy/latency SA-pipeline model overlap
 differently than legacy's per-iteration BARs).
 
+**Subtile + multi-tile-K now runs** (256x512x256 forced to 128x128 subtiles, 2
+K-tiles: 5774 cycles, no crash). This needed `build_skeleton` to strip the
+`-acc_iv` accumulation marker from the dma_wait tag index so the memory_barrier
+slot stays subtile-only and pairs with its load (see §3, `tag_slot`); before the
+strip the producer evaluated `-acc_iv` to a negative slot at the 2nd K-tile and
+TOGSim aborted with "Key does not exist in ... tag table".
+
 ## 4. Components
 
 - `build_skeleton.py` + `dep_analysis.py` — in-place reduction of post-vcix to

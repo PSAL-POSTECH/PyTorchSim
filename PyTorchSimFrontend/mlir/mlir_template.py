@@ -21,7 +21,6 @@ from torch._inductor.codegen.cuda.cuda_kernel import CUDATemplateCaller
 from torch._inductor.autotune_process import TensorMeta
 from torch._inductor.virtualized import V, NullHandler, _ops as ops
 from torch._inductor.utils import IndentedBuffer
-from torch._inductor.codecache import write_atomic
 
 import PyTorchSimFrontend.extension_codecache as extension_codecache
 from PyTorchSimFrontend.mlir.mlir_autotune import MLIRBenchmarkRequest
@@ -613,22 +612,11 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         return src_code, meta_code
 
     def _prepare_simulator_headers(self, src_code):
-        from filelock import FileLock
-
         spad_end_symbol = f"int spad_end[0] __attribute__ ((section(\".spad\")));\n"
         spad_section_end_symbol = f"int spad_section_end[0] __attribute__ ((section(\".spad\"), aligned({self.spad_info['spad_size']*self.vector_lane})));"
-
-        write_path = extension_codecache.get_write_path(src_code)
-        os.makedirs(write_path, exist_ok=True)
-        spike_write_path = os.path.join(write_path, "global_var.h")
-        gem5_write_path = os.path.join(write_path, "gem5_global_var.h")
-
-        lock = FileLock(extension_codecache.get_lock_path(write_path), timeout=extension_codecache.LOCK_TIMEOUT)
-        with lock:
-            if not os.path.exists(spike_write_path):
-                write_atomic(spike_write_path, self.header.getvalue()+spad_end_symbol+spad_section_end_symbol)
-            if not os.path.exists(gem5_write_path):
-                write_atomic(gem5_write_path, self.gem5_header.getvalue())
+        spike_content = self.header.getvalue()+spad_end_symbol+spad_section_end_symbol
+        gem5_content = self.gem5_header.getvalue()
+        extension_codecache.store_header(src_code, spike_content, gem5_content)
 
     def codegen_prologue_body(self):
         body = IndentedBuffer()

@@ -1,6 +1,7 @@
 #pragma once
 #include <robin_hood.h>
 #include <unordered_set>
+#include <map>
 #include <memory>
 #include <vector>
 #include <fmt/core.h>
@@ -24,6 +25,10 @@ class Core {
   Core(uint32_t id, SimulationConfig config);
   ~Core()=default;
   virtual bool running();
+  // True if this core has work actively in flight (DMA / compute pipeline / queues)
+  // that will produce a future finish event -- i.e. running() minus "tiles waiting".
+  // Used by the frozen-state (spad-too-small) guard.
+  bool has_inflight();
   virtual bool can_issue(const std::shared_ptr<Tile>& op);
   virtual void issue(std::shared_ptr<Tile> tile);
   virtual std::shared_ptr<Tile> pop_finished_tile();
@@ -55,6 +60,16 @@ class Core {
   void sa_cycle();
   bool can_issue_compute(std::shared_ptr<Instruction>& inst);
   void update_stats();
+  // SRAM-capacity throttle (sec 10.4): a consumer frees the buffer-versions it
+  // read (refcount -> 0 releases the spad bytes). Called when COMP/MOVOUT issue.
+  void release_sram(const std::shared_ptr<Instruction>& inst);
+  // SA weight-buffer throttle (sec 10.4): pick a systolic array that has a free
+  // weight slot (round-robin among free); -1 if all full -> the preload stalls.
+  int pick_free_weight_sa();
+  // Free weight slots due this cycle: a matmul releases its slot at its
+  // streaming-end (finish - overlapping, when it stops reading the weight),
+  // scheduled at issue in _weight_release_q. Last consumer frees it.
+  void process_weight_releases();
 
   /* Core id & config file */
   const uint32_t _id;
@@ -103,4 +118,20 @@ class Core {
   std::queue<mem_fetch*> _request_queue;
   std::queue<mem_fetch*> _response_queue;
   uint32_t _waiting_write_reqs;
+
+  // SRAM-capacity throttle (sec 10.4). _sram_used = current per-core spad bytes;
+  // _sram_capacity = limit (0 = disabled); _sram_allocs maps a buffer-version id
+  // to its accumulated footprint bytes (freed when its last reader issues).
+  size_t _sram_used = 0;
+  size_t _sram_capacity = 0;
+  std::unordered_map<int64_t, size_t> _sram_allocs;
+
+  // SA weight-buffer throttle (sec 10.4). _weight_slots_used[s] = weights resident
+  // on SA s (loaded by a preload, not yet freed by their last matmul);
+  // _weight_slot_depth = per-SA capacity (0 = disabled -> plain round-robin).
+  std::vector<int> _weight_slots_used;
+  uint32_t _weight_slot_depth = 0;
+  // Pending weight-slot releases keyed by cycle (each matmul's streaming-end);
+  // process_weight_releases() drains those due and decrements the token.
+  std::multimap<cycle_type, std::shared_ptr<WeightToken>> _weight_release_q;
 };

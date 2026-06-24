@@ -238,8 +238,13 @@ class MLIRCodeCache:
             # Run cyclesim
             cyclesim = CycleSimulator()
             cycle_list = cyclesim.compile_and_simulate(os.path.join(write_path, cycle_binary_name), vectorlane_size, silent_mode=silent_mode)
+            # Snapshot for the P3-trace hook below: generate_tile_graph consumes
+            # cycle_list in place (cycle_list.pop(0) per tile), leaving it empty.
+            cycle_list_for_trace = list(cycle_list)
 
-            # Create TOG
+            # Create TOG -- DEPRECATED (timing path): the ONNX-TOG producer, superseded
+            # by the C++ trace pipeline. The cycle_list / x_offset / w_offset computed
+            # here are reused by cycle_table, so both paths stay cycle-consistent.
             w_offset, x_offset = vectorlane_size, vectorlane_size
             if kwargs['loop_size'] is not None and kwargs['loop_size'][-3] < vectorlane_size:
                 x_offset = kwargs['loop_size'][-3]
@@ -255,6 +260,34 @@ class MLIRCodeCache:
                 w_offset=w_offset, # FIXME.
                 vector_lane=vectorlane_size
             )
+
+            # Trace pipeline (opt-in, TORCHSIM_DUMP_TRACE_SO=1): also emit the trace
+            # producer .so + cycle-table TSV from the SAME post-vcix IR and gem5 cycles,
+            # so it can be compared cycle-consistently. Best-effort: never breaks the build.
+            if os.environ.get("TORCHSIM_DUMP_TRACE_SO") == "1":
+                try:
+                    import mlir.ir as ir
+                    from PyTorchSimFrontend.mlir.passes import (
+                        build_skeleton as _bs, cycle_table as _ct, lower_to_emitc as _l2e)
+                    pv = sample_mlir_path + "_postvcix.mlir"
+                    _ctx = ir.Context(); _ctx.allow_unregistered_dialects = True
+                    with _ctx:
+                        _mod = ir.Module.parse(open(pv).read(), _ctx)
+                        _bs.build_skeleton(_mod)
+                        _ntiles = len(_ct._compute_types(_mod))
+                        # align lengths: gem5 gives one numCycles per compute node;
+                        # pad with the last value / truncate if it disagrees.
+                        _cl = list(cycle_list_for_trace)
+                        if _cl and len(_cl) != _ntiles:
+                            _cl = (_cl + [_cl[-1]] * _ntiles)[:_ntiles]
+                        logger.info(f"[P3-trace] cycle_list={cycle_list_for_trace} -> {_cl} "
+                                    f"(#tiles={_ntiles}, x_off={x_offset}, w_off={w_offset})")
+                        _tbl = _ct.build_cycle_table(_mod, _cl, x_offset, w_offset)
+                    _ct.dump_cycle_table_tsv(_tbl, os.path.join(write_path, "trace_cycles.tsv"))
+                    _l2e.build_trace_so(pv, os.path.join(write_path, "trace.so"))
+                    logger.info(f"[P3-trace] wrote trace.so + trace_cycles.tsv in {write_path}")
+                except Exception as e:
+                    logger.warning(f"[P3-trace] trace .so/sidecar dump skipped: {e}")
         return key
 
 class CustomAsyncCompile(AsyncCompile):

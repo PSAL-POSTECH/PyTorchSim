@@ -5,7 +5,7 @@ import subprocess
 import torch
 
 from PyTorchSimFrontend import extension_config
-from torch._inductor.codecache import get_hash, write
+from torch._inductor.codecache import get_hash, write, write_atomic
 from torch._inductor.async_compile import AsyncCompile
 from AsmParser.tog_generator import tog_generator
 from PyTorchSimFrontend.mlir.mlir_caller_codegen import MLIRKernelCallerCodeGen
@@ -21,6 +21,13 @@ def hash_prefix(hash_value):
 
 def get_write_path(src_code):
     return os.path.join(extension_config.get_dump_path(), hash_prefix(get_hash(src_code.strip())))
+
+
+_HEADER_BY_HASH = {}
+def store_header(src_code, spike_header, gem5_header):
+    _HEADER_BY_HASH[get_hash(src_code.strip())] = (spike_header, gem5_header)
+def get_header(src_code):
+    return _HEADER_BY_HASH.get(get_hash(src_code.strip()))
 
 
 def get_lock_path(write_path):
@@ -128,6 +135,13 @@ class MLIRCodeCache:
         vlen = kwargs['vlen']
         vlenb = vlen // 8
         write_path = get_write_path(source_code)
+        os.makedirs(write_path, exist_ok=True)
+        global_var_header = kwargs.get("global_var_header")
+        if global_var_header is not None:
+            write_atomic(os.path.join(write_path, "global_var.h"), global_var_header)
+        gem5_global_var_header = kwargs.get("gem5_global_var_header")
+        if gem5_global_var_header is not None:
+            write_atomic(os.path.join(write_path, "gem5_global_var.h"), gem5_global_var_header)
         key, input_path = write(source_code, "mlir", specified_dir=write_path)
         # Run the Python out-of-line MLIR passes (MLIR bindings) on the kernel
         # .mlir in place, before mlir-opt. Currently lowers torchsim.vlane_idx

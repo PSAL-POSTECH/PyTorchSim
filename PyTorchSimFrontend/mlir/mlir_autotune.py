@@ -54,7 +54,7 @@ class MLIRBenchmarkRequest():
     def make_run_fn(
         self, input_tensors: torch.Tensor, output_tensors: torch.Tensor
     ) -> Callable[[], None]:
-        from PyTorchSimFrontend.extension_codecache import CustomAsyncCompile
+        from PyTorchSimFrontend.extension_codecache import CustomAsyncCompile, get_header
         custom_async_compile = CustomAsyncCompile()
 
         # Check already cached result.
@@ -80,12 +80,15 @@ class MLIRBenchmarkRequest():
                 return cached_run_fn
 
         # Run a candidate code
+        _headers = get_header(self.source_code)
+        _header_kwargs = {} if _headers is None else {
+            "global_var_header": _headers[0], "gem5_global_var_header": _headers[1]}
         run_method = custom_async_compile.mlir(
             self.source_code, vectorlane_size=self.extra_args["vector_lane"],
             loop_size=self.extra_args["loop_size"], spad_info=self.extra_args["spad_info"],
             vlen=self.extra_args["vlen"], arg_attributes=self.extra_args["arg_attributes"],
             origins=self.extra_args["origins"], silent_mode=True,
-            autotune=self.extra_args['autotune'])
+            autotune=self.extra_args['autotune'], **_header_kwargs)
 
         args = [
             tensor

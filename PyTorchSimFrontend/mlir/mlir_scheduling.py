@@ -5,6 +5,7 @@ from functools import reduce
 import operator
 from sympy import symbols, sympify
 from PyTorchSimFrontend import extension_config
+from PyTorchSimFrontend import extension_codecache
 from PyTorchSimFrontend.mlir.mlir_codegen_backend import MLIRKernel
 
 from torch.utils._ordered_set import OrderedSet
@@ -333,6 +334,10 @@ class MLIRScheduling(BaseScheduling):
             codecache_def.writeline(f"spad_info={spad_info},")
             codecache_def.writeline(f"origins={origins},")
             codecache_def.writeline(f"arg_attributes={meta_code},")
+            headers = extension_codecache.get_header(src_code)
+            if headers is not None:
+                codecache_def.writeline(f"global_var_header='''{headers[0]}''',")
+                codecache_def.writeline(f"gem5_global_var_header='''{headers[1]}''',")
             codecache_def.writeline(f"vlen={extension_config.vpu_vector_length_bits})")
             wrapper.define_kernel(kernel_name, codecache_def.getvalue(), gpu=False)
         return kernel_name

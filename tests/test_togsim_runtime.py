@@ -5,8 +5,9 @@ the loader (`run_producer`) against the `.so`, and checks the recorded trace:
 DRAM addresses are resolved (base[arg_id] + offset*elem_bytes), compute cycles
 are looked up from the cycle table, and every wait gets a handle a dma minted.
 
-Skipped unless the MLIR bindings, `mlir-translate`, a C++ compiler, and a
-post-vcix `.mlir` fixture (`TOGSIM_SKELETON_FIXTURE`) are available.
+Uses a checked-in post-vcix `.mlir` fixture (tests/fixtures/), so it is
+self-contained; skipped only when the MLIR bindings, `mlir-translate`, or a C++
+compiler are missing.
 """
 import importlib.util
 import os
@@ -36,11 +37,16 @@ def _tools_ready():
             and _RUNTIME.is_file())
 
 
+# Checked-in post-vcix kernel: a 256^3 single-output-tile GEMM (X/W/Y_spad
+# 256x256), matching the trace assertions below. Self-contained so the test
+# runs wherever the tools are present -- no setup/env needed.
+_FIXTURE = pathlib.Path(__file__).resolve().parent / "fixtures" / "gemm256_postvcix.mlir"
+
+
 def _fixture():
-    fix = os.environ.get("TOGSIM_SKELETON_FIXTURE")
-    if not fix or not os.path.isfile(fix):
-        pytest.skip("set TOGSIM_SKELETON_FIXTURE to a post-vcix kernel .mlir")
-    return fix
+    if not _FIXTURE.is_file():
+        pytest.skip(f"missing checked-in fixture {_FIXTURE}")
+    return str(_FIXTURE)
 
 
 # Drives the loader with known tensor bases + a synthetic cycle table, then

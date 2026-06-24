@@ -57,7 +57,8 @@ int main(int argc, char** argv) {
   uint64_t bases[3] = {0x1000, 0x2000, 0x3000};
   int64_t  cyc[3]   = {100, 200, 300};
   int64_t  ovl[3]   = {0, 200, 172};
-  RunResult r = run_producer(argv[1], nullptr, 0, bases, 3, cyc, ovl, 3, 1);
+  int32_t  pcores[1] = {0};  // round-robin work-items over core 0 (single-core harness)
+  RunResult r = run_producer(argv[1], nullptr, 0, bases, 3, cyc, ovl, 3, pcores, 1);
   if (!r.ok) { printf("run failed\n"); return 2; }
   int ndisp=0, nd=0, nc=0, nm=0, fail=0;
   std::vector<uint64_t> dma_a; std::vector<int> dma_arg, dma_dir;
@@ -136,7 +137,8 @@ int main(int argc, char** argv) {
   uint64_t bases[3] = {0x1000, 0x2000, 0x3000};
   int64_t  cyc[3]   = {100, 200, 300};
   int64_t  ovl[3]   = {0, 200, 172};
-  RunResult r = run_producer(argv[1], nullptr, 0, bases, 3, cyc, ovl, 3, 1);
+  int32_t  pcores[1] = {0};  // round-robin work-items over core 0 (single-core harness)
+  RunResult r = run_producer(argv[1], nullptr, 0, bases, 3, cyc, ovl, 3, pcores, 1);
   if (!r.ok) { printf("run failed\n"); return 2; }
   TimingParams p; p.dma_latency = 100;
   SimResult s = simulate(r, p);

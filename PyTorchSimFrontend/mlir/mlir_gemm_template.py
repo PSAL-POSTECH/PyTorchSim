@@ -329,7 +329,7 @@ class MLIRGemmTemplate(MLIRTemplate):
         else:
             # case 2: use heuristic mapping
             min_tile = (n_extra_node + n_prologue_node) == 0
-            tile_candidates = kernel.gemm_combination_mapping(M, N, K, max(n_extra_read-2, 0), n_prologue_node, min_tile=True, precision_bytes=precision_bytes)
+            tile_candidates = kernel.gemm_combination_mapping(M, N, K, n_extra_node + n_extra_read, n_prologue_node, min_tile=True, precision_bytes=precision_bytes)
 
         # Edge case
         if (M == 0) or (N == 0) or (K == 0):

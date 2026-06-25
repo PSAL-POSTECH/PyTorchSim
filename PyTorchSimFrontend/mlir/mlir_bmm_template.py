@@ -165,10 +165,10 @@ class MLIRBMMTemplate(MLIRTemplate):
                prologue_nodes: Optional[List[IRNode]] = None,
                tile_info = None,
                **kwargs):
-        X, W, Y, Bias, W_tensor, X_tensor, B, M, N, K, n_extra_node, n_prologue_node = self.extract_info(template_buffer_node, epilogue_nodes, prologue_nodes)
+        X, W, Y, Bias, W_tensor, X_tensor, B, M, N, K, n_extra_node, n_prologue_node, n_extra_read = self.extract_info(template_buffer_node, epilogue_nodes, prologue_nodes)
         precision_bytes = mlir_common.get_dtype_nbytes(X.get_dtype())
         if tile_info is None:
-            TILE_M, TILE_N, TILE_K, SUB_TILE_M, SUB_TILE_N, SUB_TILE_K = self.select_tile(kernel, M, N, K, n_extra_node, 0, n_prologue_node, precision_bytes)[0]
+            TILE_M, TILE_N, TILE_K, SUB_TILE_M, SUB_TILE_N, SUB_TILE_K = self.select_tile(kernel, M, N, K, n_extra_node, n_extra_read, n_prologue_node, precision_bytes)[0]
         else:
             TILE_M, TILE_N, TILE_K, SUB_TILE_M, SUB_TILE_N, SUB_TILE_K = tile_info
 
@@ -342,7 +342,38 @@ class MLIRBMMTemplate(MLIRTemplate):
         # Select tile size
         n_extra_node = len(epilogue_nodes) if epilogue_nodes is not None else 0
         n_prologue_node = len(prologue_nodes) if prologue_nodes is not None else 0
-        return X,W,Y,Bias,W_tensor,X_tensor,B,M,N,K,n_extra_node, n_prologue_node
+        n_extra_read = self.count_prologue_extra_buffers(prologue_nodes)
+        return X,W,Y,Bias,W_tensor,X_tensor,B,M,N,K,n_extra_node, n_prologue_node, n_extra_read
+
+    def count_prologue_extra_buffers(self, prologue_nodes):
+        # Each prologue node reuses the matmul-operand spad buffer for its one
+        # "main" input (the read whose numel matches the node, MVIN'd in place)
+        # and for its single output; see codegen_template_code. Every other read
+        # (e.g. the softmax max/sum broadcast operands) is laid out as its own
+        # disjoint output-tile-sized .spad global, so it must be budgeted in tile
+        # selection or the emitted kernel overflows spad/2 (mirrors the epilogue
+        # n_extra_read accounting in the GEMM template).
+        if not prologue_nodes:
+            return 0
+        from functools import reduce
+        import operator
+        from torch._inductor.virtualized import V
+        buf_dict = {val.name: val for val in V.graph.buffers}
+        buf_dict.update(V.graph.graph_inputs)
+        prologue_outputs = {list(node.read_writes.writes)[0].name for node in prologue_nodes}
+        extra = set()
+        for node in prologue_nodes:
+            reads = sorted(i.name for i in node.read_writes.reads)
+            main_input = None
+            for candidate_read in reads:
+                if candidate_read in buf_dict and \
+                   reduce(operator.mul, buf_dict[candidate_read].get_size(), 1) == node.node.get_numel():
+                    main_input = candidate_read
+                    break
+            for r in reads:
+                if r != main_input and r not in prologue_outputs:
+                    extra.add(r)
+        return len(extra)
 
     def get_tile_candidates(self,
                kernel: MLIRTemplateKernel,
@@ -350,12 +381,18 @@ class MLIRBMMTemplate(MLIRTemplate):
                epilogue_nodes: Optional[List[IRNode]] = None,
                prologue_nodes: Optional[List[IRNode]] = None,
                **kwargs):
-        X, W, Y, Bias, W_tensor, X_tensor, B, M, N, K, n_extra_node, n_prologue_node = self.extract_info(template_buffer_node, epilogue_nodes, prologue_nodes)
+        X, W, Y, Bias, W_tensor, X_tensor, B, M, N, K, n_extra_node, n_prologue_node, n_extra_read = self.extract_info(template_buffer_node, epilogue_nodes, prologue_nodes)
         precision_bytes = mlir_common.get_dtype_nbytes(X.get_dtype())
-        return self.select_tile(kernel, M, N, K, n_extra_node, 0, n_prologue_node, precision_bytes)
+        return self.select_tile(kernel, M, N, K, n_extra_node, n_extra_read, n_prologue_node, precision_bytes)
 
     def select_tile(self, kernel, M, N, K, n_extra_node, n_extra_read, n_prologue_node, precision_bytes):
-        tile_candidates = kernel.gemm_combination_mapping(M, N, K, n_extra_node=n_extra_node, precision_bytes=precision_bytes)
+        # Budget the prologue's extra-read .spad globals (e.g. the softmax max/sum
+        # operands) so the chosen tile actually fits spad/2. They are laid out at the
+        # produced-operand (weight) tile size, so account for them as weight-tile
+        # buffers; the prologue's main input reuses the matmul-operand buffer.
+        tile_candidates = kernel.gemm_combination_mapping(
+            M, N, K, n_extra_node=n_extra_node, n_prologue_extra_read=n_extra_read,
+            precision_bytes=precision_bytes)
         for idx, (TILE_M, TILE_N, TILE_K) in enumerate(tile_candidates):
             SUB_TILE_M = TILE_M if (TILE_M < kernel.vector_lane) or n_prologue_node else kernel.vector_lane
             SUB_TILE_N = TILE_N # if (TILE_N < kernel.vector_lane) or prologue_nodes else kernel.vector_lane

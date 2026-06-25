@@ -204,7 +204,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
 
         return inner_I, inner_J, inner_K
 
-    def gemm_combination_mapping(self, M, N, K, n_extra_node=0, n_prologue_node=0, pad_k=True, min_tile=False, is_conv=False, precision_bytes=4):
+    def gemm_combination_mapping(self, M, N, K, n_extra_node=0, n_prologue_node=0, n_prologue_extra_read=0, pad_k=True, min_tile=False, is_conv=False, precision_bytes=4):
         tile_candidates = []
         spad_size_per_lane = self.spad_info["spad_size"]
         spad_size = spad_size_per_lane * self.vector_lane
@@ -232,8 +232,8 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
                 tile_M = i * self.vector_lane if M > self.vector_lane else M_padded
                 for j in tile_N_range:
                     tile_N = j * self.vector_lane if N > self.vector_lane else N_padded
-                    used_spad_size = (tile_M * tile_K * (1 + n_prologue_node) + tile_K * tile_N + tile_M * tile_N * (1 + n_extra_node)) * precision_bytes
-                    weight_size_per_lane = self.get_spad_size_per_lane(tile_K, tile_N)
+                    used_spad_size = (tile_M * tile_K * (1 + n_prologue_node) + tile_K * tile_N * (1 + n_prologue_extra_read) + tile_M * tile_N * (1 + n_extra_node)) * precision_bytes
+                    weight_size_per_lane = self.get_spad_size_per_lane(tile_K, tile_N) * (1 + n_prologue_extra_read)
                     input_size_per_lane = self.get_spad_size_per_lane(tile_M * (1 + n_prologue_node), tile_K)
                     output_size_per_lane = self.get_spad_size_per_lane(tile_M * (1 + n_extra_node), tile_N)
                     used_spad_size_per_lane = (weight_size_per_lane + input_size_per_lane + output_size_per_lane) * precision_bytes
@@ -258,8 +258,8 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
                 tile_M = i * self.vector_lane if M > self.vector_lane else M_padded
                 for j in tile_N_range:
                     tile_N = j * self.vector_lane if N > self.vector_lane else N_padded
-                    used_spad_size = (tile_M * tile_K * (1 + n_prologue_node) + tile_K * tile_N + tile_M * tile_N * (1 + n_extra_node)) * precision_bytes
-                    weight_size_per_lane = self.get_spad_size_per_lane(tile_K, tile_N)
+                    used_spad_size = (tile_M * tile_K * (1 + n_prologue_node) + tile_K * tile_N * (1 + n_prologue_extra_read) + tile_M * tile_N * (1 + n_extra_node)) * precision_bytes
+                    weight_size_per_lane = self.get_spad_size_per_lane(tile_K, tile_N) * (1 + n_prologue_extra_read)
                     input_size_per_lane = self.get_spad_size_per_lane(tile_M * (1 + n_prologue_node), tile_K)
                     output_size_per_lane = self.get_spad_size_per_lane(tile_M * (1 + n_extra_node), tile_N)
                     used_spad_size_per_lane = (weight_size_per_lane + input_size_per_lane + output_size_per_lane) * precision_bytes

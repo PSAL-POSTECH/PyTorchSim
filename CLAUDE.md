@@ -21,7 +21,7 @@ The pipeline runs in that order on every `torch.compile` invocation; you'll see 
 | `Simulator/simulator.py` | Python drivers: `FunctionalSimulator` (Spike), `CycleSimulator` (Gem5), `TOGSimulator` (the cycle-accurate one + multi-tenant context manager) |
 | `Scheduler/scheduler.py` | Poisson arrival generator + scheduling utilities for multi-tenant runs |
 | `TOGSim/` | C++ TOGSim source. `src/Simulator.cc`, `Core.cc`, `Dram.cc`, `Interconnect.cc`, `L2Cache.cc`, `Tile.cc`, `TileGraph.cc` are the core models. Externals: ramulator2, booksim, stonneCore, onnx, protobuf, spdlog, yaml-cpp |
-| `AsmParser/` | `tog_generator.py`, `onnx_utility.py` — TOG generation from ONNX/ASM |
+| `AsmParser/` | `tog_generator.py`, `onnx_utility.py` — legacy ONNX TOG generation; now used only by the STONNE sparse path (the main path emits a C++ `trace.so` instead) |
 | `configs/` | TOGSim hardware configs (YAML). The default is `systolic_ws_128x128_c1_simple_noc_tpuv3.yml`. Naming pattern: `systolic_ws_<size>_c<cores>_<noc>_<target>.yml` |
 | `tests/` | Op- and model-level tests organized under `ops/<family>/` (elementwise, reduce, gemm, conv, attention, view, sort, sparsity, misc, fusion), `models/<name>/` (Llama, Mixtral8x7B, DeepSeek, Diffusion, MoE, MLP, MobileNet, Yolov5) plus single-file model tests (test_resnet, test_transformer, test_vit, test_mlp, test_single_perceptron), and `system/` (scheduler, eager, hetro, stonne, vectorops). Shared helper: `tests/_utils.py` |
 | `experiments/artifact/` | Paper reproduction scripts (`cycle_validation/run_cycle.sh`, `speedup/run_speedup.sh`) |
@@ -130,7 +130,7 @@ Conan deps for TOGSim: `boost/1.79.0`, `robin-hood-hashing/3.11.5`, `spdlog/1.11
 - **Adding a new op (Inductor lowering):** `PyTorchSimFrontend/mlir/mlir_ops.py`, `mlir_lowering.py`, plus a new `mlir_<op>_template.py` if it needs its own MLIR template. Decomposition rules: `mlir_decomposition.py`. Scheduling: `mlir_scheduling.py`. Autotune: `mlir_autotune.py`.
 - **Adding a PyTorch device op:** `PyTorchSimDevice/csrc/aten/native/*` (Minimal/Extra split mirrors `torch_openreg`).
 - **TOGSim hardware model changes:** `TOGSim/src/{Core,Dram,Interconnect,L2Cache,Tile,TileGraph}.cc` + matching `include/*.h`.
-- **TOG generation:** `AsmParser/tog_generator.py` builds the raw graph and serializes it via `AsmParser/onnx_utility.py` to **ONNX, which is the on-disk TOG format** consumed by TOGSim.
+- **TOG generation:** the main path compiles each kernel to a C++ **`trace.so`** (`mlir/passes/build_skeleton.py` + `lower_to_emitc.py`) plus a `trace_cycles.tsv` cycle table, which TOGSim turns into a TileGraph via `trace_to_tilegraph`. `AsmParser/tog_generator.py` + `onnx_utility.py` (the legacy ONNX TOG) remain only for the **STONNE sparse path** (`extension_op.py`).
 - **Eager fallback registration:** `torch.npu.register_eager_to_compile([...])` — see `tests/system/test_eager.py`.
 - **Per-run results:** `togsim_results/<YYYYMMDD_HHMMSS_<hash>>.log` (stats) and `.trace` (instruction trace). The path is also printed at the end of every run.
 - **Wrapper codegen path:** printed as `Wrapper Codegen Path = /tmp/torchinductor_<user>/<hash>/...py` — useful for inspecting generated kernel code and tensor names for `SRAM_BUFFER_PLAN_PATH`.

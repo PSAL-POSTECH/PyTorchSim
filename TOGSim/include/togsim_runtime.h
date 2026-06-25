@@ -116,6 +116,17 @@ typedef enum {
 //   read_bufs/n_read, write_bufs/n_write : SRAM buffer ids this op reads/writes
 //   (sec 10 dataflow). The loader builds the dependency DAG by last-writer per
 //   buffer.
+// --- BEGIN trace-producer call formats (copied verbatim into generated trace.cpp) ---
+// Each togsim_* call below lowers 1:1 to one of these free functions. Arg formats:
+//   togsim_dma(ctx, dir, arg_id, offset, ndim, dims[], strides[], elem_bits,
+//              is_async, tag_id, tag_slot, read_bufs[], n_read, write_bufs[], n_write)
+//              dir: 0=load (MOVIN), 1=store (MOVOUT)
+//   togsim_compute(ctx, tile_id, compute_type, ndim, dims[], read_bufs[], n_read,
+//                  write_bufs[], n_write)   compute_type: 0=vector, 1=matmul, 2=preload
+//   togsim_memory_barrier(ctx, tag_id, tag_slot, write_bufs[], n_write)
+//   togsim_dispatch(ctx, tile_fn, iv[], n_iv)        // run one work-item
+//   togsim_kernel(ctx, shape_args[], n_shape_args)   // producer entry point
+// --- END trace-producer call formats ---
 void togsim_dma(EmitCtx* ctx, int32_t dir, int32_t arg_id,
                 uint64_t offset, int32_t ndim, const int64_t* dims,
                 const int64_t* strides, int32_t elem_bits,

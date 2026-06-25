@@ -7,7 +7,6 @@ import torch
 from PyTorchSimFrontend import extension_config
 from torch._inductor.codecache import get_hash, write, write_atomic
 from torch._inductor.async_compile import AsyncCompile
-from AsmParser.tog_generator import tog_generator
 from PyTorchSimFrontend.mlir.mlir_caller_codegen import MLIRKernelCallerCodeGen
 from Simulator.simulator import FunctionalSimulator, CycleSimulator, TOGSimulator
 
@@ -81,7 +80,7 @@ def mlir_compile_command(filename, vectorlane_size, vlen=256):
         """,
     ).strip()]
 
-def mlir_gem5_compile_command(filename, sample_filename, tog_file, vectorlane_size, vlen=256):
+def mlir_gem5_compile_command(filename, sample_filename, vectorlane_size, vlen=256):
     # See mlir_compile_command: -dma-fine-grained and -test-pytorchsim-to-vcix are
     # Python passes run in-process; mlir-opt runs only loop-padding here.
     return [re.sub(r"[ \n]+", " ",
@@ -146,17 +145,17 @@ class MLIRCodeCache:
         # it back (mlir-opt). Two compiles of the same source -- the autotune's chosen
         # candidate and the final kernel -- share a write_path, so hold the per-path
         # lock across the whole build to keep them from interleaving, and skip the
-        # rebuild when a prior build already finished (its tile_graph.onnx exists).
+        # rebuild when a prior build already finished (its trace.so exists).
         from filelock import FileLock
         from PyTorchSimFrontend.mlir.passes import (
             run_python_passes, run_module_passes, POST_OPT_PASSES,
             run_standard_lowering, run_tog,
         )
-        tog_path = os.path.join(write_path, "tile_graph.onnx")
+        trace_so_path = os.path.join(write_path, "trace.so")
         lock = FileLock(get_lock_path(write_path), timeout=LOCK_TIMEOUT)
         with lock:
             key, input_path = write(source_code, "mlir", specified_dir=write_path)
-            if os.path.isfile(tog_path):
+            if os.path.isfile(trace_so_path):
                 return key
             # Run the Python out-of-line MLIR passes (MLIR bindings) on the kernel
             # .mlir in place, before mlir-opt. Currently lowers torchsim.vlane_idx
@@ -166,7 +165,7 @@ class MLIRCodeCache:
             raw_tog_path = new_input_path + "_tog.py"
             sample_mlir_path = new_input_path + "_sample"
             validation_binary_path = os.path.join(write_path, validation_binary_name)
-            gem5_cmds = mlir_gem5_compile_command(new_input_path, sample_mlir_path, raw_tog_path, vectorlane_size)
+            gem5_cmds = mlir_gem5_compile_command(new_input_path, sample_mlir_path, vectorlane_size)
 
             if spad_info is not None:
                 link_option = f"-Wl,--section-start=.spad=0x{spad_info['spad_vaddr']:x}"
@@ -260,61 +259,39 @@ class MLIRCodeCache:
             # Run cyclesim
             cyclesim = CycleSimulator()
             cycle_list = cyclesim.compile_and_simulate(os.path.join(write_path, cycle_binary_name), vectorlane_size, silent_mode=silent_mode)
-            # Snapshot for the P3-trace hook below: generate_tile_graph consumes
-            # cycle_list in place (cycle_list.pop(0) per tile), leaving it empty.
             cycle_list_for_trace = list(cycle_list)
 
-            # Create TOG
-            # DEPRECATED (timing path): this ONNX-TOG producer -- run_tog ->
-            # tog_generator.generate_tile_graph -> ONNX -> C++ TileGraphParser --
-            # is being superseded by the C++ trace pipeline (build_skeleton +
-            # lower_to_emitc -> compiled .so, + the cycle_table sidecar). The
-            # per-tile cycle_list / x_offset / w_offset computed here are exactly
-            # what cycle_table.build_cycle_table will reuse, so both paths stay
-            # cycle-consistent during the transition. Kept live (pipeline must not
-            # break); to be retired once the trace pipeline (P3+) stabilizes.
+            # Per-tile cycle offsets, shared with the trace cycle-table below.
             w_offset, x_offset = vectorlane_size, vectorlane_size
             if kwargs['loop_size'] is not None and kwargs['loop_size'][-3] < vectorlane_size:
                 x_offset = kwargs['loop_size'][-3]
             if kwargs['loop_size'] is not None and kwargs['loop_size'][-1] < vectorlane_size:
                 w_offset = kwargs['loop_size'][-1]
             w_offset = 0 # max(w_offset - x_offset, 0)
-            tile_graph_generator = tog_generator(origins)
-            tile_graph_generator.load_file(raw_tog_path)
-            tile_graph_generator.generate_tile_graph(
-                tog_path,
-                cycle_list=cycle_list,
-                x_offset=x_offset, # FIXME.
-                w_offset=w_offset, # FIXME.
-                vector_lane=vectorlane_size
-            )
 
-            # Trace pipeline (DEFAULT): emit the compiled trace producer .so + the
-            # cycle-table TSV from the post-vcix IR and gem5 cycle_list/offsets. This
-            # is the default simulation path (the C++ TOG); the legacy ONNX TOG is
-            # DEPRECATED, an opt-in fallback via TORCHSIM_LEGACY_TOG=1, in which case the
-            # .so is unused so skip emitting it. Best-effort: never breaks the compile.
-            if os.environ.get("TORCHSIM_LEGACY_TOG") != "1":
-                try:
-                    import mlir.ir as ir
-                    from PyTorchSimFrontend.mlir.passes import (
-                        build_skeleton as _bs, cycle_table as _ct, lower_to_emitc as _l2e)
-                    pv = sample_mlir_path + "_postvcix.mlir"
-                    _ctx = ir.Context(); _ctx.allow_unregistered_dialects = True
-                    with _ctx:
-                        _mod = ir.Module.parse(open(pv).read(), _ctx)
-                        _bs.build_skeleton(_mod)
-                        _ntiles = len(_ct._compute_types(_mod))
-                        # align lengths: gem5 gives one numCycles per compute node;
-                        # pad with the last value / truncate if it disagrees.
-                        _cl = list(cycle_list_for_trace)
-                        if _cl and len(_cl) != _ntiles:
-                            _cl = (_cl + [_cl[-1]] * _ntiles)[:_ntiles]
-                        _tbl = _ct.build_cycle_table(_mod, _cl, x_offset, w_offset)
-                    _ct.dump_cycle_table_tsv(_tbl, os.path.join(write_path, "trace_cycles.tsv"))
-                    _l2e.build_trace_so(pv, os.path.join(write_path, "trace.so"))
-                except Exception as e:
-                    logger.warning(f"[P3-trace] trace .so/sidecar dump skipped: {e}")
+            # Trace pipeline (sole sim path): emit the compiled trace producer .so +
+            # the cycle-table TSV from the post-vcix IR and gem5 cycle_list/offsets;
+            # TOGSim builds its C++ TOG from this via trace_to_tilegraph.
+            try:
+                import mlir.ir as ir
+                from PyTorchSimFrontend.mlir.passes import (
+                    build_skeleton as _bs, cycle_table as _ct, lower_to_emitc as _l2e)
+                pv = sample_mlir_path + "_postvcix.mlir"
+                _ctx = ir.Context(); _ctx.allow_unregistered_dialects = True
+                with _ctx:
+                    _mod = ir.Module.parse(open(pv).read(), _ctx)
+                    _bs.build_skeleton(_mod)
+                    _ntiles = len(_ct._compute_types(_mod))
+                    # align lengths: gem5 gives one numCycles per compute node;
+                    # pad with the last value / truncate if it disagrees.
+                    _cl = list(cycle_list_for_trace)
+                    if _cl and len(_cl) != _ntiles:
+                        _cl = (_cl + [_cl[-1]] * _ntiles)[:_ntiles]
+                    _tbl = _ct.build_cycle_table(_mod, _cl, x_offset, w_offset)
+                _ct.dump_cycle_table_tsv(_tbl, os.path.join(write_path, "trace_cycles.tsv"), origins=origins)
+                _l2e.build_trace_so(pv, os.path.join(write_path, "trace.so"))
+            except Exception as e:
+                logger.warning(f"[P3-trace] trace .so/sidecar dump skipped: {e}")
         return key
 
 class CustomAsyncCompile(AsyncCompile):
@@ -339,6 +316,9 @@ class CustomAsyncCompile(AsyncCompile):
         def run_kernel_simulation(*args, autotune_subprocess_timeout_sec=None, **kwargs):
             # Wait for compilation
             key = future.result()
+            if not autotune and origins:
+                logger.info("[kernel %s] origins: %s",
+                            hash_prefix(key), ", ".join(sorted(str(o) for o in origins)))
             from filelock import FileLock
             result_path = os.path.join(extension_config.get_dump_path(), hash_prefix(key))
             lock = FileLock(get_lock_path(result_path), timeout=LOCK_TIMEOUT)

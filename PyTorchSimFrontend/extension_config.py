@@ -57,6 +57,13 @@ def __getattr__(name):
         return config_yaml['pytorchsim_functional_mode']
     if name == "pytorchsim_timing_mode":
         return config_yaml['pytorchsim_timing_mode']
+    # Sub-option of functional mode: per-kernel CPU cross-check. When set (and
+    # functional mode is on), every realized buffer produced by Spike is compared
+    # against a CPU golden to localize the first kernel whose value diverges.
+    # Auto-disabled when functional mode is off (no Spike values to verify).
+    if name == "pytorchsim_functional_verify_per_kernel":
+        return bool(config_yaml.get('pytorchsim_functional_verify_per_kernel', False)) \
+            and bool(config_yaml['pytorchsim_functional_mode'])
 
     # Mapping strategy
     if name == "codegen_mapping_strategy":

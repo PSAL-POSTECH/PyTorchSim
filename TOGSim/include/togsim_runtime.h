@@ -33,51 +33,8 @@
 extern "C" {
 #endif
 
-// Bump whenever the signatures below change incompatibly. TOGSim refuses to load
-// a producer whose embedded version (a `togsim_producer_abi_version` symbol, or
-// a value passed at the entry point) does not match.
-//   v1 -> v2 (P2): dma takes an event_id and returns void (was: returns a
-//                  handle); togsim_kernel shape_args is non-const to match the
-//                  emitc/mlir-to-cpp output.
-//   v2 -> v3 (P3): add togsim_dispatch (work-item boundary + core binding) and
-//                  togsim_wait_all (join / barrier).
-//   v3 -> v4 (P3): togsim_dma takes (arg_id, element offset) instead of a
-//                  precomputed base_addr; the producer lowers the address
-//                  arithmetic and the runtime adds the tensor base.
-//   v4 -> v5 (P3): event handles. togsim_dma RETURNS a fresh handle (drops the
-//                  event_id arg); the producer parks it in a heap event buffer
-//                  (togsim_event_alloc/free) and togsim_wait takes the handle.
-//   v5 -> v6 (P3): replace togsim_dispatch with togsim_core_alloc (returns a
-//                  core id; no free) -- the runtime owns the core pool, num_cores
-//                  is never baked into the producer.
-//   v6 -> v7 (P3): togsim_dma takes a tag_slot (SRAM tile slot) for the runtime's
-//                  double-buffer / SRAM-capacity model.
-//   v7 -> v8 (P3): togsim_compute takes a compute_type (vector/matmul/preload) so
-//                  the Core routes it to the right compute unit.
-//   v8 -> v9 (P3 sec10): togsim_dma/compute take read_bufs/write_bufs (SRAM buffer
-//                  ids); the loader builds an explicit dependency DAG by
-//                  last-writer per buffer (replaces in-order/tag dependencies).
-//   v9 -> v10 (P3 sec10.7): add togsim_compute_barrier (the explicit compute fence
-//                  before a store; loader -> COMPUTE_BAR instruction).
-//   v10 -> v11 (P3 sec10): replace the static event-id pairing with the RUNTIME
-//                  tag slot. togsim_dma takes a tag_id (its tag memref identity)
-//                  and returns void; the original dma_wait becomes an explicit
-//                  togsim_memory_barrier(tag_id, tag_slot, write_bufs) that pairs
-//                  with its async dma by the runtime (tag_id, tag_slot) -- one
-//                  static dma op runs once per loop iteration with a different
-//                  %tag[%idx], so only a runtime key can pair them. Drops
-//                  togsim_wait/signal/wait_all/event_alloc/event_free + the
-//                  togsim_event handle (no compile-time pairing token).
-//   v11 -> v12 (P3 sec9.3): replace the bare togsim_core_alloc marker with a
-//                  higher-order togsim_dispatch(ctx, tile_fn, iv, n_iv) wrapper.
-//                  The producer outlines each parallel work-item into a uniform
-//                  togsim_kernel_tile(ctx, iv, n) and the dispatcher loop hands it
-//                  to togsim_dispatch, which round-robins a core and brackets the
-//                  call with TILE_BEGIN/TILE_END. The work-item scope is now the
-//                  function call itself (no implicit "until the next core_alloc"
-//                  range); one general dispatcher serves every kernel (uniform
-//                  iv-array ABI). Core alloc + the begin/end boundary are
-//                  runtime-owned.
+// Producer/runtime ABI version. TOGSim refuses to load a producer whose
+// embedded togsim_abi_version() does not match TOGSIM_ABI_VERSION.
 #define TOGSIM_ABI_VERSION 12
 int32_t togsim_abi_version(void);
 

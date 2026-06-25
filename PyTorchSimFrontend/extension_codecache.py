@@ -170,47 +170,51 @@ class MLIRCodeCache:
                 link_option = f"-Wl,--section-start=.spad=0x{spad_info['spad_vaddr']:x}"
             else:
                 link_option = ""
-            # Generate LLVM kernel calller and binary for validation
-            if extension_config.pytorchsim_functional_mode:
-                # Use custom malloc to avoid size error
-                new_link_option = link_option + " -Wl,--wrap=malloc -Wl,--wrap=free"
-                cmds = mlir_compile_command(new_input_path, vectorlane_size, vlen=vlen)
-                opt_pad_cmd = shlex.split(cmds[0])
-                translate_cmd = shlex.split(cmds[1])
-                llc_cmd = shlex.split(cmds[2])
-                llc_asm_cmd = shlex.split(cmds[3])
-                try:
-                    # loop-padding (mlir-opt) -> Python fine-grained + vcix (one parse/print)
-                    subprocess.check_call(opt_pad_cmd)
-                    run_module_passes(new_input_path + "_padded.mlir",
-                                      new_input_path + "_custom.mlir",
-                                      POST_OPT_PASSES, vectorlane=vectorlane_size, vlen=vlen)
-                    # Standard MLIR -> LLVM-dialect lowering (registered upstream
-                    # passes) runs in-process via the bindings PassManager, picking
-                    # up after the custom mlir-opt passes (memref-to-gemmini).
-                    run_standard_lowering(new_input_path + "_custom.mlir", new_input_path + "_llvm.mlir")
-                    subprocess.check_call(translate_cmd)
-                    subprocess.check_call(llc_cmd)
-                    subprocess.check_call(llc_asm_cmd)
-                except subprocess.CalledProcessError as e:
-                    logger.error(f"Command failed with exit code {e.returncode}")
-                    logger.error(f"Error output: {e.output.decode() if isinstance(e.output, bytes) else e.output}")
-                    assert(0)
+            # Compile a validation binary and measure its .spad section to reject
+            # over-spad tilings, even in timing-only mode -- else the tiling wedges
+            # TOGSim. Spike *execution* stays gated on functional_mode (run_spike).
+            new_link_option = link_option + " -Wl,--wrap=malloc -Wl,--wrap=free"
+            cmds = mlir_compile_command(new_input_path, vectorlane_size, vlen=vlen)
+            opt_pad_cmd = shlex.split(cmds[0])
+            translate_cmd = shlex.split(cmds[1])
+            llc_cmd = shlex.split(cmds[2])
+            llc_asm_cmd = shlex.split(cmds[3])
+            try:
+                # loop-padding (mlir-opt) -> Python fine-grained + vcix (one parse/print)
+                subprocess.check_call(opt_pad_cmd)
+                run_module_passes(new_input_path + "_padded.mlir",
+                                  new_input_path + "_custom.mlir",
+                                  POST_OPT_PASSES, vectorlane=vectorlane_size, vlen=vlen)
+                # Standard MLIR -> LLVM-dialect lowering (registered upstream
+                # passes) runs in-process via the bindings PassManager, picking
+                # up after the custom mlir-opt passes (memref-to-gemmini).
+                run_standard_lowering(new_input_path + "_custom.mlir", new_input_path + "_llvm.mlir")
+                subprocess.check_call(translate_cmd)
+                subprocess.check_call(llc_cmd)
+                subprocess.check_call(llc_asm_cmd)
+            except subprocess.CalledProcessError as e:
+                logger.error(f"Command failed with exit code {e.returncode}")
+                logger.error(f"Error output: {e.output.decode() if isinstance(e.output, bytes) else e.output}")
+                assert(0)
 
-                val_llvm_caller = MLIRKernelCallerCodeGen(extension_config.pytorchsim_functional_mode, arg_attributes)
-                val_llvm_caller.generate_wrapper_file(write_path, validation_wrapper_name)
-                val_llvm_caller.compile_wih_kernel(write_path, key, validation_wrapper_name,
-                                                   validation_binary_name, new_link_option)
+            val_llvm_caller = MLIRKernelCallerCodeGen(extension_config.pytorchsim_functional_mode, arg_attributes)
+            val_llvm_caller.generate_wrapper_file(write_path, validation_wrapper_name)
+            val_llvm_caller.compile_wih_kernel(write_path, key, validation_wrapper_name,
+                                               validation_binary_name, new_link_option)
 
-                stack_size = val_llvm_caller.parse_stack_sizes(f"{write_path}/{key}.s", vlenb=vlenb)
-                spad_size =  val_llvm_caller.get_spad_size(validation_binary_path)
-                spad_usage = stack_size + spad_size # Spad usage per lane
-                if extension_config.CONFIG_SPAD_INFO["spad_size"] < spad_usage:
-                    logger.debug(
-                        f"Scratchpad size exceeded: required {spad_usage} bytes, "
-                        f"but only {extension_config.CONFIG_SPAD_INFO['spad_size']} bytes available."
-                    )
-                    raise SpadOverflowError()
+            stack_size = val_llvm_caller.parse_stack_sizes(f"{write_path}/{key}.s", vlenb=vlenb)
+            spad_size =  val_llvm_caller.get_spad_size(validation_binary_path)
+            spad_usage = stack_size + spad_size # Spad usage per lane
+            # Budget per dispatch = half the spad: two work-items run concurrently
+            # (double-buffer), so each must fit in spad/2 or they deadlock competing for
+            # the shared spad. Matches the GEMM tiling gate (max_spad_size = spad/2).
+            spad_budget = extension_config.CONFIG_SPAD_INFO["spad_size"] // 2
+            if spad_budget < spad_usage:
+                logger.debug(
+                    f"Scratchpad size exceeded: required {spad_usage} bytes, but only "
+                    f"{spad_budget} bytes (spad/2, double-buffer budget) available."
+                )
+                raise SpadOverflowError()
 
             # Launch tile graph generator
             gem5_pad_cmd = shlex.split(gem5_cmds[0])

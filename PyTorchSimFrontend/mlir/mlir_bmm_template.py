@@ -346,13 +346,7 @@ class MLIRBMMTemplate(MLIRTemplate):
         return X,W,Y,Bias,W_tensor,X_tensor,B,M,N,K,n_extra_node, n_prologue_node, n_extra_read
 
     def count_prologue_extra_buffers(self, prologue_nodes):
-        # Each prologue node reuses the matmul-operand spad buffer for its one
-        # "main" input (the read whose numel matches the node, MVIN'd in place)
-        # and for its single output; see codegen_template_code. Every other read
-        # (e.g. the softmax max/sum broadcast operands) is laid out as its own
-        # disjoint output-tile-sized .spad global, so it must be budgeted in tile
-        # selection or the emitted kernel overflows spad/2 (mirrors the epilogue
-        # n_extra_read accounting in the GEMM template).
+        # Count prologue reads needing their own .spad global: the numel-matching main input reuses the matmul-operand buffer, every other read (e.g. softmax max/sum) gets a disjoint one (see codegen_template_code).
         if not prologue_nodes:
             return 0
         from functools import reduce
@@ -386,10 +380,7 @@ class MLIRBMMTemplate(MLIRTemplate):
         return self.select_tile(kernel, M, N, K, n_extra_node, n_extra_read, n_prologue_node, precision_bytes)
 
     def select_tile(self, kernel, M, N, K, n_extra_node, n_extra_read, n_prologue_node, precision_bytes):
-        # Budget the prologue's extra-read .spad globals (e.g. the softmax max/sum
-        # operands) so the chosen tile actually fits spad/2. They are laid out at the
-        # produced-operand (weight) tile size, so account for them as weight-tile
-        # buffers; the prologue's main input reuses the matmul-operand buffer.
+        # Budget the prologue extra-read globals as weight-tile buffers (their emitted size) so the chosen tile fits spad/2.
         tile_candidates = kernel.gemm_combination_mapping(
             M, N, K, n_extra_node=n_extra_node, n_prologue_extra_read=n_extra_read,
             precision_bytes=precision_bytes)

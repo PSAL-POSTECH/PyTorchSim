@@ -24,6 +24,7 @@ from torch._inductor.utils import (
 )
 from torch.utils._sympy.functions import ModularIndexing, FloorDiv
 from PyTorchSimFrontend import extension_codecache
+from PyTorchSimFrontend import extension_functional_verify as _func_verify
 from . import mlir_common
 from .mlir_common import LoopLevel, LoopNest
 from .mlir_ops import ExtensionOverrides
@@ -103,6 +104,7 @@ class ExtensionWrapperCodegen(wrapper.PythonWrapperCodegen):
                 from PyTorchSimFrontend.extension_config import CONFIG_SRAM_BUFFER_PLAN, setup_logger
                 from Simulator.simulator import TOGSimulator
                 from PyTorchSimFrontend.extension_op import sparse_mm_dummy_stonne_outer
+                from PyTorchSimFrontend import extension_functional_verify as _fverify
                 from torch._inductor.select_algorithm import extern_kernels
 
                 # Configure logger for generated wrapper code
@@ -162,6 +164,16 @@ class ExtensionWrapperCodegen(wrapper.PythonWrapperCodegen):
                 self.prefix.writeline(f"{lhs} = args")
                 self.prefix.writeline("args.clear()")
 
+            # Per-kernel functional verify: register the runnable aten graph and
+            # emit a CPU golden build at the top of call(), passing graph inputs.
+            if _func_verify.enabled():
+                gm = getattr(V.graph, "module", None)
+                if gm is not None:
+                    gid = _func_verify.register_graph(gm)
+                    in_names = list(V.graph.graph_inputs.keys())
+                    self.prefix.writeline(
+                        f"_fverify.verify_init({gid}, [{', '.join(in_names)}])")
+
             self.codegen_inputs()
             self.codegen_input_size_asserts()
             self.codegen_sram_plan_prefix()
@@ -204,6 +216,7 @@ class ExtensionWrapperCodegen(wrapper.PythonWrapperCodegen):
         result = IndentedBuffer()
         # result.splice(self.header)
 
+        self._fverify_seen = set()
         with contextlib.ExitStack() as stack:
             stack.enter_context(self.wrapper_call.indent())
             self.memory_plan_reuse()
@@ -220,6 +233,8 @@ class ExtensionWrapperCodegen(wrapper.PythonWrapperCodegen):
                         line.codegen(self.wrapper_call)
                     elif isinstance(line, wrapper.KernelCallLine):
                         self.wrapper_call.writeline(self.wrap_kernel_call(line.kernel_name, line.call_args))
+                        if _func_verify.enabled():
+                            self._fverify_emit_checks(line.call_args)
                     else:
                         if isinstance(line, wrapper.WrapperLine):
                             line.codegen(self.wrapper_call)
@@ -248,6 +263,37 @@ class ExtensionWrapperCodegen(wrapper.PythonWrapperCodegen):
             result.getvaluewithlinemap(),
             self.kernel_declarations.getvaluewithlinemap(),
         )
+
+    def _fverify_emit_checks(self, call_args):
+        """Emit per-kernel CPU verify calls for this kernel's output buffers.
+
+        A buffer's value is produced by the first kernel that names it (producer
+        precedes consumers in topo order), so we check each bare-identifier buffer
+        arg the first time it is seen -- that occurrence is its output. The buffer
+        is mapped to its originating fx node (op) so the runtime check can compare
+        against the CPU golden keyed by that node.
+        """
+        for a in call_args:
+            if not isinstance(a, str):
+                continue
+            name = a.strip()
+            if not name.isidentifier() or name in self._fverify_seen:
+                continue
+            self._fverify_seen.add(name)
+            if name in V.graph.graph_inputs:
+                continue  # placeholders: golden == input, nothing to verify
+            try:
+                buf = V.graph.get_buffer(name)
+            except Exception:
+                buf = None
+            if buf is None:
+                continue
+            origin = getattr(buf, "origin_node", None)
+            if origin is None:
+                continue
+            op = str(getattr(origin, "target", "?"))
+            self.wrapper_call.writeline(
+                f'_fverify.verify_check({name}, "{name}", "{origin.name}", "{op}")')
 
     def memory_plan(self):
         self.lines = memory_planning.MemoryPlanner(self).plan(self.lines)

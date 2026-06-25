@@ -93,11 +93,19 @@ def load_cycle_table(path):
         return json.load(fh)
 
 
-def dump_cycle_table_tsv(table, path):
+def dump_cycle_table_tsv(table, path, origins=None):
     """Plain `cycle<TAB>overlapping` per line, in tile_id order -- the trivial
     format the C++ `--cycle_table` loader (main.cc, P3 trace pipeline) reads with
-    ifstream (no JSON dependency in TOGSim)."""
+    ifstream (no JSON dependency in TOGSim).
+
+    `origins` (the FX nodes this kernel came from) is recorded as a trailing
+    `# origins: ...` comment after the data rows -- the legacy ONNX TOG carried
+    this as node metadata. The C++ loader's `while (ct >> c >> o)` stops at the
+    `#` once all (cycle, overlapping) rows are read, so the comment is safe with
+    the current parser; a future TOGSim change can promote it to a real field."""
     with open(path, "w") as fh:
         for cycle, overlapping in table:
             fh.write("%d\t%d\n" % (int(cycle), int(overlapping)))
+        if origins:
+            fh.write("# origins: %s\n" % ", ".join(sorted(str(o) for o in origins)))
     return path

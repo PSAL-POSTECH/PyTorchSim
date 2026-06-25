@@ -18,7 +18,8 @@ std::string format_dma_inst_issued_trace_line(Instruction& inst);
 /** Opcode + (detail...) for COMP / BAR / MOVIN / MOVOUT finished or issued lines. */
 std::string format_instruction_detail_line(Instruction& inst);
 
-void trace_tile_scheduled(cycle_type core_cycle, uint32_t core_id, const std::string& tag15);
+void trace_tile_scheduled(cycle_type core_cycle, uint32_t core_id, const std::string& tag15,
+                          size_t spad_footprint, int max_dispatch);
 
 void trace_instruction_line(cycle_type core_cycle,
                             uint32_t core_id,

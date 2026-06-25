@@ -86,8 +86,10 @@ std::string format_instruction_detail_line(Instruction& inst) {
   return opname;
 }
 
-void trace_tile_scheduled(cycle_type core_cycle, uint32_t core_id, const std::string& tag15) {
-  spdlog::trace("[{}][Core {}][{}]", core_cycle, core_id, tag15);
+void trace_tile_scheduled(cycle_type core_cycle, uint32_t core_id, const std::string& tag15,
+                          size_t spad_footprint, int max_dispatch) {
+  spdlog::trace("[{}][Core {}][{}] spad_footprint={} max_dispatch={}",
+                core_cycle, core_id, tag15, spad_footprint, max_dispatch);
 }
 
 void trace_instruction_line(cycle_type core_cycle,

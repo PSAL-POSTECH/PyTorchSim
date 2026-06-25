@@ -13,6 +13,6 @@
 #include "TileGraph.h"
 #include "togsim_loader.h"
 
-// Build a TileGraph from a recorded trace. `path`/`name` label the graph.
+// Build a TileGraph from a recorded trace. `name` labels the graph.
 std::unique_ptr<TileGraph> trace_to_tilegraph(const togsim::RunResult& run,
                                               const std::string& name);

@@ -28,6 +28,9 @@ class Tile : public std::enable_shared_from_this<Tile> {
   size_t get_required_sram_size() { return _required_sram_size; }
   void set_required_sram_size(size_t sram_size) { _required_sram_size=sram_size; }
   void inc_required_sram_size(size_t sram_size) { _required_sram_size+=sram_size; }
+  // Dispatch spad-buffer footprint (bytes, codegen .spad x lanes); Core picks 1- vs 2-dispatch by it.
+  size_t get_spad_footprint() { return _spad_footprint; }
+  void set_spad_footprint(size_t b) { _spad_footprint = b; }
   void append_instuction(std::shared_ptr<Instruction>& inst);
   void append_child(std::shared_ptr<Tile> child);
   std::vector<std::shared_ptr<Tile>>& get_child_tile () { return _child_tiles; }
@@ -52,6 +55,7 @@ class Tile : public std::enable_shared_from_this<Tile> {
   std::shared_ptr<TileSubGraph> _onwer_graph;
   Status _status = Status::EMPTY;
   size_t _required_sram_size=0;
+  size_t _spad_footprint=0;
   size_t _ready_counter=0;
   size_t _nr_insts = 0;
   size_t _nr_finished_insts = 0;

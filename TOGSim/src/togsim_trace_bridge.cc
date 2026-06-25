@@ -111,9 +111,12 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(const togsim::RunResult& run,
            std::pair<int64_t, std::shared_ptr<Instruction>>> bar_for_load;
   int64_t next_tag = 0;   // mints a unique Core tag key per dma record
   int cur_tile_group = -1;   // work-item index, bumped per TILE_BEGIN (trace grouping)
+  std::set<int64_t> cur_tile_bufs;   // distinct spad buffers this tile touches
+  size_t cur_tile_footprint = 0;     // their footprint sum = the tile's resident set
 
   auto flush = [&]() {
     if (sg && tile) {
+      tile->set_spad_footprint(cur_tile_footprint);   // distinct-buffer resident set (1- vs 2-dispatch)
       sg->add_tile(tile);
       tile->set_owner(sg);
       tg->append_subgraph(sg);
@@ -123,6 +126,8 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(const togsim::RunResult& run,
     writers.clear();
     current_dma.clear();
     bar_for_load.clear();
+    cur_tile_bufs.clear();
+    cur_tile_footprint = 0;
     next_tag = 0;
   };
 
@@ -205,6 +210,14 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(const togsim::RunResult& run,
     const auto& bs = (t.dir == 1) ? t.read_bufs : t.write_bufs;  // store reads spad, load writes spad
     for (int64_t b : bs) buf_bytes[b] = rec_bytes(t);
   }
+  // Add each buffer once to the current tile's footprint (reloads in a K-loop reuse the same id).
+  auto note_bufs = [&](const std::vector<int64_t>& bufs) {
+    for (int64_t b : bufs)
+      if (cur_tile_bufs.insert(b).second) {
+        auto it = buf_bytes.find(b);
+        if (it != buf_bytes.end()) cur_tile_footprint += it->second;
+      }
+  };
   auto sram_on_load = [&](int64_t b, const std::shared_ptr<Instruction>& ld) {
     if (!cur_alloc.count(b) || !open_ver[b]) {   // a read closed it -> new version
       cur_alloc[b] = next_alloc++;
@@ -271,6 +284,7 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(const togsim::RunResult& run,
       auto inst = make_dma(t, uniq);
       inst->set_tile_group(cur_tile_group);
       tile->inc_required_sram_size(rec_bytes(t));         // SRAM footprint (ready-tile ordering)
+      note_bufs(t.read_bufs); note_bufs(t.write_bufs);   // distinct-buffer footprint for 1- vs 2-dispatch
       if (t.dir == 1) {                                  // STORE
         // store reads the result buffer(s) -> link() JOINs all their writers.
         link(inst, t.read_bufs, t.write_bufs);
@@ -326,6 +340,7 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(const togsim::RunResult& run,
       auto inst = make_compute(t);
       inst->set_tile_group(cur_tile_group);
       link(inst, t.read_bufs, t.write_bufs);
+      note_bufs(t.read_bufs); note_bufs(t.write_bufs);   // distinct-buffer footprint for 1- vs 2-dispatch
       // in-place buffers (read AND written) are version-transparent (accumulator,
       // in-place vector): skip the self-read and the self-write so footprint is not
       // double-counted. read_bufs/write_bufs are tiny, so a linear scan beats a set.

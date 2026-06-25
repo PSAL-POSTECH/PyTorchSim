@@ -207,9 +207,8 @@ class MLIRCodeCache:
             val_llvm_caller.compile_wih_kernel(write_path, key, validation_wrapper_name,
                                                validation_binary_name, new_link_option)
 
-            stack_size = val_llvm_caller.parse_stack_sizes(f"{write_path}/{key}.s", vlenb=vlenb)
-            spad_size =  val_llvm_caller.get_spad_size(validation_binary_path)
-            spad_usage = stack_size + spad_size # Spad usage per lane
+            # Only the .spad section consumes the scratchpad; the stack frame lives in main memory (sp in the -m region, not the scratchpad vaddr) so it is not charged against the per-lane spad budget.
+            spad_usage = val_llvm_caller.get_spad_size(validation_binary_path)
             # Budget per dispatch = half the spad: two work-items run concurrently
             # (double-buffer), so each must fit in spad/2 or they deadlock competing for
             # the shared spad. Matches the GEMM tiling gate (max_spad_size = spad/2).

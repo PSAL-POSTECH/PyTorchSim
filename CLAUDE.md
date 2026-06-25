@@ -58,6 +58,12 @@ export TORCHSIM_DUMP_MLIR_IR=1
 export TORCHSIM_DUMP_LLVM_IR=1
 ```
 
+**To find which op a wrong result first diverges at** (per-kernel CPU cross-check;
+sub-option of functional mode). Set `pytorchsim_functional_verify_per_kernel: 1`
+in the config YAML, clear the codegen cache, and re-run: each compiled kernel's
+output is compared to a CPU golden and the run stops at the first divergent
+kernel, naming the op and offending indices.
+
 ## Key environment variables
 
 Read in `PyTorchSimFrontend/extension_config.py`:
@@ -91,6 +97,7 @@ Located under `configs/*.yml`:
 - `icnt_type` (`simple` | `booksim`), `icnt_latency_cycles`, `icnt_freq_mhz`, `icnt_config_path`
 - `l2d_type` (e.g., `datacache`), `l2d_config` (AccelSim-format cache config string)
 - `pytorchsim_functional_mode` (Spike on/off), `pytorchsim_timing_mode`
+- `pytorchsim_functional_verify_per_kernel` (debug: per-kernel CPU cross-check)
 - `codegen_mapping_strategy`: `heuristic` | `autotune` | `external-then-heuristic` | `external-then-autotune`
 - `codegen_external_mapping_file` (key `"M_N_K"` → `{TILE_M, TILE_K, TILE_N}` JSON)
 - `codegen_compiler_optimization`: `"all"` | `"none"` | a list from `{fusion, reduction_epilogue, reduction_reduction, prologue, single_batch_conv, multi_tile_conv, subtile}`

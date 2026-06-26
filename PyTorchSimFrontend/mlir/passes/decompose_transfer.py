@@ -132,6 +132,7 @@ def run(module, vectorlane=128, **_):
                 attrs["async"] = async_attr
             if offset_sym is not None:
                 attrs["indirect_offset"] = offset_sym
+                attrs["offset_stride"] = op.attributes["offset_stride"]
             Operation.create(
                 "memref.dma_start", results=[], operands=operands, attributes=attrs)
 

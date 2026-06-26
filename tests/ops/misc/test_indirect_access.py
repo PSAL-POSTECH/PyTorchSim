@@ -52,6 +52,31 @@ def test_scatter_add(device, num_tokens=256, hidden_size=256, num_assignments=3,
     res = opt_fn(out, token_indices, weighted_output)
     test_result("ScatterAdd(index_add_)", res, cpu_out)
 
+def test_multidim_indirect(device, size=(64, 64), n=256):
+    torch.manual_seed(0)
+    def gather2d(x, ix, iy):
+        return x[ix, iy] + 1.0
+    x = torch.randn(size, dtype=torch.float32).to(device=device)
+    ix = torch.randint(0, size[0], [n]).to(device=device)
+    iy = torch.randint(0, size[1], [n]).to(device=device)
+    opt_fn = torch.compile(dynamic=False)(gather2d)
+    res = opt_fn(x, ix, iy)
+    out = gather2d(x.cpu(), ix.cpu(), iy.cpu())
+    test_result("Multi-dim Indirect (x[ix,iy])", res, out)
+
+def test_multidim_indirect_index_reuse(device, size=(64, 64), n=256):
+    torch.manual_seed(0)
+    def gather_reuse(x, ix, iy):
+        # ix is reused after the gather -> the offset spad must not clobber the index spad
+        return x[ix, iy] + ix.float()
+    x = torch.randn(size, dtype=torch.float32).to(device=device)
+    ix = torch.randint(0, size[0], [n]).to(device=device)
+    iy = torch.randint(0, size[1], [n]).to(device=device)
+    opt_fn = torch.compile(dynamic=False)(gather_reuse)
+    res = opt_fn(x, ix, iy)
+    out = gather_reuse(x.cpu(), ix.cpu(), iy.cpu())
+    test_result("Multi-dim Indirect index reuse (x[ix,iy]+ix)", res, out)
+
 def test_scatter_full(device, size=(128, 128)):
     def vectoradd(a, idx, b):
         a[idx, :] = b
@@ -71,4 +96,6 @@ if __name__ == "__main__":
     test_scatter_full(device, size=(2048, 2048))
     test_scatter_add(device)
     test_indirect_vectoradd(device)
+    test_multidim_indirect(device)
+    test_multidim_indirect_index_reuse(device)
     #test_embedding(device, 1024, 2048)

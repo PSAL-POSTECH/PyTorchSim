@@ -46,10 +46,14 @@ std::string format_dma_inst_issued_detail(Instruction& inst) {
 }
 
 std::string format_dma_inst_issued_trace_line(Instruction& inst) {
+  // Built eagerly at the call site but only fed to spdlog::trace, so skip the format
+  // work when trace logging is off.
+  if (!spdlog::should_log(spdlog::level::trace)) return {};
   return fmt::format("{} ({})", opcode_to_string(inst.get_opcode()), format_dma_inst_issued_detail(inst));
 }
 
 std::string format_instruction_detail_line(Instruction& inst) {
+  if (!spdlog::should_log(spdlog::level::trace)) return {};  // see format_dma_inst_issued_trace_line
   const Opcode op = inst.get_opcode();
   const std::string opname = opcode_to_string(op);
   if (op == Opcode::COMP) {

@@ -42,7 +42,7 @@ int Core::pick_free_weight_sa() {
 void Core::apply_due(const DueAction& a) {
   switch (a.kind) {
     case DueAction::FreeWeightSlot:
-      if (--a.token->refcount <= 0) _weight_slots_used[a.token->sa]--;  // last reader frees the slot
+      if (--a.token->refcount <= 0) { _weight_slots_used[a.token->sa]--; _issue_dirty = true; }  // weight slot freed -> re-arm
       break;
     case DueAction::WakeBar: {
       auto bar = a.bar;            // async load data arrived -> fire its MEMORY_BAR
@@ -68,6 +68,7 @@ void Core::release_sram(const std::shared_ptr<Instruction>& inst) {
     if (it == _sram_allocs.end()) continue;
     _sram_used -= it->second;
     _sram_allocs.erase(it);
+    _issue_dirty = true;   // freed spad bytes -> re-arm
   }
 }
 
@@ -100,10 +101,12 @@ void Core::issue(std::shared_ptr<Tile> op) {
                                          M, max_dispatch);
   }
   for (const auto& inst : op->get_instructions()) {
+    inst->set_owner_dirty(&_issue_dirty);   // dep-resolved enqueues re-arm THIS core
     if (inst->is_ready())
       op->enqueue_ready(inst);
   }
   _tiles.push_back(std::move(op));
+  _issue_dirty = true;   // new dispatch -> re-arm
 }
 
 std::shared_ptr<Tile> Core::pop_finished_tile() {
@@ -275,6 +278,12 @@ void Core::cycle() {
   /* Iterate tile while an instruction is issued */
   bool issued = false;
 
+  // Re-arm gate: skip the scan unless _issue_dirty was set since the last scan (a
+  // ready-set grow or a resource free; else it re-walks the same blocked instructions
+  // and issues nothing). Issue-identical.
+  if (_issue_dirty) {
+  _issue_dirty = false;
+
   for (int i=0; i<_tiles.size() && !issued; i++) {
     auto& instructions = _tiles[i]->get_ready_instructions();
     for (auto it=instructions.begin(); it!=instructions.end();) {
@@ -398,7 +407,9 @@ void Core::cycle() {
               inst->finish_instruction();
               static_cast<Tile*>(inst->get_owner())->inc_finished_inst();
               _stat_tot_skipped_inst.at(static_cast<size_t>(inst->get_opcode()))++;
-              instructions.erase(it);
+              it = instructions.erase(it);   // erase returns the next iterator; the
+              continue;                      // old code fell through to it++ on the
+                                             // erased (invalidated) iterator -> UB
             } else {
               core_trace_log::trace_instruction_line(_core_cycle,
                                                        _id,
@@ -455,6 +466,12 @@ void Core::cycle() {
       it++;
     }
   }
+
+  // Keep dirty after an issue: the scan breaks at the first issue (!issued loop
+  // guard), so ready instructions in later tiles were not scanned this cycle. Needed
+  // for that early-break even when the issue woke no new dependent.
+  if (issued) _issue_dirty = true;
+  }  // if (_issue_dirty)
 
   /* Remove finshed tiles */
   bool retry = true;

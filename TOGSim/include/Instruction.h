@@ -77,6 +77,7 @@ class Instruction : public std::enable_shared_from_this<Instruction> {
     ready_counter--;
     if (!ready_counter && _owner_ready_queue_ref != nullptr) {
       _owner_ready_queue_ref->push_back(shared_from_this());
+      if (_owner_dirty_ref) *_owner_dirty_ref = true;   // ready set grew -> re-arm the owning Core's issue scan
     }
   }
   size_t get_tile_numel() { return _tile_numel; }
@@ -103,6 +104,9 @@ class Instruction : public std::enable_shared_from_this<Instruction> {
   void* get_owner() { return _owner; }
   void set_owner(void *owner) { _owner = owner;}
   void set_owner_ready_queue(std::list<std::shared_ptr<Instruction>>* q) { _owner_ready_queue_ref = q; }
+  // Points at the owning Core's _issue_dirty; set when the tile is issued to a core
+  // (Core::issue) so a dep-resolved enqueue re-arms only that core's issue scan.
+  void set_owner_dirty(bool* d) { _owner_dirty_ref = d; }
   void set_compute_type(int type) { _compute_type = type; }
   int get_compute_type() { return _compute_type; }
   void set_numa_id(int numa_id) { _numa_id = numa_id; }
@@ -148,6 +152,7 @@ class Instruction : public std::enable_shared_from_this<Instruction> {
 
   void *_owner = nullptr;
   std::list<std::shared_ptr<Instruction>>* _owner_ready_queue_ref = nullptr;
+  bool* _owner_dirty_ref = nullptr;   // owning Core's _issue_dirty (re-arm gate)
   Opcode opcode;
   cycle_type compute_cycle = 0;
   cycle_type overlapping_cycle = 0;

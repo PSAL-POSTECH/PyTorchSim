@@ -115,6 +115,11 @@ class Core {
   std::vector<std::shared_ptr<Tile>> _tiles;
   std::queue<std::shared_ptr<Tile>> _finished_tiles;
 
+  // Issue-scan re-arm (perf): cycle() skips the ready-queue scan unless this is set.
+  // EVERY event that can make a stalled instruction issuable must set it -- a new
+  // issue-gating throttle that forgets to will make cycle() skip the scan forever.
+  bool _issue_dirty = true;
+
   std::queue<std::shared_ptr<Instruction>> _vu_compute_pipeline;
   std::vector<std::queue<std::shared_ptr<Instruction>>> _sa_compute_pipeline;
   std::queue<std::shared_ptr<Instruction>> _ld_inst_queue;

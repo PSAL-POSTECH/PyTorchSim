@@ -384,6 +384,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         self.welford_reduce_out = None
         self.reduce_iterator = {}
         self.spad_buffer_dict = dict()
+        self.indirect_symbols = set()  # CSE-var names bound as indirect indices
         self.base_vector_initialized = False
         self.loop_size = None
 
@@ -605,7 +606,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         offset_desc = None
 
         # Handle scatter store
-        if "tmp" in str(index):
+        if self._has_indirect(index):
             # Convert the output buffer type to the inplace buffer
             arg_name =  V.graph.scheduler.mutation_real_name.get(name, name)
             if arg_name not in self.kernel_group.args.inplace_buffers:
@@ -788,7 +789,11 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
             self.reductions_suffix.writeline(common.DeferredLine(name, code))
 
     def indirect_indexing(self, index_var, size, check=True, wrap_neg=True):
+        self.indirect_symbols.add(str(index_var))  # record the bound indirect symbol
         return str(index_var)
+
+    def _has_indirect(self, expr):
+        return any(s.name in self.indirect_symbols for s in expr.free_symbols)
 
     def _index_expr(self, tile_desc, renamed_expression, index, base_vector_index):
         # In case of index expr, dimension size should be divisible by tile size
@@ -1227,7 +1232,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         """
         # Use loads as default
         if buffer is None:
-            buffer = self.applys if "tmp" not in str(index) else self.dma_loads
+            buffer = self.applys if not self._has_indirect(index) else self.dma_loads
 
         # TODO.
         kg_tile_desc = self.kernel_group.tile_desc
@@ -1237,7 +1242,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         total_dims =  [int(str(i)[5:]) for i in self.itervars]
         local_tile_desc = mlir_common.MLIRMultiDimTile([1], self.vector_lane)
         local_dims.sort() # Assume that smaller index is placed in the outer loop
-        indirect_syms = [s for s in index.free_symbols if "tmp" in s.name]
+        indirect_syms = [s for s in index.free_symbols if s.name in self.indirect_symbols]
         index = index.subs({s: 0 for s in indirect_syms}, simultaneous=True)
         indirect_dims = [f"{i}" for i in indirect_syms]
 
@@ -1405,10 +1410,10 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
                     f'%{tag}, %{dma_type}, %{vst}')
         optypes = f'{dram_shape}, index, {tile_shape}, index, memref<1xi32>, index, index'
         if offset is not None:  # indirect: per-position offset spad (decompose lifts it to a symbol attr)
-            offset_buf, offset_type = offset
+            offset_buf, offset_type, offset_stride = offset
             operands += f', %{offset_buf}'
             optypes += f', {offset_type}'
-            attrs += ', indirect = true'
+            attrs += f', indirect = true, offset_stride = {int(offset_stride)} : i64'
         return f'"togsim.transfer"({operands}) {{{attrs}}} : ({optypes}) -> ()'
 
     def allocate_sram_buffer(self, dtype, dram_name, tile_desc, raw_index, buffer=None, forced_name=None):
@@ -1490,7 +1495,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         return mask_shape, mask_var
 
     def convert_indirect_indexing(self, index :sympy.Expr):
-        if "tmp" not in str(index):
+        if not self._has_indirect(index):
             return index, None
 
         # Note: In case of indirect indexing, dimensions should be divisible by tile size
@@ -1501,12 +1506,11 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
             raise mlir_common.RecompileSignal(f"Indirect access (tile size {self.kernel_group.tile_desc.get_tile_size()} is not divisible by {self.ranges})")
 
         # Process start
-        indirect_dims = [str(dim) for dim in index.free_symbols if "tmp" in str(dim)]
+        indirect_dims = [str(dim) for dim in index.free_symbols if str(dim) in self.indirect_symbols]
         indirect_dims.sort()
         first_dim = indirect_dims[0]
         spad_vars = dict()
         compute_dependecy = any([target_dim not in self.spad_buffer_dict for target_dim in indirect_dims])
-
         # Store each newly-produced indirect index into spad, in its producing step
         for target_dim in indirect_dims:
             if target_dim in self.spad_buffer_dict:
@@ -1529,17 +1533,30 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         if compute_dependecy:
             self.push_step()
 
-        # Build the offset (outer ops) in the current step, reading indices back from spad
-        for target_dim in indirect_dims:
-            sram_var, _, tile_numel_per_lane, sram_index_var, tile_shape, vshape = self.spad_buffer_dict[target_dim]
-            mlir_dtype = vshape.split("x")[1][:-1]
-            with self.override_buffer_cse(buffer=self.dma_loads):
-                out = ops._load(tile_numel_per_lane, mlir_dtype, sram_var, sram_index_var, tile_shape)
-                spad_vars[target_dim] = out
+        # Single indirect dim: the raw index IS the offset; the MVIN applies offset_stride (CONFIG4)
+        if len(indirect_dims) == 1:
+            offset_stride = 1
+            for arg in list(index.args):
+                if not self._has_indirect(arg):
+                    continue
+                if arg.is_Mul and arg.args[0].is_number:
+                    offset_stride = int(arg.args[0])
+                index = index.replace(arg, 0)
+            sram_var, _, _, _, tile_shape, _ = self.spad_buffer_dict[first_dim]
+            return index, (sram_var, tile_shape, offset_stride)
 
-        with self.override_buffer_cse(buffer=self.dma_loads):
+        # Multi indirect dim: sum the strided indices in the compute loop (chunked by compute_vec_size)
+        local_tile_desc = self.kernel_group.tile_desc
+        compute_vec_size = local_tile_desc.get_compute_vec_size()
+        for target_dim in indirect_dims:
+            sram_var, _, _, sram_index_var, tile_shape, vshape = self.spad_buffer_dict[target_dim]
+            mlir_dtype = vshape.split("x")[1][:-1]
+            compute_index_var = ",".join(sram_index_var.split(",")[:-1] + [f"%{self.compute_idx}"])
+            with self.override_buffer_cse(buffer=self.loads):
+                spad_vars[target_dim] = ops._load(compute_vec_size, mlir_dtype, sram_var, compute_index_var, tile_shape)
+        with self.override_buffer_cse(buffer=self.compute):
             for arg in index.args:
-                if "tmp" not in str(arg):
+                if not self._has_indirect(arg):
                     continue
                 if arg.is_Mul and arg.args[0].is_number:
                     coeff_dtype = self.var_info[spad_vars[str(arg.args[1])]][1]
@@ -1550,9 +1567,14 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
                 if dim == first_dim:
                     continue
                 spad_vars[first_dim] = ops.add(spad_vars[first_dim], var)
-
-        sram_var, _, tile_numel_per_lane, sram_index_var, tile_shape, vshape = self.spad_buffer_dict[first_dim]
-        with self.override_buffer_cse(buffer=self.dma_loads):
-            ops._store(spad_vars[first_dim], sram_var, sram_index_var, tile_shape)
-        # Clean base index + the offset spad as an explicit transfer descriptor
-        return index, (sram_var, tile_shape)
+        # Summed offset goes to a DEDICATED spad (not an index buffer) to avoid clobbering a live index
+        var_info = [v for k, v in self.var_info.items() if str(k) == first_dim][0]
+        dtype = mlir_common.MLIR_TO_DTYPE[var_info[1]]
+        off_shape = local_tile_desc.get_mlir_shape(var_info[1])
+        off_sram, off_index = self.get_scratchpad_buffer(
+            dtype, "indirect_offset_" + first_dim, local_tile_desc, "indirect_offset_" + first_dim)
+        off_compute_index = ",".join(off_index.split(",")[:-1] + [f"%{self.compute_idx}"])
+        with self.override_buffer_cse(buffer=self.stores):
+            ops._store(spad_vars[first_dim], off_sram, off_compute_index, off_shape)
+        self.push_step()  # offset-build compute loop must finish before the gather reads it
+        return index, (off_sram, off_shape, 1)

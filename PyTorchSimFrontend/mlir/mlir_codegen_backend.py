@@ -566,7 +566,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         return index
 
     def load(self, name: str, index: sympy.Expr):
-        index, _ = self.convert_indirect_indexing(index)
+        index, offset_desc = self.convert_indirect_indexing(index)
         padding = self.get_padding_type()
 
         # Extract dram info
@@ -591,7 +591,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         compute_index_var = ",".join(sram_index_var.split(",")[:-1] + [f"%{self.compute_idx}"])
 
         code = self.emit_transfer("MVIN", vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
-                                  dram_shape, tile_shape, dram_stride, tile_stride, int(padding))
+                                  dram_shape, tile_shape, dram_stride, tile_stride, int(padding), offset=offset_desc)
         self.cse.generate(self.dma_loads, code, assignment = False) # FIXME: assignment = False does not support caching
 
         with self.override_buffer_cse(buffer=self.loads):
@@ -602,6 +602,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
     def store(self, name: str, index: sympy.Expr, value, mode=None, *args, **kwargs):
         dtype = V.graph.get_dtype(name)
         mlir_dtype = mlir_common.DTYPE_TO_MLIR[dtype]
+        offset_desc = None
 
         # Handle scatter store
         if "tmp" in str(index):
@@ -613,7 +614,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
             if mode == "atomic_add":
                 loaded_value = ops.load(name, index)
                 value = ops.add(loaded_value, value)
-            index, _ = self.convert_indirect_indexing(index)
+            index, offset_desc = self.convert_indirect_indexing(index)
         dram_var = self.kernel_group.args.output(name)
 
         # Prepare dma instruction
@@ -655,7 +656,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
 
         # Generate DMA instruction
         code = self.emit_transfer("MVOUT", vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
-                                  dram_shape, tile_shape, dram_stride, tile_stride, 0)
+                                  dram_shape, tile_shape, dram_stride, tile_stride, 0, offset=offset_desc)
         self.dma_stores.writeline(common.DeferredLine(name, code))
 
     def reduction(self, dtype, src_dtype, reduction_type, value):
@@ -1358,7 +1359,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
     def emit_transfer(self, dma_type_name, vlane_split_axis, vlane_stride, mlir_dtype,
                       dram_var, dram_index_var, sram_var, sram_index_var,
                       dram_shape, tile_shape, dram_stride, tile_stride, padding,
-                      subtile_size=None, async_type=None):
+                      subtile_size=None, async_type=None, offset=None):
         """Emit a generic togsim.transfer op for a DMA whose access exceeds the
         4D Gemmini descriptor limit. Carries the full N-D access (dram/tile
         strides + shapes) plus the SSA operands a memref.dma_start needs
@@ -1399,12 +1400,16 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         if subtile_size:
             av = int(async_type) if async_type is not None else 1
             attrs += f', subtile_size = {list(subtile_size)}, async = {av} : i64'
-        # operands: dram, dram_idx, sram, sram_idx, tag, dma_type, vlane_stride
-        return (
-            f'"togsim.transfer"(%{dram_var}, %{dram_index_var}, %{sram_var}, %{zero_cse}, '
-            f'%{tag}, %{dma_type}, %{vst}) {{{attrs}}} : '
-            f'({dram_shape}, index, {tile_shape}, index, memref<1xi32>, index, index) -> ()'
-        )
+        # operands: dram, dram_idx, sram, sram_idx, tag, dma_type, vlane_stride [, offset spad]
+        operands = (f'%{dram_var}, %{dram_index_var}, %{sram_var}, %{zero_cse}, '
+                    f'%{tag}, %{dma_type}, %{vst}')
+        optypes = f'{dram_shape}, index, {tile_shape}, index, memref<1xi32>, index, index'
+        if offset is not None:  # indirect: per-position offset spad (decompose lifts it to a symbol attr)
+            offset_buf, offset_type = offset
+            operands += f', %{offset_buf}'
+            optypes += f', {offset_type}'
+            attrs += ', indirect = true'
+        return f'"togsim.transfer"({operands}) {{{attrs}}} : ({optypes}) -> ()'
 
     def allocate_sram_buffer(self, dtype, dram_name, tile_desc, raw_index, buffer=None, forced_name=None):
         c_type = mlir_common.DTYPE_TO_C[dtype]
@@ -1547,13 +1552,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
                 spad_vars[first_dim] = ops.add(spad_vars[first_dim], var)
 
         sram_var, _, tile_numel_per_lane, sram_index_var, tile_shape, vshape = self.spad_buffer_dict[first_dim]
-        mlir_dtype = vshape.split("x")[1][:-1]
         with self.override_buffer_cse(buffer=self.dma_loads):
             ops._store(spad_vars[first_dim], sram_var, sram_index_var, tile_shape)
-
-        mlir_dtype = self.var_info[spad_vars[first_dim]][1]
-        with self.override_buffer_cse(buffer=self.dma_loads):
-            out = ops._load(1, mlir_dtype, sram_var, sram_index_var, tile_shape)
-            if mlir_dtype != "index":
-                out = ops.index_cast(out, "index")
-        return index + sympy.Symbol(str(out)), compute_dependecy
+        # Clean base index + the offset spad as an explicit transfer descriptor
+        return index, (sram_var, tile_shape)

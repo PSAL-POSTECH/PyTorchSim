@@ -166,7 +166,8 @@ def run(module, timing=False):
                 ind_base = memref.ExtractAlignedPointerAsIndexOp(indirect_memref).result
                 ind_addr = arith.IndexCastOp(i64, ind_base).result
                 ind_esize = _elem_bytes(off_ty.element_type)
-                asm(CONFIG4, ind_addr, i64_const(((ind_esize & 0xFF) << 16) | (1 & 0xFFFF)))
+                off_stride = IntegerAttr(op.attributes["offset_stride"]).value
+                asm(CONFIG4, ind_addr, i64_const(((ind_esize & 0xFF) << 16) | (off_stride & 0xFFFF)))
             asm(dma_type, dram_addr, spad_addr)
         op.erase()
 

@@ -407,7 +407,9 @@ void Core::cycle() {
               inst->finish_instruction();
               static_cast<Tile*>(inst->get_owner())->inc_finished_inst();
               _stat_tot_skipped_inst.at(static_cast<size_t>(inst->get_opcode()))++;
-              instructions.erase(it);
+              it = instructions.erase(it);   // erase returns the next iterator; the
+              continue;                      // old code fell through to it++ on the
+                                             // erased (invalidated) iterator -> UB
             } else {
               core_trace_log::trace_instruction_line(_core_cycle,
                                                        _id,

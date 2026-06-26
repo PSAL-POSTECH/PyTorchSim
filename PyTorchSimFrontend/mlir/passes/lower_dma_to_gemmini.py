@@ -58,11 +58,17 @@ def run(module, timing=False):
     memref.dma_wait is erased in both modes (matches C++ DmaWaitOpLowering).
     """
     from mlir.ir import (InsertionPoint, Operation, IntegerType, IndexType,
-                         IntegerAttr, MemRefType)
+                         IntegerAttr, MemRefType, FlatSymbolRefAttr, TypeAttr)
     from mlir.dialects import llvm, arith, memref
 
     i64 = IntegerType.get_signless(64)
     idx = IndexType.get()
+
+    # memref.global symbol -> type, to resolve the indirect_offset spad
+    sym2type = {}
+    for g in module.operation.regions[0].blocks[0].operations:
+        if g.operation.name == "memref.global":
+            sym2type[g.attributes["sym_name"].value] = MemRefType(TypeAttr(g.attributes["type"]).value)
 
     def const_int(val):
         return IntegerAttr(val.owner.attributes["value"]).value
@@ -119,9 +125,8 @@ def run(module, timing=False):
         is_mvin = dma_type in (MVIN, MVIN2, MVIN3)
 
         elem_bytes = _elem_bytes(src_ty.element_type)
-        # Indirect (gather): the gather-side indices are src for mvin, dst for mvout.
-        gather_idx = src_idx if is_mvin else dst_idx
-        indirect, indirect_memref = _find_indirect(gather_idx)
+        # Indirect (gather): offset spad referenced by the indirect_offset symbol attr
+        indirect = "indirect_offset" in op.attributes
 
         tile_shape = _subtile(op)
         if tile_shape is None:
@@ -155,10 +160,14 @@ def run(module, timing=False):
                 i64_const((spad4[2] << 32) | (spad4[3] & 0xFFFFFFFF)))
             if indirect:
                 # CONFIG4: rs1 = indirect index-spad base address, rs2 = (elem_size<<16)|stride(1)
+                offset_sym = FlatSymbolRefAttr(op.attributes["indirect_offset"]).value
+                off_ty = sym2type[offset_sym]
+                indirect_memref = memref.GetGlobalOp(off_ty, offset_sym).result
                 ind_base = memref.ExtractAlignedPointerAsIndexOp(indirect_memref).result
                 ind_addr = arith.IndexCastOp(i64, ind_base).result
-                ind_esize = _elem_bytes(MemRefType(indirect_memref.type).element_type)
-                asm(CONFIG4, ind_addr, i64_const(((ind_esize & 0xFF) << 16) | (1 & 0xFFFF)))
+                ind_esize = _elem_bytes(off_ty.element_type)
+                off_stride = IntegerAttr(op.attributes["offset_stride"]).value
+                asm(CONFIG4, ind_addr, i64_const(((ind_esize & 0xFF) << 16) | (off_stride & 0xFFFF)))
             asm(dma_type, dram_addr, spad_addr)
         op.erase()
 
@@ -187,23 +196,6 @@ def _elem_bytes(elem_type):
     bits = (IntegerType(elem_type).width if IntegerType.isinstance(elem_type)
             else FloatType(elem_type).width)
     return max(bits, 8) // 8
-
-
-def _find_indirect(indices):
-    """If a gather index is an affine.apply{indirect_access} whose operands include
-    index_cast(affine.load(%spad)), return (True, %spad memref); else (False, None)."""
-    for idx in indices:
-        ap = idx.owner
-        if getattr(ap, "name", None) != "affine.apply" or "indirect_access" not in ap.attributes:
-            continue
-        for operand in ap.operands:
-            ic = operand.owner
-            if getattr(ic, "name", None) != "arith.index_cast":
-                continue
-            ld = ic.operands[0].owner
-            if getattr(ld, "name", None) == "affine.load":
-                return True, ld.operands[0]  # affine.load operand 0 == the index spad memref
-    return False, None
 
 
 def lower_text(text):

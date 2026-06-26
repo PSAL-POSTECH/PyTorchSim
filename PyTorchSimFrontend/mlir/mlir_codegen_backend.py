@@ -310,6 +310,22 @@ DMA_TYPE = {
     "MVOUT1": 3,
 }
 
+
+class Step:
+    """One load->compute->store unit of the kernel body (see codegen_loops).
+
+    Bundles the DMA, mask, index and compute buffers so the body can be an
+    ordered list of steps; the formerly ad-hoc mask/index buffers are just
+    fields here.
+    """
+    __slots__ = ("applys", "dma_loads",
+                 "loads", "compute", "stores", "dma_stores")
+
+    def __init__(self, **buffers):
+        for name, buf in buffers.items():
+            setattr(self, name, buf)
+
+
 class MLIRKernel(mlir_common.BaseMLIRKernel):
     overrides = ExtensionOverrides
     newvar_prefix = "%"
@@ -321,11 +337,15 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         self.spad_buffer = IndentedBuffer()
         self.reduction_prefix = IndentedBuffer()
         self.reduction_suffix = IndentedBuffer()
-        self.applys = IndentedBuffer()
-        self.masks = IndentedBuffer()
-        self.dma_loads = IndentedBuffer()
-        self.dma_stores = IndentedBuffer()
-        self.indexed_buffer = IndentedBuffer()
+        # Kernel body = ordered load->compute->store steps; step 0 keeps the base
+        # loads/compute/stores (the CSE target default captured self.compute at init).
+        step0 = Step(
+            applys=IndentedBuffer(),
+            dma_loads=IndentedBuffer(), dma_stores=IndentedBuffer(),
+            loads=self.loads, compute=self.compute, stores=self.stores,
+        )
+        self.steps = [step0]
+        self._bind_step(step0)
         self.global_vars = IndentedBuffer()
         self.header = IndentedBuffer()
         self.gem5_header = IndentedBuffer()
@@ -364,6 +384,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         self.welford_reduce_out = None
         self.reduce_iterator = {}
         self.spad_buffer_dict = dict()
+        self.indirect_symbols = set()  # CSE-var names bound as indirect indices
         self.base_vector_initialized = False
         self.loop_size = None
 
@@ -546,18 +567,8 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         return index
 
     def load(self, name: str, index: sympy.Expr):
-        index, comptute_depedency = self.convert_indirect_indexing(index)
+        index, offset_desc = self.convert_indirect_indexing(index)
         padding = self.get_padding_type()
-
-        # In case of special form of indirect access, we need to put load in dma_store buffer
-        if comptute_depedency:
-            apply_buffer = self.dma_stores
-            dma_buffer = self.dma_stores
-            load_buffer = self.dma_stores
-        else:
-            apply_buffer = None
-            dma_buffer = self.dma_loads
-            load_buffer = self.loads
 
         # Extract dram info
         dram_var = self.kernel_group.args.input(name)
@@ -566,7 +577,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         mlir_dtype = mlir_common.DTYPE_TO_MLIR[dtype]
 
         # Extract sram info
-        local_tile_desc, index_var, dram_stride = self.get_dma_info(name, index, buffer=apply_buffer)
+        local_tile_desc, index_var, dram_stride = self.get_dma_info(name, index)
         vlane_split_axis = local_tile_desc.vmap.vlane_split_axis
         vlane_stride = local_tile_desc.vmap.vlane_stride
         tile_numel_per_lane = local_tile_desc.get_numel_per_lane()
@@ -581,26 +592,21 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         compute_index_var = ",".join(sram_index_var.split(",")[:-1] + [f"%{self.compute_idx}"])
 
         code = self.emit_transfer("MVIN", vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
-                                  dram_shape, tile_shape, dram_stride, tile_stride, int(padding))
-        self.cse.generate(dma_buffer, code, assignment = False) # FIXME: assignment = False does not support caching
+                                  dram_shape, tile_shape, dram_stride, tile_stride, int(padding), offset=offset_desc)
+        self.cse.generate(self.dma_loads, code, assignment = False) # FIXME: assignment = False does not support caching
 
-        if not comptute_depedency:
-            # Generate vector load instruction
-            with self.override_buffer_cse(buffer=load_buffer):
-                out = ops._load(compute_vec_size, mlir_dtype, sram_var, compute_index_var, tile_shape)
-        else:
-            # FIXME. Any good idea?
-            out = sram_var
-            self.register_var_info(out, [compute_vec_size, mlir_dtype])
+        with self.override_buffer_cse(buffer=self.loads):
+            out = ops._load(compute_vec_size, mlir_dtype, sram_var, compute_index_var, tile_shape)
         self.spad_buffer_dict[str(out)] = [sram_var, local_tile_desc.get_tile_size(), tile_numel_per_lane, sram_index_var, tile_shape, vshape]
         return out
 
     def store(self, name: str, index: sympy.Expr, value, mode=None, *args, **kwargs):
         dtype = V.graph.get_dtype(name)
         mlir_dtype = mlir_common.DTYPE_TO_MLIR[dtype]
+        offset_desc = None
 
         # Handle scatter store
-        if "tmp" in str(index):
+        if self._has_indirect(index):
             # Convert the output buffer type to the inplace buffer
             arg_name =  V.graph.scheduler.mutation_real_name.get(name, name)
             if arg_name not in self.kernel_group.args.inplace_buffers:
@@ -609,7 +615,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
             if mode == "atomic_add":
                 loaded_value = ops.load(name, index)
                 value = ops.add(loaded_value, value)
-            index, _ = self.convert_indirect_indexing(index)
+            index, offset_desc = self.convert_indirect_indexing(index)
         dram_var = self.kernel_group.args.output(name)
 
         # Prepare dma instruction
@@ -651,7 +657,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
 
         # Generate DMA instruction
         code = self.emit_transfer("MVOUT", vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
-                                  dram_shape, tile_shape, dram_stride, tile_stride, 0)
+                                  dram_shape, tile_shape, dram_stride, tile_stride, 0, offset=offset_desc)
         self.dma_stores.writeline(common.DeferredLine(name, code))
 
     def reduction(self, dtype, src_dtype, reduction_type, value):
@@ -783,7 +789,11 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
             self.reductions_suffix.writeline(common.DeferredLine(name, code))
 
     def indirect_indexing(self, index_var, size, check=True, wrap_neg=True):
+        self.indirect_symbols.add(str(index_var))  # record the bound indirect symbol
         return str(index_var)
+
+    def _has_indirect(self, expr):
+        return any(s.name in self.indirect_symbols for s in expr.free_symbols)
 
     def _index_expr(self, tile_desc, renamed_expression, index, base_vector_index):
         # In case of index expr, dimension size should be divisible by tile size
@@ -933,6 +943,30 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
     def codegen_global_init(self):
         return self.global_vars
 
+    def _bind_step(self, step):
+        # Make `step` the current emit sink: route the body buffers to its buffers
+        self.current_step = step
+        self.applys = step.applys
+        self.dma_loads = step.dma_loads
+        self.dma_stores = step.dma_stores
+        self.loads = step.loads
+        self.compute = step.compute
+        self.stores = step.stores
+
+    def push_step(self):
+        # New load->compute->store step; later emits land here, steps bridge via spad
+        step = Step(
+            applys=IndentedBuffer(),
+            dma_loads=IndentedBuffer(), dma_stores=IndentedBuffer(),
+            loads=IndentedBuffer(), compute=IndentedBuffer(), stores=IndentedBuffer(),
+        )
+        self.steps.append(step)
+        self._bind_step(step)
+        self.cse = self.cse.clone()  # share name counter, fresh dedup cache (region-safe)
+        self.target_buffer_override.set(self.compute)
+        self.target_cse_override.set(self.cse)
+        return step
+
     def codegen_loops(self):
         code = mlir_common.ParallelLoopBuffer()
         # Loop body part
@@ -965,18 +999,18 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
                         epilogue = reduction_loop.epilogue_line()
                         code.writelines(reduction_lines)
                         stack.enter_context(code.indent(attribute="{accumulation_loop=true}", suffix=epilogue))
-                code.splice(self.applys)
-                code.splice(self.indexed_buffer)
-                code.splice(self.dma_loads)
-                # Compute body
-                code.writelines(self.compute_body_loop.lines())
-                with contextlib.ExitStack() as stack:
-                    stack.enter_context(code.indent(attribute="{inner_loop=false}",suffix=self.compute_body_loop.epilogue_line()))
-                    code.splice(self.masks)
-                    code.splice(self.loads)
-                    code.splice(self.compute)
-                    code.splice(self.stores)
-                code.splice(self.dma_stores)
+                for step in self.steps:
+                    code.splice(step.applys)
+                    code.splice(step.dma_loads)
+                    # Compute body -- only steps that have one get the loop + epilogue
+                    if any(b.getvalue() for b in (step.loads, step.compute, step.stores)):
+                        code.writelines(self.compute_body_loop.lines())
+                        with contextlib.ExitStack() as stack:
+                            stack.enter_context(code.indent(attribute="{inner_loop=false}",suffix=self.compute_body_loop.epilogue_line()))
+                            code.splice(step.loads)
+                            code.splice(step.compute)
+                            code.splice(step.stores)
+                    code.splice(step.dma_stores)
             code.splice(self.reductions_suffix)
             # Non-outerloop end
         code.writeline(f"return")
@@ -1197,7 +1231,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         """
         # Use loads as default
         if buffer is None:
-            buffer = self.applys if "tmp" not in str(index) else self.dma_loads
+            buffer = self.applys if not self._has_indirect(index) else self.dma_loads
 
         # TODO.
         kg_tile_desc = self.kernel_group.tile_desc
@@ -1207,7 +1241,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         total_dims =  [int(str(i)[5:]) for i in self.itervars]
         local_tile_desc = mlir_common.MLIRMultiDimTile([1], self.vector_lane)
         local_dims.sort() # Assume that smaller index is placed in the outer loop
-        indirect_syms = [s for s in index.free_symbols if "tmp" in s.name]
+        indirect_syms = [s for s in index.free_symbols if s.name in self.indirect_symbols]
         index = index.subs({s: 0 for s in indirect_syms}, simultaneous=True)
         indirect_dims = [f"{i}" for i in indirect_syms]
 
@@ -1329,7 +1363,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
     def emit_transfer(self, dma_type_name, vlane_split_axis, vlane_stride, mlir_dtype,
                       dram_var, dram_index_var, sram_var, sram_index_var,
                       dram_shape, tile_shape, dram_stride, tile_stride, padding,
-                      subtile_size=None, async_type=None):
+                      subtile_size=None, async_type=None, offset=None):
         """Emit a generic togsim.transfer op for a DMA whose access exceeds the
         4D Gemmini descriptor limit. Carries the full N-D access (dram/tile
         strides + shapes) plus the SSA operands a memref.dma_start needs
@@ -1370,12 +1404,16 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         if subtile_size:
             av = int(async_type) if async_type is not None else 1
             attrs += f', subtile_size = {list(subtile_size)}, async = {av} : i64'
-        # operands: dram, dram_idx, sram, sram_idx, tag, dma_type, vlane_stride
-        return (
-            f'"togsim.transfer"(%{dram_var}, %{dram_index_var}, %{sram_var}, %{zero_cse}, '
-            f'%{tag}, %{dma_type}, %{vst}) {{{attrs}}} : '
-            f'({dram_shape}, index, {tile_shape}, index, memref<1xi32>, index, index) -> ()'
-        )
+        # operands: dram, dram_idx, sram, sram_idx, tag, dma_type, vlane_stride [, offset spad]
+        operands = (f'%{dram_var}, %{dram_index_var}, %{sram_var}, %{zero_cse}, '
+                    f'%{tag}, %{dma_type}, %{vst}')
+        optypes = f'{dram_shape}, index, {tile_shape}, index, memref<1xi32>, index, index'
+        if offset is not None:  # indirect: per-position offset spad (decompose lifts it to a symbol attr)
+            offset_buf, offset_type, offset_stride = offset
+            operands += f', %{offset_buf}'
+            optypes += f', {offset_type}'
+            attrs += f', indirect = true, offset_stride = {int(offset_stride)} : i64'
+        return f'"togsim.transfer"({operands}) {{{attrs}}} : ({optypes}) -> ()'
 
     def allocate_sram_buffer(self, dtype, dram_name, tile_desc, raw_index, buffer=None, forced_name=None):
         c_type = mlir_common.DTYPE_TO_C[dtype]
@@ -1449,14 +1487,14 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
             upper_bound = ops.constant(self.compute_body_loop.size, "index")
             step_vec = ops.step(self.compute_body_loop.step, "index")
 
-        with self.override_buffer_cse(buffer=self.masks, cse=self.mask_cse):
+        with self.override_buffer_cse(buffer=self.compute, cse=self.mask_cse):
             gap = ops.sub(upper_bound, self.compute_idx)
             gap_vec = ops.broadcast(gap, self.compute_body_loop.step)
             mask_var = ops.lt(step_vec, gap_vec)
         return mask_shape, mask_var
 
     def convert_indirect_indexing(self, index :sympy.Expr):
-        if "tmp" not in str(index):
+        if not self._has_indirect(index):
             return index, None
 
         # Note: In case of indirect indexing, dimensions should be divisible by tile size
@@ -1467,67 +1505,75 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
             raise mlir_common.RecompileSignal(f"Indirect access (tile size {self.kernel_group.tile_desc.get_tile_size()} is not divisible by {self.ranges})")
 
         # Process start
-        indirect_dims = [str(dim) for dim in index.free_symbols if "tmp" in str(dim)]
+        indirect_dims = [str(dim) for dim in index.free_symbols if str(dim) in self.indirect_symbols]
         indirect_dims.sort()
         first_dim = indirect_dims[0]
         spad_vars = dict()
         compute_dependecy = any([target_dim not in self.spad_buffer_dict for target_dim in indirect_dims])
-        target_dma_buffers = self.dma_stores if compute_dependecy else self.dma_loads
-
-        # Load indirect operands
+        # Store each newly-produced indirect index into spad, in its producing step
         for target_dim in indirect_dims:
             if target_dim in self.spad_buffer_dict:
-                sram_var, _, tile_numel_per_lane, sram_index_var, tile_shape, vshape = self.spad_buffer_dict[target_dim]
-            else:
-                # FIXME.
-                var_info = [v for k, v in self.var_info.items() if str(k) == target_dim][0]
-                dtype = mlir_common.MLIR_TO_DTYPE[var_info[1]]
+                continue
+            var_info = [v for k, v in self.var_info.items() if str(k) == target_dim][0]
+            dtype = mlir_common.MLIR_TO_DTYPE[var_info[1]]
+            local_tile_desc = self.kernel_group.tile_desc
+            tile_numel_per_lane = local_tile_desc.get_numel_per_lane()
+            tile_shape = local_tile_desc.get_mlir_shape(var_info[1])
+            tile_vec = local_tile_desc.get_compute_vec_size()
+            vshape = f"vector<{var_info[0]}x{var_info[1]}>"
+            sram_var, sram_index_var = self.get_scratchpad_buffer(dtype, target_dim, local_tile_desc, target_dim)
+            self.spad_buffer_dict[target_dim] = [sram_var, local_tile_desc.get_tile_size(), tile_numel_per_lane, sram_index_var, tile_shape, vshape]
+            target_var = self.cse.varname_map[target_dim]
+            compute_index_var = ",".join(sram_index_var.split(",")[:-1] + [f"%{self.compute_idx}"])
+            with self.override_buffer_cse(buffer=self.stores):
+                ops._store(target_var, sram_var, compute_index_var, tile_shape)
 
-                local_tile_desc = self.kernel_group.tile_desc
-                tile_numel_per_lane = local_tile_desc.get_numel_per_lane()
-                tile_shape = local_tile_desc.get_mlir_shape(var_info[1])
-                tile_vec = local_tile_desc.get_compute_vec_size()
-                vshape = f"vector<{var_info[0]}x{var_info[1]}>"
-                sram_var, sram_index_var = self.get_scratchpad_buffer(dtype, target_dim, local_tile_desc, target_dim)
-                self.spad_buffer_dict[target_dim] = [sram_var, local_tile_desc.get_tile_size(), tile_numel_per_lane, sram_index_var, tile_shape, vshape]
+        # Offset build runs after the index is in spad -> own step when just produced
+        if compute_dependecy:
+            self.push_step()
 
-                # Store the indirect index variable
-                target_var = self.cse.varname_map[target_dim]
-                compute_index_var = ",".join(sram_index_var.split(",")[:-1] + [f"%{self.compute_idx}"])
-                with self.override_buffer_cse(buffer=self.stores):
-                    ops._store(target_var, sram_var, compute_index_var, tile_shape)
+        # Single indirect dim: the raw index IS the offset; the MVIN applies offset_stride (CONFIG4)
+        if len(indirect_dims) == 1:
+            offset_stride = 1
+            for arg in list(index.args):
+                if not self._has_indirect(arg):
+                    continue
+                if arg.is_Mul and arg.args[0].is_number:
+                    offset_stride = int(arg.args[0])
+                index = index.replace(arg, 0)
+            sram_var, _, _, _, tile_shape, _ = self.spad_buffer_dict[first_dim]
+            return index, (sram_var, tile_shape, offset_stride)
+
+        # Multi indirect dim: sum the strided indices in the compute loop (chunked by compute_vec_size)
+        local_tile_desc = self.kernel_group.tile_desc
+        compute_vec_size = local_tile_desc.get_compute_vec_size()
+        for target_dim in indirect_dims:
+            sram_var, _, _, sram_index_var, tile_shape, vshape = self.spad_buffer_dict[target_dim]
             mlir_dtype = vshape.split("x")[1][:-1]
-            with self.override_buffer_cse(buffer=target_dma_buffers):
-                out = ops._load(tile_numel_per_lane, mlir_dtype, sram_var, sram_index_var, tile_shape)
-                spad_vars[target_dim] = out
-
-        with self.override_buffer_cse(buffer=target_dma_buffers):
-            # Apply stride
+            compute_index_var = ",".join(sram_index_var.split(",")[:-1] + [f"%{self.compute_idx}"])
+            with self.override_buffer_cse(buffer=self.loads):
+                spad_vars[target_dim] = ops._load(compute_vec_size, mlir_dtype, sram_var, compute_index_var, tile_shape)
+        with self.override_buffer_cse(buffer=self.compute):
             for arg in index.args:
-                if "tmp" not in str(arg):
+                if not self._has_indirect(arg):
                     continue
                 if arg.is_Mul and arg.args[0].is_number:
                     coeff_dtype = self.var_info[spad_vars[str(arg.args[1])]][1]
                     coeff = self.get_const_cse(int(arg.args[0]), coeff_dtype)
                     spad_vars[str(arg.args[1])] = ops.mul(spad_vars[str(arg.args[1])], coeff)
                 index = index.replace(arg, 0)
-
-            # Sum
             for dim, var in spad_vars.items():
                 if dim == first_dim:
                     continue
                 spad_vars[first_dim] = ops.add(spad_vars[first_dim], var)
-
-        # Store index var
-        sram_var, _, tile_numel_per_lane, sram_index_var, tile_shape, vshape = self.spad_buffer_dict[first_dim]
-        mlir_dtype = vshape.split("x")[1][:-1]
-        with self.override_buffer_cse(buffer=target_dma_buffers):
-            ops._store(spad_vars[first_dim], sram_var, sram_index_var, tile_shape) # FIXME. Maybe require fine grain compute...
-
-        # Conversion
-        mlir_dtype = self.var_info[spad_vars[first_dim]][1]
-        with self.override_buffer_cse(buffer=target_dma_buffers):
-            out = ops._load(1, mlir_dtype, sram_var, sram_index_var, tile_shape)
-            if mlir_dtype != "index":
-                out = ops.index_cast(out, "index")
-        return index + sympy.Symbol(str(out)), compute_dependecy
+        # Summed offset goes to a DEDICATED spad (not an index buffer) to avoid clobbering a live index
+        var_info = [v for k, v in self.var_info.items() if str(k) == first_dim][0]
+        dtype = mlir_common.MLIR_TO_DTYPE[var_info[1]]
+        off_shape = local_tile_desc.get_mlir_shape(var_info[1])
+        off_sram, off_index = self.get_scratchpad_buffer(
+            dtype, "indirect_offset_" + first_dim, local_tile_desc, "indirect_offset_" + first_dim)
+        off_compute_index = ",".join(off_index.split(",")[:-1] + [f"%{self.compute_idx}"])
+        with self.override_buffer_cse(buffer=self.stores):
+            ops._store(spad_vars[first_dim], off_sram, off_compute_index, off_shape)
+        self.push_step()  # offset-build compute loop must finish before the gather reads it
+        return index, (off_sram, off_shape, 1)

@@ -91,7 +91,10 @@ def run(module, vectorlane=128, **_):
                     targets.append(op.operation)
 
     for op in targets:
-        dram, dram_idx, sram, sram_idx, tag, dma_type, vst = op.operands
+        op_operands = list(op.operands)
+        dram, dram_idx, sram, sram_idx, tag, dma_type, vst = op_operands[:7]
+        # indirect: offset spad operand -> lift to a symbol attr (memref.dma_start can't take the operand)
+        offset_sym = op_operands[7].owner.attributes["name"] if len(op_operands) > 7 else None
         kind = op.attributes["dma_kind"].value          # StringAttr -> "MVIN"/"MVOUT"
         vlane_axis = IntegerAttr(op.attributes["vlane_split_axis"]).value
         dram_stride = _int_array(op.attributes["dram_stride"])
@@ -127,6 +130,9 @@ def run(module, vectorlane=128, **_):
             if st_attr is not None:
                 attrs["subtile_size"] = st_attr
                 attrs["async"] = async_attr
+            if offset_sym is not None:
+                attrs["indirect_offset"] = offset_sym
+                attrs["offset_stride"] = op.attributes["offset_stride"]
             Operation.create(
                 "memref.dma_start", results=[], operands=operands, attributes=attrs)
 

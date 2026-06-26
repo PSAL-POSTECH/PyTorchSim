@@ -441,6 +441,11 @@ def _emit_one_dma(ctx, op, node, builder, bufs, tags):
     spad_id = bufs.of(dep._global_of(f["src"] if node.is_write else f["dst"]))
     read_bufs = [spad_id] if node.is_write else []
     write_bufs = [] if node.is_write else [spad_id]
+    if "indirect_offset" in op.attributes:  # gather/scatter reads the offset spad -> dep on its build
+        from mlir.ir import FlatSymbolRefAttr
+        off_id = bufs.of(FlatSymbolRefAttr(op.attributes["indirect_offset"]).value)
+        if off_id not in read_bufs:
+            read_bufs = read_bufs + [off_id]
     tag_id = tags.bind(_value_key(f["tag"]), spad_id)
     _emit_dma(ctx, node, tag_id, dram_index, tag_index, read_bufs, write_bufs)
 

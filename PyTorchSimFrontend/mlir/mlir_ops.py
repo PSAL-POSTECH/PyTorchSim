@@ -467,25 +467,45 @@ class ExtensionOverrides(common.OpOverrides):
     @staticmethod
     def cosh(operand, *args, **kwargs):
         raise NotImplementedError
+        # tile_size, dtype = V.kernel.var_info[operand]
+        #
+        # # Check scalar
+        # if tile_size == 1:
+        #     operand = ops.broadcast(operand, 4)
+        #     val = ops.cosh(operand)
+        #     result = ops.extractelement(val, 0)
+        #     return result, V.kernel.var_info[result]
+        #
+        # shape = f"vector<{tile_size}x{dtype}>" if tile_size > 1 else dtype
+        # return format_mlir_op(f'math.cosh %{operand}', shape, **kwargs), [tile_size, dtype]
 
     @staticmethod
     def sinh(operand, *args, **kwargs):
         raise NotImplementedError
+        # tile_size, dtype = V.kernel.var_info[operand]
+        #
+        # # Check scalar
+        # if tile_size == 1:
+        #     operand = ops.broadcast(operand, 4)
+        #     val = ops.sinh(operand)
+        #     result = ops.extractelement(val, 0)
+        #     return result, V.kernel.var_info[result]
+        #
+        # shape = f"vector<{tile_size}x{dtype}>" if tile_size > 1 else dtype
+        # return format_mlir_op(f'math.sinh %{operand}', shape, **kwargs), [tile_size, dtype]
 
     @staticmethod
     def tanh(operand, *args, **kwargs):
         op_type = V.kernel.var_info[operand]
+        tile_size = op_type[0]
+        dtype = op_type[1]
 
         # Check scalar
-        op_type = V.kernel.var_info[operand]
         if op_type[0] == 1:
             operand = ops.broadcast(operand, 4)
             val = ops.tanh(operand)
             result = ops.extractelement(val, 0)
             return result, V.kernel.var_info[result]
-        op_type = V.kernel.var_info[operand]
-        tile_size = op_type[0]
-        dtype = op_type[1]
 
         # Type check & auto cast
         if dtype.startswith("f"):
@@ -692,15 +712,44 @@ class ExtensionOverrides(common.OpOverrides):
 
     @staticmethod
     def fmod(operand1, operand2, *args, **kwargs):
-        raise NotImplementedError
+        tile_size, ret_type, operand1, operand2 = ExtensionOverrides.binary_elementwise_common(operand1, operand2)
+        shape = f"vector<{tile_size}x{ret_type}>" if tile_size > 1 else ret_type
+
+        opcode = "arith.remf" if ret_type.startswith("f") else "arith.remsi"
+
+        op_str = f'{opcode} %{operand1}, %{operand2}'
+        return format_mlir_op(op_str, shape, **kwargs), [tile_size, ret_type]
 
     @staticmethod
     def isinf(operand, *args, **kwargs):
-        raise NotImplementedError
+        tile_size, dtype = V.kernel.var_info[operand]
+
+        if dtype.startswith("f"):
+            abs_val = ops.abs(operand)
+            inf_val = ops.constant("inf", dtype)
+            res = ops.eq(abs_val, inf_val)
+            return res, V.kernel.var_info[res]
+        else:
+            const_false = ops.constant(False, "i1")
+            if tile_size > 1:
+                const_false = ops.broadcast(const_false, tile_size)
+            return const_false, V.kernel.var_info[const_false]
 
     @staticmethod
     def isnan(operand, *args, **kwargs):
-        raise NotImplementedError
+        tile_size, dtype = V.kernel.var_info[operand]
+
+        if dtype.startswith("f"):
+            # Unordered comparison (uno) to detect NaN (uno returns true if either operand is NaN)
+            shape = f"vector<{tile_size}xi1>" if tile_size > 1 else "i1"
+            op_str = f"arith.cmpf uno, %{operand}, %{operand}"
+            return format_mlir_op(op_str, shape, **kwargs), [tile_size, "i1"]
+        else:
+            # Integers cannot be NaN
+            const_false = ops.constant(False, "i1")
+            if tile_size > 1:
+                const_false = ops.broadcast(const_false, tile_size)
+            return const_false, V.kernel.var_info[const_false]
 
     @staticmethod
     def round(operand, *args, **kwargs):
@@ -726,7 +775,17 @@ class ExtensionOverrides(common.OpOverrides):
 
     @staticmethod
     def sign(operand, *args, **kwargs):
-        raise NotImplementedError
+        dtype = V.kernel.var_info[operand][1]
+        
+        const_zero = ops.constant(0, dtype)
+        const_one = ops.constant(1, dtype)
+        const_neg_one = ops.constant(-1, dtype)
+
+        is_pos = ops.gt(operand, const_zero)
+        is_neg = ops.lt(operand, const_zero)
+
+        res = ops.where(is_pos, const_one, ops.where(is_neg, const_neg_one, const_zero))
+        return res, V.kernel.var_info[res]
 
     @staticmethod
     def trunc(operand, *args, **kwargs):

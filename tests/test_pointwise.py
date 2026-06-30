@@ -112,6 +112,46 @@ def test_fmod(device, size=(128, 128)):
 
     test_result("Fmod", res, out)
 
+def test_lshift(device, size=(128, 128)):
+    def lshift_fn(a, b):
+        return torch.bitwise_left_shift(a, b)
+
+    x = torch.randint(1, 100, size, dtype=torch.int32).to(device=device)
+    y = torch.randint(1, 5, size, dtype=torch.int32).to(device=device)
+
+    opt_fn = torch.compile(dynamic=False)(lshift_fn)
+    res = opt_fn(x, y)
+    out = lshift_fn(x.cpu(), y.cpu())
+
+    input_val_x = x.flatten()[:10].tolist() if size != (1, 1) else x.item()
+    input_val_y = y.flatten()[:10].tolist() if size != (1, 1) else y.item()
+    output_val = res.flatten()[:10].tolist() if size != (1, 1) else res.item()
+    print(f"[{size}] LShift Input X: {input_val_x}")
+    print(f"[{size}] LShift Input Y: {input_val_y}")
+    print(f"[{size}] LShift Output: {output_val}")
+
+    test_result("LShift", res, out)
+
+def test_rshift(device, size=(128, 128)):
+    def rshift_fn(a, b):
+        return torch.bitwise_right_shift(a, b)
+
+    x = torch.randint(10, 1000, size, dtype=torch.int32).to(device=device)
+    y = torch.randint(1, 5, size, dtype=torch.int32).to(device=device)
+
+    opt_fn = torch.compile(dynamic=False)(rshift_fn)
+    res = opt_fn(x, y)
+    out = rshift_fn(x.cpu(), y.cpu())
+
+    input_val_x = x.flatten()[:10].tolist() if size != (1, 1) else x.item()
+    input_val_y = y.flatten()[:10].tolist() if size != (1, 1) else y.item()
+    output_val = res.flatten()[:10].tolist() if size != (1, 1) else res.item()
+    print(f"[{size}] RShift Input X: {input_val_x}")
+    print(f"[{size}] RShift Input Y: {input_val_y}")
+    print(f"[{size}] RShift Output: {output_val}")
+
+    test_result("RShift", res, out)
+
 if __name__ == "__main__":
     device = torch.device("npu:0")
 
@@ -129,3 +169,9 @@ if __name__ == "__main__":
 
     test_fmod(device, size=(128, 128))
     test_fmod(device, size=(1, 1))
+
+    test_lshift(device, size=(128, 128))
+    test_lshift(device, size=(1, 1))
+
+    test_rshift(device, size=(128, 128))
+    test_rshift(device, size=(1, 1))

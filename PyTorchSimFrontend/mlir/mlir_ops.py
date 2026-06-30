@@ -683,11 +683,21 @@ class ExtensionOverrides(common.OpOverrides):
 
     @staticmethod
     def bitwise_left_shift(operand1, operand2, *args, **kwargs):
-        raise NotImplementedError
+        tile_size, ret_type, operand1, operand2 = ExtensionOverrides.binary_elementwise_common(operand1, operand2)
+        if ret_type.startswith("f"):
+            raise ValueError("Bitwise left shift not supported for floats")
+        shape = f"vector<{tile_size}x{ret_type}>" if tile_size > 1 else ret_type
+        op_str = f'arith.shli %{operand1}, %{operand2}'
+        return format_mlir_op(op_str, shape, **kwargs), [tile_size, ret_type]
 
     @staticmethod
     def bitwise_right_shift(operand1, operand2, *args, **kwargs):
-        raise NotImplementedError
+        tile_size, ret_type, operand1, operand2 = ExtensionOverrides.binary_elementwise_common(operand1, operand2)
+        if ret_type.startswith("f"):
+            raise ValueError("Bitwise right shift not supported for floats")
+        shape = f"vector<{tile_size}x{ret_type}>" if tile_size > 1 else ret_type
+        op_str = f'arith.shrsi %{operand1}, %{operand2}'
+        return format_mlir_op(op_str, shape, **kwargs), [tile_size, ret_type]
 
     @staticmethod
     def rsqrt(operand, *args, **kwargs):
@@ -995,11 +1005,11 @@ class ExtensionOverrides(common.OpOverrides):
 
     @staticmethod
     def lshift(operand1, operand2, *args, **kwargs):
-        raise NotImplementedError
+        return ops.bitwise_left_shift(operand1, operand2)
 
     @staticmethod
     def rshift(operand1, operand2, *args, **kwargs):
-        raise NotImplementedError
+        return ops.bitwise_right_shift(operand1, operand2)
 
     @staticmethod
     def truncdiv(operand1, operand2, *args, **kwargs):

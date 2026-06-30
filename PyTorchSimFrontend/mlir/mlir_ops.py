@@ -309,7 +309,10 @@ class ExtensionOverrides(common.OpOverrides):
 
     @staticmethod
     def abs(operand, *args, **kwargs):
-        raise NotImplementedError
+        tile_size, dtype = V.kernel.var_info[operand]
+        shape = f"vector<{tile_size}x{dtype}>" if tile_size > 1 else dtype
+        opcode = "math.absf" if dtype.startswith("f") else "math.absi"
+        return format_mlir_op(f'{opcode} %{operand}', shape, **kwargs), [tile_size, dtype]
 
     @staticmethod
     def exp(operand, *args, **kwargs):

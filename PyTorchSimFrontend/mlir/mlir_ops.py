@@ -543,11 +543,27 @@ class ExtensionOverrides(common.OpOverrides):
 
     @staticmethod
     def copysign(operand1, operand2, *args, **kwargs):
-        raise NotImplementedError
+        tile_size, ret_type, operand1, operand2 = ExtensionOverrides.binary_elementwise_common(operand1, operand2)
+        if not ret_type.startswith("f"):
+            raise ValueError("copysign is only supported for floats")
+        shape = f"vector<{tile_size}x{ret_type}>" if tile_size > 1 else ret_type
+        op_str = f'math.copysign %{operand1}, %{operand2}'
+        return format_mlir_op(op_str, shape, **kwargs), [tile_size, ret_type]
 
     @staticmethod
     def erfc(operand, *args, **kwargs):
-        raise NotImplementedError
+        # Check scalar
+        op_type = V.kernel.var_info[operand]
+        if op_type[0] == 1:
+            operand = ops.broadcast(operand, 4)
+            val = ops.erfc(operand)
+            result = ops.extractelement(val, 0)
+            return result, V.kernel.var_info[result]
+
+        tile_size = op_type[0]
+        dtype = op_type[1]
+        shape = f"vector<{tile_size}x{dtype}>" if tile_size > 1 else dtype
+        return format_mlir_op(f'math.erfc %{operand}', shape, **kwargs), [tile_size, dtype]
 
     @staticmethod
     def erfinv(operand, *args, **kwargs):
@@ -559,7 +575,15 @@ class ExtensionOverrides(common.OpOverrides):
 
     @staticmethod
     def hypot(operand1, operand2, *args, **kwargs):
-        raise NotImplementedError
+        tile_size, ret_type, operand1, operand2 = ExtensionOverrides.binary_elementwise_common(operand1, operand2)
+        if not ret_type.startswith("f"):
+            raise ValueError("hypot is only supported for floats")
+
+        x_sq = ops.square(operand1)
+        y_sq = ops.square(operand2)
+        sum_sq = ops.add(x_sq, y_sq)
+        res = ops.sqrt(sum_sq)
+        return res, V.kernel.var_info[res]
 
     @staticmethod
     def log10(operand, *args, **kwargs):

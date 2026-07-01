@@ -15,163 +15,208 @@ def test_result(name, out, cpu_out, rtol=1e-4, atol=1e-4):
         print("cpu out: ", cpu_out)
         exit(1)
 
-def test_abs(device, size=(128, 128)):
+def run_test(name, device, fn, inputs, size_desc, rtol=1e-4, atol=1e-4):
+    """
+    Harness function to compile, execute on NPU, compare with CPU, and print details.
+    inputs: single tensor or tuple/list of tensors (on CPU)
+    """
+    if not isinstance(inputs, (tuple, list)):
+        inputs = [inputs]
+        
+    npu_inputs = [x.to(device=device) for x in inputs]
+    cpu_inputs = [x.clone() for x in inputs]
+
+    opt_fn = torch.compile(dynamic=False)(fn)
+    res = opt_fn(*npu_inputs)
+    out = fn(*cpu_inputs)
+
+    # Print input / output slices (up to 10 elements)
+    for idx, x in enumerate(inputs):
+        label = f"X" if len(inputs) == 1 else f"X{idx+1}"
+        val = x.flatten()[:10].tolist() if x.numel() > 1 else x.item()
+        print(f"[{size_desc}] {name} Input {label}: {val}")
+    
+    out_val = res.flatten()[:10].tolist() if res.numel() > 1 else res.item()
+    print(f"[{size_desc}] {name} Output: {out_val}")
+
+    test_result(f"{name}_{size_desc}", res, out, rtol=rtol, atol=atol)
+
+def test_abs(device):
     def abs_fn(a):
         return torch.abs(a)
 
-    x = (torch.randn(size) * 10).to(device=device)
-    opt_fn = torch.compile(dynamic=False)(abs_fn)
-    res = opt_fn(x)
-    out = abs_fn(x.cpu())
+    # 1. Float Vector (Aligned)
+    run_test("Abs_Float", device, abs_fn, torch.randn(128, 128) * 10, "128x128")
+    # 2. Float Scalar
+    run_test("Abs_Float", device, abs_fn, torch.randn(1, 1) * 10, "1x1")
+    # 3. Float Vector (Tail / Remainder - Small & Large)
+    run_test("Abs_Float", device, abs_fn, torch.randn(15, 15) * 10, "15x15")
+    run_test("Abs_Float", device, abs_fn, torch.randn(129, 129) * 10, "129x129")
+    # 4. Int Vector (Aligned)
+    run_test("Abs_Int", device, abs_fn, torch.randint(-100, 100, (128, 128), dtype=torch.int32), "128x128_int")
+    # 5. Non-contiguous (Transposed & Strided Sliced)
+    run_test("Abs_Float_Strided", device, abs_fn, (torch.randn(128, 128) * 10).t(), "128x128_strided_transposed")
+    run_test("Abs_Float_Strided", device, abs_fn, (torch.randn(128, 256) * 10)[:, ::2], "128x128_strided_sliced")
 
-    # Print input and output values (print first 5 if size is large)
-    input_val = x.flatten()[:10].tolist() if size != (1, 1) else x.item()
-    output_val = res.flatten()[:10].tolist() if size != (1, 1) else res.item()
-    print(f"[{size}] Abs Input: {input_val}")
-    print(f"[{size}] Abs Output: {output_val}")
-
-    test_result("Abs", res, out)
-
-def test_sign(device, size=(128, 128)):
+def test_sign(device):
     def sign_fn(a):
         return torch.sign(a)
 
-    x = torch.randn(size).to(device=device)
-    x[x.abs() < 0.3] = 0.0
+    # 1. Float Vector (Aligned)
+    x_float = torch.randn(128, 128)
+    x_float[x_float.abs() < 0.3] = 0.0
+    run_test("Sign_Float", device, sign_fn, x_float, "128x128")
+    # 2. Float Scalar (includes zero and nonzero)
+    x_scalar = torch.tensor([[0.0]])
+    run_test("Sign_Float", device, sign_fn, x_scalar, "1x1_zero")
+    x_scalar_non_zero = torch.tensor([[-4.5]])
+    run_test("Sign_Float", device, sign_fn, x_scalar_non_zero, "1x1_nonzero")
+    # 3. Float Vector (Tail / Remainder - Small & Large)
+    x_tail = torch.randn(15, 15)
+    x_tail[x_tail.abs() < 0.3] = 0.0
+    run_test("Sign_Float", device, sign_fn, x_tail, "15x15")
+    x_tail_large = torch.randn(129, 129)
+    x_tail_large[x_tail_large.abs() < 0.3] = 0.0
+    run_test("Sign_Float", device, sign_fn, x_tail_large, "129x129")
+    # 4. Int Vector (Aligned)
+    x_int = torch.randint(-5, 5, (128, 128), dtype=torch.int32)
+    run_test("Sign_Int", device, sign_fn, x_int, "128x128_int")
 
-    opt_fn = torch.compile(dynamic=False)(sign_fn)
-    res = opt_fn(x)
-    out = sign_fn(x.cpu())
-
-    # Print input and output values (print first 10 if size is large)
-    input_val = x.flatten()[:10].tolist() if size != (1, 1) else x.item()
-    output_val = res.flatten()[:10].tolist() if size != (1, 1) else res.item()
-    print(f"[{size}] Sign Input: {input_val}")
-    print(f"[{size}] Sign Output: {output_val}")
-
-    test_result("Sign", res, out)
-
-def test_isnan(device, size=(128, 128)):
+def test_isnan(device):
     def isnan_fn(a):
         return torch.isnan(a)
 
-    # Generate random floats on CPU and inject NaNs, then move to NPU
-    x_cpu = torch.randn(size)
-    x_cpu[x_cpu.abs() < 0.3] = float('nan')
-    x = x_cpu.to(device=device)
+    # 1. Float Vector with NaNs (Aligned)
+    x = torch.randn(128, 128)
+    x[x.abs() < 0.3] = float('nan')
+    run_test("IsNaN", device, isnan_fn, x, "128x128")
+    # 2. Float Scalar
+    x_scalar = torch.tensor([[float('nan')]])
+    run_test("IsNaN", device, isnan_fn, x_scalar, "1x1")
+    # 3. Float Vector (Tail / Remainder - Small & Large)
+    x_tail = torch.randn(15, 15)
+    x_tail[x_tail.abs() < 0.3] = float('nan')
+    run_test("IsNaN", device, isnan_fn, x_tail, "15x15")
+    x_tail_large = torch.randn(129, 129)
+    x_tail_large[x_tail_large.abs() < 0.3] = float('nan')
+    run_test("IsNaN", device, isnan_fn, x_tail_large, "129x129")
 
-    opt_fn = torch.compile(dynamic=False)(isnan_fn)
-    res = opt_fn(x)
-    out = isnan_fn(x.cpu())
-
-    input_val = x.flatten()[:10].tolist() if size != (1, 1) else x.item()
-    output_val = res.flatten()[:10].tolist() if size != (1, 1) else res.item()
-    print(f"[{size}] IsNaN Input: {input_val}")
-    print(f"[{size}] IsNaN Output: {output_val}")
-
-    test_result("IsNaN", res, out)
-
-def test_isinf(device, size=(128, 128)):
+def test_isinf(device):
     def isinf_fn(a):
         return torch.isinf(a)
 
-    # Generate random floats and inject positive/negative infinities
-    x_cpu = torch.randn(size)
-    x_cpu[x_cpu > 1.0] = float('inf')
-    x_cpu[x_cpu < -1.0] = float('-inf')
-    x = x_cpu.to(device=device)
+    # 1. Float Vector with Infs (Aligned)
+    x = torch.randn(128, 128)
+    x[x > 1.0] = float('inf')
+    x[x < -1.0] = float('-inf')
+    run_test("IsInf", device, isinf_fn, x, "128x128")
+    # 2. Float Scalar
+    x_scalar = torch.tensor([[float('-inf')]])
+    run_test("IsInf", device, isinf_fn, x_scalar, "1x1")
+    # 3. Float Vector (Tail / Remainder - Small & Large)
+    x_tail = torch.randn(15, 15)
+    x_tail[x_tail > 1.0] = float('inf')
+    x_tail[x_tail < -1.0] = float('-inf')
+    run_test("IsInf", device, isinf_fn, x_tail, "15x15")
+    x_tail_large = torch.randn(129, 129)
+    x_tail_large[x_tail_large > 1.0] = float('inf')
+    x_tail_large[x_tail_large < -1.0] = float('-inf')
+    run_test("IsInf", device, isinf_fn, x_tail_large, "129x129")
 
-    opt_fn = torch.compile(dynamic=False)(isinf_fn)
-    res = opt_fn(x)
-    out = isinf_fn(x.cpu())
-
-    input_val = x.flatten()[:10].tolist() if size != (1, 1) else x.item()
-    output_val = res.flatten()[:10].tolist() if size != (1, 1) else res.item()
-    print(f"[{size}] IsInf Input: {input_val}")
-    print(f"[{size}] IsInf Output: {output_val}")
-
-    test_result("IsInf", res, out)
-
-def test_fmod(device, size=(128, 128)):
+def test_fmod(device):
     def fmod_fn(a, b):
         return torch.fmod(a, b)
 
-    x = (torch.randn(size) * 10).to(device=device)
-    y = (torch.randn(size) * 3 + 1).to(device=device)  # Avoid dividing by zero
+    # 1. Float Vector (Aligned)
+    x = torch.randn(128, 128) * 10
+    y = torch.randn(128, 128) * 3 + 1
+    run_test("Fmod", device, fmod_fn, (x, y), "128x128")
+    # 2. Float Scalar
+    run_test("Fmod", device, fmod_fn, (torch.tensor([[5.5]]), torch.tensor([[2.0]])), "1x1")
+    # 3. Float Vector (Tail / Remainder - Small & Large)
+    run_test("Fmod", device, fmod_fn, (torch.randn(15, 15) * 10, torch.randn(15, 15) * 3 + 1), "15x15")
+    run_test("Fmod", device, fmod_fn, (torch.randn(129, 129) * 10, torch.randn(129, 129) * 3 + 1), "129x129")
+    # 4. Broadcasting (128x1 vs 1x128)
+    run_test("Fmod_Broadcast", device, fmod_fn, (torch.randn(128, 1) * 10, torch.randn(1, 128) * 3 + 1), "broadcast")
 
-    opt_fn = torch.compile(dynamic=False)(fmod_fn)
-    res = opt_fn(x, y)
-    out = fmod_fn(x.cpu(), y.cpu())
-
-    input_val_x = x.flatten()[:10].tolist() if size != (1, 1) else x.item()
-    input_val_y = y.flatten()[:10].tolist() if size != (1, 1) else y.item()
-    output_val = res.flatten()[:10].tolist() if size != (1, 1) else res.item()
-    print(f"[{size}] Fmod Input X: {input_val_x}")
-    print(f"[{size}] Fmod Input Y: {input_val_y}")
-    print(f"[{size}] Fmod Output: {output_val}")
-
-    test_result("Fmod", res, out)
-
-def test_lshift(device, size=(128, 128)):
+def test_lshift(device):
     def lshift_fn(a, b):
         return torch.bitwise_left_shift(a, b)
 
-    x = torch.randint(1, 100, size, dtype=torch.int32).to(device=device)
-    y = torch.randint(1, 5, size, dtype=torch.int32).to(device=device)
+    # 1. Int Vector (Aligned)
+    run_test("LShift", device, lshift_fn, (torch.randint(1, 100, (128, 128), dtype=torch.int32), torch.randint(1, 5, (128, 128), dtype=torch.int32)), "128x128")
+    # 2. Int Scalar
+    run_test("LShift", device, lshift_fn, (torch.randint(1, 100, (1, 1), dtype=torch.int32), torch.randint(1, 5, (1, 1), dtype=torch.int32)), "1x1")
+    # 3. Int Vector (Tail / Remainder - Small & Large)
+    run_test("LShift", device, lshift_fn, (torch.randint(1, 100, (15, 15), dtype=torch.int32), torch.randint(1, 5, (15, 15), dtype=torch.int32)), "15x15")
+    run_test("LShift", device, lshift_fn, (torch.randint(1, 100, (129, 129), dtype=torch.int32), torch.randint(1, 5, (129, 129), dtype=torch.int32)), "129x129")
+    # 4. Broadcasting (128x1 vs 1x128)
+    run_test("LShift_Broadcast", device, lshift_fn, (torch.randint(1, 100, (128, 1), dtype=torch.int32), torch.randint(1, 5, (1, 128), dtype=torch.int32)), "broadcast")
 
-    opt_fn = torch.compile(dynamic=False)(lshift_fn)
-    res = opt_fn(x, y)
-    out = lshift_fn(x.cpu(), y.cpu())
-
-    input_val_x = x.flatten()[:10].tolist() if size != (1, 1) else x.item()
-    input_val_y = y.flatten()[:10].tolist() if size != (1, 1) else y.item()
-    output_val = res.flatten()[:10].tolist() if size != (1, 1) else res.item()
-    print(f"[{size}] LShift Input X: {input_val_x}")
-    print(f"[{size}] LShift Input Y: {input_val_y}")
-    print(f"[{size}] LShift Output: {output_val}")
-
-    test_result("LShift", res, out)
-
-def test_rshift(device, size=(128, 128)):
+def test_rshift(device):
     def rshift_fn(a, b):
         return torch.bitwise_right_shift(a, b)
 
-    x = torch.randint(10, 1000, size, dtype=torch.int32).to(device=device)
-    y = torch.randint(1, 5, size, dtype=torch.int32).to(device=device)
+    # 1. Int Vector (Aligned)
+    run_test("RShift", device, rshift_fn, (torch.randint(10, 1000, (128, 128), dtype=torch.int32), torch.randint(1, 5, (128, 128), dtype=torch.int32)), "128x128")
+    # 2. Int Scalar
+    run_test("RShift", device, rshift_fn, (torch.randint(10, 1000, (1, 1), dtype=torch.int32), torch.randint(1, 5, (1, 1), dtype=torch.int32)), "1x1")
+    # 3. Int Vector (Tail / Remainder - Small & Large)
+    run_test("RShift", device, rshift_fn, (torch.randint(10, 1000, (15, 15), dtype=torch.int32), torch.randint(1, 5, (15, 15), dtype=torch.int32)), "15x15")
+    run_test("RShift", device, rshift_fn, (torch.randint(10, 1000, (129, 129), dtype=torch.int32), torch.randint(1, 5, (129, 129), dtype=torch.int32)), "129x129")
+    # 4. Broadcasting (128x1 vs 1x128)
+    run_test("RShift_Broadcast", device, rshift_fn, (torch.randint(10, 1000, (128, 1), dtype=torch.int32), torch.randint(1, 5, (1, 128), dtype=torch.int32)), "broadcast")
 
-    opt_fn = torch.compile(dynamic=False)(rshift_fn)
-    res = opt_fn(x, y)
-    out = rshift_fn(x.cpu(), y.cpu())
+def test_copysign(device):
+    def copysign_fn(a, b):
+        return torch.copysign(a, b)
 
-    input_val_x = x.flatten()[:10].tolist() if size != (1, 1) else x.item()
-    input_val_y = y.flatten()[:10].tolist() if size != (1, 1) else y.item()
-    output_val = res.flatten()[:10].tolist() if size != (1, 1) else res.item()
-    print(f"[{size}] RShift Input X: {input_val_x}")
-    print(f"[{size}] RShift Input Y: {input_val_y}")
-    print(f"[{size}] RShift Output: {output_val}")
+    # 1. Float Vector (Aligned)
+    run_test("Copysign", device, copysign_fn, (torch.randn(128, 128) * 10, torch.randn(128, 128)), "128x128")
+    # 2. Float Scalar (test sign of zero case specifically: negative zero)
+    run_test("Copysign", device, copysign_fn, (torch.tensor([[3.0]]), torch.tensor([[-0.0]])), "1x1_negzero")
+    # 3. Float Vector (Tail / Remainder - Small & Large)
+    run_test("Copysign", device, copysign_fn, (torch.randn(15, 15) * 10, torch.randn(15, 15)), "15x15")
+    run_test("Copysign", device, copysign_fn, (torch.randn(129, 129) * 10, torch.randn(129, 129)), "129x129")
+    # 4. Broadcasting (128x1 vs 1x128)
+    run_test("Copysign_Broadcast", device, copysign_fn, (torch.randn(128, 1) * 10, torch.randn(1, 128)), "broadcast")
 
-    test_result("RShift", res, out)
+def test_erfc(device):
+    def erfc_fn(a):
+        return torch.erfc(a)
+
+    # 1. Float Vector (Aligned)
+    run_test("Erfc", device, erfc_fn, torch.randn(128, 128), "128x128")
+    # 2. Float Scalar (test large positive float)
+    run_test("Erfc", device, erfc_fn, torch.tensor([[4.5]]), "1x1")
+    # 3. Float Vector (Tail / Remainder - Small & Large)
+    run_test("Erfc", device, erfc_fn, torch.randn(15, 15), "15x15")
+    run_test("Erfc", device, erfc_fn, torch.randn(129, 129), "129x129")
+
+def test_hypot(device):
+    def hypot_fn(a, b):
+        return torch.hypot(a, b)
+
+    # 1. Float Vector (Aligned)
+    run_test("Hypot", device, hypot_fn, (torch.randn(128, 128), torch.randn(128, 128)), "128x128")
+    # 2. Float Scalar (Result should be exactly 5.0)
+    run_test("Hypot", device, hypot_fn, (torch.tensor([[3.0]]), torch.tensor([[4.0]])), "1x1")
+    # 3. Float Vector (Tail / Remainder - Small & Large)
+    run_test("Hypot", device, hypot_fn, (torch.randn(15, 15), torch.randn(15, 15)), "15x15")
+    run_test("Hypot", device, hypot_fn, (torch.randn(129, 129), torch.randn(129, 129)), "129x129")
+    # 4. Broadcasting (128x1 vs 1x128)
+    run_test("Hypot_Broadcast", device, hypot_fn, (torch.randn(128, 1), torch.randn(1, 128)), "broadcast")
 
 if __name__ == "__main__":
     device = torch.device("npu:0")
 
-    test_abs(device, size=(128, 128))
-    test_abs(device, size=(1, 1))
-
-    test_sign(device, size=(128, 128))
-    test_sign(device, size=(1, 1))
-
-    test_isnan(device, size=(128, 128))
-    test_isnan(device, size=(1, 1))
-
-    test_isinf(device, size=(128, 128))
-    test_isinf(device, size=(1, 1))
-
-    test_fmod(device, size=(128, 128))
-    test_fmod(device, size=(1, 1))
-
-    test_lshift(device, size=(128, 128))
-    test_lshift(device, size=(1, 1))
-
-    test_rshift(device, size=(128, 128))
-    test_rshift(device, size=(1, 1))
+    test_abs(device)
+    test_sign(device)
+    test_isnan(device)
+    test_isinf(device)
+    test_fmod(device)
+    test_lshift(device)
+    test_rshift(device)
+    test_copysign(device)
+    test_erfc(device)
+    test_hypot(device)

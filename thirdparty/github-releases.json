@@ -13,7 +13,7 @@
   },
   "spike": {
     "repository": "PSAL-POSTECH/riscv-isa-sim",
-    "release_tag": "v1.0.3",
+    "release_tag": "v1.0.5",
     "asset_name": "spike-release.tar.gz"
   }
 }

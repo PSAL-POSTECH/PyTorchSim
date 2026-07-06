@@ -8,7 +8,7 @@ API. This pass performs that reduction at the MLIR level:
 
   * `togsim.transfer`   -> `togsim.dma(...) {tag_id, is_async, ...}` carrying the
                             runtime tag index operand (`%tag[%idx]`).
-  * `memref.dma_wait`   -> `togsim.memory_barrier(tag_idx) {tag_id, write_bufs}`,
+  * `togsim.wait`   -> `togsim.memory_barrier(tag_idx) {tag_id, write_bufs}`,
                             the explicit async-DMA sync. It pairs with its dma by
                             the RUNTIME tag slot (tag_id + the tag index), not a
                             compile-time id: one static dma op runs once per loop
@@ -78,7 +78,7 @@ def _emit_dma(ctx, dma_node, tag_id, dram_index, tag_index, read_bufs, write_buf
     """Insert a `togsim.dma` before the original `togsim.transfer`.
 
     `tag_id` is the identity of this DMA's tag memref. An async DMA pairs with
-    its `togsim.memory_barrier` (the original dma_wait) by the RUNTIME tag slot
+    its `togsim.memory_barrier` (the original togsim.wait) by the RUNTIME tag slot
     -- (tag_id, tag_index) -- not a compile-time identifier: one static dma op runs
     once per loop iteration, each with a different runtime `%tag[%idx]` slot, so
     only a runtime key can pair iteration i's dma with iteration i's wait.
@@ -119,7 +119,7 @@ def _emit_dma(ctx, dma_node, tag_id, dram_index, tag_index, read_bufs, write_buf
 
 def _emit_memory_bar(ctx, anchor_op, tag_id, tag_index, write_bufs):
     """Insert a `togsim.memory_barrier` before `anchor_op` -- the explicit
-    async-DMA sync that was the original `memref.dma_wait`. It pairs with its
+    async-DMA sync that was the original `togsim.wait`. It pairs with its
     async `togsim.dma` by the RUNTIME tag slot (tag_id + tag_index), and carries
     the SRAM buffer that dma loaded so consumers gate on data-arrival, not on the
     async dma's issue-complete."""
@@ -146,7 +146,7 @@ def _flatten_add(expr):
 def _neg_coeff_dim(summand):
     """If `summand` is `dim * c` with a negative constant `c`, return that dim's
     position; else None. lower_to_vcix tags each accumulation (reduction) loop var
-    with coefficient -1 in the dma_wait tag index -- a SENTINEL marking the
+    with coefficient -1 in the togsim.wait tag index -- a SENTINEL marking the
     reduction axis, not an arithmetic offset (legacy TileGraphParser skips stride
     -1 for the same reason)."""
     if not ir.AffineMulExpr.isinstance(summand):
@@ -389,7 +389,7 @@ class _BufferIds:
 class _TagIds:
     """Identity of a DMA's tag memref -> stable small int, plus the SRAM buffer
     that tag's async DMA loads. An async dma and its memory_barrier (the original
-    dma_wait) share a tag memref; this assigns it a tag_id (so the runtime can
+    togsim.wait) share a tag memref; this assigns it a tag_id (so the runtime can
     pair them by the runtime tag slot) and remembers the loaded buffer so the
     barrier can release it to consumers. Pairing is by tag, never a static id."""
 
@@ -477,7 +477,7 @@ def _emit_one_dma(ctx, op, node, builder, bufs, tags):
 
 
 def _emit_one_wait(ctx, op, tags):
-    """Rewrite one memref.dma_wait as togsim.memory_barrier -- the explicit
+    """Rewrite one togsim.wait as togsim.memory_barrier -- the explicit
     async-DMA sync already in the IR. Paired with its dma by the tag memref
     (tag_id) and the runtime tag index; carries the buffer the dma loaded.
     Returns True iff emitted (a wait whose tag no dma used is dropped)."""
@@ -496,7 +496,7 @@ def _emit_one_wait(ctx, op, tags):
 
 
 def _emit_dmas_and_waits(ctx, block, builder, dma_by_op, bufs):
-    """Step 2: rewrite togsim.transfer -> togsim.dma and memref.dma_wait ->
+    """Step 2: rewrite togsim.transfer -> togsim.dma and togsim.wait ->
     togsim.memory_barrier in program order. An async dma and its barrier are
     paired by the RUNTIME tag slot (tag_id + tag index), not a compile-time id:
     one static dma op runs per loop iteration with a different `%tag[%idx]`, so

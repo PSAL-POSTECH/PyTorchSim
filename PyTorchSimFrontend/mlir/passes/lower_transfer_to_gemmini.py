@@ -19,8 +19,9 @@ from ._mlir_util import walk_ops
 from .lower_dma_to_gemmini import _i64_signed, _row_major_strides, _elem_bytes, _asm, CONSTRAINTS
 from .decompose_transfer import _int_array, _const_int, _squeeze_reassociation
 
-CONFIG, CONFIG2, CONFIG3, CONFIG4 = 0, 4, 5, 6
+CONFIG, CONFIG2, CONFIG3, CONFIG4, CONFIG_DESC = 0, 4, 5, 6, 7
 MVIN, MVIN2, MVIN3, MVOUT = 2, 1, 14, 3
+DESC_SLOTS = 18   # 144-byte DMA descriptor as 18 x i64 (see project-dma-descriptor)
 CONFIG_TYPE = {MVIN: 0, MVIN2: 1, MVIN3: 2, MVOUT: 3}
 MAX_TENSOR_DIM = 4
 
@@ -29,15 +30,69 @@ def run(module, timing=False, vectorlane=128, **_):
     from mlir.ir import (InsertionPoint, Operation, MemRefType, ArrayAttr,
                          IntegerAttr, IntegerType, IndexType, DenseI64ArrayAttr,
                          DenseI32ArrayAttr, StridedLayoutAttr, AffineMap, AffineMapAttr,
-                         AffineExpr, BoolAttr, FlatSymbolRefAttr, TypeAttr)
+                         AffineExpr, BoolAttr, FlatSymbolRefAttr, TypeAttr,
+                         DenseElementsAttr, RankedTensorType, StringAttr, UnitAttr)
     from mlir.dialects import affine, llvm, arith, memref
     i64 = IntegerType.get_signless(64)
     idx_ty = IndexType.get()
+    module_top = module.operation.regions[0].blocks[0]
 
     sym2type = {}
-    for g in module.operation.regions[0].blocks[0].operations:
+    for g in module_top.operations:
         if g.operation.name == "memref.global":
             sym2type[g.attributes["sym_name"].value] = MemRefType(TypeAttr(g.attributes["type"]).value)
+
+    desc_ty = MemRefType.get([DESC_SLOTS], i64)
+    desc_globals = {}   # slots tuple -> global sym name (dedup)
+    desc_counter = [0]
+
+    def _pack_desc(shape4, dram4, spad4, elem_bytes, vlstride, vsa4, cfg_type, indirect,
+                   ind_stride, ind_esize):
+        # 18 i64 slots matching the C dma_descriptor byte layout (little-endian).
+        lo = [0, 0, 0, 0]
+        hi = list(shape4)
+        def s2(a, b): return (a & 0xFFFFFFFF) | ((b & 0xFFFFFFFF) << 32)
+        m = 0xFFFFFFFFFFFFFFFF
+        slots = [
+            s2(shape4[0], shape4[1]), s2(shape4[2], shape4[3]),
+            s2(lo[0], lo[1]), s2(lo[2], lo[3]),
+            s2(hi[0], hi[1]), s2(hi[2], hi[3]),
+            dram4[0] & m, dram4[1] & m, dram4[2] & m, dram4[3] & m,
+            spad4[0] & m, spad4[1] & m, spad4[2] & m, spad4[3] & m,
+            (elem_bytes & 0xFFFF) | ((vlstride & 0xFFFF) << 16) | ((vsa4 & 0xFF) << 32)
+                | ((cfg_type & 0xFF) << 40) | (((1 if indirect else 0) & 0xFFFF) << 48),
+            0,                                                    # +120 indirect_addr (runtime)
+            (ind_stride & 0xFFFF) | ((ind_esize & 0xFFFF) << 16),  # +128
+            0,                                                    # +136 fill (runtime/step3)
+        ]
+        return slots
+
+    def _desc_global(slots):
+        key = tuple(slots)
+        if key not in desc_globals:
+            name = f"dma_desc_{desc_counter[0]}"
+            desc_counter[0] += 1
+            import numpy as np
+            init = DenseElementsAttr.get(
+                np.array([_i64_signed(v) for v in slots], dtype=np.int64),
+                type=RankedTensorType.get([DESC_SLOTS], i64))
+            with InsertionPoint.at_block_begin(module_top):
+                Operation.create("memref.global", results=[], operands=[], attributes={
+                    "sym_name": StringAttr.get(name),
+                    "sym_visibility": StringAttr.get("private"),
+                    "type": TypeAttr.get(desc_ty),
+                    "initial_value": init})
+            desc_globals[key] = name
+        return desc_globals[key]
+
+    def desc_ptr_and_store_indirect(slots, ind_addr_i64):
+        # get_global -> byte pointer; for indirect, store the runtime addr into slot 15.
+        name = _desc_global(slots)
+        g = memref.GetGlobalOp(desc_ty, name).result
+        if ind_addr_i64 is not None:
+            memref.StoreOp(ind_addr_i64, g, [arith.ConstantOp(idx_ty, IntegerAttr.get(idx_ty, 15)).result])
+        base = memref.ExtractAlignedPointerAsIndexOp(g).result
+        return arith.IndexCastOp(i64, base).result
 
     def i64_const(value):
         return arith.ConstantOp(i64, IntegerAttr.get(i64, _i64_signed(value))).result
@@ -117,24 +172,19 @@ def run(module, timing=False, vectorlane=128, **_):
             sram_c = MemRefType(sram_mem.type)
             dram_addr = elem_addr_i64(dram, [dram_idx_val], dram_ty, elem_bytes)
             spad_addr = elem_addr_i64(sram_mem, sram_indices, sram_c, elem_bytes)
-            cfg_rs1 = i64_const(((shape4[0] & 0xFFFF) << 48) | ((shape4[1] & 0xFFFF) << 32)
-                                | ((shape4[2] & 0xFFFF) << 16) | (shape4[3] & 0xFFFF))
-            cfg_rs2 = i64_const((vlane_stride << 32) | ((config_type & 0x3) << 17)
-                                | ((1 if indirect else 0) << 16)
-                                | ((vsa4 & 0x3) << 14) | elem_bytes)
-            asm(CONFIG, cfg_rs1, cfg_rs2)
-            asm(CONFIG2, i64_const((dram4[0] << 32) | (dram4[1] & 0xFFFFFFFF)),
-                i64_const((dram4[2] << 32) | (dram4[3] & 0xFFFFFFFF)))
-            asm(CONFIG3, i64_const((spad4[0] << 32) | (spad4[1] & 0xFFFFFFFF)),
-                i64_const((spad4[2] << 32) | (spad4[3] & 0xFFFFFFFF)))
+            ind_addr = None
+            ind_stride = ind_esize = 0
             if indirect:
                 sym = FlatSymbolRefAttr(offset_sym).value if not isinstance(offset_sym, str) else offset_sym
                 off_ty = sym2type[sym]
                 ind_base = memref.ExtractAlignedPointerAsIndexOp(memref.GetGlobalOp(off_ty, sym).result).result
                 ind_addr = arith.IndexCastOp(i64, ind_base).result
                 ind_esize = _elem_bytes(off_ty.element_type)
-                off_stride = IntegerAttr(op.attributes["offset_stride"]).value
-                asm(CONFIG4, ind_addr, i64_const(((ind_esize & 0xFF) << 16) | (off_stride & 0xFFFF)))
+                ind_stride = IntegerAttr(op.attributes["offset_stride"]).value
+            slots = _pack_desc(shape4, dram4, spad4, elem_bytes, vlane_stride, vsa4,
+                               config_type, indirect, ind_stride, ind_esize)
+            desc_ptr = desc_ptr_and_store_indirect(slots, ind_addr)
+            asm(CONFIG_DESC, desc_ptr, i64_const(0))
             asm(dma_type_val, dram_addr, spad_addr)
 
         if offset_sym is not None:

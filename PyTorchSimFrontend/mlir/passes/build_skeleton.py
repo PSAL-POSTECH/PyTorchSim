@@ -47,7 +47,7 @@ from .build_tog import (
 )
 
 #: Marker op names for the passes/__init__ fast-path (skip parsing if absent).
-MARKERS = ("togsim.transfer", "memref.dma_wait")
+MARKERS = ("togsim.transfer", "togsim.wait")
 
 #: Ops the DCE must never remove (loops, terminators, our API ops).
 _KEEP = {
@@ -514,7 +514,7 @@ def _emit_dmas_and_waits(ctx, block, builder, dma_by_op, bufs):
             _emit_one_dma(ctx, op, node, builder, bufs, tags)
             originals.append(op)
             n_dma += 1
-        elif name == "memref.dma_wait":
+        elif name == "togsim.wait":
             if _emit_one_wait(ctx, op, tags):
                 n_wait += 1
             originals.append(op)

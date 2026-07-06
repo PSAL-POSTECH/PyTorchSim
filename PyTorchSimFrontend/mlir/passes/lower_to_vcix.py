@@ -340,17 +340,19 @@ def _lower_matmul(op, SS, vlen):
     from mlir.dialects import arith
 
     A, B, C = op.operands[0], op.operands[1], op.operands[2]
-    mtA, mtB = ir.MemRefType(A.type), ir.MemRefType(B.type)
-    elt = mtA.element_type
+    mtA, mtB, mtC = ir.MemRefType(A.type), ir.MemRefType(B.type), ir.MemRefType(C.type)
+    eltA, eltB, eltC = mtA.element_type, mtB.element_type, mtC.element_type
     M, K, N = mtA.shape[0], mtA.shape[1], mtB.shape[1]
+
     # Mirror the C++ guard: a dimension > SS must be an exact multiple, else the
     # N//SS / K//SS loop trip counts below silently drop the tail tile.
     for _dim, _name in ((M, "M"), (N, "N"), (K, "K")):
         if _dim > SS and _dim % SS != 0:
             raise NotImplementedError(
                 f"matmul {_name}={_dim} must be a multiple of systolic size {SS} when > {SS}")
-    elen = _elt_bits(elt)
-    nr_element = vlen // elen
+    
+    elenA, elenB, elenC = _elt_bits(eltA), _elt_bits(eltB), _elt_bits(eltC)
+    nr_eltA, nr_eltB, nr_eltC = vlen // elenA, vlen // elenB, vlen // elenC
     i64 = ir.IntegerType.get_signless(64)
     def a64(v): return ir.IntegerAttr.get(i64, v)
 
@@ -362,9 +364,14 @@ def _lower_matmul(op, SS, vlen):
     if is_conv2d:                  # inner = [k_h, k_w, o_h, o_w]
         tile_kw, tile_oh, tile_ow = inner[1], inner[2], inner[3]
 
-    vectorType = ir.VectorType.get([nr_element], elt)
-    nr_m = max(min(M, nr_element), 2)
-    vectorMType = ir.VectorType.get([nr_m], elt)
+    vectorTypeA = ir.VectorType.get([nr_eltA], eltA)
+    vectorTypeC = ir.VectorType.get([nr_eltC], eltC)
+    
+    nr_m = max(min(M, nr_eltA), 2)
+    vectorMTypeA = ir.VectorType.get([nr_m], eltA)
+    
+    nr_m_c = max(min(M, nr_eltC), 2)
+    vectorMTypeC = ir.VectorType.get([nr_m_c], eltC)
     spad_map, spadX, spadY = _spad_maps()
 
     idxMap = [0, 1, 2]
@@ -445,11 +452,13 @@ def _lower_matmul(op, SS, vlen):
           if is_conv2d else ir.InsertionPoint(op))
     with ip:
         c0 = _const_index(0)
-        rvl = arith.ConstantOp(i64, a64(nr_element)).result
+        rvl = arith.ConstantOp(i64, a64(nr_eltA)).result
+        rvl_c = arith.ConstantOp(i64, a64(nr_eltC)).result
         K_val, N_val, M_val = _const_index(K), _const_index(N), _const_index(M)
         push_val = _const_index(push_length)
         num1 = _const_index(1)
-        zero_pad = arith.ConstantOp(elt, ir.FloatAttr.get(elt, 0.0)).result
+        zero_pad = arith.ConstantOp(eltA, ir.FloatAttr.get(eltA, 0.0)).result
+        zero_pad_c = arith.ConstantOp(eltC, ir.FloatAttr.get(eltC, 0.0)).result
 
     # --- inner N / K loops ---
     from mlir.dialects import affine
@@ -478,8 +487,8 @@ def _lower_matmul(op, SS, vlen):
         nk_inner = kl
     else:
         with body_ip:
-            zv = ir.DenseElementsAttr.get_splat(vectorType, ir.FloatAttr.get(elt, 0.0))
-            zero_vector = arith.ConstantOp(vectorType, zv).result
+            zv = ir.DenseElementsAttr.get_splat(vectorTypeA, ir.FloatAttr.get(eltA, 0.0))
+            zero_vector = arith.ConstantOp(vectorTypeA, zv).result
 
     n_tag = c0 if N == subtileN else n_idx
     k_tag = c0 if K == subtileK else k_idx
@@ -509,12 +518,12 @@ def _lower_matmul(op, SS, vlen):
             _dma_wait(BTag, btag_idx, num1)
 
         # --- weight push loop (K x N) ---
-        for i in range(0, SS, nr_element):
+        for i in range(0, SS, nr_eltA):
             if i < K:
                 sp = _apply(spad_map, [n_idx, k_idx, _const_index(i), K_val, _const_index(SS)])
                 wx = _apply(spadX, [sp, N_val])
                 wy = _apply(spadY, [sp, N_val])
-                wv = _transfer_read(vectorType, B, [wx, wy], zero_pad)
+                wv = _transfer_read(vectorTypeA, B, [wx, wy], zero_pad)
             else:
                 wv = zero_vector
             _vcix("vcix.iv", [wv, rvl], [],
@@ -581,28 +590,28 @@ def _lower_matmul(op, SS, vlen):
                 _dma_wait(BiasTag, bias_tag_idx, num1)
 
         # --- input push loop (M x K) ---
-        for i in range(0, M_LOOP, nr_element):
+        for i in range(0, M_LOOP, nr_eltA):
             sp = _apply(spad_map, [k_idx, m_idx, _const_index(i), M_val, push_val])
             x = _apply(spadX, [sp, K_val])
             y = _apply(spadY, [sp, K_val])
-            iv = _transfer_read(vectorMType, A, [x, y], zero_pad)
+            iv = _transfer_read(vectorMTypeA, A, [x, y], zero_pad)
             _vcix("vcix.iv", [iv, rvl], [],
                   {"opcode": a64(0), "imm": a64(0), "rd": a64(0)})
 
         # --- compute ---
         _vcix("vcix.i", [rvl], [],
               {"opcode": a64(1), "imm": a64(4), "rd": a64(0), "rs2": a64(0),
-               "sew": a64(elen), "lmul": a64(0)})
+               "sew": a64(elenA), "lmul": a64(0)})
 
         # --- pop loop (M x N) ---
-        for i in range(0, M_LOOP, nr_element):
+        for i in range(0, M_LOOP, nr_eltC):
             sp = _apply(spad_map, [n_idx, m_idx, _const_index(i), M_val, push_val])
-            vpop = _vcix("vcix.v.i", [rvl], [vectorMType],
+            vpop = _vcix("vcix.v.i", [rvl_c], [vectorMTypeC],
                          {"opcode": a64(2), "imm": a64(0), "rs2": a64(0)}).results[0]
             x = _apply(spadX, [sp, N_val])
             y = _apply(spadY, [sp, N_val])
-            prev = _transfer_read(vectorMType, C, [x, y], zero_pad)
-            if ir.IntegerType.isinstance(elt):
+            prev = _transfer_read(vectorMTypeC, C, [x, y], zero_pad_c)
+            if ir.IntegerType.isinstance(eltC):
                 out = arith.AddIOp(prev, vpop).result
             else:
                 out = arith.AddFOp(prev, vpop).result

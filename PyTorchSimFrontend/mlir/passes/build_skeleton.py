@@ -6,7 +6,7 @@ shape-parametric C++ trace producer. The producer is just the kernel's loop
 skeleton with the data computation replaced by calls to the event-based runtime
 API. This pass performs that reduction at the MLIR level:
 
-  * `memref.dma_start`  -> `togsim.dma(...) {tag_id, is_async, ...}` carrying the
+  * `togsim.transfer`   -> `togsim.dma(...) {tag_id, is_async, ...}` carrying the
                             runtime tag index operand (`%tag[%idx]`).
   * `memref.dma_wait`   -> `togsim.memory_barrier(tag_idx) {tag_id, write_bufs}`,
                             the explicit async-DMA sync. It pairs with its dma by
@@ -47,7 +47,7 @@ from .build_tog import (
 )
 
 #: Marker op names for the passes/__init__ fast-path (skip parsing if absent).
-MARKERS = ("memref.dma_start", "memref.dma_wait")
+MARKERS = ("togsim.transfer", "memref.dma_wait")
 
 #: Ops the DCE must never remove (loops, terminators, our API ops).
 _KEEP = {
@@ -75,7 +75,7 @@ def _arg_id_of(base_addr):
 
 
 def _emit_dma(ctx, dma_node, tag_id, dram_index, tag_index, read_bufs, write_bufs):
-    """Insert a `togsim.dma` before the original `memref.dma_start`.
+    """Insert a `togsim.dma` before the original `togsim.transfer`.
 
     `tag_id` is the identity of this DMA's tag memref. An async DMA pairs with
     its `togsim.memory_barrier` (the original dma_wait) by the RUNTIME tag slot
@@ -84,7 +84,7 @@ def _emit_dma(ctx, dma_node, tag_id, dram_index, tag_index, read_bufs, write_buf
     only a runtime key can pair iteration i's dma with iteration i's wait.
 
     `dram_index` is the original linear DRAM index Value (the `affine.apply`
-    result that indexed the tensor in the `memref.dma_start`) -- carried as an
+    result that indexed the tensor in the `togsim.transfer`) -- carried as an
     operand so the DCE keeps the address arithmetic live and the C4 lowering can
     compute the real `base_addr = base[arg_id] + index*elem` (P3, approach A).
 
@@ -425,25 +425,51 @@ def _emit_computes(ctx, builder, bufs):
     return n
 
 
+def _transfer_fields(op):
+    """Decode a `togsim.transfer`'s fixed operands by position.
+
+    Layout (see mlir_codegen_backend.emit_transfer / lower_transfer_to_gemmini):
+        operands: dram, dram_idx, sram, sram_idx, tag, tag_idx, dma_type, vst
+                  [, offset_spad]        # 8 or 9 operands
+    Unlike the old `memref.dma_start`, dram/sram are FIXED (not direction-swapped):
+    the DRAM side is always operand[0]/[1], the SRAM spad always operand[2], the
+    runtime tag slot always operand[4] (tag memref) + operand[5] (tag_idx). The
+    optional indirect-offset spad is operand[8]; its owning `memref.get_global`
+    carries the offset symbol name in its "name" attribute (matching
+    lower_transfer_to_gemmini's offset_sym derivation)."""
+    operands = list(op.operands)
+    offset = operands[8] if len(operands) > 8 else None
+    return {
+        "dram": operands[0], "dram_idx": operands[1],
+        "sram": operands[2], "sram_idx": operands[3],
+        "tag": operands[4], "tag_idx": operands[5],
+        "dma_type": operands[6], "vst": operands[7],
+        "offset": offset,
+    }
+
+
 def _emit_one_dma(ctx, op, node, builder, bufs, tags):
-    """Rewrite one memref.dma_start as togsim.dma. A load reads DRAM and writes
+    """Rewrite one togsim.transfer as togsim.dma. A load reads DRAM and writes
     its SRAM spad; a store reads the spad and writes DRAM -- which sets the
     read/write buffer that drives the dependency edge (sec 10). The tag memref is
     bound to a tag_id (with its loaded buffer) so the paired memory_barrier finds
     it by the runtime tag slot."""
     from . import dep_analysis as dep  # lazy: dep_analysis imports build_skeleton
-    f = builder._dma_start_fields(op)
-    dram_indices = f["dst_indices"] if node.is_write else f["src_indices"]
-    dram_index = dram_indices[0] if dram_indices else None
-    tag_indices = f["tag_indices"]
-    tag_index = tag_indices[0] if tag_indices else None
-    # the spad is the SRAM side of the copy: dst for a load, src for a store.
-    spad_id = bufs.of(dep._global_of(f["src"] if node.is_write else f["dst"]))
+    f = _transfer_fields(op)
+    # dram/sram are fixed operands now (not direction-swapped): the DRAM index is
+    # always operand[1], the SRAM spad always operand[2]. Direction (read/write)
+    # comes from the node (dma_kind attr / dma_type value).
+    dram_index = f["dram_idx"]
+    tag_index = f["tag_idx"]  # single runtime tag slot operand (%tag[%idx])
+    spad_id = bufs.of(dep._global_of(f["sram"]))
     read_bufs = [spad_id] if node.is_write else []
     write_bufs = [] if node.is_write else [spad_id]
-    if "indirect_offset" in op.attributes:  # gather/scatter reads the offset spad -> dep on its build
-        from mlir.ir import FlatSymbolRefAttr
-        off_id = bufs.of(FlatSymbolRefAttr(op.attributes["indirect_offset"]).value)
+    if f["offset"] is not None:  # gather/scatter reads the offset spad -> dep on its build
+        # the offset symbol name lives on the offset operand's owning get_global
+        # ("name" attr), the same place lower_transfer_to_gemmini reads it.
+        off_owner = f["offset"].owner
+        off_sym = str(off_owner.attributes["name"]).strip('@" ')
+        off_id = bufs.of(off_sym)
         if off_id not in read_bufs:
             read_bufs = read_bufs + [off_id]
     tag_id = tags.bind(_value_key(f["tag"]), spad_id)
@@ -470,7 +496,7 @@ def _emit_one_wait(ctx, op, tags):
 
 
 def _emit_dmas_and_waits(ctx, block, builder, dma_by_op, bufs):
-    """Step 2: rewrite memref.dma_start -> togsim.dma and memref.dma_wait ->
+    """Step 2: rewrite togsim.transfer -> togsim.dma and memref.dma_wait ->
     togsim.memory_barrier in program order. An async dma and its barrier are
     paired by the RUNTIME tag slot (tag_id + tag index), not a compile-time id:
     one static dma op runs per loop iteration with a different `%tag[%idx]`, so
@@ -481,7 +507,7 @@ def _emit_dmas_and_waits(ctx, block, builder, dma_by_op, bufs):
     n_dma = n_wait = 0
     for op in list(walk_ops(block)):
         name = op.operation.name
-        if name == "memref.dma_start":
+        if name == "togsim.transfer":
             node = dma_by_op.get(id(op.operation))
             if node is None:
                 continue

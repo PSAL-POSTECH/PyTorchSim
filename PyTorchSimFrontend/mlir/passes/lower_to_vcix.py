@@ -255,8 +255,9 @@ def _transfer_write(value, dest, indices):
 
 
 def _dma_wait(tag, idx, num_elements):
-    from mlir.dialects import memref
-    memref.DmaWaitOp(tag, [idx], num_elements)
+    # togsim-level counterpart of the async-DMA barrier (paired with togsim.transfer),
+    # instead of memref.dma_wait -- no memref.* DMA ops remain in the pipeline.
+    ir.Operation.create("togsim.wait", results=[], operands=[tag, idx, num_elements])
 
 
 def _vcix(name, operands, result_tys, attrs):
@@ -277,22 +278,29 @@ def _reaches(value, target):
 
 
 class _DmaView:
-    """Positional view of a customized memref.dma_start (see lower_dma_to_gemmini)."""
+    """Positional view of a togsim.transfer op (see emit_transfer /
+    lower_transfer_to_gemmini).
+
+    New operand layout: (dram, dram_idx, sram, sram_idx, tag, tag_idx, dma_type,
+    vst [, offset]). Direction (which of dram/sram is source vs dest) comes from
+    the `dma_kind` attr ("MVIN"|"MVOUT"), not from operand position. To keep the
+    downstream _dram_is_write(src, dst) / `sram = d.dst` logic working (it
+    distinguishes MVIN loads from MVOUT stores by memory space), src/dst are
+    exposed direction-swapped: MVIN -> src=dram, dst=sram; MVOUT -> src=sram,
+    dst=dram."""
 
     def __init__(self, op):
         self.op = op
         operands = list(op.operands)
-        src_rank = len(ir.MemRefType(operands[0].type).shape)
-        i = 0
-        self.src = operands[i]; i += 1
-        i += src_rank
-        self.dst = operands[i]; i += 1
-        dst_rank = len(ir.MemRefType(self.dst.type).shape)
-        i += dst_rank
-        i += 1  # num_elements
-        self.tag = operands[i]; i += 1
-        tag_rank = len(ir.MemRefType(self.tag.type).shape)
-        self.tag_idx = operands[i:i + tag_rank]
+        dram = operands[0]
+        sram = operands[2]
+        self.tag = operands[4]
+        self.tag_idx = [operands[5]]
+        kind = ir.StringAttr(op.attributes["dma_kind"]).value
+        if kind == "MVOUT":
+            self.src, self.dst = sram, dram
+        else:  # MVIN (load)
+            self.src, self.dst = dram, sram
 
     def subtile_size(self):
         a = self.op.attributes
@@ -358,10 +366,9 @@ def _lower_matmul(op, SS, vlen):
     BiasIdx = None
     subtileM, subtileN, subtileK = M, N, K
     a_subk = b_subk = None
-    # Mirror the C++ isAInitialized / isBInitialized flags: an operand is
-    # "initialized" either by an MVIN dma_start (tag found below) or by a
-    # preceding affine.vector_store into its root memref (the fused case, e.g.
-    # SDPA scores.V where B is the softmax output produced in-place, not DMAed).
+    # Mirror the C++ isAInitialized / isBInitialized flags: an operand is initialized
+    # either by an MVIN togsim.transfer (tag found below) or by a preceding
+    # affine.vector_store into its root memref (the fused case, e.g. SDPA scores.V).
     isAInit = isBInit = False
 
     def _root(v):
@@ -380,7 +387,7 @@ def _lower_matmul(op, SS, vlen):
             elif dest == rootB:
                 isBInit = True
             continue
-        if o.operation.name != "memref.dma_start":
+        if o.operation.name != "togsim.transfer":
             continue
         d = _DmaView(o.operation)
         dram, is_write = _dram_is_write(d.src, d.dst)

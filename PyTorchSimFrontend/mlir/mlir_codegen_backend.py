@@ -1404,10 +1404,10 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         if subtile_size:
             av = int(async_type) if async_type is not None else 1
             attrs += f', subtile_size = {list(subtile_size)}, async = {av} : i64'
-        # operands: dram, dram_idx, sram, sram_idx, tag, dma_type, vlane_stride [, offset spad]
+        # operands: dram, dram_idx, sram, sram_idx, tag, tag_idx, dma_type, vlane_stride [, offset spad]
         operands = (f'%{dram_var}, %{dram_index_var}, %{sram_var}, %{zero_cse}, '
-                    f'%{tag}, %{dma_type}, %{vst}')
-        optypes = f'{dram_shape}, index, {tile_shape}, index, memref<1xi32>, index, index'
+                    f'%{tag}, %{zero_cse}, %{dma_type}, %{vst}')
+        optypes = f'{dram_shape}, index, {tile_shape}, index, memref<1xi32>, index, index, index'
         if offset is not None:  # indirect: per-position offset spad (decompose lifts it to a symbol attr)
             offset_buf, offset_type, offset_stride = offset
             operands += f', %{offset_buf}'

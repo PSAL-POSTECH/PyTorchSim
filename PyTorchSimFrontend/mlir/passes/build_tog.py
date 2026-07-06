@@ -608,11 +608,11 @@ class TogBuilder:
                             self.print_operation(inner, loop_node)
                 return
 
-        if name == "memref.dma_start":
+        if name == "togsim.transfer":
             self._handle_dma_start(op, node)
             return
 
-        if name == "memref.dma_wait":
+        if name == "togsim.wait":
             self._handle_dma_wait(op, node)
             return
 
@@ -716,36 +716,60 @@ class TogBuilder:
             return
         self._append_vector_compute(node, op)
 
-    # ---- dma_start ----
-    def _dma_start_fields(self, op):
-        """Decode memref.dma_start operands by memref ranks.
+    # ---- transfer (formerly memref.dma_start) ----
+    @staticmethod
+    def _transfer_is_load(op, dma_type_operand):
+        """True if a `togsim.transfer` is a load (DRAM -> SRAM), False for a store.
 
-        Layout: src[srcIdx], dst[dstIdx], numElements, tag[tagIdx], stride,
-        numElementsPerStride.
-        """
+        Prefer the `dma_kind` attr ("MVIN"/"MVIN2"/"MVIN3" load, "MVOUT" store);
+        fall back to the `dma_type` operand constant (MVIN=2/MVIN2=1/MVIN3=14 are
+        loads, MVOUT=3 is a store)."""
+        oper = op.operation
+        if "dma_kind" in oper.attributes:
+            try:
+                kind = ir.StringAttr(oper.attributes["dma_kind"]).value
+            except Exception:
+                kind = str(oper.attributes["dma_kind"]).strip('"')
+            if kind:
+                return kind.upper().startswith("MVIN")
+        c = _const_index_value(dma_type_operand)
+        if c is not None:
+            return c in (1, 2, 14)
+        return True
+
+    def _dma_start_fields(self, op):
+        """Decode a `togsim.transfer` into the legacy src/dst view.
+
+        togsim.transfer operand layout (mirrors build_skeleton._transfer_fields /
+        lower_transfer_to_gemmini):
+            dram, dram_idx, sram, sram_idx, tag, tag_idx, dma_type, vst[, offset]
+        The DRAM side is always operand[0]/[1], the SRAM spad operand[2]/[3], the
+        runtime tag slot operand[4] (tag memref) + operand[5] (tag_idx). The
+        optional indirect-offset spad is operand[8].
+
+        Direction (from dma_kind / dma_type) decides the src/dst mapping so the
+        rest of build_tog keeps the old memref.dma_start convention: for a load
+        the DRAM side is the SOURCE and the SRAM spad the DEST; a store reverses
+        it. src/dst therefore still carry the right memory spaces (DRAM=0,
+        SRAM=1) that `_handle_dma_start` recovers is_write from."""
         operands = list(op.operands)
-        i = 0
-        src = operands[i]
-        src_type = src.type
-        src_rank = len(ir.MemRefType(src_type).shape)
-        i += 1
-        src_indices = operands[i:i + src_rank]
-        i += src_rank
-        dst = operands[i]
-        dst_type = dst.type
-        dst_rank = len(ir.MemRefType(dst_type).shape)
-        i += 1
-        dst_indices = operands[i:i + dst_rank]
-        i += dst_rank
-        i += 1  # numElements
-        tag = operands[i]
-        tag_rank = len(ir.MemRefType(tag.type).shape)
-        i += 1
-        tag_indices = operands[i:i + tag_rank]
+        dram, dram_idx = operands[0], operands[1]
+        sram, sram_idx = operands[2], operands[3]
+        tag, tag_idx = operands[4], operands[5]
+        dma_type = operands[6]
+        offset = operands[8] if len(operands) > 8 else None
+
+        if self._transfer_is_load(op, dma_type):   # DRAM -> SRAM
+            src, src_idx = dram, dram_idx
+            dst, dst_idx = sram, sram_idx
+        else:                                       # SRAM -> DRAM
+            src, src_idx = sram, sram_idx
+            dst, dst_idx = dram, dram_idx
         return {
-            "src": src, "src_type": src_type, "src_indices": src_indices,
-            "dst": dst, "dst_type": dst_type, "dst_indices": dst_indices,
-            "tag": tag, "tag_indices": tag_indices,
+            "src": src, "src_type": src.type, "src_indices": [src_idx],
+            "dst": dst, "dst_type": dst.type, "dst_indices": [dst_idx],
+            "tag": tag, "tag_indices": [tag_idx],
+            "dma_type": dma_type, "offset": offset,
         }
 
     def _handle_dma_start(self, op, node):
@@ -776,7 +800,7 @@ class TogBuilder:
         tile_size = [int(x) for x in tile_shape]
 
         tile_stride = []
-        ds = _int_array_attr(oper, "dram_stride")
+        ds = _int_array_attr(oper, "dram_stride")   # TOGDMANode.tile_stride keeps the DRAM stride (as before)
         if ds:
             tile_stride = list(ds)
 
@@ -857,10 +881,11 @@ class TogBuilder:
     # ---- dma_wait ----
     def _handle_dma_wait(self, op, node):
         oper = op.operation
+        # togsim.wait operands: (tag[0], tag_idx[1], num_elements[2]). tag_idx is
+        # now a single operand (memref.dma_wait had a variadic [tag_idx]).
         operands = list(oper.operands)
         tag = operands[0]
-        tag_rank = len(ir.MemRefType(tag.type).shape)
-        tag_indices = operands[1:1 + tag_rank]
+        tag_indices = operands[1:2]
 
         tag_index_list = []
         tag_stride_list = []
@@ -880,11 +905,11 @@ class TogBuilder:
                 tag_stride_list = _collect_coefficients(amap.results[0])
                 tag_divider_list = _collect_dividers(amap.results[0])
 
-        # base address: scan users of tag memref for a dma_start.
+        # base address: scan users of tag memref for a togsim.transfer.
         address = "arg"
         for use in tag.uses:
             user = use.owner
-            if user.name == "memref.dma_start":
+            if user.name == "togsim.transfer":
                 f = self._dma_start_fields(user)
                 dst_space = _memref_space(f["dst_type"])
                 src_space = _memref_space(f["src_type"])

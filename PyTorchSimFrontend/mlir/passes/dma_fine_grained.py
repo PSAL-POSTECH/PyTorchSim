@@ -11,13 +11,16 @@ The C++ pass fuses the two subtile loop nests by cloning their bodies with an
 IRMapping; the MLIR Python bindings expose no IRMapping, so this port builds the
 fused nest directly and emits each DMA inside it using the fused induction vars
 (equivalence target: same loop structure / counts, same offset maps, same
-dma_start operands+attrs -- validated against mlir-opt -dma-fine-grained and the
-end-to-end gemm/conv/model tests, not byte-exact SSA text).
+togsim.transfer operands+attrs -- validated against mlir-opt -dma-fine-grained and
+the end-to-end gemm/conv/model tests, not byte-exact SSA text).
 
-Operates on the customized memref.dma_start convention (see lower_dma_to_gemmini):
-operands = src, *src_idx, dst, *dst_idx, num_elements(dma_type), tag, *tag_idx,
-stride(=vlane_split_axis), num_elements_per_stride(=vlane_stride). MVIN dma_type in
-{2,1,14}; tile shape = dst shape for MVIN.
+Operates on the togsim.transfer convention (see mlir_codegen_backend.emit_transfer
+and lower_transfer_to_gemmini): operands = dram, dram_idx, sram, sram_idx, tag,
+tag_idx, dma_type, vst(=vlane_stride)[, offset]; attrs = dma_kind, vlane_split_axis
+(i64), dram_stride[], tile_stride[], padding, [subtile_size, async]. Direction is
+derived from dma_kind / dma_type: MVIN => src=dram, dst=sram; MVOUT => src=sram,
+dst=dram. tile shape = the sram memref shape for BOTH directions. MVIN dma_type in
+{2,1,14}.
 
 Pipeline entry point: run_fine_grained(in_path, out_path, vectorlane).
 """
@@ -62,25 +65,37 @@ def _is_block_arg(v):
 
 
 class _Dma:
-    """Positional view of a customized memref.dma_start op."""
+    """Positional view of a togsim.transfer op.
+
+    operands: dram, dram_idx, sram, sram_idx, tag, tag_idx, dma_type, vst[, offset]
+    Direction from dma_kind / dma_type: MVIN => src=dram, dst=sram (MVOUT swaps).
+    self.src_idx is a single-element list holding the base DRAM idx for MVIN (the
+    SRAM idx for MVOUT); tile_shape is always the sram memref shape.
+    """
 
     def __init__(self, op):
         self.op = op
         operands = list(op.operands)
-        src_rank = len(ir.MemRefType(operands[0].type).shape)
-        i = 0
-        self.src = operands[i]; i += 1
-        self.src_idx = operands[i:i + src_rank]; i += src_rank
-        self.dst = operands[i]; i += 1
-        dst_rank = len(ir.MemRefType(self.dst.type).shape)
-        self.dst_idx = operands[i:i + dst_rank]; i += dst_rank
-        self.num_elements = operands[i]; i += 1
-        self.tag = operands[i]; i += 1
-        tag_rank = len(ir.MemRefType(self.tag.type).shape)
-        self.tag_idx = operands[i:i + tag_rank]; i += tag_rank
-        self.stride = operands[i]; i += 1          # = vlane_split_axis
-        self.num_elements_per_stride = operands[i]  # = vlane_stride
-        self.src_rank, self.dst_rank, self.tag_rank = src_rank, dst_rank, tag_rank
+        # dram, dram_idx, sram, sram_idx, tag, tag_idx, dma_type, vst[, offset]
+        self.dram = operands[0]
+        self.dram_idx = operands[1]
+        self.sram = operands[2]
+        self.sram_idx = operands[3]
+        self.tag = operands[4]
+        self.tag_idx = operands[5]
+        self.num_elements = operands[6]           # = dma_type const operand
+        self.num_elements_per_stride = operands[7]  # = vlane_stride (vst)
+
+        self.sram_rank = len(ir.MemRefType(self.sram.type).shape)
+        # Direction: MVIN reads dram -> sram; MVOUT writes sram -> dram.
+        if self.is_mvin:
+            self.src, self.dst = self.dram, self.sram
+            self.src_idx = [self.dram_idx]
+        else:
+            self.src, self.dst = self.sram, self.dram
+            self.src_idx = [self.sram_idx]
+        self.src_rank = len(ir.MemRefType(self.src.type).shape)
+        self.dst_rank = len(ir.MemRefType(self.dst.type).shape)
 
     @property
     def dma_type(self):
@@ -92,21 +107,21 @@ class _Dma:
 
     @property
     def vlane_split_axis(self):
-        return _const_int(self.stride)
+        return ir.IntegerAttr(self.op.attributes["vlane_split_axis"]).value
 
     @property
     def vlane_stride(self):
         return _const_int(self.num_elements_per_stride) & 0x7FFF
 
     def tile_shape(self):
-        mt = ir.MemRefType((self.dst if self.is_mvin else self.src).type)
-        return list(mt.shape)
+        return list(ir.MemRefType(self.sram.type).shape)
 
     def subtile_size(self):
         return attr_i64_array(self.op, "subtile_size", default=[])
 
     def sram_stride(self):
-        return attr_i64_array(self.op, "sram_stride", default=[])
+        # togsim.transfer names the spad stride "tile_stride".
+        return attr_i64_array(self.op, "tile_stride", default=[])
 
     def dram_stride(self):
         return attr_i64_array(self.op, "dram_stride", default=[])
@@ -200,10 +215,13 @@ def _apply(map_, operands, ip):
 
 
 def _dma_attrs(dma):
-    """Mirror getDmaAttrs: keep subtile/sram/dram strides, set async + fine_grained."""
+    """Build the emitted togsim.transfer's attrs: copy dma_kind, vlane_split_axis,
+    dram_stride, tile_stride (the spad stride), subtile_size and padding straight
+    from the source op; set async (BoolAttr) + fine_grained (BoolAttr true)."""
     attrs = {}
     op = dma.op
-    for k in ("subtile_size", "sram_stride", "dram_stride"):
+    for k in ("dma_kind", "vlane_split_axis", "dram_stride", "tile_stride",
+              "subtile_size", "padding"):
         if k in op.attributes:
             attrs[k] = op.attributes[k]
     attrs["async"] = ir.BoolAttr.get(dma.is_async())
@@ -212,26 +230,20 @@ def _dma_attrs(dma):
 
 
 def _emit_dma(dma, ivs, vectorlane, ip):
-    """Emit one fine-grained memref.dma_start at `ip`, indexed by `ivs` (the fused
+    """Emit one fine-grained togsim.transfer at `ip`, indexed by `ivs` (the fused
     induction vars for this DMA's dims, in dim order)."""
-    idx_ty = ir.IndexType.get()
-    zero = _const_index(0, ip)
-
     dram_off = _apply(_build_dram_map(dma), ivs, ip)
-    src_idx0 = dma.src_idx[0]
-    dram_idx = _apply(_sum_map(), [dram_off, src_idx0], ip)
+    # DRAM base index = the original transfer's dram_idx operand.
+    dram_idx = _apply(_sum_map(), [dram_off, dma.dram_idx], ip)
 
+    # SRAM offset is a SINGLE linear sram_idx operand (row-major stride 1).
     sram_off = _apply(_build_sram_map(dma, vectorlane), ivs, ip)
+    # Per-subtile tag index (required for async DMA<->barrier pairing downstream).
     tag_idx = _apply(_build_tag_map(dma, list(range(len(dma.tile_shape())))), ivs, ip)
 
-    # SRAM indices: zeros except the last = sram offset (mirror sramIndices.back()).
-    sram_indices = [zero] * dma.dst_rank
-    sram_indices[-1] = sram_off
-
-    operands = [dma.src, dram_idx, dma.dst, *sram_indices,
-                dma.num_elements, dma.tag, tag_idx,
-                dma.stride, dma.num_elements_per_stride]
-    ir.Operation.create("memref.dma_start", results=[], operands=operands,
+    operands = [dma.dram, dram_idx, dma.sram, sram_off,
+                dma.tag, tag_idx, dma.num_elements, dma.num_elements_per_stride]
+    ir.Operation.create("togsim.transfer", results=[], operands=operands,
                         attributes=_dma_attrs(dma), ip=ip)
 
 
@@ -320,7 +332,7 @@ def _run_func(func, vectorlane):
         name = op.operation.name
         if name == "linalg.matmul" and matmul is None:
             matmul = op
-        elif name == "memref.dma_start":
+        elif name == "togsim.transfer":
             dmas.append(op)
     if matmul is None:
         return

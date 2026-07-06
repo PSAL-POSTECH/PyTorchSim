@@ -50,15 +50,15 @@ def run_standard_lowering(in_path, out_path=None, timing=False):
         out_path = in_path
     from mlir.ir import Context, Module, Location
     from mlir.passmanager import PassManager
-    from . import lower_dma_to_gemmini
+    from . import lower_transfer_to_gemmini
     ctx = Context()
     ctx.allow_unregistered_dialects = True
     with ctx, Location.unknown():
         with open(in_path) as f:
             module = Module.parse(f.read())
-        # Imperative Python pass: memref.dma_start/dma_wait -> Gemmini asm (replaces
-        # the C++ test-memref-to-gemmini), then the registered standard lowering.
-        lower_dma_to_gemmini.run(module, timing=timing)
+        # Imperative Python pass: togsim.transfer -> Gemmini asm directly (no
+        # memref.dma_start intermediate), then the registered standard lowering.
+        lower_transfer_to_gemmini.run(module, timing=timing)
         PassManager.parse(STANDARD_PIPELINE, ctx).run(module.operation)
         with open(out_path, "w") as f:
             f.write(str(module))

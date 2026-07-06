@@ -41,9 +41,8 @@ from .lower_to_vcix import run_to_vcix  # noqa: F401 (re-exported; standalone/CL
 
 # Module rewrite passes around the one remaining mlir-opt pass (-test-loop-padding).
 # Each exposes MARKERS + run(module, **opts); run_module_passes parses once per phase.
-# decompose_transfer first: togsim.transfer -> memref.dma_start (downstream expects it).
+# togsim.transfer survives to lower_transfer_to_gemmini; loop-padding runs opaquely.
 PRE_OPT_PASSES = [
-    decompose_transfer,
     lower_vlane_idx,
 ]
 # fine-grained first: splits the matmul DMAs that the vcix lowering then reads.

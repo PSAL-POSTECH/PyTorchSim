@@ -51,7 +51,7 @@ def mlir_compile_command(filename, vectorlane_size, vlen=256):
     return [re.sub(r"[ \n]+", " ",
         f"""
             {extension_config.CONFIG_TORCHSIM_LLVM_PATH}/mlir-opt \
-            -test-loop-padding \
+            -test-loop-padding --allow-unregistered-dialect \
             {'--mlir-print-ir-after-all' if extension_config.CONFIG_TORCHSIM_DUMP_MLIR_IR else ''} \
             {filename}.mlir -o {filename}_padded.mlir
         """,
@@ -86,7 +86,7 @@ def mlir_gem5_compile_command(filename, sample_filename, vectorlane_size, vlen=2
     return [re.sub(r"[ \n]+", " ",
         f"""
             {extension_config.CONFIG_TORCHSIM_LLVM_PATH}/mlir-opt \
-            -test-loop-padding='timing_mode=1' \
+            -test-loop-padding='timing_mode=1' --allow-unregistered-dialect \
             {'--mlir-print-ir-after-all' if extension_config.CONFIG_TORCHSIM_DUMP_MLIR_IR else ''} \
             {filename}.mlir -o {sample_filename}_padded.mlir
         """,

@@ -342,10 +342,12 @@ def decompose_native_multi_head_attention(
 
     # Step 4: Apply mask if provided
     if mask is not None:
+        attn_bias = torch.zeros_like(scores)
         if mask.dtype == torch.bool:
-            attn_bias.masked_fill_(mask.logical_not(), float("-inf"))
+            attn_bias = attn_bias.masked_fill(mask.logical_not(), float("-inf"))
         else:
-            attn_bias = mask + attn_bias
+            attn_bias = attn_bias + mask
+        scores = scores + attn_bias
 
     # Step 5: Softmax along the last dimension (seq_len dimension)
     attn_weights = F.softmax(scores, dim=-1)  # [batch, num_heads, seq_len, seq_len]

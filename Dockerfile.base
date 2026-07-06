@@ -23,35 +23,50 @@
 # THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-ARG PYTORCH_IMAGE=pytorch/pytorch:2.2.0-cuda12.1-cudnn8-runtime
+# CPU-only base. PyTorchSim never executes CUDA: the npu PrivateUse1 backend
+# (third_party/openreg) simulates CUDA behavior on the CPU and forces math-only
+# SDPA, so no GPU libraries are needed at build or run time. We stay on
+# ubuntu:22.04 (matching the prebuilt gem5/llvm/spike release ABIs: libpython3.11,
+# libprotobuf.so.23) and install the CPU PyTorch wheels.
+ARG PYTORCH_IMAGE=ubuntu:22.04
 FROM ${PYTORCH_IMAGE}
 
-# Copied from Gem5 Docker file
 ENV DEBIAN_FRONTEND=noninteractive
-RUN apt -y update && \
-    apt -y install build-essential git m4 zlib1g zlib1g-dev \
+WORKDIR /workspace
+
+# System dependencies (gem5 / TOGSim build + runtime) and Python 3.11 (deadsnakes).
+# Copied/adapted from the Gem5 Docker file.
+RUN apt-get -y update && \
+    apt-get -y install software-properties-common ca-certificates gnupg && \
+    add-apt-repository -y ppa:deadsnakes/ppa && \
+    apt-get -y update && \
+    apt-get -y install build-essential git m4 zlib1g zlib1g-dev \
     libprotobuf-dev protobuf-compiler libprotoc-dev libgoogle-perftools-dev \
-    python3-dev python-is-python3 libboost-all-dev \
-    libhdf5-serial-dev python3-pydot libpng-dev libelf-dev pkg-config pip \
-    python3-venv black libssl-dev libasan5 libubsan1 curl device-tree-compiler wget ninja-build && \
-    pip install onnx matplotlib scikit-learn pydot tabulate flash_attn && pip install --user conan==1.56.0 cmake==3.26.4 && rm -rf /var/lib/apt/lists/*
+    libboost-all-dev libhdf5-serial-dev libpng-dev libelf-dev pkg-config \
+    libssl-dev libasan6 libubsan1 curl wget device-tree-compiler ninja-build \
+    python3.11 python3.11-dev python3.11-venv python3.11-distutils && \
+    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 && \
+    update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 && \
+    curl -sS https://bootstrap.pypa.io/get-pip.py | python3.11 && \
+    rm -rf /var/lib/apt/lists/*
 
-# Download RISC-V tool chain
-RUN wget https://github.com/riscv-collab/riscv-gnu-toolchain/releases/download/2023.12.14/riscv64-glibc-ubuntu-22.04-llvm-nightly-2023.12.14-nightly.tar.gz && \
-    wget https://github.com/riscv-collab/riscv-gnu-toolchain/releases/download/2023.12.14/riscv64-elf-ubuntu-20.04-llvm-nightly-2023.12.14-nightly.tar.gz && \
-    tar -zxvf riscv64-elf-ubuntu-20.04-llvm-nightly-2023.12.14-nightly.tar.gz && tar -zxvf riscv64-elf-ubuntu-20.04-llvm-nightly-2023.12.14-nightly.tar.gz && \
-    rm *.tar.gz
+# CPU PyTorch (no CUDA wheels). torchvision is required by the vision model tests.
+RUN python3.11 -m pip install --no-cache-dir \
+    torch==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cpu
 
-# Install torchsim dependency
-RUN apt install ninja-build && pip install onnx matplotlib && pip install --user conan==1.56.0 && pip install "transformers<4.44" && pip install diffusers==0.34.0
+# TorchSim Python dependencies (numpy pinned <2 for transformers/diffusers compat).
+RUN python3.11 -m pip install --no-cache-dir \
+    "numpy<2" onnx matplotlib scikit-learn pydot tabulate \
+    "transformers<4.44" diffusers==0.34.0 \
+    conan==1.56.0 cmake==3.26.4 && \
+    python3.11 -m pip install --no-cache-dir --no-deps ultralytics && \
+    python3.11 -m pip install --no-cache-dir opencv-python-headless pandas seaborn \
+    psutil pyyaml requests tqdm py-cpuinfo
 
-# FlashAttention
-RUN python -m pip install --no-build-isolation flash-attn
-
-# Extra Python deps for YOLO/vision tests
-RUN python -m pip install -U pip setuptools wheel && \
-    python -m pip install --no-cache-dir --no-deps ultralytics && \
-    python -m pip install --no-cache-dir opencv-python-headless pandas seaborn
+# Download RISC-V tool chain (elf toolchain is the one used to build riscv-pk).
+RUN wget -q https://github.com/riscv-collab/riscv-gnu-toolchain/releases/download/2023.12.14/riscv64-elf-ubuntu-20.04-llvm-nightly-2023.12.14-nightly.tar.gz && \
+    tar -zxf riscv64-elf-ubuntu-20.04-llvm-nightly-2023.12.14-nightly.tar.gz && \
+    rm riscv64-elf-ubuntu-20.04-llvm-nightly-2023.12.14-nightly.tar.gz
 
 ENV RISCV=/workspace/riscv
 ENV PATH=$RISCV/bin:$PATH
@@ -60,7 +75,7 @@ ARG GEM5_ASSET_ID
 ARG LLVM_ASSET_ID
 ARG SPIKE_ASSET_ID
 ENV PATH=$PATH:/root/.local/bin
-ENV LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/opt/conda/lib:/usr/local/nvidia/lib:/usr/local/nvidia/lib64:$LD_LIBRARY_PATH
+ENV LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
 
 # Download GEM5 for torchsim
 RUN curl -L -H "Accept: application/octet-stream" https://api.github.com/repos/PSAL-POSTECH/gem5/releases/assets/${GEM5_ASSET_ID} -o /tmp/gem5-release.tar.gz && \
@@ -76,6 +91,11 @@ RUN curl -L -H "Accept: application/octet-stream" https://api.github.com/repos/P
 
 # Store RISC-V LLVM for TorchSim
 ENV TORCHSIM_LLVM_PATH=/riscv-llvm/bin
+# MLIR Python bindings shipped inside the LLVM release artifact (built by the
+# llvm-project CI with -DMLIR_ENABLE_BINDINGS_PYTHON=ON). Lets PyTorchSim load
+# mlir.ir / dialects for Python-side MLIR passes. The artifact must be built
+# against this image's Python (3.11) or `import mlir` fails on ABI mismatch.
+ENV PYTHONPATH=/riscv-llvm/python_packages/mlir_core:$PYTHONPATH
 ENV TORCHSIM_DIR=/workspace/PyTorchSim
 
 # Download Spike simulator

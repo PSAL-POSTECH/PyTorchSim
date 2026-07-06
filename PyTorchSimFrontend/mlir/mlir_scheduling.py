@@ -249,6 +249,19 @@ class MLIRScheduling(BaseScheduling):
             nodes, key=lambda x: int(x.is_reduction())
         ).group
 
+        # axis-split: linearize compatible floor/mod radices at the scheduling layer.
+        from . import axis_split
+        plan = axis_split.find_split_plan(nodes)
+        if plan:
+            for _n in nodes:
+                if getattr(_n, "_body", None) is None:
+                    continue
+                _body, _ranges = axis_split.build_split_body(_n, plan)
+                _n._sizes, _n._body, _n.group = _ranges, _body, (_n.get_device(), self.group_fn(_ranges))
+            _, (group, reduction_group) = max(
+                nodes, key=lambda x: int(x.is_reduction())
+            ).group
+
         # Note: We assume that there is at least one loop in the nodes
         # But, inductor simplifies the group, there could be no loop
         # In that case, we add dummy loop(size=1) to the group
@@ -353,3 +366,9 @@ class MLIRScheduling(BaseScheduling):
         if origins:
             _, _, last = max(origins)
             V.graph.wrapper_code.enter_context(last)
+
+
+# Install the graph-copy (incompatible-radix relayout) lowering hook once at import.
+# See graph_copy.py.
+from . import graph_copy as _graph_copy
+_graph_copy.install()

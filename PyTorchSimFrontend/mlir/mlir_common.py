@@ -1,5 +1,6 @@
 import dataclasses
 import math
+import os
 import contextvars
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -14,9 +15,8 @@ from torch._inductor.codegen import common
 from torch._inductor.codegen import cpp
 from torch._inductor.virtualized import V
 from torch._inductor.ir import MultiOutputLayout
-from torch._inductor.dependencies import MemoryDep, StarDep, WeakDep
 from torch._inductor.codegen.wrapper import KernelDefinitionLine
-from torch.utils._sympy.functions import ModularIndexing, FloorDiv, Mod, Identity
+from torch.utils._sympy.functions import Identity
 import sympy
 import contextlib
 
@@ -118,27 +118,6 @@ MLIR_INF = {
         "f64" : 0x7FF8000000000000
     }
 }
-
-def format_dma_op_attributes(
-    dram_stride: Sequence,
-    sram_stride: Sequence,
-    padding: int = 0,
-    *,
-    subtile_size: Optional[Sequence] = None,
-    async_type: Optional[int] = None,
-) -> str:
-    """Attribute dict for memref.dma_start; stride lists as bracketed integer lists."""
-    parts = [
-        f"dram_stride = {dram_stride}",
-        f"sram_stride = {sram_stride}",
-        f"padding = {int(padding)}",
-    ]
-    if subtile_size:
-        parts.append(f"subtile_size = {subtile_size}")
-        av = int(async_type) if async_type is not None else 1
-        parts.append(f"async = {av} : i64")
-    return "{" + ", ".join(parts) + "}"
-
 
 class ParallelLoopBuffer(IndentedBuffer):
     def indent(self, offset=1, attribute="", suffix=""):
@@ -456,45 +435,27 @@ class TileAdjustMixin():
         padded_size = used_vlane * vlane_stride
         self._tile_size[vlane_split_axis] = math.ceil(self._tile_size[vlane_split_axis] / padded_size) * padded_size
 
-    def apply_constraints(self, constraints, ranges):
-        for idx, (axis_constraints, axis_size) in enumerate(zip(constraints.values(), ranges)):
-            for const in axis_constraints:
-                if const.args[1] == 1:
-                    continue
-                divider = int(const.args[1])
-
-                if not self.tile_constraint[idx].fixed:
-                    self.tile_constraint[idx].fixed = True
-                    self._tile_size[idx] = divider
-                elif self.tile_constraint[idx].fixed and self._tile_size[idx] > divider:
-                    self._tile_size[idx] = divider
-        self.update_tile_stride()
-
     @staticmethod
     def init_tile_size(ranges, vlane_stride, vector_lane):
+        # Logical tile init for ANY rank. Only the innermost dims carry the
+        # vectorized tile; all further-outer dims stay 1. The physical Gemmini DMA
+        # descriptor is <=4D -- a higher-rank logical tile is mapped onto <=4D
+        # descriptors by togsim.transfer + the decompose pass (logical/physical
+        # tile split), so no rank cap here.
         nr_dim = len(ranges)
+        if nr_dim == 0:                                   # scalar
+            return [1]
         tile_size = [1] * nr_dim
-        if len(tile_size) == 2:
+        if nr_dim == 1:
+            tile_size[0] = 1 if ranges[0] == 1 else 2 * vlane_stride * vector_lane
+        elif nr_dim == 2:
             tile_size[-1] = vlane_stride * vector_lane
             tile_size[-2] = 2 * vector_lane
-        elif len(tile_size) == 0: # Scalar
-            tile_size = [1]
-            ranges = [1]
-        elif len(tile_size) == 1 and ranges[0]==1:
-            tile_size[0] = 1
-        elif len(tile_size) == 1:
-            tile_size[0] = 2 * vlane_stride * vector_lane
-        elif len(tile_size) == 3:
+        else:                                             # 3D and up (general)
             tile_size[-1] = vector_lane
             tile_size[-2] = 4 * vector_lane
             tile_size[-3] = 2
-        elif len(tile_size) == 4:
-            tile_size[-1] = vector_lane
-            tile_size[-2] = 4 * vector_lane
-            tile_size[-3] = 2
-            tile_size[-4] = 1
-        else:
-            raise NotImplementedError("dummy tile size fail!")
+            # tile_size[:-3] stay 1 (subsumes the old 4D [-4]=1 and any higher rank)
         return tile_size
 
     @staticmethod
@@ -544,7 +505,6 @@ class MLIRMultiDimTile(TileAdjustMixin):
             vlane_stride=vlane_stride
         )
 
-        self.implicit_dim_size = {}
         self.nr_rdim = 0
         self.offset = sympy.Integer(0) # Dram offset
 
@@ -710,59 +670,6 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
        # generate the code to call this
         wrapper.generate_kernel_call(kernel_name, call_args, triton=False)
 
-    def is_modular_indexing(self, expr):
-        return "ModularIndexing" in str(expr)
-
-    def implicit_dim_ops(self, nodes):
-        target_patterns = (ModularIndexing, FloorDiv, Mod)
-        target_operands = []
-        for target_node in nodes:
-            for read_operand in target_node.read_writes.reads:
-                read_operand: MemoryDep
-                if isinstance(read_operand, StarDep) or isinstance(read_operand, WeakDep):
-                    continue
-                read_index = read_operand.index
-                for arg_expr in read_index.args:
-                    if arg_expr.atoms(*target_patterns):
-                        target_operands.append(read_operand)
-        return target_operands
-
-    def extract_dividers(self, implicit_ops):
-        # When a specific axis is processed, the key constraint to verify is the divider.
-        # The tile size must be forced to match the divider size.
-        dim_dividers = defaultdict(set)
-        for operand in implicit_ops:
-            subs_map = {
-                s: sympy.symbols(s.name.replace("c", "index", 1))
-                for s in operand.index.free_symbols
-            }
-            rev_subs_map = {
-                sympy.symbols(s.name.replace("c", "index", 1)) : s
-                for s in operand.index.free_symbols
-            }
-            new_index = operand.index.subs(subs_map)
-            for arg in new_index.args:
-                if arg.is_number:
-                    continue
-                if len(arg.free_symbols) > 1:
-                    raise NotImplementedError("Not supporting this view operation...!")
-                if arg.is_Mul and arg.args[0].is_number:
-                    arg = arg.args[1]
-
-                if isinstance(arg, ModularIndexing):
-                    modular_expr = ModularIndexing(arg.args[0], arg.args[1], arg.args[2])
-                    modular_expr.original_expr = arg
-                elif arg.is_symbol:
-                    modular_expr = ModularIndexing(arg, 1, operand.ranges[rev_subs_map[arg]])
-                    modular_expr.original_expr = arg
-                elif "//" in str(arg):
-                    modular_expr = ModularIndexing(arg.args[0], arg.args[1], operand.ranges[rev_subs_map[arg.args[0]]]//arg.args[1])
-                    modular_expr.original_expr = arg
-                else:
-                    raise NotImplementedError("What is this case?")
-                dim_dividers[modular_expr.args[0]].add(modular_expr)
-        return dim_dividers
-
     def compute_tile_size(self, nodes, vars, reduction_vars):
         vlane_split_axis = len(vars) - 1
         vlane_stride = 2 # Set minimum vlane stride
@@ -781,14 +688,6 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
             elif vlane_split_axis == -1: # Reduction only case
                 self.kernel_group.tile_desc.vmap.vlane_split_axis = 0
                 self.kernel_group.tile_desc.vmap.vlane_stride = self.kernel_group.tile_desc.get_tile_size()[0]
-
-        # Handle implict dims. Input operand could be high dimension tensor.
-        # Note: https://github.com/PSAL-POSTECH/PyTorchSim/issues/173
-        implicit_ops = self.implicit_dim_ops(nodes)
-        if implicit_ops:
-            tile_constraints = self.extract_dividers(implicit_ops)
-            self.kernel_group.tile_desc.apply_constraints(tile_constraints, self.ranges)
-            self.kernel_group.tile_desc.implicit_dim_size = tile_constraints
 
         # Check recodegen reason
         if self.recodegen is not None:
@@ -838,12 +737,11 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
                 with self as kernel:
                     for node in nodes:
                         node.run(vars, reduction_vars)
-            except RecompileSignal as e:
+            except RecompileSignal:
                 recompile_try += 1
                 if recompile_try > max_retry_compile:
                     raise RuntimeError("Failed to compile kernel after multiple attempts.")
                 # Retry compile nodes
-                #print(f"Try recompile({recompile_try}/{max_retry_compile}). Reason: {e}")
                 continue
             V.graph.removed_buffers |= self.removed_buffers
             # V.graph.inplaced_to_remove |= self.inplaced_to_remove
@@ -1025,10 +923,6 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
             @staticmethod
             def reduction(dtype, src_dtype, reduction_type, value):
                 return self.reduction(dtype, src_dtype, reduction_type, value)
-
-            @staticmethod
-            def check_bounds(index, size, lower, upper):
-                return self.check_bounds(index, size, lower, upper)
 
             @staticmethod
             def _index_expr(tile_size, buffer, renamed_expression, index):

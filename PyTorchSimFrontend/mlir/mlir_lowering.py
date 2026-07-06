@@ -89,6 +89,25 @@ def _mlir_tuned_bmm(mat1, mat2, *, layout=None):
     return mlir_template.generate().output_node()
 
 
+def _flash_decode_pad_query(query: TensorBox, tile_l: int, l_real: int) -> TensorBox:
+    """Zero-pad the query length L up to tile_l so the flash kernel runs its
+    verified prefill path (query rows fill the vector lanes). query (n, hq, L, e) ->
+    (n, hq, tile_l, e); the extra rows are dropped again by _flash_decode_slice_output.
+    """
+    pad_amt = tile_l - l_real
+    # constant_pad_nd pad spec is [e_lo, e_hi, l_lo, l_hi, ...]:
+    # pad the l dim at the high end by pad_amt.
+    return lowerings[aten.constant_pad_nd](query, [0, 0, 0, pad_amt], 0.0)
+
+
+def _flash_decode_slice_output(out: TensorBox, l_real: int) -> TensorBox:
+    """Slice the padded output (n, hq, tile_l, ev) back to the real L rows
+    (n, hq, L, ev) along the query dim. Lowers to a free reinterpret/view."""
+
+    # slice spec is [target, dim_idx, start_idx, len]
+    return lowerings[aten.slice.Tensor](out, len(out.get_size()) - 2, 0, l_real)
+
+
 def _mlir_tuned_flash_sdpa(
         query             : TensorBox,
         key               : TensorBox,
@@ -100,14 +119,36 @@ def _mlir_tuned_flash_sdpa(
         scale             : Optional[float] = None,
         enable_gqa        : bool = False) -> tuple:
     # _fused_sdp_choice in C++ already guarantees:
-    #   L == S (prefill), Hq == H (non-GQA), dropout_p == 0.0
+    # dropout_p == 0.0
     # before routing here via SDPBackend::overrideable.
     # Non-matching shapes fall back to SDPBackend::math in C++ and decompose
     # into primitive ops (matmul/softmax) before reaching this lowering.
     scale = calculate_scale(query, scale)
+
+    tile_l = extension_config.vpu_num_lanes
+    l_real = V.graph.sizevars.size_hint(query.get_size()[-2])
+    hq = V.graph.sizevars.size_hint(query.get_size()[-3])
+    h = V.graph.sizevars.size_hint(key.get_size()[-3])
+    kv_ratio = 1
+
+    enable_decode = l_real < tile_l
+    enable_gqa    = (hq != h) and (hq % h == 0)
+
+    if enable_decode:
+        query = _flash_decode_pad_query(query, tile_l, l_real)
+    if enable_gqa:
+        kv_ratio = int(hq / h)   
+
     N, Hq, H, L, S, E, Ev, layout, query, key, value = flash_sdpa_args(query, key, value)
-    mlir_template = MLIRFlashSDPATemplate([query, key, value], layout, scale)
-    return (mlir_template.generate().output_node(), None, None, None, None, None, None, None, None)
+    mlir_template = MLIRFlashSDPATemplate([query, key, value], layout, scale, kv_ratio, is_causal)
+    out = mlir_template.generate().output_node()
+
+    if enable_decode:
+        out = _flash_decode_slice_output(out, l_real)
+    if enable_gqa:
+        pass 
+
+    return (out, None, None, None, None, None, None, None, None)
 
 
 def conv_layout(

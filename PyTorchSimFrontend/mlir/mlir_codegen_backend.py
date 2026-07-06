@@ -1,6 +1,5 @@
 import contextlib
 import sympy
-import sys
 import time
 import re
 import os
@@ -170,11 +169,11 @@ class ExtensionWrapperCodegen(wrapper.PythonWrapperCodegen):
 
     def codegen_sram_plan_prefix(self):
         for name, buf in V.graph.graph_inputs.items():
+            if buf is None:
+                continue
             if isinstance(buf, sympy.Expr):
                 continue
             if sympy_product(buf.get_size()) == 0:
-                continue
-            if buf is None:
                 continue
             self.prefix.writeline(f"sram_plan_prefix('{name}', {name})")
 
@@ -536,10 +535,8 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         sram_var, sram_index_var = self.get_scratchpad_buffer(dtype, name, local_tile_desc, index)
         compute_index_var = ",".join(sram_index_var.split(",")[:-1] + [f"%{self.compute_idx}"])
 
-        # MVIN Encoding
-        attribute = mlir_common.format_dma_op_attributes(dram_stride, tile_stride, int(padding))
-        code = self.get_dma_code("MVIN", vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
-                                 dram_shape, tile_shape, attribute)
+        code = self.emit_transfer("MVIN", vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
+                                  dram_shape, tile_shape, dram_stride, tile_stride, int(padding))
         self.cse.generate(dma_buffer, code, assignment = False) # FIXME: assignment = False does not support caching
 
         if not comptute_depedency:
@@ -608,9 +605,8 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
             sram_index_var = self.spad_buffer_dict[str(value)][3]
 
         # Generate DMA instruction
-        attribute = mlir_common.format_dma_op_attributes(dram_stride, tile_stride, 0)
-        code = self.get_dma_code("MVOUT", vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
-                                 dram_shape, tile_shape, attribute)
+        code = self.emit_transfer("MVOUT", vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
+                                  dram_shape, tile_shape, dram_stride, tile_stride, 0)
         self.dma_stores.writeline(common.DeferredLine(name, code))
 
     def reduction(self, dtype, src_dtype, reduction_type, value):
@@ -737,9 +733,8 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
                 ops._store(value, sram_var, sram_index_var, tile_shape, buffer_name=name)
 
             # Generate DMA instruction
-            attribute = mlir_common.format_dma_op_attributes(dram_stride, tile_stride, 0)
-            code = self.get_dma_code("MVOUT", vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
-                                    dram_shape, tile_shape, attribute)
+            code = self.emit_transfer("MVOUT", vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
+                                      dram_shape, tile_shape, dram_stride, tile_stride, 0)
             self.reductions_suffix.writeline(common.DeferredLine(name, code))
 
     def indirect_indexing(self, index_var, size, check=True, wrap_neg=True):
@@ -905,9 +900,6 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         # For non-loop code
         if (self.reduction_depth==0):
             loops = LoopNest([LoopLevel("dummy", 1)])
-
-        if len(reductions.loops) > 1:
-            NotImplementedError("Not support multiple reduction axis..")
 
         code.splice(self.const_buffer)
         code.splice(self.alloc_buffer)
@@ -1173,13 +1165,23 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         # Note: index could contain symbols that represent dynamic axies
         # Extract dimension of index(e.g, index0, index1)
         local_dims = [int(str(i)[5:]) for i in index.free_symbols if "index" in str(i)]
-        implicit_local_dims = list(index.args)
         total_dims =  [int(str(i)[5:]) for i in self.itervars]
         local_tile_desc = mlir_common.MLIRMultiDimTile([1], self.vector_lane)
         local_dims.sort() # Assume that smaller index is placed in the outer loop
         indirect_syms = [s for s in index.free_symbols if "tmp" in s.name]
         index = index.subs({s: 0 for s in indirect_syms}, simultaneous=True)
         indirect_dims = [f"{i}" for i in indirect_syms]
+
+        # axis-split + graph-copy linearize aligned floor/mod upstream. Anything that
+        # reaches here still carrying floor/mod (store-side ModularIndexing,
+        # reduction-axis floor/mod, incompatible-radix views) would be silently
+        # mis-strided in the dram_stride computation below, so fail loudly instead.
+        if index.has(FloorDiv) or index.has(ModularIndexing):
+            raise NotImplementedError(
+                f"Unlinearized floor/mod in DMA index: {index}. axis-split/graph-copy "
+                f"did not eliminate it; this view is unsupported "
+                f"(see docs/axis-split-scheduling.md)."
+            )
 
         # Reduction can have two type of tile size
         if broadcast and (total_dims != local_dims or (self.reduction_depth!=len(total_dims) and total_dims[:self.reduction_depth] == local_dims)):
@@ -1246,15 +1248,9 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
             local_tile_desc.vmap.vlane_split_axis = local_vlane_split_axis
             local_tile_desc.vmap.vlane_stride = kg_tile_desc.vmap.vlane_stride
         else:
-            raise NotImplementedError("Currently not implemented... ;)")
-
-        if len(implicit_local_dims)!=0 and len(local_dims) != len(implicit_local_dims) and self.is_modular_indexing(index):
-            for axis_constraints in self.kernel_group.tile_desc.implicit_dim_size.values():
-                if len(axis_constraints) <= 1:
-                    continue
-                sorted_constraints = sorted(axis_constraints, key=lambda c: int(c.args[1]))
-                for constraint in sorted_constraints[1:]:
-                    index = index.replace(constraint.original_expr, 0)
+            local_tile_desc.set_tile_size([kg_tile_desc.get_dim_size(dim) for dim in local_dims])
+            local_tile_desc.vmap.vlane_split_axis = local_vlane_split_axis
+            local_tile_desc.vmap.vlane_stride = kg_tile_desc.vmap.vlane_stride
 
         # Calculate dram stride in local tile-dim order.
         # This keeps dram/sram stride rank aligned with tile rank.
@@ -1269,19 +1265,12 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         else:
 
             dram_dict = defaultdict(list)
-            implicit_dim_divisors = defaultdict(lambda: sys.maxsize)
-            # Assume that div will have high priority than mod
             for arg in index.as_ordered_terms():
                 coeff, dim = arg.as_coeff_mul()
                 if len(dim) == 0:
                     continue
                 real_dim = list(dim[0].free_symbols)[0]
-                if dim[0].has(ModularIndexing):
-                    if dim[0].args[1] < implicit_dim_divisors[str(real_dim)]:
-                        implicit_dim_divisors[str(real_dim)] = dim[0].args[1]
-                        dram_dict[str(real_dim)] = [coeff]
-                else:
-                    dram_dict[str(real_dim)].append(coeff)
+                dram_dict[str(real_dim)].append(coeff)
 
             # Add missing dims if not added
             max_dim = len(self.ranges) if not store_reduction else len(self.ranges) - 1
@@ -1292,142 +1281,62 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
             sorted_keys = sorted(dram_dict.keys())
             dram_stride = sum((dram_dict[key] for key in sorted_keys), [])
 
-        # Support floordiv pattern
-        # FIXME. How to integrate implicit dims and floordiv?
-        # This was introduced to support GroupNorm
-        if index.has(FloorDiv) and not index.has(ModularIndexing):
-            dim_divisor = [1] * len(local_dims)
-            for sub in sympy.preorder_traversal(index):
-                if isinstance(sub, FloorDiv):
-                    if not str(sub.args[0]).startswith("index"):
-                        continue
-                    dim_idx = int((str(sub.args[0])[5:]))
-                    if dim_idx not in local_dim_to_axis:
-                        continue
-                    local_dim_idx = local_dim_to_axis[dim_idx]
-                    if int(self.kernel_group.tile_desc.get_tile_size()[dim_idx] % sub.args[1]) != 0:
-                        # In this case, need to recompile
-                        original_tile = self.kernel_group.tile_desc.get_tile_size()
-                        original_size = original_tile[dim_idx]
-                        divisor = sub.args[1] * self.kernel_group.tile_desc.vmap.vlane_stride
-                        new_size = ((original_size + divisor - 1) // divisor) * divisor
-                        new_tile_sizes = list(self.kernel_group.tile_desc.get_tile_size())
-                        new_tile_sizes[dim_idx] = new_size
-                        self.kernel_group.tile_desc.set_tile_size(new_tile_sizes)
-                        self.kernel_group.tile_desc.tile_constraint[dim_idx].fixed = True
-
-                        # Can't use dim_idx as vlane_split_axis
-                        if dim_idx == self.kernel_group.tile_desc.vmap.vlane_split_axis:
-                            self.kernel_group.tile_desc.vmap.vlane_split_axis = (dim_idx + 1) % len(original_tile)
-
-                        # Send recompile signal
-                        self.reset("recompile")
-                        raise mlir_common.RecompileSignal(f"Tile size {self.kernel_group.tile_desc.get_tile_size()[dim_idx]} is not divisible by {sub.args[1]}")
-                    dim_divisor[local_dim_idx] = sub.args[1]
-
-            # Update dram_stride, just insert 0 next to target dim
-            offset = 0
-            for dim_idx, divisor in enumerate(dim_divisor):
-                if divisor == 1:
-                    continue
-                dram_stride.insert(dim_idx+offset+1, 0)
-                local_tile_desc.apply_divisor(dim_idx+offset, divisor, "pad")
-                local_tile_desc.apply_divisor(dim_idx+offset, divisor, "split")
-                offset = offset+1
-
-        # Support ModularIndexing pattern
-        # This pattern can be used to broadcast ex) torch.cat([a,a])
-        # ModularIndexing(x, y, z) means (x // y) % z
-        # tile_size must be: multiple of y (floorDiv divisor) and divisor of z (modular divisor)
-        if index.has(ModularIndexing):
-            for sub in sympy.preorder_traversal(index):
-                if isinstance(sub, ModularIndexing):
-                    if not str(sub.args[0]).startswith("index"):
-                        continue
-                    dim_idx = int((str(list(sub.args[0].free_symbols)[0])[5:]))
-                    floor_divisor = sub.args[1]  # y: floorDiv divisor
-                    mod_divisor = sub.args[2]    # z: modular divisor
-                    current_tile_size = self.kernel_group.tile_desc.get_tile_size()[dim_idx]
-
-                    # Check if tile_size is multiple of floorDiv divisor
-                    if int(current_tile_size % floor_divisor) != 0:
-                        original_tile = self.kernel_group.tile_desc.get_tile_size()
-                        original_size = original_tile[dim_idx]
-                        divisor = floor_divisor * self.kernel_group.tile_desc.vmap.vlane_stride
-                        new_size = ((original_size + divisor - 1) // divisor) * divisor
-                        new_tile_sizes = list(self.kernel_group.tile_desc.get_tile_size())
-                        new_tile_sizes[dim_idx] = new_size
-                        self.kernel_group.tile_desc.set_tile_size(new_tile_sizes)
-                        self.kernel_group.tile_desc.tile_constraint[dim_idx].fixed = True
-
-                        self.reset("recompile")
-                        raise mlir_common.RecompileSignal(f"Tile size {current_tile_size} is not a multiple of floorDiv divisor {floor_divisor} in ModularIndexing")
-
-                    # Check if tile_size is a divisor of modular divisor
-                    if int((mod_divisor * floor_divisor) % current_tile_size) != 0:
-                        original_tile = self.kernel_group.tile_desc.get_tile_size()
-                        original_size = original_tile[dim_idx]
-                        # Find the largest divisor of mod_divisor that is <= original_size
-                        # and is a multiple of floor_divisor
-                        new_size = original_size
-                        while new_size > 0:
-                            if mod_divisor % new_size == 0 and new_size % floor_divisor == 0:
-                                break
-                            new_size -= floor_divisor
-
-                        if new_size <= 0:
-                            new_size = mod_divisor * floor_divisor
-
-                        new_tile_sizes = list(self.kernel_group.tile_desc.get_tile_size())
-                        new_tile_sizes[dim_idx] = new_size
-                        self.kernel_group.tile_desc.set_tile_size(new_tile_sizes)
-                        self.kernel_group.tile_desc.tile_constraint[dim_idx].fixed = True
-
-                        self.reset("recompile")
-                        raise mlir_common.RecompileSignal(f"Tile size {current_tile_size} is not a divisor of modular divisor {mod_divisor} in ModularIndexing")
-
         # FIXME. It will be nice to modify node instead of this exception handling...
         if len(self.itervars) == 1 and self.reduction_depth == 0:
             # In case of reduction loop only case, we will add dummy loop so shift it once
             dram_stride = [0] + dram_stride[:-1]
         return local_tile_desc, index_var, dram_stride
 
-    def get_dma_code(self, dma_type_name, vlane_split_axis, vlane_stride, mlir_dtype, dram_var, dram_index_var, sram_var, sram_index_var,
-                     dram_shape, tile_shape, attribute):
+    def emit_transfer(self, dma_type_name, vlane_split_axis, vlane_stride, mlir_dtype,
+                      dram_var, dram_index_var, sram_var, sram_index_var,
+                      dram_shape, tile_shape, dram_stride, tile_stride, padding,
+                      subtile_size=None, async_type=None):
+        """Emit a generic togsim.transfer op for a DMA whose access exceeds the
+        4D Gemmini descriptor limit. Carries the full N-D access (dram/tile
+        strides + shapes) plus the SSA operands a memref.dma_start needs
+        (dma_type / vlane_split_axis / vlane_stride), so the decompose pass
+        (passes/decompose_transfer.py) is purely mechanical: it peels the excess
+        dims into a loop of <=4D memref.dma_start, reusing these operands.
+
+        Operand prep uses the read/write cache+counter for the dma_type enum and
+        CSE'd vlane consts so the transfer is self-contained; togsim is an
+        unregistered dialect -> generic form.
+        """
         dma_key = (vlane_split_axis, vlane_stride, mlir_dtype)
         if dma_type_name == "MVIN" and dma_key in self.dma_read_cache:
-            dma_type, vlane_split_axis, vlane_stride = self.dma_read_cache[dma_key]
+            dma_type, vsa, vst = self.dma_read_cache[dma_key]
         elif dma_type_name == "MVOUT" and dma_key in self.dma_write_cache:
-            dma_type, vlane_split_axis, vlane_stride = self.dma_write_cache[dma_key]
+            dma_type, vsa, vst = self.dma_write_cache[dma_key]
         else:
-            vlane_split_axis = self.get_const_cse(vlane_split_axis)
-            vlane_stride = self.get_const_cse(vlane_stride)
+            vsa = self.get_const_cse(vlane_split_axis)
+            vst = self.get_const_cse(vlane_stride)
             if dma_type_name == "MVIN":
                 dma_type = self.get_const_cse(DMA_TYPE[f"{dma_type_name}{self.dma_read_counter}"])
                 self.dma_read_counter += 1
-                self.dma_read_cache[dma_key] = [dma_type, vlane_split_axis, vlane_stride]
+                self.dma_read_cache[dma_key] = [dma_type, vsa, vst]
             else:
                 dma_type = self.get_const_cse(DMA_TYPE[f"{dma_type_name}{self.dma_write_counter}"])
-                self.dma_write_cache[dma_key] = [dma_type, vlane_split_axis, vlane_stride]
+                self.dma_write_cache[dma_key] = [dma_type, vsa, vst]
         tag = self.get_tag_cse()
         zero_cse = self.get_const_cse(0)
-
-        # Prepare opearnds and attributes
-        dram_operand = f"%{dram_var}[%{dram_index_var}]"
-        sram_operand = f"%{sram_var}[{sram_index_var}]" # Use string
-        tag_var = f"%{tag}[%{zero_cse}]"
-        dma_attribute = f"%{vlane_split_axis}, %{vlane_stride}"
-        sram_shape = tile_shape
-        tag_shape = "memref<1xi32>"
-
-        if dma_type_name == "MVIN":
-            src_operand, dst_operand = dram_operand, sram_operand
-            src_shape, dst_shape = dram_shape, sram_shape
-        else:
-            src_operand, dst_operand = sram_operand, dram_operand
-            src_shape, dst_shape = sram_shape, dram_shape
-
-        return f"memref.dma_start {src_operand}, {dst_operand}, %{dma_type}, {tag_var}, {dma_attribute} : {src_shape}, {dst_shape}, {tag_shape} {attribute}"
+        # vlane_split_axis is carried as a VALUE attr (not an SSA operand) because the
+        # decompose pass must remap it: collapsing unit tile dims renumbers the axes,
+        # so the descriptor's vlane axis index changes and the pass rebuilds the const.
+        attrs = (
+            f'dma_kind = "{dma_type_name}", '
+            f'vlane_split_axis = {int(vlane_split_axis)} : i64, '
+            f'dram_stride = {dram_stride}, tile_stride = {tile_stride}, '
+            f'padding = {int(padding)} : i64'
+        )
+        if subtile_size:
+            av = int(async_type) if async_type is not None else 1
+            attrs += f', subtile_size = {list(subtile_size)}, async = {av} : i64'
+        # operands: dram, dram_idx, sram, sram_idx, tag, dma_type, vlane_stride
+        return (
+            f'"togsim.transfer"(%{dram_var}, %{dram_index_var}, %{sram_var}, %{zero_cse}, '
+            f'%{tag}, %{dma_type}, %{vst}) {{{attrs}}} : '
+            f'({dram_shape}, index, {tile_shape}, index, memref<1xi32>, index, index) -> ()'
+        )
 
     def allocate_sram_buffer(self, dtype, dram_name, tile_desc, raw_index, buffer=None, forced_name=None):
         c_type = mlir_common.DTYPE_TO_C[dtype]

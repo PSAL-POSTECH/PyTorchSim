@@ -19,7 +19,7 @@ If the issue occurs while running a Python workload or involves a simulator cras
 
 For example:
 ```
-python3 tests/test_add.py
+python3 tests/ops/elementwise/test_add.py
 ...
 [SpikeSimulator] cmd> spike --isa rv64gcv --varch=vlen:256,elen:64 --vectorlane-size=128 \
   -m0x80000000:0x1900000000,0x2000000000:0x1000000 \

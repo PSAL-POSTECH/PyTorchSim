@@ -25,6 +25,7 @@ jobs:
         with:
           ref: ${{ env.SOURCE_SHA }}
           submodules: recursive
+          persist-credentials: false
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -78,7 +79,9 @@ jobs:
 
   build-and-test:
     needs: ensure-base
-    runs-on: self-hosted
+    # App image build runs on a GitHub-hosted runner: the CPU-only image is small
+    # and ensure-base already builds the heavier base image on ubuntu-latest.
+    runs-on: ubuntu-latest
 
     permissions:
       contents: read
@@ -90,6 +93,7 @@ jobs:
         with:
           ref: ${{ env.SOURCE_SHA }}
           submodules: recursive
+          persist-credentials: false
 
       - name: Login to GHCR
         uses: docker/login-action@v3
@@ -137,13 +141,21 @@ jobs:
     uses: ./.github/workflows/pytorchsim_test.yml
     with:
       image_name: ghcr.io/psal-postech/torchsim-test:${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-      vector_lane: 128
-      spad_size: 128
+      togsim_config: /workspace/PyTorchSim/configs/systolic_ws_128x128_c1_simple_noc_tpuv3.yml
+      run_accuracy: true
 
   test-pytorchsim-wrapper2:
     needs: build-and-test
     uses: ./.github/workflows/pytorchsim_test.yml
     with:
       image_name: ghcr.io/psal-postech/torchsim-test:${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-      vector_lane: 32
-      spad_size: 32
+      togsim_config: /workspace/PyTorchSim/configs/systolic_ws_32x32_c1_simple_noc_tpuv3.yml
+      run_accuracy: false
+
+  test-pytorchsim-wrapper3:
+    needs: build-and-test
+    uses: ./.github/workflows/pytorchsim_test.yml
+    with:
+      image_name: ghcr.io/psal-postech/torchsim-test:${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+      togsim_config: /workspace/PyTorchSim/configs/systolic_ws_8x8_c1_simple_noc_tpuv3.yml
+      run_accuracy: false

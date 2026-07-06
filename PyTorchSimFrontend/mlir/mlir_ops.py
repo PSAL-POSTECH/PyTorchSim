@@ -265,7 +265,7 @@ class ExtensionOverrides(common.OpOverrides):
 
         # Data type check
         if op_type1[1] != op_type2[1]:
-            if op_type1[1] == "index" or op_type1 == "index":
+            if op_type1[1] == "index" or op_type2[1] == "index":
                 if op_type1[1] == "index":
                     # index -> target type: 2-step casting if target is float
                     if op_type2[1][0] == "f":
@@ -1135,11 +1135,19 @@ class ExtensionOverrides(common.OpOverrides):
 
     @staticmethod
     def vlane_offset(operand1, operand2, *args, **kwargs):
+        # Emit a dedicated torchsim.vlane_idx op (generic form; torchsim is an
+        # unregistered dialect) instead of overloading arith.addi with a
+        # vlane_offset attribute. A Python out-of-line pass lowers it to
+        # (vcix.v.i per-lane index * offset); see
+        # PyTorchSimFrontend/mlir/passes/lower_vlane_idx.py.
         tile_size, ret_type, operand1, operand2 = ExtensionOverrides.binary_elementwise_common(operand1, operand2)
         shape = f"vector<{tile_size}x{ret_type}>" if tile_size > 1 else ret_type
-        opcode = f'arith.add{ret_type[0]}'
-        op_str = f'{opcode} %{operand1}, %{operand2}'
-        return format_mlir_op(op_str, shape, **kwargs), [tile_size, ret_type]
+        offset = kwargs.get("attributes", {}).get("vlane_offset", 0)
+        op_str = '"torchsim.vlane_idx"()'
+        func_type = f'() -> {shape}'
+        return format_mlir_op(op_str, func_type,
+                              attributes={"vlane_offset": f"{offset} : i64"},
+                              comment=kwargs.get("comment")), [tile_size, ret_type]
 
     @staticmethod
     def multi_reduction(acc, init, vec_size, red_size, red_shape, red_type, type_name, *args, **kwargs):

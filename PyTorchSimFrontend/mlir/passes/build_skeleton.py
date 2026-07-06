@@ -438,7 +438,7 @@ def _transfer_fields(op):
     carries the offset symbol name in its "name" attribute (matching
     lower_transfer_to_gemmini's offset_sym derivation)."""
     operands = list(op.operands)
-    offset = operands[8] if len(operands) > 8 else None
+    offset = operands[8] if "indirect" in op.attributes else None
     return {
         "dram": operands[0], "dram_idx": operands[1],
         "sram": operands[2], "sram_idx": operands[3],

@@ -77,7 +77,7 @@ def run(module, timing=False, vectorlane=128, **_):
     for op in targets:
         op_operands = list(op.operands)
         dram, dram_idx, sram, sram_idx, tag, tag_idx, dma_type, vst = op_operands[:8]
-        offset_sym = (op_operands[8].owner.attributes["name"] if len(op_operands) > 8 else None)
+        offset_sym = (op_operands[8].owner.attributes["name"] if "indirect" in op.attributes else None)
         kind = op.attributes["dma_kind"].value
         dma_type_val = _const_int(dma_type)          # MVIN(2)/MVIN2(1)/MVIN3(14)/MVOUT(3)
         is_mvin = dma_type_val in (MVIN, MVIN2, MVIN3)

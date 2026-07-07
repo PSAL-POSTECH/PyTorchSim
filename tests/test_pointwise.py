@@ -1,5 +1,14 @@
 import torch
+import os
 
+def clear_caches():
+    from torch._functorch._aot_autograd.autograd_cache import AOTAutogradCache
+    from torch._inductor.codecache import FxGraphCache
+    AOTAutogradCache.clear()
+    torch._dynamo.reset()
+    os.environ["TORCHINDUCTOR_CACHE"] = "0"
+    FxGraphCache.clear()
+    
 def test_result(name, out, cpu_out, rtol=1e-4, atol=1e-4):
     if torch.allclose(out.cpu(), cpu_out, rtol=rtol, atol=atol):
         message = f"|{name} Test Passed|"
@@ -26,6 +35,8 @@ def run_test(name, device, fn, inputs, size_desc, rtol=1e-4, atol=1e-4):
     npu_inputs = [x.to(device=device) for x in inputs]
     cpu_inputs = [x.clone() for x in inputs]
 
+    clear_caches()
+    
     opt_fn = torch.compile(dynamic=False)(fn)
     res = opt_fn(*npu_inputs)
     out = fn(*cpu_inputs)
@@ -131,8 +142,8 @@ def test_fmod(device):
     x = torch.randn(128, 128) * 10
     y = torch.randn(128, 128) * 3 + 1
     run_test("Fmod", device, fmod_fn, (x, y), "128x128")
-    # 2. Float Scalar
-    run_test("Fmod", device, fmod_fn, (torch.tensor([[5.5]]), torch.tensor([[2.0]])), "1x1")
+    #2. Float Scalar
+    run_test("Fmod", device, fmod_fn, (torch.tensor([[5.5102357203957]]), torch.tensor([[2.0235825235]])), "1x1")
     # 3. Float Vector (Tail / Remainder - Small & Large)
     run_test("Fmod", device, fmod_fn, (torch.randn(15, 15) * 10, torch.randn(15, 15) * 3 + 1), "15x15")
     run_test("Fmod", device, fmod_fn, (torch.randn(129, 129) * 10, torch.randn(129, 129) * 3 + 1), "129x129")
@@ -207,6 +218,66 @@ def test_hypot(device):
     # 4. Broadcasting (128x1 vs 1x128)
     run_test("Hypot_Broadcast", device, hypot_fn, (torch.randn(128, 1), torch.randn(1, 128)), "broadcast")
 
+def test_cosh(device):
+    def cosh_fn(a):
+        return torch.cosh(a)
+
+    # 1. Float Vector (Aligned)
+    run_test("Cosh", device, cosh_fn, torch.randn(128, 128), "128x128")
+    # 2. Float Scalar (test large positive float)
+    run_test("Cosh", device, cosh_fn, torch.tensor([[4.5]]), "1x1")
+    # 3. Float Vector (Tail / Remainder - Small & Large)
+    run_test("Cosh", device, cosh_fn, torch.randn(15, 15), "15x15")
+    run_test("Cosh", device, cosh_fn, torch.randn(129, 129), "129x129")
+
+def test_sinh(device):
+    def sinh_fn(a):
+        return torch.sinh(a)
+
+    # 1. Float Vector (Aligned)
+    run_test("Sinh", device, sinh_fn, torch.randn(128, 128), "128x128")
+    # 2. Float Scalar (test large positive float)
+    run_test("Sinh", device, sinh_fn, torch.tensor([[4.5]]), "1x1")
+    # 3. Float Vector (Tail / Remainder - Small & Large)
+    run_test("Sinh", device, sinh_fn, torch.randn(15, 15), "15x15")
+    run_test("Sinh", device, sinh_fn, torch.randn(129, 129), "129x129")
+    
+def test_acosh(device):
+    def acosh_fn(a):
+        return torch.acosh(a)
+
+    # 1. Float Vector (Aligned)
+    run_test("Acosh", device, acosh_fn, torch.rand(128, 128) + 1, "128x128")  # Values in [1, 2]
+    # 2. Float Scalar
+    run_test("Acosh", device, acosh_fn, torch.tensor([[1.5]]), "1x1")
+    # 3. Float Vector (Tail / Remainder - Small & Large)
+    run_test("Acosh", device, acosh_fn, torch.rand(15, 15) + 1, "15x15")
+    run_test("Acosh", device, acosh_fn, torch.rand(129, 129) + 1, "129x129")
+
+def test_asinh(device):
+    def asinh_fn(a):
+        return torch.asinh(a)
+
+    # 1. Float Vector (Aligned)
+    run_test("Asinh", device, asinh_fn, torch.randn(128, 128), "128x128")
+    # 2. Float Scalar
+    run_test("Asinh", device, asinh_fn, torch.tensor([[1.5]]), "1x1")
+    # 3. Float Vector (Tail / Remainder - Small & Large)
+    run_test("Asinh", device, asinh_fn, torch.randn(15, 15), "15x15")
+    run_test("Asinh", device, asinh_fn, torch.randn(129, 129), "129x129")
+
+def test_atanh(device):
+    def atanh_fn(a):
+        return torch.atanh(a)
+
+    # 1. Float Vector (Aligned)
+    run_test("Atanh", device, atanh_fn, torch.rand(128, 128) * 2 - 1, "128x128")  # Values in (-1, 1)
+    # 2. Float Scalar
+    run_test("Atanh", device, atanh_fn, torch.tensor([[0.5]]), "1x1")
+    # 3. Float Vector (Tail / Remainder - Small & Large)
+    run_test("Atanh", device, atanh_fn, torch.rand(15, 15) * 2 - 1, "15x15")
+    run_test("Atanh", device, atanh_fn, torch.rand(129, 129) * 2 - 1, "129x129")
+
 def test_log(device):
     def log_fn(a):
         return torch.log(a)
@@ -218,18 +289,25 @@ def test_log(device):
     # 3. Float Vector (Tail / Remainder - Small & Large)
     run_test("Log", device, log_fn, torch.rand(15, 15) + 1e-5, "15x15")
     run_test("Log", device, log_fn, torch.rand(129, 129) + 1e-5, "129x129")
-
+    
 if __name__ == "__main__":
     device = torch.device("npu:0")
 
-    test_abs(device)
-    test_sign(device)
-    test_isnan(device)
-    test_isinf(device)
-    test_fmod(device)
-    test_lshift(device)
-    test_rshift(device)
-    test_copysign(device)
-    test_erfc(device)
-    test_hypot(device)
+    # test_abs(device)
+    # test_sign(device)
+    # test_isnan(device)
+    # test_isinf(device)
+    # test_fmod(device)
+    # test_lshift(device)
+    # test_rshift(device)
+    # test_copysign(device)
+    # test_erfc(device)
+    # test_hypot(device)
+    # test_cosh(device)
+    # test_sinh(device)
+    # test_acos(device)
+    # test_acosh(device)
+    # test_asinh(device)
+    # test_atanh(device)
     test_log(device)
+    

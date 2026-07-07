@@ -393,12 +393,21 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         self.__init__(self.kernel_group, reason=reason)
         self.exit_stack, self._nested_context_depth = save
 
+    @staticmethod
+    def _origin_is_exp(o):
+        """True iff the FX origin node is an aten.exp op -- matched by the op target, not a
+        name substring (so it does not fire on expand / expm1 / experimental)."""
+        t = getattr(o, "target", None)
+        pkt = getattr(t, "_overloadpacket", None)
+        name = getattr(pkt, "__name__", None) or getattr(t, "__name__", None) or ""
+        return name == "exp"
+
     # padding type 0: zero-padding 1: negative-padding(-inf) ...
     def get_padding_type(self):
         ops = self.current_node.node.origins
         if self.current_node.is_reduction():
             for op in ops:
-                if "exp" in op.name: # exponential reduciton case
+                if self._origin_is_exp(op): # exponential reduciton case
                     return 1
         # for op in ops: # TODO: padding has some problem in the case of max_pool
         #     if "max_pool" in op.args[0].name:
@@ -577,7 +586,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         mlir_dtype = mlir_common.DTYPE_TO_MLIR[dtype]
 
         # Extract sram info
-        local_tile_desc, index_var, dram_stride = self.get_dma_info(name, index)
+        local_tile_desc, index_var, dram_stride, local_dims = self.get_dma_info(name, index)
         vlane_split_axis = local_tile_desc.vmap.vlane_split_axis
         vlane_stride = local_tile_desc.vmap.vlane_stride
         tile_numel_per_lane = local_tile_desc.get_numel_per_lane()
@@ -591,8 +600,10 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         sram_var, sram_index_var = self.get_scratchpad_buffer(dtype, name, local_tile_desc, index)
         compute_index_var = ",".join(sram_index_var.split(",")[:-1] + [f"%{self.compute_idx}"])
 
+        masked_bounds = self._masked_bounds(name, index, dram_stride, local_tile_desc, is_load=True, buffer=self.dma_loads, local_dims=local_dims)
         code = self.emit_transfer("MVIN", vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
-                                  dram_shape, tile_shape, dram_stride, tile_stride, int(padding), offset=offset_desc)
+                                  dram_shape, tile_shape, dram_stride, tile_stride, int(padding), offset=offset_desc,
+                                  masked_bounds=masked_bounds, masked_fill=self._masked_fill_bits(dtype, index))
         self.cse.generate(self.dma_loads, code, assignment = False) # FIXME: assignment = False does not support caching
 
         with self.override_buffer_cse(buffer=self.loads):
@@ -606,20 +617,22 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         offset_desc = None
 
         # Handle scatter store
+        accumulate = False
         if self._has_indirect(index):
             # Convert the output buffer type to the inplace buffer
             arg_name =  V.graph.scheduler.mutation_real_name.get(name, name)
             if arg_name not in self.kernel_group.args.inplace_buffers:
                 self.kernel_group.args.make_inplace(arg_name, arg_name)
 
-            if mode == "atomic_add":
-                loaded_value = ops.load(name, index)
-                value = ops.add(loaded_value, value)
+            # index_add: let the MVOUT do out[idx] += val. The DMA processes positions
+            # sequentially, so duplicate indices accumulate correctly -- unlike the compute
+            # gather-add-overwrite, which loses duplicates landing in the same tile.
+            accumulate = (mode == "atomic_add")
             index, offset_desc = self.convert_indirect_indexing(index)
         dram_var = self.kernel_group.args.output(name)
 
         # Prepare dma instruction
-        local_tile_desc, index_var, dram_stride = self.get_dma_info(name, index)
+        local_tile_desc, index_var, dram_stride, local_dims = self.get_dma_info(name, index)
         vlane_split_axis = local_tile_desc.vmap.vlane_split_axis
         vlane_stride = local_tile_desc.vmap.vlane_stride
 
@@ -656,8 +669,10 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
             sram_index_var = self.spad_buffer_dict[str(value)][3]
 
         # Generate DMA instruction
+        masked_bounds = self._masked_bounds(name, index, dram_stride, local_tile_desc, is_load=False, buffer=self.dma_stores, local_dims=local_dims)
         code = self.emit_transfer("MVOUT", vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
-                                  dram_shape, tile_shape, dram_stride, tile_stride, 0, offset=offset_desc)
+                                  dram_shape, tile_shape, dram_stride, tile_stride, 0, offset=offset_desc, masked_bounds=masked_bounds,
+                                  accumulate=accumulate, acc_float=dtype.is_floating_point)
         self.dma_stores.writeline(common.DeferredLine(name, code))
 
     def reduction(self, dtype, src_dtype, reduction_type, value):
@@ -756,7 +771,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
 
         with self.override_buffer_cse(cse=self.reduction_cse):
             # Tile is always reuduced in inner loop
-            local_tile_desc, index_var, dram_stride = self.get_dma_info(name, index, broadcast=False, store_reduction=True, buffer=self.reductions_suffix)
+            local_tile_desc, index_var, dram_stride, _ = self.get_dma_info(name, index, broadcast=False, store_reduction=True, buffer=self.reductions_suffix)
             vlane_split_axis = local_tile_desc.vmap.vlane_split_axis
             vlane_stride = local_tile_desc.vmap.vlane_stride
 
@@ -796,14 +811,6 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         return any(s.name in self.indirect_symbols for s in expr.free_symbols)
 
     def _index_expr(self, tile_desc, renamed_expression, index, base_vector_index):
-        # In case of index expr, dimension size should be divisible by tile size
-        if not self.kernel_group.tile_desc.is_dim_dividable(self.ranges):
-            new_tile_size = self.kernel_group.tile_desc.adjust_tile_to_divisible(self.ranges)
-            prior_tile_size, prior_ranges = self.kernel_group.tile_desc.get_tile_size(), self.ranges
-            self.kernel_group.tile_desc.set_tile_size(new_tile_size)
-            self.reset("recompile")
-            raise mlir_common.RecompileSignal(f"Index access (tile size {prior_tile_size} is not divisible by {prior_ranges})")
-
         tile_size_per_lane = tile_desc.get_tile_size_per_lane()
         compute_vec_size = tile_desc.get_compute_vec_size()
         strides = tile_desc.get_tile_stride_per_lane()
@@ -1358,12 +1365,96 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         if len(self.itervars) == 1 and self.reduction_depth == 0:
             # In case of reduction loop only case, we will add dummy loop so shift it once
             dram_stride = [0] + dram_stride[:-1]
-        return local_tile_desc, index_var, dram_stride
+
+        # Return the tile-axis -> loop-dim map (local_dims) so load()/store() can pass it to
+        # _masked_bounds for the per-dim [low, high) clamp (it needs each tile axis' loop iv).
+        return local_tile_desc, index_var, dram_stride, local_dims
+
+    _FILL_BITVIEW = {torch.float32: torch.int32, torch.float16: torch.int16,
+                     torch.bfloat16: torch.int16, torch.float64: torch.int64}
+
+    def _masked_fill_bits(self, dtype, index):
+        """Raw bits for the masked-DMA tail fill = the consuming reduction's identity
+        (reduction_init; sum->0, max->-inf, ...) in the LOAD dtype, 0 for a non-reduction
+        load. Log-sum-exp exception: a sum reducing exp(input) fills its PRIMARY input's
+        tail with -inf (exp(-inf)=0); broadcast operands keep their finite identity."""
+        node = getattr(self, "current_node", None)
+        if node is None or getattr(node, "node", None) is None or not node.node.get_reduction_type():
+            return 0
+        rtype = node.node.get_reduction_type()
+        is_primary = bool(set(self.itervars[self.reduction_depth:]) & index.free_symbols)
+        if rtype == "sum" and is_primary and any(self._origin_is_exp(o) for o in node.node.origins):
+            init = "-inf"
+        else:
+            init = reduction_init(rtype, dtype)
+        val = {"-inf": float("-inf"), "inf": float("inf")}.get(init, init)
+        if isinstance(val, str):     # e.g. welford_reduce -> "0.0"
+            val = float(val)
+        t = torch.tensor(val, dtype=dtype)
+        view = self._FILL_BITVIEW.get(dtype)
+        bits = int(t.view(view).item()) if view is not None else int(t.item())
+        return bits & ((1 << (t.element_size() * 8)) - 1)
+
+    def _masked_bounds(self, name, index, dram_stride, local_tile_desc, is_load, buffer, local_dims):
+        """Per tile-axis [low, high) clamp for a masked DMA. Per axis the valid GLOBAL range
+        is [glo, ghi) (store: [0, output_extent); padded load: [pad, pad + input_extent)), and
+        _emit_clamp turns it into the tile-local low/high SSA vars. Returns [(tile_axis, low_var, high_var), ...].
+        """
+        tile_size = local_tile_desc.get_tile_size()
+        const = int(index.as_coeff_Add()[0]) if not index.is_number else int(index)
+        # index const = -sum(pad_d * dram_stride[d]); recover per-dim pad greedily (desc stride).
+        pad = [0] * len(tile_size)
+        if is_load and const < 0:
+            rem = -const
+            for d in sorted(range(len(dram_stride)), key=lambda x: -dram_stride[x]):
+                s = dram_stride[d]
+                if s > 0 and d < len(pad):
+                    pad[d] = rem // s
+                    rem -= pad[d] * s
+        in_shape, in_stride = self.buffer_types[name][2], self.buffer_types[name][3]
+        axes = []
+        for d, k in enumerate(local_dims):
+            if d >= len(tile_size) or k >= len(self.ranges):
+                continue
+            iv = str(self.itervars[k])
+            # A padded load (const < 0) reads a smaller input: clamp per-dim to
+            # [pad_d, pad_d + input_extent_d). Every other DMA is valid over the whole
+            # loop extent, so only the trailing tail needs clamping.
+            if is_load and const < 0:
+                ext = next((int(in_shape[j]) for j, st in enumerate(in_stride)
+                            if int(st) == int(dram_stride[d])), None)
+                glo, ghi = (pad[d], pad[d] + ext) if ext is not None else (0, int(self.ranges[k]))
+            else:
+                glo, ghi = 0, int(self.ranges[k])
+            axes.append((d, iv, glo, ghi, int(tile_size[d])))
+        return self._emit_clamp(axes, buffer)
+
+    def _emit_clamp(self, axes, buffer):
+        """Emit the per-axis dynamic clamp. axes: [(tile_axis, base_iv, glo, ghi, tile), ...]
+        -- low = max(0, glo - base), high = min(tile, ghi - base) as affine.max/affine.min of
+        the loop iv so the last partial tile and the pad borders fall out per iteration.
+        Returns [(tile_axis, low_var, high_var), ...] for the non-trivial axes only."""
+        result = []
+        for d, iv, glo, ghi, tile in axes:
+            if glo == 0 and ghi % tile == 0:      # every tile fully valid -> no clamp
+                continue
+            high_var = self.apply_cse.generate(
+                buffer, f"affine.min affine_map<(d0) -> ({tile}, {ghi} - d0)>(%{iv})")
+            self.register_var_info(high_var, [1, "index"])
+            if glo > 0:
+                low_var = self.apply_cse.generate(
+                    buffer, f"affine.max affine_map<(d0) -> (0, {glo} - d0)>(%{iv})")
+                self.register_var_info(low_var, [1, "index"])
+            else:
+                low_var = self.get_const_cse(0)
+            result.append((d, low_var, high_var))
+        return result
 
     def emit_transfer(self, dma_type_name, vlane_split_axis, vlane_stride, mlir_dtype,
                       dram_var, dram_index_var, sram_var, sram_index_var,
                       dram_shape, tile_shape, dram_stride, tile_stride, padding,
-                      subtile_size=None, async_type=None, offset=None):
+                      subtile_size=None, async_type=None, offset=None, masked_bounds=None, masked_fill=0,
+                      accumulate=False, acc_float=False):
         """Emit a generic togsim.transfer op for a DMA whose access exceeds the
         4D Gemmini descriptor limit. Carries the full N-D access (dram/tile
         strides + shapes) plus the SSA operands a memref.dma_start needs
@@ -1404,6 +1495,10 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         if subtile_size:
             av = int(async_type) if async_type is not None else 1
             attrs += f', subtile_size = {list(subtile_size)}, async = {av} : i64'
+        if accumulate:   # index_add: MVOUT does out[idx] += val (float or integer add)
+            attrs += f', accumulate = true'
+            if acc_float:
+                attrs += f', acc_float = true'
         # operands: dram, dram_idx, sram, sram_idx, tag, tag_idx, dma_type, vlane_stride [, offset spad]
         operands = (f'%{dram_var}, %{dram_index_var}, %{sram_var}, %{zero_cse}, '
                     f'%{tag}, %{zero_cse}, %{dma_type}, %{vst}')
@@ -1413,6 +1508,18 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
             operands += f', %{offset_buf}'
             optypes += f', {offset_type}'
             attrs += f', indirect = true, offset_stride = {int(offset_stride)} : i64'
+        # masked-DMA dynamic clamp: append (low, high) index operands per clamped tile axis;
+        # masked_axes names the tile axis of each pair so the lowering writes the runtime
+        # values into the descriptor's dim_low/dim_high before the DMA. See _masked_bounds.
+        if masked_bounds:
+            axes = [d for d, _lo, _hi in masked_bounds]
+            for _d, lo, hi in masked_bounds:
+                operands += f', %{lo}, %{hi}'
+                optypes += ', index, index'
+            attrs += f', masked_axes = {axes}'
+            # box-excluded positions are filled with the consuming reduction's identity
+            # (0/1/-inf/+inf, per dtype); 0 for non-reduction loads. See _masked_fill_bits.
+            attrs += f', masked_fill = {int(masked_fill)} : i64'
         return f'"togsim.transfer"({operands}) {{{attrs}}} : ({optypes}) -> ()'
 
     def allocate_sram_buffer(self, dtype, dram_name, tile_desc, raw_index, buffer=None, forced_name=None):
@@ -1496,13 +1603,6 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
     def convert_indirect_indexing(self, index :sympy.Expr):
         if not self._has_indirect(index):
             return index, None
-
-        # Note: In case of indirect indexing, dimensions should be divisible by tile size
-        if not self.kernel_group.tile_desc.is_dim_dividable(self.ranges):
-            new_tile_size = self.kernel_group.tile_desc.adjust_tile_to_divisible(self.ranges)
-            self.kernel_group.tile_desc.set_tile_size(new_tile_size)
-            self.reset("recompile")
-            raise mlir_common.RecompileSignal(f"Indirect access (tile size {self.kernel_group.tile_desc.get_tile_size()} is not divisible by {self.ranges})")
 
         # Process start
         indirect_dims = [str(dim) for dim in index.free_symbols if str(dim) in self.indirect_symbols]

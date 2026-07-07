@@ -661,7 +661,6 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
             with contextlib.ExitStack() as stack:
                 stack.enter_context(compute_body.indent(attribute="{inner_loop=false}",suffix=self.compute_body_loop.epilogue_line()))
                 if self.reduction_fusion:
-                    compute_body.splice(self.masks)
                     compute_body.writelines(self.reduction_body_loop.lines())
                     stack.enter_context(compute_body.indent(attribute="{inner_loop=false}"))
                     compute_body.splice(self.loads)
@@ -940,9 +939,35 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
                 zero_cse = self.get_const_cse(0, "index")
                 sram_index_var = ", ".join([f"%{str(zero_cse)}"]*tile_desc.get_nr_dim())
 
+                # masked-DMA clamp: per tile dim, clamp to the real DRAM extent so a tile
+                # padding past it is zero-filled, not MAC-ing garbage. Only a dim indexed by
+                # a SINGLE iv is clampable; a sum of ivs (im2col) is pre-padded instead.
+
+                # FIXME: loop_extents is declared by hand in each conv template and drifts
+                # from the affine.for bounds. Record each loop's (iv -> bound) as the
+                # affine.for is emitted, as pointwise does with ranges/itervars.
+                loop_ext = getattr(self, "loop_extents", None)
+                layout_sizes, layout_strides = node_layout.size, node_layout.stride
+                tile_sizes = tile_desc.get_tile_size()
+                clamp_axes = []
+                for d, idx_expr in enumerate(index_list):
+                    syms = list(idx_expr.free_symbols)
+                    if len(syms) != 1 or d >= len(tile_sizes):
+                        continue
+                    base_iv = str(syms[0])
+                    if loop_ext:
+                        extent = loop_ext.get(base_iv)      # explicit: clamp only known ivs
+                    else:
+                        extent = next((int(layout_sizes[j]) for j, st in enumerate(layout_strides)
+                                       if layout_sizes[j].is_number and int(st) == int(_dram_stride[d])), None)
+                    if extent is not None:
+                        clamp_axes.append((d, base_iv, 0, int(extent), int(tile_sizes[d])))
+                masked_bounds = self._emit_clamp(clamp_axes, local_code)
+
                 code = self.emit_transfer(dma_type, vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
                                           dram_shape, tile_shape, _dram_stride, sram_strides, int(padding),
-                                          subtile_size=subtile_size if subtile_size else None, async_type=async_type)
+                                          subtile_size=subtile_size if subtile_size else None, async_type=async_type,
+                                          masked_bounds=masked_bounds, masked_fill=0)
                 local_code.writeline(code)
             return textwrap.indent(local_code.getvalue(), " "*indent_size).strip()
 
@@ -1075,9 +1100,22 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         with self.override_buffer_cse(buffer=self.stores):
             ops._store(value, sram_var, compute_index_var, tile_shape, buffer_name=buffer_name)
 
-        # Generate DMA instruction
+        # Generate the DMA. Clamp the output tail, else a non-dividing epilogue store
+        # writes the systolic pad region past the real output extent. Each iv's extent is
+        # ranges[k]; _emit_clamp skips dividing dims, so a dividing output is a no-op.
+        iv_extent = {}
+        for itervar, rng in zip(self.itervars, self.ranges):
+            try:
+                iv_extent[str(itervar)] = int(rng)
+            except (TypeError, ValueError):
+                pass
+        tile_sizes = self.kernel_group.tile_desc.get_tile_size()
+        clamp_axes = [(d, iv, 0, iv_extent[iv], int(tile_sizes[d]))
+                      for d, iv in enumerate(self.dim_aliasing.values())
+                      if d < len(tile_sizes) and iv in iv_extent]
+        masked_bounds = self._emit_clamp(clamp_axes, self.dma_stores)
         code = self.emit_transfer("MVOUT", vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
-                                  dram_shape, tile_shape, dram_stride, tile_stride, 0)
+                                  dram_shape, tile_shape, dram_stride, tile_stride, 0, masked_bounds=masked_bounds)
         self.dma_stores.writeline(DeferredLine(name, code))
 
     def reduction_epilogue(self, dtype, src_dtype, reduction_type, value):

@@ -34,6 +34,7 @@ from . import lower_vlane_idx
 from . import decompose_transfer
 from . import dma_fine_grained
 from . import lower_to_vcix
+from . import peel_transfer
 from .lower_to_llvm import run_standard_lowering  # noqa: F401 (re-exported)
 from .build_tog import run_tog  # noqa: F401 (re-exported; replaces C++ test-tile-operation-graph)
 from .dma_fine_grained import run_fine_grained  # noqa: F401 (re-exported; standalone/CLI)
@@ -47,9 +48,11 @@ PRE_OPT_PASSES = [
     lower_vlane_idx,
 ]
 # fine-grained first: splits the matmul DMAs that the vcix lowering then reads.
+# peel_transfer last: split any >4D togsim.transfer so build_tog (trace) also sees <=4D.
 POST_OPT_PASSES = [
     dma_fine_grained,
     lower_to_vcix,
+    peel_transfer,
 ]
 
 

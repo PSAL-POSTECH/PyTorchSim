@@ -95,7 +95,7 @@ def mlir_gem5_compile_command(filename, sample_filename, tog_file, vectorlane_si
             -dma-fine-grained='systolic-array-size={vectorlane_size}' \
             -global-idx='vlen={vlen}' \
             -test-pytorchsim-to-vcix='systolic-array-size={vectorlane_size} vlen={vlen}' \
-            -test-tile-operation-graph='vectorlane={vectorlane_size} sample-mode={extension_config.CONFIG_TLS_MODE}' \
+            -test-tile-operation-graph='vectorlane={vectorlane_size} tls_mode={extension_config.CONFIG_TLS_MODE}' \
             -test-memref-to-gemmini="vectorlane={vectorlane_size} timing=1" \
             -convert-linalg-to-loops \
             -convert-vector-to-scf='full-unroll' \

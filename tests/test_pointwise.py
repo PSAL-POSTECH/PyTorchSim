@@ -207,6 +207,18 @@ def test_hypot(device):
     # 4. Broadcasting (128x1 vs 1x128)
     run_test("Hypot_Broadcast", device, hypot_fn, (torch.randn(128, 1), torch.randn(1, 128)), "broadcast")
 
+def test_log(device):
+    def log_fn(a):
+        return torch.log(a)
+
+    # 1. Float Vector (Aligned)
+    run_test("Log", device, log_fn, torch.rand(128, 128) + 1e-5, "128x128")  # Avoid log(0)
+    # 2. Float Scalar
+    run_test("Log", device, log_fn, torch.tensor([[2.71828]]), "1x1")  # log(e) = 1
+    # 3. Float Vector (Tail / Remainder - Small & Large)
+    run_test("Log", device, log_fn, torch.rand(15, 15) + 1e-5, "15x15")
+    run_test("Log", device, log_fn, torch.rand(129, 129) + 1e-5, "129x129")
+
 if __name__ == "__main__":
     device = torch.device("npu:0")
 
@@ -220,3 +232,4 @@ if __name__ == "__main__":
     test_copysign(device)
     test_erfc(device)
     test_hypot(device)
+    test_log(device)

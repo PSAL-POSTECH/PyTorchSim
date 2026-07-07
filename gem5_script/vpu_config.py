@@ -20,6 +20,7 @@ class SpecialFunctionUnit(MinorFU):
         "CustomVtanh",
         "CustomVsin",
         "CustomVcos",
+        "CustomVlog",
         ])
     opLat = 10
 

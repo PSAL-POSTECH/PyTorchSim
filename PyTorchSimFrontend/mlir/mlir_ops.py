@@ -611,12 +611,18 @@ class ExtensionOverrides(common.OpOverrides):
     @staticmethod
     def log(operand, *args, **kwargs):
         op_type = V.kernel.var_info[operand]
+        if op_type[0] == 1:
+            operand = ops.broadcast(operand, 4)
+            val = ops.log(operand)
+            result = ops.extractelement(val, 0)
+            return result, V.kernel.var_info[result]
         tile_size = op_type[0]
         dtype = op_type[1]
 
         # Type check & auto cast
         if dtype.startswith("f"):
             operand = ops.to_dtype(operand, "f32")
+            dtype = "f32"
 
         shape = f"vector<{tile_size}x{dtype}>" if tile_size > 1 else dtype
         return format_mlir_op(f'math.log %{operand}', shape, **kwargs), [tile_size, dtype]

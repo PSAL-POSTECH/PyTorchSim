@@ -942,20 +942,35 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
 
                 # masked-DMA clamp: per tile dim, clamp to the real DRAM extent so a tile
                 # that pads past M/N/K (matmul) or a dim is filled with 0 instead of MAC-ing
-                # garbage. index_list[d] = iv * stride -> base iv; the extent is the DRAM dim
-                # matched by that tile dim's stride (tile order != layout order for conv).
-                # _emit_clamp skips dividing dims (no-op).
+                # garbage. index_list[d] = iv * stride -> base iv; the extent comes from the
+                # kernel's loop_extents {iv_name: loop_bound} (the template's ranges/itervars
+                # equivalent -- needed for conv, whose repacked-weight strides do not match
+                # node_layout), else it is matched by that tile dim's stride (gemm).
+                # _emit_clamp skips dividing dims (no-op). Only a dim whose index is a single
+                # iv is clampable: the clamp base is that iv, and high/low are affine in it.
+                # A dim indexed by a SUM of ivs (e.g. an im2col spatial axis o_h + k_h) has
+                # no single base, so it is left unclamped -- correct here because such inputs
+                # are pre-padded (materialized), not masked.
+                # FIXME: loop_extents is declared by hand in each conv template (verbose,
+                # easy to drift from the affine.for bounds). Fold it into the template
+                # overhaul -- e.g. record each loop's (iv -> bound) as the affine.for is
+                # emitted, so def_dma_op derives extents the way pointwise uses ranges/itervars.
+                _loop_ext = getattr(self, "loop_extents", None)
                 _dram_size, _dram_str = node_layout.size, node_layout.stride
                 _tsize = tile_desc.get_tile_size()
                 _axes = []
                 for _d, _idx in enumerate(index_list):
                     _syms = list(_idx.free_symbols)
-                    if not _syms or _d >= len(_tsize):
+                    if len(_syms) != 1 or _d >= len(_tsize):
                         continue
-                    _ext = next((int(_dram_size[j]) for j, st in enumerate(_dram_str)
-                                 if _dram_size[j].is_number and int(st) == int(_dram_stride[_d])), None)
+                    _iv = str(_syms[0])
+                    if _loop_ext:
+                        _ext = _loop_ext.get(_iv)           # explicit: clamp only known ivs
+                    else:
+                        _ext = next((int(_dram_size[j]) for j, st in enumerate(_dram_str)
+                                     if _dram_size[j].is_number and int(st) == int(_dram_stride[_d])), None)
                     if _ext is not None:
-                        _axes.append((_d, str(_syms[0]), 0, _ext, int(_tsize[_d])))
+                        _axes.append((_d, _iv, 0, int(_ext), int(_tsize[_d])))
                 masked_bounds = self._emit_clamp(_axes, local_code)
 
                 code = self.emit_transfer(dma_type, vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,

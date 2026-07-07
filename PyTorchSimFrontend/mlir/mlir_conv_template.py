@@ -147,6 +147,9 @@ def {{ FUNC_NAME }}{{kernel.def_wrapper()}}:
         TOG_latency = BATCH if TILE_M > BATCH else TILE_M
         TOG_latency = 8 if TOG_latency < 8 else TOG_latency
         kernel.loop_size = [TOG_latency, TILE_N, TILE_K]
+        # Real extent of each structural loop iv, for the masked-DMA clamp (def_dma_op).
+        kernel.loop_extents = {"tile_m": BATCH, "tile_n": O_C, "o_h": O_H, "o_w": O_W,
+                               "k_h": K_H, "k_w": K_W, "tile_k": I_C}
 
         # Prepare tile descriptors
         vlane_stride = 1

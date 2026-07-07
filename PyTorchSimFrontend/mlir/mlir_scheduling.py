@@ -60,7 +60,7 @@ class MLIRScheduling(BaseScheduling):
                 return False
 
             if list(node1.read_writes.writes)[0].name in [dep.name for dep in node2.read_writes.reads]:
-                node1 = self.revert_group(node1)
+                self.revert_group(node1)
                 return True
         return self.scheduler.can_fuse_origin(node1, node2)
 
@@ -182,7 +182,7 @@ class MLIRScheduling(BaseScheduling):
             try:
                 stride = [i.strip()[:-1].split(",")[-1].strip() for i in str(node2.get_nodes()[0].node).split("\n") if "r0" in i][1]
                 stride = int(sympify(stride).coeff(target_symbol))
-            except:
+            except Exception:
                 return False
 
             # We can't fuse dim=-1 & N == 1

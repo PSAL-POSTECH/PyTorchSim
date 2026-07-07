@@ -50,7 +50,8 @@ DTYPE_TO_MLIR = {
     torch.int8: "i8",
     torch.uint8: "i8",
     torch.bool: "i8",
-    torch.bfloat16: "bf16",   # bf16 unsupported (Spike/codegen have no bf16); left as-is
+    torch.bfloat16: "bf16",   # present only to keep the dtype table total; bf16 is not
+                              # actually supported (Spike has no bf16 and op-select rejects it)
 }
 
 MLIR_TO_DTYPE = {

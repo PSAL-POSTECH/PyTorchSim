@@ -955,23 +955,23 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
                 # easy to drift from the affine.for bounds). Fold it into the template
                 # overhaul -- e.g. record each loop's (iv -> bound) as the affine.for is
                 # emitted, so def_dma_op derives extents the way pointwise uses ranges/itervars.
-                _loop_ext = getattr(self, "loop_extents", None)
-                _dram_size, _dram_str = node_layout.size, node_layout.stride
-                _tsize = tile_desc.get_tile_size()
-                _axes = []
-                for _d, _idx in enumerate(index_list):
-                    _syms = list(_idx.free_symbols)
-                    if len(_syms) != 1 or _d >= len(_tsize):
+                loop_ext = getattr(self, "loop_extents", None)
+                layout_sizes, layout_strides = node_layout.size, node_layout.stride
+                tile_sizes = tile_desc.get_tile_size()
+                clamp_axes = []
+                for d, idx_expr in enumerate(index_list):
+                    syms = list(idx_expr.free_symbols)
+                    if len(syms) != 1 or d >= len(tile_sizes):
                         continue
-                    _iv = str(_syms[0])
-                    if _loop_ext:
-                        _ext = _loop_ext.get(_iv)           # explicit: clamp only known ivs
+                    base_iv = str(syms[0])
+                    if loop_ext:
+                        extent = loop_ext.get(base_iv)      # explicit: clamp only known ivs
                     else:
-                        _ext = next((int(_dram_size[j]) for j, st in enumerate(_dram_str)
-                                     if _dram_size[j].is_number and int(st) == int(_dram_stride[_d])), None)
-                    if _ext is not None:
-                        _axes.append((_d, _iv, 0, int(_ext), int(_tsize[_d])))
-                masked_bounds = self._emit_clamp(_axes, local_code)
+                        extent = next((int(layout_sizes[j]) for j, st in enumerate(layout_strides)
+                                       if layout_sizes[j].is_number and int(st) == int(_dram_stride[d])), None)
+                    if extent is not None:
+                        clamp_axes.append((d, base_iv, 0, int(extent), int(tile_sizes[d])))
+                masked_bounds = self._emit_clamp(clamp_axes, local_code)
 
                 code = self.emit_transfer(dma_type, vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
                                           dram_shape, tile_shape, _dram_stride, sram_strides, int(padding),
@@ -1117,16 +1117,16 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         # index-N matmul epilogue and the c0/tile_n/... conv epilogue alike); _emit_clamp
         # skips dividing dims, so a dividing output is a no-op.
         iv_extent = {}
-        for _v, _r in zip(self.itervars, self.ranges):
+        for itervar, rng in zip(self.itervars, self.ranges):
             try:
-                iv_extent[str(_v)] = int(_r)
+                iv_extent[str(itervar)] = int(rng)
             except (TypeError, ValueError):
                 pass
-        _tile = self.kernel_group.tile_desc.get_tile_size()
-        _axes = [(d, iv, 0, iv_extent[iv], int(_tile[d]))
-                 for d, iv in enumerate(self.dim_aliasing.values())
-                 if d < len(_tile) and iv in iv_extent]
-        masked_bounds = self._emit_clamp(_axes, self.dma_stores)
+        tile_sizes = self.kernel_group.tile_desc.get_tile_size()
+        clamp_axes = [(d, iv, 0, iv_extent[iv], int(tile_sizes[d]))
+                      for d, iv in enumerate(self.dim_aliasing.values())
+                      if d < len(tile_sizes) and iv in iv_extent]
+        masked_bounds = self._emit_clamp(clamp_axes, self.dma_stores)
         code = self.emit_transfer("MVOUT", vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
                                   dram_shape, tile_shape, dram_stride, tile_stride, 0, masked_bounds=masked_bounds)
         self.dma_stores.writeline(DeferredLine(name, code))

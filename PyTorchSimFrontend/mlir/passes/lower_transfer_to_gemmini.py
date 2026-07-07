@@ -2,7 +2,7 @@
 
 Merges decompose_transfer (the <=4D Gemmini-limit handling: drop unit dims /
 collapse / >4D affine.for peel with lane-banked SRAM offset) with
-lower_dma_to_gemmini (the CONFIG/CONFIG2/CONFIG3/[CONFIG4]/MVIN|MVOUT asm emission).
+lower_dma_to_gemmini (the CONFIG_DESC/MVIN|MVOUT asm emission).
 togsim.transfer is unregistered so it carries every runtime descriptor as an
 operand -- including the future masked-clamp low/high vectors -- which a registered
 memref.dma_start cannot. See docs/design/transfer-direct-lowering.md.
@@ -19,7 +19,7 @@ from ._mlir_util import walk_ops
 from .lower_dma_to_gemmini import _i64_signed, _row_major_strides, _elem_bytes, _asm, CONSTRAINTS
 from .decompose_transfer import _int_array, _const_int, _squeeze_reassociation
 
-CONFIG, CONFIG2, CONFIG3, CONFIG4, CONFIG_DESC = 0, 4, 5, 6, 7
+CONFIG_DESC = 7   # func7 for the TMA-style descriptor pointer (replaces CONFIG/2/3/4)
 MVIN, MVIN2, MVIN3, MVOUT = 2, 1, 14, 3
 DESC_SLOTS = 18   # 144-byte DMA descriptor as 18 x i64 (see project-dma-descriptor)
 CONFIG_TYPE = {MVIN: 0, MVIN2: 1, MVIN3: 2, MVOUT: 3}
@@ -42,15 +42,23 @@ def run(module, timing=False, vectorlane=128, **_):
         if g.operation.name == "memref.global":
             sym2type[g.attributes["sym_name"].value] = MemRefType(TypeAttr(g.attributes["type"]).value)
 
+    i32 = IntegerType.get_signless(32)
     desc_ty = MemRefType.get([DESC_SLOTS], i64)
+    desc_i32_ty = MemRefType.get([DESC_SLOTS * 2], i32)   # same bytes, i32-addressable (masked)
     desc_globals = {}   # slots tuple -> global sym name (dedup)
     desc_counter = [0]
 
+    def _i32_signed(v):
+        v &= 0xFFFFFFFF
+        return v - (1 << 32) if v >= (1 << 31) else v
+
     def _pack_desc(shape4, dram4, spad4, elem_bytes, vlstride, vsa4, cfg_type, indirect,
-                   ind_stride, ind_esize):
+                   ind_stride, ind_esize, hi=None, accumulate=False, acc_float=False):
         # 18 i64 slots matching the C dma_descriptor byte layout (little-endian).
         lo = [0, 0, 0, 0]
-        hi = list(shape4)
+        if hi is None:
+            hi = list(shape4)
+        masked = any(h < s for h, s in zip(hi, shape4))   # dim_high clamps below extent
         def s2(a, b): return (a & 0xFFFFFFFF) | ((b & 0xFFFFFFFF) << 32)
         m = 0xFFFFFFFFFFFFFFFF
         slots = [
@@ -60,7 +68,9 @@ def run(module, timing=False, vectorlane=128, **_):
             dram4[0] & m, dram4[1] & m, dram4[2] & m, dram4[3] & m,
             spad4[0] & m, spad4[1] & m, spad4[2] & m, spad4[3] & m,
             (elem_bytes & 0xFFFF) | ((vlstride & 0xFFFF) << 16) | ((vsa4 & 0xFF) << 32)
-                | ((cfg_type & 0xFF) << 40) | (((1 if indirect else 0) & 0xFFFF) << 48),
+                | ((cfg_type & 0xFF) << 40)
+                | (((1 if indirect else 0) | (2 if masked else 0)
+                    | (4 if accumulate else 0) | (8 if acc_float else 0)) << 48),
             0,                                                    # +120 indirect_addr (runtime)
             (ind_stride & 0xFFFF) | ((ind_esize & 0xFFFF) << 16),  # +128
             0,                                                    # +136 fill (runtime/step3)
@@ -85,14 +95,46 @@ def run(module, timing=False, vectorlane=128, **_):
             desc_globals[key] = name
         return desc_globals[key]
 
-    def desc_ptr_and_store_indirect(slots, ind_addr_i64):
-        # get_global -> byte pointer; for indirect, store the runtime addr into slot 15.
-        name = _desc_global(slots)
-        g = memref.GetGlobalOp(desc_ty, name).result
-        if ind_addr_i64 is not None:
-            memref.StoreOp(ind_addr_i64, g, [arith.ConstantOp(idx_ty, IntegerAttr.get(idx_ty, 15)).result])
-        base = memref.ExtractAlignedPointerAsIndexOp(g).result
-        return arith.IndexCastOp(i64, base).result
+    def desc_ptr(slots, masked_pairs=(), fill=0, ind_addr_i64=None):
+        """Byte pointer to the DMA descriptor global. A fully static descriptor (no
+        masked clamp, no indirect address) is a deduped i64 global. Anything with a
+        runtime-written field -- per-dim dim_low/dim_high (masked) and/or the indirect
+        address -- gets a UNIQUE i32-view global (same byte layout, i32-addressable) so
+        those int32/i64 fields can be stored individually."""
+        import numpy as np
+        if not masked_pairs and ind_addr_i64 is None:
+            g = memref.GetGlobalOp(desc_ty, _desc_global(slots)).result
+            return arith.IndexCastOp(i64, memref.ExtractAlignedPointerAsIndexOp(g).result).result
+        slots = list(slots)
+        if masked_pairs:
+            slots[14] |= (2 << 48)                    # masked flag (+118 bit1)
+            slots[17] = fill & 0xFFFFFFFFFFFFFFFF      # +136 fill: box-excluded positions
+        words = []
+        for v in slots:
+            v &= 0xFFFFFFFFFFFFFFFF
+            words.append(_i32_signed(v & 0xFFFFFFFF))
+            words.append(_i32_signed((v >> 32) & 0xFFFFFFFF))
+        name = f"dma_desc_{desc_counter[0]}"
+        desc_counter[0] += 1
+        init = DenseElementsAttr.get(np.array(words, dtype=np.int32),
+                                     type=RankedTensorType.get([DESC_SLOTS * 2], i32))
+        with InsertionPoint.at_block_begin(module_top):
+            Operation.create("memref.global", results=[], operands=[], attributes={
+                "sym_name": StringAttr.get(name),
+                "sym_visibility": StringAttr.get("private"),
+                "type": TypeAttr.get(desc_i32_ty),
+                "initial_value": init})
+        g = memref.GetGlobalOp(desc_i32_ty, name).result
+        def store_word(v32, i32_idx):
+            memref.StoreOp(v32, g, [arith.ConstantOp(idx_ty, IntegerAttr.get(idx_ty, i32_idx)).result])
+        for axis4, low_val, high_val in masked_pairs:   # dim_low i32 idx 4 (+16B), dim_high 8 (+32B)
+            store_word(arith.IndexCastOp(i32, low_val).result, 4 + axis4)
+            store_word(arith.IndexCastOp(i32, high_val).result, 8 + axis4)
+        if ind_addr_i64 is not None:                    # indirect_addr (i64) at +120 -> words 30/31
+            store_word(arith.TruncIOp(i32, ind_addr_i64).result, 30)
+            shamt = arith.ConstantOp(i64, IntegerAttr.get(i64, 32)).result
+            store_word(arith.TruncIOp(i32, arith.ShRUIOp(ind_addr_i64, shamt).result).result, 31)
+        return arith.IndexCastOp(i64, memref.ExtractAlignedPointerAsIndexOp(g).result).result
 
     def i64_const(value):
         return arith.ConstantOp(i64, IntegerAttr.get(i64, _i64_signed(value))).result
@@ -144,6 +186,20 @@ def run(module, timing=False, vectorlane=128, **_):
             subtile = _int_array(op.attributes["subtile_size"])
         except KeyError:
             subtile = None
+        # masked-DMA dynamic clamp: masked_axes lists the clamped tile axes; the trailing
+        # (low, high) index operands (2 per axis) are runtime-stored into dim_low/dim_high.
+        if "masked_axes" in op.attributes:
+            masked_axes = _int_array(op.attributes["masked_axes"])
+            n_base = 9 if "indirect" in op.attributes else 8
+            mvals = op_operands[n_base:]
+            masked_pairs = [(masked_axes[i], mvals[2 * i], mvals[2 * i + 1])
+                            for i in range(len(masked_axes))]
+            masked_fill = IntegerAttr(op.attributes["masked_fill"]).value
+        else:
+            masked_pairs = []
+            masked_fill = 0
+        accumulate = "accumulate" in op.attributes     # index_add: MVOUT out[idx] += val
+        acc_float = "acc_float" in op.attributes
 
         if timing:
             op.erase()
@@ -161,7 +217,7 @@ def run(module, timing=False, vectorlane=128, **_):
             return arith.ConstantOp(idx_ty, IntegerAttr.get(idx_ty, v)).result
 
         def _emit_asm(sram_mem, sram_indices, dram_idx_val, vsa_val, desc_shape,
-                      desc_dram_strides, desc_spad_strides, subtile_shape):
+                      desc_dram_strides, desc_spad_strides, subtile_shape, desc_masked_pairs=None):
             cfg_shape = subtile_shape if subtile_shape is not None else desc_shape
             expand = MAX_TENSOR_DIM - len(cfg_shape)
             shape4 = [1] * expand + list(cfg_shape)
@@ -182,9 +238,11 @@ def run(module, timing=False, vectorlane=128, **_):
                 ind_esize = _elem_bytes(off_ty.element_type)
                 ind_stride = IntegerAttr(op.attributes["offset_stride"]).value
             slots = _pack_desc(shape4, dram4, spad4, elem_bytes, vlane_stride, vsa4,
-                               config_type, indirect, ind_stride, ind_esize)
-            desc_ptr = desc_ptr_and_store_indirect(slots, ind_addr)
-            asm(CONFIG_DESC, desc_ptr, i64_const(0))
+                               config_type, indirect, ind_stride, ind_esize,
+                               accumulate=accumulate, acc_float=acc_float)
+            pairs4 = [(expand + d, lo, hi) for d, lo, hi in (desc_masked_pairs or ())]  # 4D-expand axis
+            desc_ptr_val = desc_ptr(slots, pairs4, masked_fill, ind_addr)
+            asm(CONFIG_DESC, desc_ptr_val, i64_const(0))
             asm(dma_type_val, dram_addr, spad_addr)
 
         if offset_sym is not None:
@@ -195,7 +253,7 @@ def run(module, timing=False, vectorlane=128, **_):
                 # sram offset is linear (row-major stride 1) -> last index only; others 0.
                 sidx = [_const(0)] * (len(tile_shape) - 1) + [sram_idx]
                 _emit_asm(sram, sidx, dram_idx, vlane_axis,
-                          tile_shape, dram_stride, tile_stride, subtile)
+                          tile_shape, dram_stride, tile_stride, subtile, masked_pairs)
             op.erase()
             continue
 
@@ -208,13 +266,16 @@ def run(module, timing=False, vectorlane=128, **_):
             dr = [dram_stride[i] for i in keep]
             tl = [tile_stride[i] for i in keep]
             st = [subtile[i] for i in keep] if subtile is not None else None
+            # remap each masked tile axis to its collapsed group index.
+            mp = [(next(gi for gi, g in enumerate(groups) if d in g), lo, hi)
+                  for d, lo, hi in masked_pairs]
             new_vlane = next(gi for gi, g in enumerate(groups) if vlane_axis in g)
             with InsertionPoint(op):
                 sram_c = Operation.create(
                     "memref.collapse_shape", results=[collapsed_ty], operands=[sram],
                     attributes={"reassociation": reassoc}).results[0]
                 sidx = [_const(0)] * (len(target) - 1) + [sram_idx]
-                _emit_asm(sram_c, sidx, dram_idx, new_vlane, target, dr, tl, st)
+                _emit_asm(sram_c, sidx, dram_idx, new_vlane, target, dr, tl, st, mp)
             op.erase()
             continue
 
@@ -226,6 +287,9 @@ def run(module, timing=False, vectorlane=128, **_):
         dr = [dram_stride[d] for d in inner]
         tl = [tile_stride[d] for d in inner]
         st = [subtile[d] for d in inner] if subtile is not None else None
+        if any(d in peeled for d, _lo, _hi in masked_pairs):
+            raise NotImplementedError("masked-DMA clamp on a peeled (outer-loop) axis")
+        mp = [(inner.index(d), lo, hi) for d, lo, hi in masked_pairs if d in inner]
         if vlane_axis in inner:
             new_vlane = inner.index(vlane_axis)
         elif vlane_axis in peeled:
@@ -285,7 +349,7 @@ def run(module, timing=False, vectorlane=128, **_):
             ).results[0]
             zero = _const(0)
             _emit_asm(sub, [zero, zero, zero, sram_off_val], dram_idx_val, new_vlane,
-                      inner_shape, dr, tl, st)
+                      inner_shape, dr, tl, st, mp)
         op.erase()
 
 

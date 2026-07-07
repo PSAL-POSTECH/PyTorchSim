@@ -100,12 +100,106 @@ def flatten_nested_floormod(expr):
     return expr.xreplace(replace) if replace else expr
 
 
+# --- symbolic-aware boundary arithmetic ------------------------------------
+# These reduce EXACTLY to the integer case when their operands are concrete, so
+# static axis splitting is unchanged; they additionally accept symbolic size
+# expressions (e.g. a flattened reshape extent E = M*N with divisor N), where a
+# boundary that is a genuine product of dims divides the extent by construction.
+# A dynamic dim symbol is created integer/positive, so sympy proves the
+# divisibility (Mod(M*N, N) -> 0) and the quotient (cancel(M*N/N) -> M).
+
+def _divides(d, E):
+    """True iff d divides E. For concrete ints this is `E % d == 0`."""
+    di, Ei = _as_int(d), _as_int(E)
+    if di is not None and Ei is not None:
+        return di != 0 and Ei % di == 0
+    try:
+        return bool(sympy.simplify(sympy.Mod(E, d)) == 0)
+    except Exception:
+        return False
+
+
+def _eq(a, b):
+    """Provable equality of two size exprs (structural for ints)."""
+    ai, bi = _as_int(a), _as_int(b)
+    if ai is not None and bi is not None:
+        return ai == bi
+    try:
+        return bool(sympy.simplify(a - b) == 0)
+    except Exception:
+        return a == b
+
+
+def _gt1(x):
+    """True iff x is a non-trivial boundary (> 1). A symbolic dim is assumed > 1."""
+    xi = _as_int(x)
+    if xi is not None:
+        return xi > 1
+    return not _eq(x, sympy.Integer(1))
+
+
+def _proper(b, E):
+    """True iff b is a proper interior divisor of E: 1 < b < E and b | E."""
+    bi, Ei = _as_int(b), _as_int(E)
+    if bi is not None and Ei is not None:
+        return 1 < bi < Ei and Ei % bi == 0
+    return _gt1(b) and not _eq(b, E) and _divides(b, E)
+
+
+def _quotient(a, b):
+    """a / b as an exact int (concrete) or simplified sympy expr (symbolic)."""
+    ai, bi = _as_int(a), _as_int(b)
+    if ai is not None and bi is not None:
+        return ai // bi
+    return sympy.cancel(a / b)
+
+
+def _as_size(x):
+    """Wrap a concrete int as sympy.Integer; pass a sympy expr through unchanged
+    (preserving its integer/positive assumptions)."""
+    xi = _as_int(x)
+    return sympy.Integer(xi) if xi is not None else x
+
+
+def _ordered_chain(boundaries, E):
+    """Order the proper divisors of E into a divisibility chain [1, ..., E], else None.
+
+    Generalises the old `_is_chain` + numeric `sorted`: orders by the divisibility
+    partial order (b_i precedes b_j iff b_i | b_j) rather than by numeric value, so
+    symbolic boundaries (suffix-products of dims, e.g. N | M*N) chain correctly. For
+    concrete ints this yields exactly the old ascending divisibility chain. Returns
+    None when the boundaries do not form a TOTAL divisibility chain (the
+    incompatible-radix / misaligned case), so the axis is left unsplit.
+    """
+    bs = []
+    for b in boundaries:
+        if _proper(b, E) and not any(_eq(b, x) for x in bs):
+            bs.append(b)
+    ordered = []
+    remaining = list(bs)
+    while remaining:
+        # the divisibility-minimum is the unique element that divides all others.
+        mins = [b for b in remaining
+                if all(_divides(b, o) for o in remaining if not _eq(b, o))]
+        if len(mins) != 1:
+            return None  # no unique minimum -> incomparable -> not a chain
+        ordered.append(mins[0])
+        remaining = [o for o in remaining if not _eq(o, mins[0])]
+    chain = [sympy.Integer(1)] + ordered + [_as_size(E)]
+    for i in range(len(chain) - 1):
+        if not _divides(chain[i], chain[i + 1]):
+            return None
+    return chain
+
+
 def collect_boundaries(exprs, var_to_axis, var_ranges):
     """{axis_index: set(boundary cut points)} for the given index expressions.
 
     A FloorDiv(v, k) contributes boundary k; ModularIndexing(v, k, m) contributes
     k and k*m. Only aligned terms count (boundary divides the var extent). Shared
-    by find_split_plan (fused LoopBody) and graph_copy (operand loaders).
+    by find_split_plan (fused LoopBody) and graph_copy (operand loaders). Boundaries
+    and extents may be symbolic (dynamic reshape); divisibility is checked via
+    `_divides`, so a symbolic divisor that is a genuine factor of the extent counts.
     """
     import collections
     bset = collections.defaultdict(set)
@@ -113,29 +207,22 @@ def collect_boundaries(exprs, var_to_axis, var_ranges):
         expr = flatten_nested_floormod(expr)   # nested digit extractors -> single level
         for fd in expr.atoms(FloorDiv):
             base, div = fd.args
-            k = _as_int(div)
-            if base in var_to_axis and k and k > 1:
-                E = _as_int(var_ranges.get(base))
-                if E and E % k == 0:
-                    bset[var_to_axis[base]].add(k)
+            if base in var_to_axis and _gt1(div):
+                E = var_ranges.get(base)
+                if E is not None and _divides(div, E):
+                    bset[var_to_axis[base]].add(div)
         for mi in expr.atoms(ModularIndexing):
             base, div, mod = mi.args
-            k, m = _as_int(div), _as_int(mod)
-            if base in var_to_axis and k and m:
-                E = _as_int(var_ranges.get(base))
-                if E and E % (k * m) == 0:
+            if base in var_to_axis:
+                E = var_ranges.get(base)
+                km = div * mod
+                if E is not None and _divides(km, E):
                     ax = var_to_axis[base]
-                    if k > 1:
-                        bset[ax].add(k)
-                    if k * m < E:
-                        bset[ax].add(k * m)
+                    if _gt1(div):
+                        bset[ax].add(div)
+                    if _proper(km, E):
+                        bset[ax].add(km)
     return bset
-
-
-def _is_chain(boundaries, E):
-    """True iff [1, sorted(boundaries in (1,E)), E] is a divisibility chain."""
-    chain = [1] + sorted(b for b in boundaries if 1 < b < E) + [E]
-    return all(chain[i + 1] % chain[i] == 0 for i in range(len(chain) - 1))
 
 
 def find_split_plan(nodes):
@@ -152,13 +239,14 @@ def find_split_plan(nodes):
     collected boundaries for an axis do NOT form a divisibility chain (e.g.
     floor-by-2 and mod-by-3 on extent 6), the radices are incompatible -> the axis
     is left unsplit (its floor/mod stays for the misaligned/recompile path).
+    Boundaries/extents may be symbolic (see _ordered_chain).
 
     axis_index is positional in the group's iteration space, so the same plan
     applies to every fused node sharing that space.
     """
     import collections
     bset = collections.defaultdict(set)     # axis -> set of boundary cut points
-    ext_of = {}                             # axis -> extent
+    ext_of = {}                             # axis -> extent (int or symbolic)
     for n in nodes:
         body = getattr(n, "_body", None)
         if body is None:
@@ -167,14 +255,17 @@ def find_split_plan(nodes):
         nb = collect_boundaries(body.indexing_exprs.values(), var_to_axis, body.var_ranges)
         for ax, bs in nb.items():
             bset[ax] |= bs
-            ext_of[ax] = _as_int(body.var_ranges[body.iter_vars[ax]])
+            ext_of[ax] = body.var_ranges[body.iter_vars[ax]]
 
     plan = {}
     for ax, bs in bset.items():
-        E = ext_of[ax]
+        E = ext_of.get(ax)
+        if E is None:
+            continue
         # require a real, divisibility-chain split (incompatible radices -> skip).
-        if E and any(1 < b < E for b in bs) and _is_chain(bs, E):
-            plan[ax] = [1] + sorted(b for b in bs if 1 < b < E) + [E]
+        chain = _ordered_chain(bs, E)
+        if chain is not None and len(chain) > 2:
+            plan[ax] = chain
 
     # A split may push the per-axis index rank past 4. The resulting >4D logical tile
     # is peeled into <=4D physical descriptors by the decompose-transfer pass (an
@@ -215,15 +306,15 @@ def build_split_body(node, plan, prefix="z"):
             subs = []                         # (symbol, extent, significance) low->high
             expr = sympy.Integer(0)
             for i in range(len(bounds) - 1):
-                seg_ext = bounds[i + 1] // bounds[i]
+                seg_ext = _quotient(bounds[i + 1], bounds[i])
                 nv = sympy_index_symbol(f"{prefix}{ctr}"); ctr += 1
                 subs.append((nv, seg_ext, bounds[i]))
                 expr = expr + nv * bounds[i]
             # iteration nest: most-significant (outermost) dim first.
             for nv, seg_ext, _sig in reversed(subs):
                 iter_vars.append(nv)
-                var_ranges[nv] = sympy.Integer(seg_ext)
-                index_size.append(sympy.Integer(seg_ext))
+                var_ranges[nv] = _as_size(seg_ext)
+                index_size.append(_as_size(seg_ext))
             index_args.append(expr)
         else:
             nv = sympy_index_symbol(f"{prefix}{ctr}"); ctr += 1

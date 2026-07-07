@@ -661,7 +661,6 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
             with contextlib.ExitStack() as stack:
                 stack.enter_context(compute_body.indent(attribute="{inner_loop=false}",suffix=self.compute_body_loop.epilogue_line()))
                 if self.reduction_fusion:
-                    compute_body.splice(self.masks)
                     compute_body.writelines(self.reduction_body_loop.lines())
                     stack.enter_context(compute_body.indent(attribute="{inner_loop=false}"))
                     compute_body.splice(self.loads)

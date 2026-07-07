@@ -50,7 +50,8 @@ DTYPE_TO_MLIR = {
     torch.int8: "i8",
     torch.uint8: "i8",
     torch.bool: "i8",
-    torch.bfloat16: "bf16",
+    torch.bfloat16: "bf16",   # present only to keep the dtype table total; bf16 is not
+                              # actually supported (Spike has no bf16 and op-select rejects it)
 }
 
 MLIR_TO_DTYPE = {
@@ -324,41 +325,6 @@ class TileAdjustMixin():
 
         raise ValueError(f"Unknown mode: {mode}. Supported: 'pad', 'split'.")
 
-    def is_dim_dividable(self, dim_sizes: list[int]) -> bool:
-        if len(dim_sizes) != len(self._tile_size):
-            raise ValueError("dim_sizes must match the tile size dimensions")
-
-        dim_sizes_cpy = list(dim_sizes)
-        axis, stride = self.vmap.vlane_split_axis, self.vmap.vlane_stride
-        remain = dim_sizes_cpy[axis] % stride
-        if remain:
-            dim_sizes_cpy[axis] += stride - remain
-
-        return all(d % t == 0 for d, t in zip(dim_sizes_cpy, self._tile_size))
-
-    def adjust_tile_to_divisible(self, dim_sizes: list[int]) -> list[int]:
-        """Adjust current tile to be divisible by given dimensions."""
-        if len(dim_sizes) != len(self._tile_size):
-            raise ValueError("dim_sizes must match the tile size dimensions")
-
-        def _adjust_one(dim_size, tile_size):
-            for candidate in range(tile_size, 0, -1):
-                if dim_size % candidate == 0:
-                    return candidate
-            return 1
-
-        candidate_tile_size = [_adjust_one(d, t) for d, t in zip(dim_sizes, self._tile_size)]
-        for i in range(len(candidate_tile_size)):
-            self.tile_constraint[i].must_divide_dim = True
-
-        axis, stride = self.vmap.vlane_split_axis, self.vmap.vlane_stride
-        remain = candidate_tile_size[axis] % stride
-
-        if remain:
-            # #201: relax vlane_stride constraints
-            self.vmap.vlane_stride = 1
-        return candidate_tile_size
-
     def scale_tile_dim(self, axis, dim_sz, scale_factor=2):
         axis_constrinat = self.tile_constraint[axis]
         current_sz = self._tile_size[axis]
@@ -395,8 +361,6 @@ class TileAdjustMixin():
             constraint = self.tile_constraint[i]
             if constraint.fixed:
                 continue
-            elif constraint.must_divide_dim:
-                BETA = 0
 
             padding_ratio = TileAdjustMixin.get_padding_ratio(tile_range, dim_range)
             if padding_ratio < self.tail_ratio_threshold:
@@ -469,23 +433,14 @@ class TileAdjustMixin():
 @dataclass
 class TileConstraint:
     multiple_of: int = 1
-    must_divide_dim: bool = False
     fixed: bool = False
 
     def adjust(self, old: int, new: int, dim: int) -> int:
         if self.fixed:
             return old # Fixed tile size
 
-        tail = new % self.multiple_of
-        new -= tail
-        if not self.must_divide_dim:
-            return max(new, self.multiple_of)
-
-        while new > 0:
-            if dim % new == 0:
-                return new
-            new -= self.multiple_of
-        raise extension_codecache.TileSizeError("Cannot find suitable tile size under the given constraints.")
+        new -= new % self.multiple_of
+        return max(new, self.multiple_of)
 
 class MLIRMultiDimTile(TileAdjustMixin):
     def __init__(self, tile_size, vector_lane, vlane_split_axis=None, vlane_stride=None, forced_vec_size=None):

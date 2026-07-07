@@ -85,6 +85,14 @@ class _Dma:
         self.tag_idx = operands[5]
         self.num_elements = operands[6]           # = dma_type const operand
         self.num_elements_per_stride = operands[7]  # = vlane_stride (vst)
+        # trailing operands: [offset (indirect)] then (low, high) per masked axis.
+        _extra = operands[8:]
+        self.offset = None
+        if "indirect" in op.attributes:
+            self.offset = _extra[0]
+            _extra = _extra[1:]
+        self.masked_axes = attr_i64_array(op, "masked_axes", default=[])
+        self.masked_ops = _extra   # low0, high0, low1, high1, ...
 
         self.sram_rank = len(ir.MemRefType(self.sram.type).shape)
         # Direction: MVIN reads dram -> sram; MVOUT writes sram -> dram.
@@ -221,12 +229,25 @@ def _dma_attrs(dma):
     attrs = {}
     op = dma.op
     for k in ("dma_kind", "vlane_split_axis", "dram_stride", "tile_stride",
-              "subtile_size", "padding"):
+              "subtile_size", "padding", "masked_axes", "masked_fill", "indirect",
+              "offset_stride", "accumulate", "acc_float"):
         if k in op.attributes:
             attrs[k] = op.attributes[k]
     attrs["async"] = ir.BoolAttr.get(dma.is_async())
     attrs["fine_grained"] = ir.BoolAttr.get(True)
     return attrs
+
+
+def _remap_bound(bound, iv, sub, is_high, ip):
+    """The masked low/high are full-tile-local; shift to this subtile: subtile position
+    p maps to full-tile p + iv*sub, so subtile-local high = min(sub, high - iv*sub) and
+    low = max(0, low - iv*sub). Out-of-window (neg high / low>sub) -> Spike skips all."""
+    from mlir.dialects import affine
+    d0, d1 = ir.AffineDimExpr.get(0), ir.AffineDimExpr.get(1)
+    edge = ir.AffineConstantExpr.get(sub if is_high else 0)
+    m = ir.AffineMap.get(2, 0, [edge, d0 - d1 * sub])
+    op = affine.AffineMinOp if is_high else affine.AffineMaxOp
+    return op(m, [bound, iv], ip=ip).result
 
 
 def _emit_dma(dma, ivs, vectorlane, ip):
@@ -243,6 +264,14 @@ def _emit_dma(dma, ivs, vectorlane, ip):
 
     operands = [dma.dram, dram_idx, dma.sram, sram_off,
                 dma.tag, tag_idx, dma.num_elements, dma.num_elements_per_stride]
+    if dma.offset is not None:
+        operands.append(dma.offset)
+    # masked low/high are full-tile-local -> remap each per THIS subtile's offset.
+    sub = dma.subtile_size()
+    for i, axis in enumerate(dma.masked_axes):
+        low, high = dma.masked_ops[2 * i], dma.masked_ops[2 * i + 1]
+        operands.append(_remap_bound(low, ivs[axis], sub[axis], False, ip))
+        operands.append(_remap_bound(high, ivs[axis], sub[axis], True, ip))
     ir.Operation.create("togsim.transfer", results=[], operands=operands,
                         attributes=_dma_attrs(dma), ip=ip)
 

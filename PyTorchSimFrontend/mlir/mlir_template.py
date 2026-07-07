@@ -1109,9 +1109,26 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         with self.override_buffer_cse(buffer=self.stores):
             ops._store(value, sram_var, compute_index_var, tile_shape, buffer_name=buffer_name)
 
-        # Generate DMA instruction
+        # Generate DMA instruction. Clamp the output tail, else a non-dividing epilogue
+        # store writes the systolic pad region past the real output extent (fused matmul +
+        # relu/add on a non-dividing shape). The extent of each loop iv is ranges[k]; the
+        # tile dims are indexed by dim_aliasing (tile-dim order), so a dim whose iv extent
+        # does not divide the tile is clamped to [0, extent). Naming-agnostic (works for the
+        # index-N matmul epilogue and the c0/tile_n/... conv epilogue alike); _emit_clamp
+        # skips dividing dims, so a dividing output is a no-op.
+        iv_extent = {}
+        for _v, _r in zip(self.itervars, self.ranges):
+            try:
+                iv_extent[str(_v)] = int(_r)
+            except (TypeError, ValueError):
+                pass
+        _tile = self.kernel_group.tile_desc.get_tile_size()
+        _axes = [(d, iv, 0, iv_extent[iv], int(_tile[d]))
+                 for d, iv in enumerate(self.dim_aliasing.values())
+                 if d < len(_tile) and iv in iv_extent]
+        masked_bounds = self._emit_clamp(_axes, self.dma_stores)
         code = self.emit_transfer("MVOUT", vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
-                                  dram_shape, tile_shape, dram_stride, tile_stride, 0)
+                                  dram_shape, tile_shape, dram_stride, tile_stride, 0, masked_bounds=masked_bounds)
         self.dma_stores.writeline(DeferredLine(name, code))
 
     def reduction_epilogue(self, dtype, src_dtype, reduction_type, value):

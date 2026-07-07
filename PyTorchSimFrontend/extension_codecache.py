@@ -40,8 +40,25 @@ def dump_metadata(args, arg_attributes, path):
 
     with open(meta_path, "a") as file:
         for (arg_name, arg_attribute), arg in zip(arg_attributes, args):
-            file.write(f'{arg_name}=({arg_attribute[0]}, {arg.dtype}, {arg.shape})\n')
+            if isinstance(arg, torch.Tensor):
+                file.write(f'{arg_name}=({arg_attribute[0]}, {arg.dtype}, {arg.shape})\n')
+            else:
+                # Dynamic shape: a scalar size argument (e.g. s52) -- not a tensor.
+                file.write(f'{arg_name}=({arg_attribute[0]}, {type(arg).__name__}, {arg})\n')
     return
+
+def _concretize_attrs_for_sampling(arg_attributes, tile):
+    """Size the cycle-sampling host buffers to one tile. Under dynamic shape the
+    arg_attributes carry stringified symbolic extents (e.g. 's52'); the one-tile
+    sampling kernel only touches [0, tile) of each tensor, so replace any symbolic
+    numel/size with `tile` (a static int). Non-symbolic entries (e.g. the size
+    arg, numel 1) are left as is."""
+    cz = lambda v: tile if isinstance(v, str) else v
+    out = []
+    for name, (atype, dtype, numel, sizes, stride) in arg_attributes:
+        out.append([name, [atype, dtype, cz(numel), [cz(s) for s in sizes], stride]])
+    return out
+
 
 def mlir_compile_command(filename, vectorlane_size, vlen=256):
     # The C++ -dma-fine-grained and -test-pytorchsim-to-vcix passes are ported to
@@ -172,6 +189,19 @@ class MLIRCodeCache:
             # Compile a validation binary and measure its .spad section to reject
             # over-spad tilings, even in timing-only mode -- else the tiling wedges
             # TOGSim. Spike *execution* stays gated on functional_mode (run_spike).
+            #
+            # The validation binary is shape-agnostic: under dynamic shape it reads the
+            # runtime extent from the size-arg buffer and sizes its host buffers from it
+            # (mlir_caller_codegen), so one binary serves any size -- like the producer.
+            # It therefore builds for a dynamic kernel too; the per-tile spad measurement
+            # is shape-invariant, so the overflow gate stays valid.
+            #
+            # Dynamic shape: a kernel has a size-symbol arg (MLIR_ARGS_VAR) iff some dim
+            # is a runtime extent. Use that flag (authoritative) rather than sniffing the
+            # IR text.
+            from PyTorchSimFrontend.mlir.mlir_common import MLIRKernelArgs
+            is_dynamic_shape = any(MLIRKernelArgs.is_mlir_arg_var(attr[0]) for _, attr in arg_attributes)
+            # Use custom malloc to avoid size error
             new_link_option = link_option + " -Wl,--wrap=malloc -Wl,--wrap=free"
             cmds = mlir_compile_command(new_input_path, vectorlane_size, vlen=vlen)
             opt_pad_cmd = shlex.split(cmds[0])
@@ -227,7 +257,29 @@ class MLIRCodeCache:
                 run_module_passes(sample_mlir_path + "_padded.mlir",
                                   sample_mlir_path + "_postvcix.mlir",
                                   POST_OPT_PASSES, vectorlane=vectorlane_size, vlen=vlen)
-                run_tog(sample_mlir_path + "_postvcix.mlir", raw_tog_path,
+                # Dynamic shape: gem5 measures per-tile compute cost, which is
+                # shape-invariant. Sample it on a one-tile copy (each symbolic loop
+                # bound pinned to its step) so the legacy cycle machinery runs on a
+                # concrete kernel, while the symbolic _postvcix.mlir is kept for the
+                # producer .so / cycle_table below.
+                # pin_loops_to_one_tile is general (static + dynamic); today it is
+                # wired only for dynamic, where the legacy full TOG cannot be built
+                # (symbolic trip count) and is skipped anyway. Driving the trace
+                # path's cycle sampling through it for STATIC too is the intended
+                # direction, but needs the sampling decoupled from run_tog first
+                # (run_tog also builds the legacy full TOG, which needs full loops).
+                tog_input = sample_mlir_path + "_postvcix.mlir"
+                sample_tile = None
+                if is_dynamic_shape:
+                    import mlir.ir as _ir
+                    from PyTorchSimFrontend.mlir.passes.cycle_table import pin_loops_to_one_tile
+                    _ctx = _ir.Context(); _ctx.allow_unregistered_dialects = True
+                    with _ctx:
+                        _pm = _ir.Module.parse(open(tog_input).read(), _ctx)
+                        sample_tile = pin_loops_to_one_tile(_pm)
+                        tog_input = sample_mlir_path + "_pinned.mlir"
+                        open(tog_input, "w").write(str(_pm))
+                run_tog(tog_input, raw_tog_path,
                         sample_mlir_path + "_custom.mlir",
                         sample_mode=extension_config.CONFIG_TLS_MODE,
                         vectorlane=vectorlane_size)
@@ -243,8 +295,13 @@ class MLIRCodeCache:
             if not extension_config.pytorchsim_timing_mode:
                 return key
 
-            # Generate MLIR kernel calller and binary for cycle calculation
-            cycle_llvm_caller = MLIRKernelCallerCodeGen(False, arg_attributes, cycle_sim=True)
+            # Generate MLIR kernel calller and binary for cycle calculation.
+            # Dynamic shape: size the host buffers to one tile (the sampling kernel
+            # was pinned to a single tile above); arg_attributes carry symbolic
+            # extents that cannot size a buffer.
+            sample_attrs = (_concretize_attrs_for_sampling(arg_attributes, sample_tile)
+                            if is_dynamic_shape else arg_attributes)
+            cycle_llvm_caller = MLIRKernelCallerCodeGen(False, sample_attrs, cycle_sim=True)
             cycle_llvm_caller.generate_wrapper_file(write_path, cycle_wrapper_name)
             cycle_llvm_caller.compile_wih_kernel(write_path, key + "_sample", cycle_wrapper_name, cycle_binary_name, link_option)
 
@@ -319,6 +376,8 @@ class CustomAsyncCompile(AsyncCompile):
                 # Dump arguments and meta data
                 dump_metadata(args, arg_attributes, result_path)
                 runtime_path = FunctionalSimulator.get_runtime_dump_path(result_path)
+                # The runtime extents reach the simulator via the attribute YAML
+                # (write_kernel_attribute_file -> shape_args), not from here.
                 if extension_config.pytorchsim_functional_mode and not autotune:
                     funcsim = FunctionalSimulator(result_path, key)
                     funcsim.run_spike(args, arg_attributes,

@@ -34,6 +34,32 @@ class MLIRKernelCallerCodeGen():
         self.arg_use_count += 1
         return self.arg_use_count-1
 
+    def _is_var(self, flag):
+        return MLIRKernelArgs.is_mlir_arg_var(flag)
+
+    @staticmethod
+    def _is_symbol(numel):
+        """A numel that is a size SYMBOL (e.g. 's52'), not a concrete value. Concrete
+        sizes may also be strings here (the meta stringifies sympy.Integer, e.g.
+        '128'); those are numeric, a symbol is not."""
+        return isinstance(numel, str) and not numel.isdigit()
+
+    def _numel_c_expr(self, numel):
+        """C expression for an arg's element count. Dynamic shape: a size SYMBOL is
+        the runtime extent, read into `N_<symbol>` from its size buffer (see
+        generate_args_define); a concrete numel (int or numeric string) is a literal."""
+        return f"N_{numel}" if self._is_symbol(numel) else str(numel)
+
+    def _assign_argv_indices(self):
+        """Assign each loaded/dumped arg an argv slot in arg_attributes order, the
+        same order Simulator.dump_args writes the .raw paths. Size (VAR) args get a
+        slot too (they are kernel inputs)."""
+        for arg_name, arg_attribute in self.arg_attributes:
+            flag = arg_attribute[0]
+            if (self.is_in_arg(flag) or self.is_out_arg(flag) or self._is_var(flag)) \
+                    and arg_name not in self.load_args:
+                self.load_args[arg_name] = self.get_argv_idx()
+
     def write_header(self):
         self.writeline('#include <stdio.h>')
         self.writeline('#include <stdlib.h>')
@@ -56,12 +82,12 @@ class MLIRKernelCallerCodeGen():
 
     def load_arg(self):
         for arg_name, arg_attribute in self.arg_attributes:
-            if self.is_in_arg(arg_attribute[0]):
-                argv_idx = self.get_argv_idx() if arg_name not in self.load_args else self.load_args[arg_name]
-                self.load_args[arg_name] = argv_idx
+            # VAR (size) args are loaded in generate_args_define (before the tensor
+            # buffers they size); skip them here.
+            if self.is_in_arg(arg_attribute[0]) and not self._is_var(arg_attribute[0]):
+                argv_idx = self.load_args[arg_name]
                 ctype = DTYPE_TO_C[arg_attribute[1]]
-                elem_count = arg_attribute[2]
-                size_expr = f'({elem_count}ULL * sizeof({ctype}))'
+                size_expr = f'((uint64_t)({self._numel_c_expr(arg_attribute[2])}) * sizeof({ctype}))'
 
                 self.writeline(f'if(load_arg(c_{arg_name}, {size_expr}, argv[{argv_idx}]) == -1){self.open_bracket}')
                 with self.code.indent():
@@ -71,10 +97,9 @@ class MLIRKernelCallerCodeGen():
     def dump_arg(self):
         for arg_name, arg_attribute in self.arg_attributes:
             if self.is_out_arg(arg_attribute[0]):
-                argv_idx = self.get_argv_idx() if not self.is_inout_arg(arg_attribute[0]) else self.load_args[arg_name]
+                argv_idx = self.load_args[arg_name]
                 ctype = DTYPE_TO_C[arg_attribute[1]]
-                elem_count = arg_attribute[2]
-                size_expr = f'({elem_count}ULL * sizeof({ctype}))'
+                size_expr = f'((uint64_t)({self._numel_c_expr(arg_attribute[2])}) * sizeof({ctype}))'
                 self.writeline(f'if(dump_arg(c_{arg_name}, {size_expr}, argv[{argv_idx}]) == -1){self.open_bracket}')
                 with self.code.indent():
                     self.writeline(f'return -1{self.ending}')
@@ -93,30 +118,53 @@ class MLIRKernelCallerCodeGen():
         name_set = set()
         if self.validation:
             self.writeline(f"int* padding = malloc(0x100000ULL * sizeof(int)){self.ending}")
-        for arg_name, (_, arg_type, arg_size, arg_sizes, arg_stride) in self.arg_attributes:
-            if not arg_name in name_set:
-                if torch.is_floating_point(torch.tensor([], dtype=arg_type)):
-                    bits = torch.finfo(arg_type).bits
-                elif arg_type == torch.bool:
-                    bits = 8
-                else:
-                    bits = torch.iinfo(arg_type).bits
-                buffer_size = int(math.ceil(arg_size * bits // 8 / 64) * 64) * 2 # Round up to 64 bytes + Add some padding for safety
-                self.writeline(f'{DTYPE_TO_C[arg_type]}* c_{arg_name} = malloc({buffer_size}ULL){self.ending}')
-                name_set.add(arg_name)
+        # Dynamic shape: handle size (VAR) args first -- malloc, load from argv, and
+        # read the runtime extent into N_<name>, BEFORE the tensor buffers, which are
+        # sized from it.
+        for arg_name, (flag, arg_type, arg_size, _, _) in self.arg_attributes:
+            if not self._is_var(flag) or arg_name in name_set:
+                continue
+            ctype = DTYPE_TO_C[arg_type]
+            self.writeline(f'{ctype}* c_{arg_name} = malloc(64ULL){self.ending}')
+            if self.validation:
+                self.writeline(f'if(load_arg(c_{arg_name}, sizeof(int64_t), argv[{self.load_args[arg_name]}]) == -1){self.open_bracket}')
+                with self.code.indent():
+                    self.writeline(f'return -1{self.ending}')
+                self.writeline(self.closed_bracket)
+            self.writeline(f'int64_t N_{arg_name} = ((int64_t*)c_{arg_name})[0]{self.ending}')
+            name_set.add(arg_name)
+        for arg_name, (flag, arg_type, arg_size, arg_sizes, arg_stride) in self.arg_attributes:
+            if self._is_var(flag) or arg_name in name_set:
+                continue
+            if torch.is_floating_point(torch.tensor([], dtype=arg_type)):
+                bits = torch.finfo(arg_type).bits
+            elif arg_type == torch.bool:
+                bits = 8
+            else:
+                bits = torch.iinfo(arg_type).bits
+            ctype = DTYPE_TO_C[arg_type]
+            if self._is_symbol(arg_size):
+                # runtime extent: round bytes up to 64 and double, computed in C.
+                nbytes = f"(N_{arg_size} * {bits} / 8)"
+                buffer_size = f"((({nbytes} + 63) / 64) * 64) * 2"
+            else:
+                buffer_size = f"{int(math.ceil(int(arg_size) * bits // 8 / 64) * 64) * 2}ULL"  # round up to 64 bytes + safety pad
+            self.writeline(f'{ctype}* c_{arg_name} = malloc({buffer_size}){self.ending}')
+            name_set.add(arg_name)
         self.writeline(self.newline)
 
     def generate_main(self):
         self.writeline(f'{self.newline}int main(int argc, char *argv[]) {self.open_bracket}{self.newline}')
         with self.code.indent():
             if self.validation:
+                self._assign_argv_indices()   # argv slots in arg order (incl. size args)
                 self.generate_args_define()
                 self.load_arg()
                 self.writeline(self.newline)
             else:
                 self.generate_args_define()
 
-            func_arguments = [f"c_{arg_name}, c_{arg_name}, 0, {arg_shape}, 1" for arg_name, (_, arg_type, arg_shape, _, _) in self.arg_attributes]
+            func_arguments = [f"c_{arg_name}, c_{arg_name}, 0, {self._numel_c_expr(arg_shape)}, 1" for arg_name, (_, arg_type, arg_shape, _, _) in self.arg_attributes]
             self.writeline(f"wrapper_{self.kernel_name}({', '.join(func_arguments)}){self.ending}{self.newline}")
 
             if self.validation:

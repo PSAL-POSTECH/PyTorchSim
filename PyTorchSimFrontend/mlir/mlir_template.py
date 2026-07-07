@@ -968,15 +968,22 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         self.render_hooks[key] = (priority, generate_dma_code)
         return key
 
-    def def_sram_buffer(self, dram_name, tile_desc, id=0, indent_size=0):
+    def def_sram_buffer(self, dram_name, tile_desc, id=0, indent_size=0, dtype=None):
         # Prepare code block
         with self:
-            try:
-                dtype = self.named_nodes[dram_name].get_layout().dtype
-            except (KeyError, AttributeError, TypeError):
-                import torch
-                dtype = torch.float32
-            
+            if dtype is not None:
+                # Explicit dtype: accept an MLIR type string ("f16"/"f32") or a torch
+                # dtype. Used for intermediate buffers with no DRAM node to infer from
+                # (e.g. the acc buffers max/sum forced to f32).
+                if isinstance(dtype, str):
+                    dtype = mlir_common.MLIR_TO_DTYPE[dtype]
+            else:
+                try:
+                    dtype = self.named_nodes[dram_name].get_layout().dtype
+                except (KeyError, AttributeError, TypeError):
+                    import torch
+                    dtype = torch.float32
+
             tile_shape = tile_desc.get_mlir_shape(mlir_common.DTYPE_TO_MLIR[dtype])
             buffer_name = self.allocate_sram_buffer(dtype, dram_name, tile_desc, id, forced_name=dram_name)
             code = f"%{tile_desc.name} = memref.get_global @{buffer_name} : {tile_shape}"

@@ -6,15 +6,69 @@ from typing import List, Optional
 import torch
 from torch import empty_strided
 from torch._inductor.ir import IRNode, TensorBox, FixedLayout
+from torch._inductor.lowering import lowerings
 from torch._inductor.virtualized import V
 from torch._inductor.select_algorithm import realize_inputs
-from torch.backends.cuda import flash_sdp_enabled, mem_efficient_sdp_enabled
 
 from PyTorchSimFrontend import extension_config
 from PyTorchSimFrontend.mlir import mlir_common
 from PyTorchSimFrontend.mlir.mlir_template import MLIRTemplate
 from PyTorchSimFrontend.mlir.mlir_template import MLIRTemplateKernel
 
+aten = torch.ops.aten
+
+def _flash_gqa_decode_reshape_query(query: TensorBox, tile_l: int, kv_ratio: int):
+    """Fold the kv_ratio GQA query heads into the L dim for decode (l == 1).
+    (B, hq, 1, e) -> (B, hq // kv_ratio, kv_ratio, e) == (B, h, kv_ratio, e), so
+    the kernel sees plain (non-GQA) attention of length kv_ratio. Returns the
+    reshaped query, kv_ratio=1 (kernel must not split heads again), and the
+    original kv_ratio (used to pad L and unfold the output).
+    """
+
+    if kv_ratio > tile_l:
+        raise NotImplementedError(
+            f"GQA-decode fold requires kv_ratio <= tile_l so the folded query "
+            f"heads fit one tile (kv_ratio={kv_ratio}, tile_l={tile_l})."
+        )
+    
+    b = V.graph.sizevars.size_hint(query.get_size()[0])
+    hq = V.graph.sizevars.size_hint(query.get_size()[1])
+    e = V.graph.sizevars.size_hint(query.get_size()[3])
+
+    reshaped_query = lowerings[aten.reshape](query, [b, hq//kv_ratio, kv_ratio, e])
+ 
+    return reshaped_query
+
+def _flash_gqa_decode_reshape_output(output: TensorBox, kv_ratio_orig: int) -> TensorBox:
+    """Inverse of _flash_gqa_decode_reshape_query: unfold the L dim back into the
+    head dim, (B, h, kv_ratio, ev) -> (B, hq, 1, ev) with hq = h * kv_ratio. Run
+    after _flash_decode_slice_output has dropped the padding rows (L == kv_ratio).
+    The kept rows are interleaved with removed padding, so this is a real gather;
+    reshape (may copy), not a view.
+    """
+    b  = V.graph.sizevars.size_hint(output.get_size()[0])
+    h  = V.graph.sizevars.size_hint(output.get_size()[1])
+    ev = V.graph.sizevars.size_hint(output.get_size()[3])
+    hq = h * kv_ratio_orig
+
+    return lowerings[aten.reshape](output, [b, hq, 1, ev])
+
+def _flash_decode_pad_query(query: TensorBox, tile_l: int, real_l: int) -> TensorBox:
+    """Zero-pad the query length L up to tile_l so the flash kernel runs its
+    verified prefill path (query rows fill the vector lanes). query (n, hq, L, e) ->
+    (n, hq, tile_l, e); the extra rows are dropped again by _flash_decode_slice_output.
+    """
+    pad_amt = tile_l - real_l
+    # constant_pad_nd pad spec is [e_lo, e_hi, l_lo, l_hi, ...]:
+    # pad the l dim at the high end by pad_amt.
+    return lowerings[aten.constant_pad_nd](query, [0, 0, 0, pad_amt], 0.0)
+
+def _flash_decode_slice_output(out: TensorBox, real_l: int) -> TensorBox:
+    """Slice the padded output (n, hq, tile_l, ev) back to the real L rows
+    (n, hq, L, ev) along the query dim. Lowers to a free reinterpret/view."""
+
+    # slice spec is [target, dim_idx, start_idx, len]
+    return lowerings[aten.slice.Tensor](out, len(out.get_size()) - 2, 0, real_l)
 
 def _make_offset_map_with_sym(strides, sym_dim, sym_stride, offset=0):
     """Like _make_offset_map but injects a block symbol ``s`` into dimension ``sym_dim``.
@@ -109,10 +163,10 @@ def flash_sdpa_args(
     # e: embeding dimension of the query and key and ev: embeding dimension of the value.
     nq, hq, l, eq  = query.get_size()
     nk, hk, sk, ek = key.get_size()
-    nk, hv, sv, ev = value.get_size()
+    nv, hv, sv, ev = value.get_size()
 
     n = V.graph.sizevars.guard_equals(nq, nk)
-    n = V.graph.sizevars.guard_equals(nq, nk)
+    n = V.graph.sizevars.guard_equals(nq, nv)
 
     h = V.graph.sizevars.guard_equals(hk, hv)
     s = V.graph.sizevars.guard_equals(sk, sv)
@@ -125,14 +179,10 @@ def flash_sdpa_args(
             "Flash SDPA currently requires matching head dimensions between query and value (e == ev)."
         )
 
-    # Minimal GQA support (single-batch only for now).
     # We map each query head to a KV head by grouping: hq = g * h.
-    if hq != h:
-        if n != 1:
-            raise NotImplementedError("Flash SDPA GQA is currently supported only for n == 1.")
-        if (hq % h) != 0:
-            raise NotImplementedError(f"Flash SDPA GQA requires hq % h == 0 (hq: {hq}, h: {h}).")
-
+    if hq != h and (hq % h) != 0:
+        raise NotImplementedError(f"Flash SDPA GQA requires hq % h == 0 (hq: {hq}, h: {h}).")
+      
     layout = FixedLayout(
         query.get_device(),
         query.get_dtype(),
@@ -151,7 +201,6 @@ def calculate_scale(query: torch.Tensor, scale: float) -> float:
     else:
         return scale
 
-
 FLASH_SDPA_TEMPLATE = r"""
 // SDPA kernel
 // b = {{ b }}
@@ -165,155 +214,176 @@ FLASH_SDPA_TEMPLATE = r"""
 
 func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[query, key, value], outputs=[out], names_str="query, key, value, out", input_reorder=input_reorder)}} {
   // Inputs
-  {{ kernel.def_sram_buffer("query", q_tile_desc, indent_size=2) }}
-  {{ kernel.def_sram_buffer("key", k_tile_desc, indent_size=2) }}
-  {{ kernel.def_sram_buffer("value", v_tile_desc, indent_size=2) }}
+  {{ kernel.def_sram_buffer("query", q_tile_desc, indent_size=2, dtype=io_stype) }}
+  {{ kernel.def_sram_buffer("key", k_tile_desc, indent_size=2, dtype=io_stype) }}
+  {{ kernel.def_sram_buffer("value", v_tile_desc, indent_size=2, dtype=io_stype) }}
 
   // Output
-  {{ kernel.def_sram_buffer("out", out_tile_desc, indent_size=2) }}
+  {{ kernel.def_sram_buffer("out", out_tile_desc, indent_size=2, dtype=io_stype) }}
+
+  {% set mixed = io_stype != acc_stype %}
+  {% if mixed %}
+  {% set oacc_buffer = "oacc_buffer" %}
+  {{ kernel.def_sram_buffer("oacc", oacc_tile_desc, indent_size=2, dtype=acc_stype) }}
+  {% else %}
+  {% set oacc_buffer = "out_buffer" %}
+  {% endif %}
 
   // Intermediate buffers
-  {{ kernel.def_sram_buffer("mul", mul_tile_desc, indent_size=2) }}
-  {{ kernel.def_sram_buffer("max", max_desc, indent_size=2) }}
-  {{ kernel.def_sram_buffer("sum", sum_desc, indent_size=2) }}
+  {{ kernel.def_sram_buffer("mul", mul_tile_desc, indent_size=2, dtype=acc_stype) }}
+  {{ kernel.def_sram_buffer("max", max_desc, indent_size=2, dtype=acc_stype) }}
+  {{ kernel.def_sram_buffer("sum", sum_desc, indent_size=2, dtype=acc_stype) }}
+
+  {% if mixed %}
+  {% set mul2_buffer = "mtrunc_buffer" %}
+  {{ kernel.def_sram_buffer("mtrunc", mtrunc_tile_desc, indent_size=2, dtype=io_stype) }}
+  {% else %}
+  {% set mul2_buffer = "mul_buffer" %}
+  {% endif %}
 
   // Constants
-  %c0 = arith.constant 0.0 : {{ data_stype }}
-  %c1 = arith.constant 1.0 : {{ data_stype }}
-  %c_scale = arith.constant {{ scale }} : {{ data_stype }}
-  %c_neg_inf = arith.constant -1.0e+30 : {{ data_stype }}
+  %c0 = arith.constant 0.0 : {{ acc_stype }}
+  %c1 = arith.constant 1.0 : {{ acc_stype }}
+  %c_scale = arith.constant {{ scale }} : {{ acc_stype }}
+  %c_neg_inf = arith.constant -1.0e+30 : {{ acc_stype }}
 
-  %v0_c = arith.constant dense<0.0> : vector<{{ chunk_size }}x{{ data_stype }}>
-  %v0_l = arith.constant dense<0.0> : vector<{{ kernel.get_spad_size_per_lane(tile_l, tile_e) }}x{{ data_stype }}>
-  %v0_s = arith.constant dense<0.0> : vector<{{ kernel.get_spad_size_per_lane(tile_s, tile_l) }}x{{ data_stype }}>
-  %v0_2x = arith.constant dense<0.0> : vector<2x{{ data_stype }}>
+  %v0_c = arith.constant dense<0.0> : vector<{{ chunk_size }}x{{ acc_stype }}>
+  %v0_l = arith.constant dense<0.0> : vector<{{ kernel.get_spad_size_per_lane(tile_l, tile_e) }}x{{ acc_stype }}>
+  %v0_s = arith.constant dense<0.0> : vector<{{ kernel.get_spad_size_per_lane(tile_s, tile_l) }}x{{ acc_stype }}>
+  %v0_2x = arith.constant dense<0.0> : vector<2x{{ acc_stype }}>
 
-  %v_neg_inf_c = arith.constant dense<-1.0e+30> : vector<{{ chunk_size }}x{{ data_stype }}>
-  %v_neg_inf_2x = arith.constant dense<-1.0e+30> : vector<2x{{ data_stype }}>
+  %v_neg_inf_c = arith.constant dense<-1.0e+30> : vector<{{ chunk_size }}x{{ acc_stype }}>
+  %v_neg_inf_2x = arith.constant dense<-1.0e+30> : vector<2x{{ acc_stype }}>
 
-  %v_scale = vector.broadcast %c_scale : {{ data_stype }} to vector<{{ tile_s }}x{{ data_stype }}>
+  %v_scale = vector.broadcast %c_scale : {{ acc_stype }} to vector<{{ tile_s }}x{{ acc_stype }}>
 
   {{ kernel.def_local_vars(indent_size=2) }}
 
   affine.for %index0 = 0 to {{ b }} {
+    %kv_index = affine.apply affine_map<(d0) -> (d0 floordiv {{ kv_ratio }})>(%index0)
+
     affine.for %index3 = 0 to 1 step 1 {
       affine.for %index1 = 0 to {{ l }} step {{ tile_l }} {
         %q_dram_offset = affine.apply {{ q_offset_map }}(%index0, %index1, %index3)
         {{ kernel.def_dma_op("MVIN", "query", [], q_tile_desc, indent_size=8, dram_stride=q_dram_stride, dram_offset="q_dram_offset") }}
 
-        affine.vector_store %v0_l, %out_buffer[0, 0, 0] : {{ out_tile_desc.get_mlir_shape(data_stype) }}, vector<{{ kernel.get_spad_size_per_lane(tile_l, tile_e) }}x{{ data_stype }}>
-        affine.vector_store %v_neg_inf_2x, %max_buffer[0, 0] : {{ max_desc.get_mlir_shape(data_stype) }}, vector<2x{{ data_stype }}>
-        affine.vector_store %v0_2x, %sum_buffer[0, 0] : {{ sum_desc.get_mlir_shape(data_stype) }}, vector<2x{{ data_stype }}>
+        affine.vector_store %v0_l, %{{ oacc_buffer }}[0, 0, 0] : {{ out_tile_desc.get_mlir_shape(acc_stype) }}, vector<{{ kernel.get_spad_size_per_lane(tile_l, tile_e) }}x{{ acc_stype }}>
+        affine.vector_store %v_neg_inf_2x, %max_buffer[0, 0] : {{ max_desc.get_mlir_shape(acc_stype) }}, vector<2x{{ acc_stype }}>
+        affine.vector_store %v0_2x, %sum_buffer[0, 0] : {{ sum_desc.get_mlir_shape(acc_stype) }}, vector<2x{{ acc_stype }}>
 
-        %qt_buffer2D = memref.reinterpret_cast %q_buffer to offset: [0], sizes: [{{ tile_e }}, {{ tile_l }}], strides: [{{ tile_l }}, 1] : {{ q_tile_desc.get_mlir_shape(data_stype) }} to memref<{{ tile_e }}x{{ tile_l }}x{{ data_stype }}, 1>
-        %ot_buffer2D = memref.reinterpret_cast %out_buffer to offset: [0], sizes: [{{ tile_e }}, {{ tile_l }}], strides: [{{ tile_l }}, 1] : {{ out_tile_desc.get_mlir_shape(data_stype) }} to memref<{{ tile_e }}x{{ tile_l }}x{{ data_stype }}, 1>
+        %qt_buffer2D = memref.reinterpret_cast %q_buffer to offset: [0], sizes: [{{ tile_e }}, {{ tile_l }}], strides: [{{ tile_l }}, 1] : {{ q_tile_desc.get_mlir_shape(io_stype) }} to memref<{{ tile_e }}x{{ tile_l }}x{{ io_stype }}, 1>
+        %ot_buffer2D = memref.reinterpret_cast %{{ oacc_buffer }} to offset: [0], sizes: [{{ tile_e }}, {{ tile_l }}], strides: [{{ tile_l }}, 1] : {{ out_tile_desc.get_mlir_shape(acc_stype) }} to memref<{{ tile_e }}x{{ tile_l }}x{{ acc_stype }}, 1>
 
         affine.for %index2 = 0 to {{ s }} step {{ tile_s }} {
-          %k_dram_offset = affine.apply {{ k_offset_map }}(%index0, %index2, %index3)
+          %k_dram_offset = affine.apply {{ k_offset_map }}(%kv_index, %index2, %index3)
           {{ kernel.def_dma_op("MVIN", "key", [], k_tile_desc, indent_size=10, dram_stride=k_dram_stride, dram_offset="k_dram_offset") }}
-          %v_dram_offset = affine.apply {{ v_offset_map }}(%index0, %index2, %index3)
+          %v_dram_offset = affine.apply {{ v_offset_map }}(%kv_index, %index2, %index3)
           {{ kernel.def_dma_op("MVIN", "value", [], v_tile_desc, indent_size=10, dram_stride=v_dram_stride, dram_offset="v_dram_offset") }}
 
-          affine.vector_store %v0_s, %mul_buffer[0, 0] : {{ mul_tile_desc.get_mlir_shape(data_stype) }}, vector<{{ kernel.get_spad_size_per_lane(tile_s, tile_l) }}x{{ data_stype }}>
+          affine.vector_store %v0_s, %mul_buffer[0, 0] : {{ mul_tile_desc.get_mlir_shape(acc_stype) }}, vector<{{ kernel.get_spad_size_per_lane(tile_s, tile_l) }}x{{ acc_stype }}>
 
-          %k_buffer2D = memref.reinterpret_cast %k_buffer to offset: [0], sizes: [{{ tile_s }}, {{ tile_e }}], strides: [{{ tile_e }}, 1] : {{ k_tile_desc.get_mlir_shape(data_stype) }} to memref<{{ tile_s }}x{{ tile_e }}x{{ data_stype }}, 1>
-          %vt_buffer2D = memref.reinterpret_cast %v_buffer to offset: [0], sizes: [{{ tile_e }}, {{ tile_s }}], strides: [{{ tile_s }}, 1] : {{ v_tile_desc.get_mlir_shape(data_stype) }} to memref<{{ tile_e }}x{{ tile_s }}x{{ data_stype }}, 1>
-
+          %k_buffer2D = memref.reinterpret_cast %k_buffer to offset: [0], sizes: [{{ tile_s }}, {{ tile_e }}], strides: [{{ tile_e }}, 1] : {{ k_tile_desc.get_mlir_shape(io_stype) }} to memref<{{ tile_s }}x{{ tile_e }}x{{ io_stype }}, 1>
+          %vt_buffer2D = memref.reinterpret_cast %v_buffer to offset: [0], sizes: [{{ tile_e }}, {{ tile_s }}], strides: [{{ tile_s }}, 1] : {{ v_tile_desc.get_mlir_shape(io_stype) }} to memref<{{ tile_e }}x{{ tile_s }}x{{ io_stype }}, 1>
 
           // key @ query.t and scaling.
           linalg.matmul
             { idx_map = array<i32: 1, 0, -1> }
-            ins(%k_buffer2D, %qt_buffer2D : memref<{{ tile_s }}x{{ tile_e }}x{{ data_stype }}, 1>, memref<{{ tile_e }}x{{ tile_l }}x{{ data_stype }}, 1>)
-            outs(%mul_buffer : {{ mul_tile_desc.get_mlir_shape(data_stype) }})
+            ins(%k_buffer2D, %qt_buffer2D : memref<{{ tile_s }}x{{ tile_e }}x{{ io_stype }}, 1>, memref<{{ tile_e }}x{{ tile_l }}x{{ io_stype }}, 1>)
+            outs(%mul_buffer : {{ mul_tile_desc.get_mlir_shape(acc_stype) }})
 
-          %raw_mul_vec = affine.vector_load %mul_buffer[0, 0] : {{ mul_tile_desc.get_mlir_shape(data_stype) }}, vector<{{ tile_s }}x{{ data_stype }}>
-          %scaled_mul_vec = arith.mulf %raw_mul_vec, %v_scale :  vector<{{ tile_s }}x{{ data_stype }}>
-          affine.vector_store %scaled_mul_vec, %mul_buffer[0, 0] : {{ mul_tile_desc.get_mlir_shape(data_stype) }}, vector<{{ tile_s }}x{{ data_stype }}>
-
+          %raw_mul_vec = affine.vector_load %mul_buffer[0, 0] : {{ mul_tile_desc.get_mlir_shape(acc_stype) }}, vector<{{ tile_s }}x{{ acc_stype }}>
+          %scaled_mul_vec = arith.mulf %raw_mul_vec, %v_scale :  vector<{{ tile_s }}x{{ acc_stype }}>
+          affine.vector_store %scaled_mul_vec, %mul_buffer[0, 0] : {{ mul_tile_desc.get_mlir_shape(acc_stype) }}, vector<{{ tile_s }}x{{ acc_stype }}>
 
           // Find new max.
-          %old_max = affine.vector_load %max_buffer[0,0] : {{ max_desc.get_mlir_shape(data_stype) }}, vector<2x{{ data_stype }}>
+          %old_max = affine.vector_load %max_buffer[0,0] : {{ max_desc.get_mlir_shape(acc_stype) }}, vector<2x{{ acc_stype }}>
 
-          %chunk_max_res = affine.for %index5 = 0 to {{ tile_s }} step {{ chunk_size }} iter_args(%iter_max=%v_neg_inf_c) -> (vector<{{ chunk_size }}x{{ data_stype }}>) {
-            %chunk_val = affine.vector_load %mul_buffer[0, %index5] : {{ mul_tile_desc.get_mlir_shape(data_stype) }}, vector<{{ chunk_size }}x{{ data_stype }}>
-            %local_max = arith.maximumf %chunk_val, %iter_max : vector<{{ chunk_size }}x{{ data_stype }}>
-            affine.yield %local_max : vector<{{ chunk_size }}x{{ data_stype }}>
+          %chunk_max_res = affine.for %index5 = 0 to {{ tile_s }} step {{ chunk_size }} iter_args(%iter_max=%v_neg_inf_c) -> (vector<{{ chunk_size }}x{{ acc_stype }}>) {
+            %chunk_val = affine.vector_load %mul_buffer[0, %index5] : {{ mul_tile_desc.get_mlir_shape(acc_stype) }}, vector<{{ chunk_size }}x{{ acc_stype }}>
+            %local_max = arith.maximumf %chunk_val, %iter_max : vector<{{ chunk_size }}x{{ acc_stype }}>
+            affine.yield %local_max : vector<{{ chunk_size }}x{{ acc_stype }}>
           } { accumulation_loop=true }
 
-          %max_cast = vector.shape_cast %chunk_max_res : vector<{{ chunk_size }}x{{ data_stype }}> to vector<{{ chunk_size // 2 }}x2x{{ data_stype }}>
-          %max_reduced_1 = vector.multi_reduction <maximumf>, %max_cast, %v_neg_inf_2x [0] : vector<8x2x{{ data_stype }}> to vector<2x{{ data_stype }}>
-          %max_shuffled = vector.shuffle %max_reduced_1, %max_reduced_1 [1, 0] : vector<2x{{ data_stype }}>, vector<2x{{ data_stype }}>
-          %max_reduced_2 = arith.maximumf %max_reduced_1, %max_shuffled : vector<2x{{ data_stype }}>
+          %max_cast = vector.shape_cast %chunk_max_res : vector<{{ chunk_size }}x{{ acc_stype }}> to vector<{{ chunk_size // 2 }}x2x{{ acc_stype }}>
+          %max_reduced_1 = vector.multi_reduction <maximumf>, %max_cast, %v_neg_inf_2x [0] : vector<{{ chunk_size // 2 }}x2x{{ acc_stype }}> to vector<2x{{ acc_stype }}>
+          %max_shuffled = vector.shuffle %max_reduced_1, %max_reduced_1 [1, 0] : vector<2x{{ acc_stype }}>, vector<2x{{ acc_stype }}>
+          %max_reduced_2 = arith.maximumf %max_reduced_1, %max_shuffled : vector<2x{{ acc_stype }}>
 
-          %new_max = arith.maximumf %max_reduced_2, %old_max : vector<2x{{ data_stype }}>
-          affine.vector_store %new_max, %max_buffer[0, 0] : {{ max_desc.get_mlir_shape(data_stype) }}, vector<2x{{ data_stype }}>
-
+          %new_max = arith.maximumf %max_reduced_2, %old_max : vector<2x{{ acc_stype }}>
+          affine.vector_store %new_max, %max_buffer[0, 0] : {{ max_desc.get_mlir_shape(acc_stype) }}, vector<2x{{ acc_stype }}>
 
           // Compute rescale factors: exp(old_max - new_max)
-          %max_diff = arith.subf %old_max, %new_max : vector<2x{{ data_stype }}>
-          %max_diff_scalar = vector.extract %max_diff[0] : {{ data_stype }} from vector<2x{{ data_stype }}>
+          %max_diff = arith.subf %old_max, %new_max : vector<2x{{ acc_stype }}>
+          %max_diff_scalar = vector.extract %max_diff[0] : {{ acc_stype }} from vector<2x{{ acc_stype }}>
 
-          %rescale_bcast_e = vector.broadcast %max_diff_scalar : {{ data_stype }} to vector<{{ tile_e }}x{{ data_stype }}>
-          %exp_rescale_e = math.exp %rescale_bcast_e : vector<{{ tile_e }}x{{ data_stype }}>
+          %rescale_bcast_e = vector.broadcast %max_diff_scalar : {{ acc_stype }} to vector<{{ tile_e }}x{{ acc_stype }}>
+          %exp_rescale_e = math.exp %rescale_bcast_e : vector<{{ tile_e }}x{{ acc_stype }}>
 
-          %rescale_bcast_2 = vector.broadcast %max_diff_scalar : {{ data_stype }} to vector<2x{{ data_stype }}>
-          %exp_rescale_2 = math.exp %rescale_bcast_2 : vector<2x{{ data_stype }}>
-
+          %rescale_bcast_2 = vector.broadcast %max_diff_scalar : {{ acc_stype }} to vector<2x{{ acc_stype }}>
+          %exp_rescale_2 = math.exp %rescale_bcast_2 : vector<2x{{ acc_stype }}>
 
           // Rescale previous out and sum accumulators
-          %old_out = affine.vector_load %ot_buffer2D[0, 0] : memref<{{ tile_e }}x{{ tile_l }}x{{ data_stype }}, 1>, vector<{{ tile_e }}x{{ data_stype }}>
-          %rescaled_out = arith.mulf %exp_rescale_e, %old_out : vector<{{ tile_e }}x{{ data_stype }}>
-          affine.vector_store %rescaled_out, %ot_buffer2D[0, 0] : memref<{{ tile_e }}x{{ tile_l }}x{{ data_stype }}, 1>, vector<{{ tile_e }}x{{ data_stype }}>
+          %old_out = affine.vector_load %ot_buffer2D[0, 0] : memref<{{ tile_e }}x{{ tile_l }}x{{ acc_stype }}, 1>, vector<{{ tile_e }}x{{ acc_stype }}>
+          %rescaled_out = arith.mulf %exp_rescale_e, %old_out : vector<{{ tile_e }}x{{ acc_stype }}>
+          affine.vector_store %rescaled_out, %ot_buffer2D[0, 0] : memref<{{ tile_e }}x{{ tile_l }}x{{ acc_stype }}, 1>, vector<{{ tile_e }}x{{ acc_stype }}>
 
-          %old_sum = affine.vector_load %sum_buffer[0, 0] : {{ sum_desc.get_mlir_shape(data_stype) }}, vector<2x{{ data_stype }}>
-          %rescaled_sum = arith.mulf %old_sum, %exp_rescale_2 : vector<2x{{ data_stype }}>
-
+          %old_sum = affine.vector_load %sum_buffer[0, 0] : {{ sum_desc.get_mlir_shape(acc_stype) }}, vector<2x{{ acc_stype }}>
+          %rescaled_sum = arith.mulf %old_sum, %exp_rescale_2 : vector<2x{{ acc_stype }}>
 
           // Shift scores and apply exp: exp(x - new_max)
-          %scaled_scores_reload = affine.vector_load %mul_buffer[0, 0] : {{ mul_tile_desc.get_mlir_shape(data_stype) }}, vector<{{ tile_s }}x{{ data_stype }}>
-          %new_max_scalar = vector.extract %new_max[0] : {{ data_stype }} from vector<2x{{ data_stype }}>
-          %new_max_bcast = vector.broadcast %new_max_scalar : {{ data_stype }} to vector<{{ tile_s }}x{{ data_stype }}>
+          %scaled_scores_reload = affine.vector_load %mul_buffer[0, 0] : {{ mul_tile_desc.get_mlir_shape(acc_stype) }}, vector<{{ tile_s }}x{{ acc_stype }}>
+          %new_max_scalar = vector.extract %new_max[0] : {{ acc_stype }} from vector<2x{{ acc_stype }}>
+          %new_max_bcast = vector.broadcast %new_max_scalar : {{ acc_stype }} to vector<{{ tile_s }}x{{ acc_stype }}>
 
-          %shifted_scores = arith.subf %scaled_scores_reload, %new_max_bcast : vector<{{ tile_s }}x{{ data_stype }}>
-          %exp_scores = math.exp %shifted_scores :  vector<{{ tile_s }}x{{ data_stype }}>
-          affine.vector_store %exp_scores, %mul_buffer[0, 0] : {{ mul_tile_desc.get_mlir_shape(data_stype) }}, vector<{{ tile_s }}x{{ data_stype }}>
-
+          %shifted_scores = arith.subf %scaled_scores_reload, %new_max_bcast : vector<{{ tile_s }}x{{ acc_stype }}>
+          %exp_scores = math.exp %shifted_scores :  vector<{{ tile_s }}x{{ acc_stype }}>
+          affine.vector_store %exp_scores, %mul_buffer[0, 0] : {{ mul_tile_desc.get_mlir_shape(acc_stype) }}, vector<{{ tile_s }}x{{ acc_stype }}>
 
           // accumulate current sum
-          %chunk_sum_res = affine.for %index5 = 0 to {{ tile_s }} step {{ chunk_size }} iter_args(%iter_sum=%v0_c) -> (vector<{{ chunk_size }}x{{ data_stype }}>) {
-            %chunk_exp = affine.vector_load %mul_buffer[0, %index5] : {{ mul_tile_desc.get_mlir_shape(data_stype) }}, vector<{{ chunk_size }}x{{ data_stype }}>
-            %local_sum = arith.addf %chunk_exp, %iter_sum : vector<{{ chunk_size }}x{{ data_stype }}>
-            affine.yield %local_sum : vector<{{ chunk_size }}x{{ data_stype }}>
+          %chunk_sum_res = affine.for %index5 = 0 to {{ tile_s }} step {{ chunk_size }} iter_args(%iter_sum=%v0_c) -> (vector<{{ chunk_size }}x{{ acc_stype }}>) {
+            %chunk_exp = affine.vector_load %mul_buffer[0, %index5] : {{ mul_tile_desc.get_mlir_shape(acc_stype) }}, vector<{{ chunk_size }}x{{ acc_stype }}>
+            %local_sum = arith.addf %chunk_exp, %iter_sum : vector<{{ chunk_size }}x{{ acc_stype }}>
+            affine.yield %local_sum : vector<{{ chunk_size }}x{{ acc_stype }}>
           } { accumulation_loop=true }
 
-          %zero_2x = vector.broadcast %c0 : {{ data_stype }} to vector<2x{{ data_stype }}>
-          %sum_cast = vector.shape_cast %chunk_sum_res : vector<{{ chunk_size }}x{{ data_stype }}> to vector<{{ chunk_size // 2 }}x2x{{ data_stype }}>
-          %sum_reduced_1 = vector.multi_reduction <add>, %sum_cast, %zero_2x [0] : vector<8x2x{{ data_stype }}> to vector<2x{{ data_stype }}>
-          %sum_shuffled = vector.shuffle %sum_reduced_1, %sum_reduced_1 [1, 0] : vector<2x{{ data_stype }}>, vector<2x{{ data_stype }}>
-          %sum_reduced_2 = arith.addf %sum_reduced_1, %sum_shuffled : vector<2x{{ data_stype }}>
+          %zero_2x = vector.broadcast %c0 : {{ acc_stype }} to vector<2x{{ acc_stype }}>
+          %sum_cast = vector.shape_cast %chunk_sum_res : vector<{{ chunk_size }}x{{ acc_stype }}> to vector<{{ chunk_size // 2 }}x2x{{ acc_stype }}>
+          %sum_reduced_1 = vector.multi_reduction <add>, %sum_cast, %zero_2x [0] : vector<{{ chunk_size // 2 }}x2x{{ acc_stype }}> to vector<2x{{ acc_stype }}>
+          %sum_shuffled = vector.shuffle %sum_reduced_1, %sum_reduced_1 [1, 0] : vector<2x{{ acc_stype }}>, vector<2x{{ acc_stype }}>
+          %sum_reduced_2 = arith.addf %sum_reduced_1, %sum_shuffled : vector<2x{{ acc_stype }}>
 
-          %new_sum = arith.addf %sum_reduced_2, %rescaled_sum :  vector<2x{{ data_stype }}>
-          affine.vector_store %new_sum, %sum_buffer[0, 0] : {{ sum_desc.get_mlir_shape(data_stype) }}, vector<2x{{ data_stype }}>
+          %new_sum = arith.addf %sum_reduced_2, %rescaled_sum :  vector<2x{{ acc_stype }}>
+          affine.vector_store %new_sum, %sum_buffer[0, 0] : {{ sum_desc.get_mlir_shape(acc_stype) }}, vector<2x{{ acc_stype }}>
+          
+          {% if mixed %}
+          %mul_full = affine.vector_load %mul_buffer[0, 0] : {{ mul_tile_desc.get_mlir_shape(acc_stype) }}, vector<{{ kernel.get_spad_size_per_lane(tile_s, tile_l) }}x{{ acc_stype }}>
+          %mtrunc_full = arith.truncf %mul_full : vector<{{ kernel.get_spad_size_per_lane(tile_s, tile_l) }}x{{ acc_stype }}> to vector<{{ kernel.get_spad_size_per_lane(tile_s, tile_l) }}x{{ io_stype }}>
+          affine.vector_store %mtrunc_full, %mtrunc_buffer[0, 0] : {{ mtrunc_tile_desc.get_mlir_shape(io_stype) }}, vector<{{ kernel.get_spad_size_per_lane(tile_s, tile_l) }}x{{ io_stype }}>
+          {% endif %}
 
-
-          // value.t @ mul
           linalg.matmul
             { idx_map = array<i32: 2, 1, -1> }
-            ins(%vt_buffer2D, %mul_buffer : memref<{{ tile_e }}x{{ tile_s }}x{{ data_stype }}, 1>, {{ mul_tile_desc.get_mlir_shape(data_stype) }})
-            outs(%ot_buffer2D : memref<{{ tile_e }}x{{ tile_l }}x{{ data_stype }}, 1>)
+            ins(%vt_buffer2D, %{{ mul2_buffer }} : memref<{{ tile_e }}x{{ tile_s }}x{{ io_stype }}, 1>, {{ mul_tile_desc.get_mlir_shape(io_stype) }})
+            outs(%ot_buffer2D : memref<{{ tile_e }}x{{ tile_l }}x{{ acc_stype }}, 1>)
         } { accumulation_loop=true }
 
         // out @ row_sum^(-1)
-        %final_row_sum = affine.vector_load %sum_buffer[0, 0] : {{ sum_desc.get_mlir_shape(data_stype) }}, vector<2x{{ data_stype }}>
-        %one_2x = vector.broadcast %c1 : {{ data_stype }} to vector<2x{{ data_stype }}>
+        %final_row_sum = affine.vector_load %sum_buffer[0, 0] : {{ sum_desc.get_mlir_shape(acc_stype) }}, vector<2x{{ acc_stype }}>
+        %one_2x = vector.broadcast %c1 : {{ acc_stype }} to vector<2x{{ acc_stype }}>
 
-        %reciprocal_row_sum_2x = arith.divf %one_2x, %final_row_sum : vector<2x{{ data_stype }}>
-        %reciprocal_scalar = vector.extract %reciprocal_row_sum_2x[0] : {{ data_stype }} from vector<2x{{ data_stype }}>
-        %reciprocal_bcast_e = vector.broadcast %reciprocal_scalar : {{ data_stype }} to vector<{{ tile_e }}x{{ data_stype }}>
+        %reciprocal_row_sum_2x = arith.divf %one_2x, %final_row_sum : vector<2x{{ acc_stype }}>
+        %reciprocal_scalar = vector.extract %reciprocal_row_sum_2x[0] : {{ acc_stype }} from vector<2x{{ acc_stype }}>
+        %reciprocal_bcast_e = vector.broadcast %reciprocal_scalar : {{ acc_stype }} to vector<{{ tile_e }}x{{ acc_stype }}>
 
-        %accumulated_out = affine.vector_load %ot_buffer2D[0, 0] : memref<{{ tile_e }}x{{ tile_l }}x{{ data_stype }}, 1>, vector<{{ tile_e }}x{{ data_stype }}>
-        %stable_final_out = arith.mulf %accumulated_out, %reciprocal_bcast_e : vector<{{ tile_e }}x{{ data_stype }}>
-        affine.vector_store %stable_final_out, %ot_buffer2D[0, 0] : memref<{{ tile_e }}x{{ tile_l }}x{{ data_stype }}, 1>, vector<{{ tile_e }}x{{ data_stype }}>
+        %accumulated_out = affine.vector_load %ot_buffer2D[0, 0] : memref<{{ tile_e }}x{{ tile_l }}x{{ acc_stype }}, 1>, vector<{{ tile_e }}x{{ acc_stype }}>
+        %stable_final_out = arith.mulf %accumulated_out, %reciprocal_bcast_e : vector<{{ tile_e }}x{{ acc_stype }}>
+        affine.vector_store %stable_final_out, %ot_buffer2D[0, 0] : memref<{{ tile_e }}x{{ tile_l }}x{{ acc_stype }}, 1>, vector<{{ tile_e }}x{{ acc_stype }}>
+
+        {% if mixed %}
+        %oacc_full = affine.vector_load %oacc_buffer[0, 0, 0] : {{ oacc_tile_desc.get_mlir_shape(acc_stype) }}, vector<{{ kernel.get_spad_size_per_lane(tile_l, tile_e) }}x{{ acc_stype }}>
+        %out_full = arith.truncf %oacc_full : vector<{{ kernel.get_spad_size_per_lane(tile_l, tile_e) }}x{{ acc_stype }}> to vector<{{ kernel.get_spad_size_per_lane(tile_l, tile_e) }}x{{ io_stype }}>
+        affine.vector_store %out_full, %out_buffer[0, 0, 0] : {{ out_tile_desc.get_mlir_shape(io_stype) }}, vector<{{ kernel.get_spad_size_per_lane(tile_l, tile_e) }}x{{ io_stype }}>
+        {% endif %}
 
         %out_dram_offset = affine.apply {{ out_offset_map }}(%index0, %index1, %index3)
         {{ kernel.def_dma_op("MVOUT", "out", [], out_tile_desc, indent_size=8, dram_stride=out_dram_stride, dram_offset="out_dram_offset") }}
@@ -325,9 +395,11 @@ func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[query, key, value], outp
 """
 
 class MLIRFlashSDPATemplate(MLIRTemplate):
-    def __init__(self, input_nodes, layout, scale, input_reorder=None):
+    def __init__(self, input_nodes, layout, scale, kv_ratio, is_causal, input_reorder=None):
         super().__init__("kernel", input_nodes, layout, input_reorder)
         self.scale = scale
+        self.kv_ratio = kv_ratio
+        self.is_causal = is_causal
 
     def render(self,
                kernel: MLIRTemplateKernel,
@@ -368,7 +440,6 @@ class MLIRFlashSDPATemplate(MLIRTemplate):
 
         # (n, l, s, e, ev)
         loop_dim = [sympy.Symbol("index0"), sympy.Symbol("index1"), sympy.Symbol("index2"), sympy.Symbol("index3")]
-
 
         # Hardware constraint: The tile split axis is restricted.
         # To accommodate this, we compute (key @ query.t) instead of (query @ key.t).
@@ -422,6 +493,10 @@ class MLIRFlashSDPATemplate(MLIRTemplate):
         # DRAM settings
         out_stride = out.get_layout().stride[1:]
 
+        oacc_tile_desc = mlir_common.MLIRMultiDimTile(out_tile_size, kernel.vector_lane, vlane_split_axis, vlane_stride)
+        oacc_tile_desc.set_tile_size_stride(out_tile_size, out_tile_stride)
+        oacc_tile_desc.set_name("oacc_buffer")
+
         # Intermediate buffers
 
         # For mul = key @ query.t
@@ -432,6 +507,12 @@ class MLIRFlashSDPATemplate(MLIRTemplate):
         mul_tile_desc.set_tile_size_stride(mul_tile_size, mul_tile_stride)
         mul_tile_desc.set_name("mul_buffer")
         #FIXME. What is the offset? -> It doesn't matter at this time.
+
+        # f16 (io) copy of mul, used as the second matmul's input in mixed precision:
+        # the SA input must be io dtype, but mul is the f32 accumulator of matmul 1.
+        mtrunc_tile_desc = mlir_common.MLIRMultiDimTile(mul_tile_size, kernel.vector_lane, vlane_split_axis, vlane_stride)
+        mtrunc_tile_desc.set_tile_size_stride(mul_tile_size, mul_tile_stride)
+        mtrunc_tile_desc.set_name("mtrunc_buffer")
 
         # For storing maximum values per row
         vlane_split_axis = 0
@@ -450,7 +531,9 @@ class MLIRFlashSDPATemplate(MLIRTemplate):
         sum_desc.set_name("sum_buffer")
 
         # For reduction
-        chunk_size = 16
+        io_stype = mlir_common.DTYPE_TO_MLIR[query.get_dtype()]
+        acc_stype = "f32"
+        chunk_size = max(2, int(kernel.vector_lane / 32 if acc_stype == "f32" else 16))
 
         # DMA strides and offset affine maps (dram_stride + dram_offset style)
         q_dram_stride  = [int(q_stride[0]), int(q_stride[1]), int(q_stride[2])]
@@ -476,7 +559,8 @@ class MLIRFlashSDPATemplate(MLIRTemplate):
             tile_l = tile_l,
             tile_s = tile_s,
             tile_e = tile_e,                   # Tile sizes (sram)
-            data_stype="f32",
+            io_stype = io_stype,
+            acc_stype = acc_stype,
             query = query,
             key = key,
             value = value,
@@ -493,11 +577,15 @@ class MLIRFlashSDPATemplate(MLIRTemplate):
             k_tile_desc = k_tile_desc,
             v_tile_desc = v_tile_desc,
             mul_tile_desc = mul_tile_desc,
+            mtrunc_tile_desc = mtrunc_tile_desc,
             out_tile_desc = out_tile_desc,     # Tile descriptions (sram)
+            oacc_tile_desc = oacc_tile_desc,
             max_desc = max_desc,
             sum_desc = sum_desc,               # Intermediate buffer descriptions (sram)
             scale = self.scale,
             chunk_size = chunk_size,
+            kv_ratio = self.kv_ratio,
+            is_causal = self.is_causal, 
             input_reorder = self.input_reorder # ETC
         )
 
@@ -535,12 +623,12 @@ class MLIRFlashSDPATemplate(MLIRTemplate):
     # Reuse the existing function in MLIRBMMTemplate.
     def select_tile(self, kernel, l, s, e, n_extra_node, n_extra_read, n_prologue_node):
 
-        # FIXME: Update the method for getting tile candidates once TestDmaFineGrained oass works correctly with Flash Attention.
+        # FIXME: Update the method for getting tile candidates once TestDmaFineGrained pass works correctly with Flash Attention.
         # tile_candidates = kernel.flash_sdpa_mapping(l, s, e, n_extra_node=n_extra_node)
         tile_candidates = [[kernel.vector_lane, kernel.vector_lane, e]]
 
         for idx, (tile_l, tile_s, tile_e) in enumerate(tile_candidates):
-            subtile_l = tile_l if (tile_l < kernel.vector_lane) or n_prologue_node else kernel.vector_lane
+            subtile_l = tile_l # if (tile_l < kernel.vector_lane) or n_prologue_node else kernel.vector_lane
             subtile_s = tile_s # if (tile_s < kernel.vector_lane) or prologue_nodes else kernel.vector_lane
             subtile_e = tile_e # if (tile_e < kernel.vector_lane) or prologue_nodes else kernel.vector_lane
 

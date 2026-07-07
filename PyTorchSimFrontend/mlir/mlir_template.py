@@ -940,9 +940,28 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
                 zero_cse = self.get_const_cse(0, "index")
                 sram_index_var = ", ".join([f"%{str(zero_cse)}"]*tile_desc.get_nr_dim())
 
+                # masked-DMA clamp: per tile dim, clamp to the real DRAM extent so a tile
+                # that pads past M/N/K (matmul) or a dim is filled with 0 instead of MAC-ing
+                # garbage. index_list[d] = iv * stride -> base iv; the extent is the DRAM dim
+                # matched by that tile dim's stride (tile order != layout order for conv).
+                # _emit_clamp skips dividing dims (no-op).
+                _dram_size, _dram_str = node_layout.size, node_layout.stride
+                _tsize = tile_desc.get_tile_size()
+                _axes = []
+                for _d, _idx in enumerate(index_list):
+                    _syms = list(_idx.free_symbols)
+                    if not _syms or _d >= len(_tsize):
+                        continue
+                    _ext = next((int(_dram_size[j]) for j, st in enumerate(_dram_str)
+                                 if _dram_size[j].is_number and int(st) == int(_dram_stride[_d])), None)
+                    if _ext is not None:
+                        _axes.append((_d, str(_syms[0]), 0, _ext, int(_tsize[_d])))
+                masked_bounds = self._emit_clamp(_axes, local_code)
+
                 code = self.emit_transfer(dma_type, vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
                                           dram_shape, tile_shape, _dram_stride, sram_strides, int(padding),
-                                          subtile_size=subtile_size if subtile_size else None, async_type=async_type)
+                                          subtile_size=subtile_size if subtile_size else None, async_type=async_type,
+                                          masked_bounds=masked_bounds, masked_fill=0)
                 local_code.writeline(code)
             return textwrap.indent(local_code.getvalue(), " "*indent_size).strip()
 

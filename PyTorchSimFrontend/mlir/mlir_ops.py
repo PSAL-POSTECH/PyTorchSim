@@ -475,7 +475,9 @@ class ExtensionOverrides(common.OpOverrides):
             result = ops.extractelement(val, 0)
             return result, V.kernel.var_info[result]
         
-        if dtype.startswith("f"):
+        # Float-only instruction: promote non-float inputs (e.g. integers) to f32
+        # to run it. Native float widths (f16/f64) are left untouched.
+        if not dtype.startswith("f"):
             operand = ops.to_dtype(operand, "f32")
             dtype = "f32"
         
@@ -499,7 +501,9 @@ class ExtensionOverrides(common.OpOverrides):
             result = ops.extractelement(val, 0)
             return result, V.kernel.var_info[result]
         
-        if dtype.startswith("f"):
+        # Float-only instruction: promote non-float inputs (e.g. integers) to f32
+        # to run it. Native float widths (f16/f64) are left untouched.
+        if not dtype.startswith("f"):
             operand = ops.to_dtype(operand, "f32")
             dtype = "f32"
         
@@ -525,9 +529,11 @@ class ExtensionOverrides(common.OpOverrides):
             result = ops.extractelement(val, 0)
             return result, V.kernel.var_info[result]
 
-        # Type check & auto cast
-        if dtype.startswith("f"):
+        # Float-only instruction: promote non-float inputs (e.g. integers) to f32
+        # to run it. Native float widths (f16/f64) are left untouched.
+        if not dtype.startswith("f"):
             operand = ops.to_dtype(operand, "f32")
+            dtype = "f32"
         shape = f"vector<{tile_size}x{dtype}>" if tile_size > 1 else dtype
         return format_mlir_op(f'math.tanh %{operand}', shape, **kwargs), [tile_size, dtype]
 
@@ -542,7 +548,9 @@ class ExtensionOverrides(common.OpOverrides):
             result = ops.extractelement(val, 0)
             return result, V.kernel.var_info[result]
 
-        if dtype.startswith("f"):
+        # Float-only instruction: promote non-float inputs (e.g. integers) to f32
+        # to run it. Native float widths (f16/f64) are left untouched.
+        if not dtype.startswith("f"):
             operand = ops.to_dtype(operand, "f32")
             dtype = "f32"
 
@@ -561,7 +569,9 @@ class ExtensionOverrides(common.OpOverrides):
             result = ops.extractelement(val, 0)
             return result, V.kernel.var_info[result]
         
-        if dtype.startswith("f"):
+        # Float-only instruction: promote non-float inputs (e.g. integers) to f32
+        # to run it. Native float widths (f16/f64) are left untouched.
+        if not dtype.startswith("f"):
             operand = ops.to_dtype(operand, "f32")
             dtype = "f32"
         
@@ -584,7 +594,9 @@ class ExtensionOverrides(common.OpOverrides):
             result = ops.extractelement(val, 0)
             return result, V.kernel.var_info[result]
 
-        if dtype.startswith("f"):
+        # Float-only instruction: promote non-float inputs (e.g. integers) to f32
+        # to run it. Native float widths (f16/f64) are left untouched.
+        if not dtype.startswith("f"):
             operand = ops.to_dtype(operand, "f32")
             dtype = "f32"
 
@@ -604,7 +616,9 @@ class ExtensionOverrides(common.OpOverrides):
             result = ops.extractelement(val, 0)
             return result, V.kernel.var_info[result]
         
-        if dtype.startswith("f"):
+        # Float-only instruction: promote non-float inputs (e.g. integers) to f32
+        # to run it. Native float widths (f16/f64) are left untouched.
+        if not dtype.startswith("f"):
             operand = ops.to_dtype(operand, "f32")
             dtype = "f32"
         
@@ -643,7 +657,9 @@ class ExtensionOverrides(common.OpOverrides):
             result = ops.extractelement(val, 0)
             return result, V.kernel.var_info[result]
         
-        if dtype.startswith("f"):
+        # Float-only instruction: promote non-float inputs (e.g. integers) to f32
+        # to run it. Native float widths (f16/f64) are left untouched.
+        if not dtype.startswith("f"):
             operand = ops.to_dtype(operand, "f32")
             dtype = "f32"
 
@@ -661,7 +677,9 @@ class ExtensionOverrides(common.OpOverrides):
             result = ops.extractelement(val, 0)
             return result, V.kernel.var_info[result]
         
-        if dtype.startswith("f"):
+        # Float-only instruction: promote non-float inputs (e.g. integers) to f32
+        # to run it. Native float widths (f16/f64) are left untouched.
+        if not dtype.startswith("f"):
             operand = ops.to_dtype(operand, "f32")
             dtype = "f32"
         
@@ -761,7 +779,9 @@ class ExtensionOverrides(common.OpOverrides):
         dtype = op_type[1]
 
         # Type check & auto cast
-        if dtype.startswith("f"):
+        # Float-only instruction: promote non-float inputs (e.g. integers) to f32
+        # to run it. Native float widths (f16/f64) are left untouched.
+        if not dtype.startswith("f"):
             operand = ops.to_dtype(operand, "f32")
             dtype = "f32"
 
@@ -924,7 +944,6 @@ class ExtensionOverrides(common.OpOverrides):
     @staticmethod
     def isnan(operand, *args, **kwargs):
         tile_size, dtype = V.kernel.var_info[operand]
-        print(f"Checking isnan for operand with dtype: {dtype} and tile_size: {tile_size}")
         if dtype.startswith("f"):
             # Unordered comparison (uno) to detect NaN (uno returns true if either operand is NaN)
             operand_shape = f"vector<{tile_size}x{dtype}>" if tile_size > 1 else dtype

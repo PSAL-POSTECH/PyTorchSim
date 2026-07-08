@@ -13,10 +13,15 @@ def reduction_combine_vec(reduction_type, vector_value, init_value, axis, shape,
         return f"vector.multi_reduction <add>, %{vector_value}, %{init_value} [{axis}] : {shape} to {reduced_shape}"
     if reduction_type == "prod":
         return f"vector.multi_reduction <mul>, %{vector_value}, %{init_value} [{axis}] : {shape} to {reduced_shape}"
+    # element type of the reduced vector (e.g. "vector<8x2xi64>" -> "i64"); int max/min use
+    # the signed-integer reduction kinds, not the float ones (maximumf/minimumf reject ints).
+    _is_int = shape.rsplit("x", 1)[-1].rstrip(">").strip().startswith("i")
     if reduction_type == "max":
-        return f"vector.multi_reduction <maximumf>, %{vector_value}, %{init_value} [{axis}] : {shape} to {reduced_shape}"
+        kind = "maxsi" if _is_int else "maximumf"
+        return f"vector.multi_reduction <{kind}>, %{vector_value}, %{init_value} [{axis}] : {shape} to {reduced_shape}"
     if reduction_type == "min":
-        return f"vector.multi_reduction <minimumf>, %{vector_value}, %{init_value} [{axis}] : {shape} to {reduced_shape}"
+        kind = "minsi" if _is_int else "minimumf"
+        return f"vector.multi_reduction <{kind}>, %{vector_value}, %{init_value} [{axis}] : {shape} to {reduced_shape}"
     if reduction_type == "any":
         return f"vector.multi_reduction <or>, %{vector_value}, %{init_value} [{axis}] : {shape} to {reduced_shape}"
     raise AssertionError(reduction_type)

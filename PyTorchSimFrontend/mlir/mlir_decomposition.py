@@ -372,3 +372,55 @@ def decompose_native_multi_head_attention(
         return output, attn_weights_mean
     else:
         return (output, None)
+
+
+# Lower roll ourselves as narrow + cat, then REALIZE the result. roll has no Inductor lowering; it
+# is decomposed (torch's default is index_select(fmod(...)), i.e. a modular gather the affine-only
+# DMA cannot express). Even our narrow+cat rewrite lets the slice offset fuse into a downstream
+# modular reshape, re-creating a shifted index like (p+60)%8. copy_input forces a hard buffer
+# boundary so the consumer reads a plain affine index -- a plain .contiguous()/clone is inlined by
+# Inductor and does NOT create the boundary. Remove roll from the decomp table so it reaches this
+# lowering instead of being decomposed first.
+from torch._inductor.decomposition import decompositions as _inductor_decompositions
+from torch._inductor import lowering as _ind_lowering
+from torch._inductor import ir as _ind_ir
+
+_inductor_decompositions.pop(aten.roll.default, None)
+
+
+def _roll_lowering(x, shifts, dims=()):
+    if not isinstance(shifts, (list, tuple)):
+        shifts = (shifts,)
+    if not isinstance(dims, (list, tuple)):
+        dims = (dims,)
+    slice_l = _ind_lowering.lowerings[aten.slice.Tensor]
+    cat_l = _ind_lowering.lowerings[aten.cat.default]
+    view_l = _ind_lowering.lowerings[aten.view.default]
+
+    # Realize the INPUT: roll's producer is often a reshaped view (e.g. swinv2's window_reverse),
+    # and our slice's offset would otherwise fuse into that reshape's modular index. Reading a
+    # materialized buffer makes each slice a plain contiguous read.
+    x = _ind_ir.ExternKernel.copy_input(x)
+
+    def roll_dim(t, shift, dim):
+        n = int(t.get_size()[dim])
+        s = int(shift) % n
+        if s == 0:
+            return t
+        front = slice_l(t, dim, n - s, n)          # narrow(t, dim, n-s, s)
+        back = slice_l(t, dim, 0, n - s)
+        return cat_l([front, back], dim)
+
+    if len(dims) == 0:
+        numel = 1
+        for d in x.get_size():
+            numel *= int(d)
+        result = view_l(roll_dim(view_l(x, [numel]), shifts[0], 0), list(x.get_size()))
+    else:
+        result = x
+        for shift, dim in zip(shifts, dims):
+            result = roll_dim(result, shift, dim)
+    return _ind_ir.ExternKernel.copy_input(result)
+
+
+_ind_lowering.lowerings[aten.roll.default] = _roll_lowering

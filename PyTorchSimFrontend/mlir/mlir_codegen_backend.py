@@ -1401,38 +1401,26 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         return bits & ((1 << (t.element_size() * 8)) - 1)
 
     def _masked_bounds(self, name, index, dram_stride, local_tile_desc, is_load, buffer, local_dims):
-        """Per tile-axis [low, high) clamp for a masked DMA. Per axis the valid GLOBAL range
-        is [glo, ghi) (store: [0, output_extent); padded load: [pad, pad + input_extent)), and
-        _emit_clamp turns it into the tile-local low/high SSA vars. See
-        docs/design/masked-dma-descriptor.md. Returns [(tile_axis, low_var, high_var), ...].
+        """Per tile-axis [low, high) clamp for a masked DMA -- ONLY the trailing tail of a
+        non-dividing loop extent (valid GLOBAL range per axis is [0, loop_extent)). _emit_clamp
+        turns it into the tile-local low/high SSA vars. Returns [(tile_axis, low_var, high_var)].
+
+        A padded load reads out-of-bounds positions, but we do NOT clamp those here: the
+        consumer already yields the correct value at pad positions (a compute-side arith.select
+        for a padded gather, or the pad op's own fill). Reverse-engineering per-dim padding from
+        the single flat index offset is ill-posed -- the offset mixes the tap shift with the
+        padding, and under channels_last the stride-1 (channel) axis absorbs the offset
+        remainder, yielding an impossible clamp (e.g. [4, 8) on a size-2 channel tile) that
+        zeroed the whole load and made channels_last depthwise conv 99.9% wrong. See
+        docs/design/masked-dma-descriptor.md.
         """
         tile_size = local_tile_desc.get_tile_size()
-        const = int(index.as_coeff_Add()[0]) if not index.is_number else int(index)
-        # index const = -sum(pad_d * dram_stride[d]); recover per-dim pad greedily (desc stride).
-        pad = [0] * len(tile_size)
-        if is_load and const < 0:
-            rem = -const
-            for d in sorted(range(len(dram_stride)), key=lambda x: -dram_stride[x]):
-                s = dram_stride[d]
-                if s > 0 and d < len(pad):
-                    pad[d] = rem // s
-                    rem -= pad[d] * s
-        in_shape, in_stride = self.buffer_types[name][2], self.buffer_types[name][3]
         axes = []
         for d, k in enumerate(local_dims):
             if d >= len(tile_size) or k >= len(self.ranges):
                 continue
             iv = str(self.itervars[k])
-            # A padded load (const < 0, i.e. index shifted by -pad) reads a smaller input:
-            # clamp per-dim to [pad_d, pad_d + input_extent_d). Every other DMA (stores and
-            # non-padded/contiguous loads, including collapsed tensors) is valid over the
-            # whole loop extent -> only the trailing tail needs clamping.
-            if is_load and const < 0:
-                ext = next((int(in_shape[j]) for j, st in enumerate(in_stride)
-                            if int(st) == int(dram_stride[d])), None)
-                glo, ghi = (pad[d], pad[d] + ext) if ext is not None else (0, int(self.ranges[k]))
-            else:
-                glo, ghi = 0, int(self.ranges[k])
+            glo, ghi = 0, int(self.ranges[k])
             axes.append((d, iv, glo, ghi, int(tile_size[d])))
         return self._emit_clamp(axes, buffer)
 

@@ -44,10 +44,16 @@ def reduction_init(reduction_type, dtype):
         return float(0) if dtype.is_floating_point else int(0)
     if reduction_type == "prod":
         return float(1) if dtype.is_floating_point else int(1)
+    # Integer reductions cannot use a +/-inf identity (invalid as an int constant and
+    # overflows torch.tensor(inf, dtype=int)); use the dtype's representable extreme.
     if reduction_type in {"max", "argmax"}:
-        return "-inf"
+        if dtype.is_floating_point:
+            return "-inf"
+        return 0 if dtype is torch.bool else torch.iinfo(dtype).min
     if reduction_type in {"min", "argmin"}:
-        return "inf"
+        if dtype.is_floating_point:
+            return "inf"
+        return 1 if dtype is torch.bool else torch.iinfo(dtype).max
     if reduction_type in {"welford_reduce"}:
         return f"0.0"
     raise AssertionError(reduction_type)

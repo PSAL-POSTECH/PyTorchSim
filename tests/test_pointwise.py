@@ -170,6 +170,24 @@ def test_atan(device):
     # domain: all reals; boundary: zero, unit, large |x| (range-reduction path)
     run_op("Atan", device, torch.atan, lambda r, c: torch.randn(r, c) * 5,
            cases=[("boundary", torch.tensor([[0.0, 1.0, -1.0, 1e3, -1e3, 1e-4]]))])
+
+def test_asin(device):
+    # domain: [-1, 1]; boundary includes the +/-1 endpoints
+    run_op("Asin", device, torch.asin, lambda r, c: torch.rand(r, c) * 2 - 1,
+           cases=[("boundary", torch.tensor([[0.0, 1.0, -1.0, 0.5, -0.5]]))])
+
+def test_acos(device):
+    # domain: [-1, 1]; boundary includes the +/-1 endpoints
+    run_op("Acos", device, torch.acos, lambda r, c: torch.rand(r, c) * 2 - 1,
+           cases=[("boundary", torch.tensor([[0.0, 1.0, -1.0, 0.5, -0.5]]))])
+
+def test_atan2(device):
+    # atan2(y, x); boundary: axes and diagonals across all four quadrants
+    # (0, 0) excluded: composition yields atan(0/0)=nan while torch returns 0
+    y = torch.tensor([[1.0, 0.0, -1.0, 0.0, 1.0, -1.0, 1.0, -1.0]])
+    x = torch.tensor([[0.0, 1.0, 0.0, -1.0, 1.0, -1.0, -1.0, 1.0]])
+    run_op("Atan2", device, torch.atan2, lambda r, c: (torch.randn(r, c), torch.randn(r, c)),
+           cases=[("boundary", (y, x))])
  
 if __name__ == "__main__":
     device = torch.device("npu:0")
@@ -191,3 +209,6 @@ if __name__ == "__main__":
     test_asinh(device)
     test_atanh(device)
     test_atan(device)
+    test_asin(device)
+    test_acos(device)
+    test_atan2(device)

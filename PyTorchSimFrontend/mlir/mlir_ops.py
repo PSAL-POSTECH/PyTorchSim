@@ -533,7 +533,22 @@ class ExtensionOverrides(common.OpOverrides):
 
     @staticmethod
     def acos(operand, *args, **kwargs):
-        raise NotImplementedError
+        tile_size, dtype = V.kernel.var_info[operand]
+
+        # Check scalar
+        if tile_size == 1:
+            operand = ops.broadcast(operand, 4)
+            val = ops.acos(operand)
+            result = ops.extractelement(val, 0)
+            return result, V.kernel.var_info[result]
+
+        if dtype.startswith("f"):
+            operand = ops.to_dtype(operand, "f32")
+            dtype = "f32"
+
+        asin_val = ops.asin(operand)
+        res = ops.sub(ops.constant(math.pi / 2, dtype), asin_val)
+        return res, V.kernel.var_info[res]
 
     @staticmethod
     def acosh(operand, *args, **kwargs):
@@ -560,7 +575,23 @@ class ExtensionOverrides(common.OpOverrides):
 
     @staticmethod
     def asin(operand, *args, **kwargs):
-        raise NotImplementedError
+        tile_size, dtype = V.kernel.var_info[operand]
+
+        # Check scalar
+        if tile_size == 1:
+            operand = ops.broadcast(operand, 4)
+            val = ops.asin(operand)
+            result = ops.extractelement(val, 0)
+            return result, V.kernel.var_info[result]
+
+        if dtype.startswith("f"):
+            operand = ops.to_dtype(operand, "f32")
+            dtype = "f32"
+
+        x2 = ops.square(operand)
+        denom = ops.sqrt(ops.sub(ops.constant(1.0, dtype), x2))
+        res = ops.atan(ops.truediv(operand, denom))
+        return res, V.kernel.var_info[res]
 
     @staticmethod
     def asinh(operand, *args, **kwargs):
@@ -587,7 +618,19 @@ class ExtensionOverrides(common.OpOverrides):
 
     @staticmethod
     def atan2(operand1, operand2, *args, **kwargs):
-        raise NotImplementedError
+        tile_size, ret_type, y, x = ExtensionOverrides.binary_elementwise_common(operand1, operand2)
+        if not ret_type.startswith("f"):
+            y = ops.to_dtype(y, "f32")
+            x = ops.to_dtype(x, "f32")
+            ret_type = "f32"
+
+        pi = ops.constant(math.pi, ret_type)
+        zero = ops.constant(0.0, ret_type)
+
+        base = ops.atan(ops.truediv(y, x))
+        corrected = ops.add(base, ops.copysign(pi, y))
+        res = ops.where(ops.lt(x, zero), corrected, base)
+        return res, [tile_size, ret_type]
 
     @staticmethod
     def atan(operand, *args, **kwargs):

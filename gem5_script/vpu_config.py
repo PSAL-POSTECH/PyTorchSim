@@ -20,7 +20,6 @@ class SpecialFunctionUnit(MinorFU):
         "CustomVtanh",
         "CustomVsin",
         "CustomVcos",
-        "CustomVlog",
         ])
     opLat = 10
 
@@ -121,6 +120,8 @@ class MinorVecMisc(MinorFU):
             "SimdExt",
             "SimdFloatExt",
             "CustomVlaneIdx",
+            "CustomVlog",
+            "CustomVatan",
         ]
     )
     opLat = 1

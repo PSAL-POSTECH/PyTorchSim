@@ -591,7 +591,21 @@ class ExtensionOverrides(common.OpOverrides):
 
     @staticmethod
     def atan(operand, *args, **kwargs):
-        raise NotImplementedError
+        tile_size, dtype = V.kernel.var_info[operand]
+        
+        # Check scalar
+        if tile_size == 1:
+            operand = ops.broadcast(operand, 4)
+            val = ops.atan(operand)
+            result = ops.extractelement(val, 0)
+            return result, V.kernel.var_info[result]
+        
+        if dtype.startswith("f"):
+            operand = ops.to_dtype(operand, "f32")
+            dtype = "f32"
+
+        shape = f"vector<{tile_size}x{dtype}>" if tile_size > 1 else dtype
+        return format_mlir_op(f'math.atan %{operand}', shape, **kwargs), [tile_size, dtype]
 
     @staticmethod
     def atanh(operand, *args, **kwargs):

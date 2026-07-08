@@ -209,6 +209,22 @@ class MLIRCatTemplate(MLIRTemplate):
             tile_sizes[idx] = 1
         return excluded
 
+    @staticmethod
+    def _largest_divisor_leq(extent, cap):
+        """Largest divisor of ``extent`` that does not exceed ``cap`` (>= 1).
+
+        The concat-dim copy loop steps by the per-input tile over ``[0, extent)``.
+        If the tile does not divide ``extent`` the final iteration is ragged and,
+        because the DMA carries no remainder mask, over-reads the input and
+        over-writes the output. Snapping the tile down to a divisor keeps every
+        iteration full-width and in-bounds.
+        """
+        cap = min(cap, extent)
+        for d in range(cap, 0, -1):
+            if extent % d == 0:
+                return d
+        return 1
+
     def _calculate_input_tile_sizes(self, kernel, input_sizes, tile_sizes, num_inputs, rank, precision_bytes):
         """Calculate tile sizes along the concat dimension for each input."""
         non_dim_tile_elements = math.prod(tile_sizes) if tile_sizes else 1
@@ -218,7 +234,9 @@ class MLIRCatTemplate(MLIRTemplate):
         input_tile_sizes_dim = []
         for i in range(num_inputs):
             if extra_concat > 0 and non_dim_tile_elements > 0:
-                tile_dim = min(input_sizes[i][self.dim], extra_concat)
+                # Snap to a divisor of the input's concat extent so the copy loop
+                # never emits a ragged (unmasked) tail tile.
+                tile_dim = self._largest_divisor_leq(input_sizes[i][self.dim], extra_concat)
                 extra_concat -= tile_dim
             else:
                 tile_dim = 1

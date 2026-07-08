@@ -848,7 +848,9 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
             if idx == tile_desc.vmap.vlane_split_axis: # Need to add vector lane offset
                 stride_dim = ops.remainder(dim, vlane_stride_vec)
                 outer_dim = ops.remainder(ops.truncdiv(dim, vlane_stride_vec), vlane_outer_vec)
-                dim = ops.add(stride_dim, ops.mul(outer_dim, nr_vector_lane_vec))
+                # Next sublane-row stride is vector_lane*vlane_stride, not vector_lane alone.
+                row_stride_vec = ops.mul(nr_vector_lane_vec, vlane_stride_vec)
+                dim = ops.add(stride_dim, ops.mul(outer_dim, row_stride_vec))
 
                 with self.override_buffer_cse(buffer=self.const_buffer, cse=self.const_cse):
                     vlane_offset = ops.vlane_offset(vlane_vec, vlane_vec, attributes={"vlane_offset": offset}, comment="vlane offset")

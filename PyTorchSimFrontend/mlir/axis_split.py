@@ -29,6 +29,77 @@ def _as_int(x):
         return None
 
 
+def _as_digit(expr):
+    """If ``expr`` is a single-variable *digit extractor* -- any nesting of FloorDiv /
+    ModularIndexing whose innermost argument is one symbol ``v`` -- return ``(v, div, mod)``
+    meaning ``(v // div) % mod`` (``mod is None`` -> a pure ``v // div``). Otherwise None.
+
+    Every such nesting collapses to a single (div, mod) by composing divisors, from four
+    algebraic identities (v >= 0, all constants positive integers):
+        FloorDiv(v//a,        b)      = v // (a*b)
+        FloorDiv((v//a)%m,    b)      = (v // (a*b)) % (m//b)      if b   | m
+        ModularIndexing(v//a,    b,m2)= (v // (a*b)) % m2
+        ModularIndexing((v//a)%m, b,m2)= (v // (a*b)) % m2         if b*m2| m
+    The divisibility guards make every rewrite provably equality-preserving. A multi-
+    variable inner argument (e.g. torch.roll's v+shift) is not a digit extractor -> None.
+    """
+    if isinstance(expr, sympy.Symbol):
+        return (expr, 1, None)
+    if isinstance(expr, FloorDiv):
+        inner, b = expr.args
+        b, e = _as_int(b), _as_digit(expr.args[0])
+        if e is None or b is None:
+            return None
+        v, a, m = e
+        if m is None:
+            return (v, a * b, None)
+        if m % b == 0:
+            return (v, a * b, m // b)
+        return None
+    if isinstance(expr, ModularIndexing):
+        inner, b, m2 = expr.args
+        b, m2, e = _as_int(b), _as_int(m2), _as_digit(expr.args[0])
+        if e is None or b is None or m2 is None:
+            return None
+        v, a, m = e
+        if m is None:
+            return (v, a * b, m2)
+        if m % (b * m2) == 0:
+            return (v, a * b, m2)
+        return None
+    return None
+
+
+def _rebuild_digit(v, a, m):
+    """Canonical single-level form of ``(v // a) % m``."""
+    x = v if a == 1 else FloorDiv(v, a)
+    return x if m is None else ModularIndexing(v, a, m)
+
+
+def flatten_nested_floormod(expr):
+    """Collapse nested single-variable FloorDiv/ModularIndexing to one level.
+
+    A composition of aligned reshapes on one iteration variable leaves a nested index like
+    ModularIndexing(ModularIndexing(p, 1, 64), 1, 8) that neither sympy nor
+    simplify_with_ranges reduces, so collect_boundaries skips its cut points (the inner base
+    is not a bare var) and the affine-only DMA check later rejects it. Rewriting each nested
+    digit extractor to its single-level (v // A) % M form (via _as_digit) exposes those cut
+    points to axis-split. General and pattern-free -- no per-shape special cases.
+    """
+    try:
+        atoms = expr.atoms(FloorDiv, ModularIndexing)
+    except AttributeError:
+        return expr
+    replace = {}
+    for atom in atoms:
+        e = _as_digit(atom)
+        if e is not None:
+            canon = _rebuild_digit(*e)
+            if canon != atom:
+                replace[atom] = canon
+    return expr.xreplace(replace) if replace else expr
+
+
 def collect_boundaries(exprs, var_to_axis, var_ranges):
     """{axis_index: set(boundary cut points)} for the given index expressions.
 
@@ -39,6 +110,7 @@ def collect_boundaries(exprs, var_to_axis, var_ranges):
     import collections
     bset = collections.defaultdict(set)
     for expr in exprs:
+        expr = flatten_nested_floormod(expr)   # nested digit extractors -> single level
         for fd in expr.atoms(FloorDiv):
             base, div = fd.args
             k = _as_int(div)
@@ -196,6 +268,7 @@ def _fold_with_ranges(expr, var_ranges):
     Iterated to a fixpoint (folding a mod can expose a foldable floor).
     """
     from torch.utils._sympy.value_ranges import bound_sympy, ValueRanges
+    expr = flatten_nested_floormod(expr)   # collapse any residual single-var nested digit
     ranges = {}
     for v, sz in var_ranges.items():
         e = _as_int(sz)

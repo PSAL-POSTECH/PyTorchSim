@@ -54,6 +54,25 @@ jobs:
             -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/test_transcendental.py
 
+  test_pointwise:
+    name: Run test_pointwise.py
+    runs-on: self-hosted
+    steps:
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run test_pointwise.py
+        run: |
+          echo "Running test_pointwise.py"
+          docker run --rm \
+            -e vpu_num_lanes="${{ inputs.vector_lane }}" \
+            -e vpu_spad_size_kb_per_lane="${{ inputs.spad_size }}" \
+            ${{ inputs.image_name }} python3 PyTorchSim/tests/test_pointwise.py
+
   test_activation:
     name: Run test_activation.py
     runs-on: self-hosted

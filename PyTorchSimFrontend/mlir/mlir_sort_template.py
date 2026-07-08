@@ -3,6 +3,7 @@ import contextlib
 
 from torch._inductor.ir import Buffer, IRNode
 from torch._inductor.virtualized import _ops as ops
+from torch._inductor.virtualized import V
 from torch._inductor.codegen import common
 
 from PyTorchSimFrontend.mlir import mlir_common
@@ -38,7 +39,9 @@ func.func @{{ KERNEL_NAME }} {{kernel.def_kernel(inputs=[X, XI], outputs=[YV], n
 {{ BITONIC_BODY }}
 
     {{ kernel.def_dma_op("MVOUT", "XI", [], XI_TILE_DESC, indent_size=INDENT_SIZE, dram_stride=XI_DRAM_STRIDE, dram_offset="xi_dram_offset") }}
+    {%- if YV_LIVE %}
     {{ kernel.def_dma_op("MVOUT", "YV", [], YV_TILE_DESC, indent_size=INDENT_SIZE, dram_stride=YV_DRAM_STRIDE, dram_offset="yv_dram_offset") }}
+    {%- endif %}
   {%- for d in range(RANK-1) %}
     } { outer_loop=true }
   {%- endfor %}
@@ -433,6 +436,9 @@ class MLIRSortTemplate(MLIRTemplate):
             X=x,
             XI=xi,
             YV=yv,
+            # In argsort the sorted-values output is dead and dropped from the kernel args;
+            # skip its MVOUT so the body does not reference the pruned %YV (undeclared SSA).
+            YV_LIVE=yv.get_name() not in V.graph.removed_buffers,
             X_TILE_DESC=x_tile_desc,
             XI_TILE_DESC=xi_tile_desc,
             YV_TILE_DESC=yv_tile_desc,

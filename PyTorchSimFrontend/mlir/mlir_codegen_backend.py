@@ -44,10 +44,16 @@ def reduction_init(reduction_type, dtype):
         return float(0) if dtype.is_floating_point else int(0)
     if reduction_type == "prod":
         return float(1) if dtype.is_floating_point else int(1)
+    # Integer reductions cannot use a +/-inf identity (invalid as an int constant and
+    # overflows torch.tensor(inf, dtype=int)); use the dtype's representable extreme.
     if reduction_type in {"max", "argmax"}:
-        return "-inf"
+        if dtype.is_floating_point:
+            return "-inf"
+        return 0 if dtype is torch.bool else torch.iinfo(dtype).min
     if reduction_type in {"min", "argmin"}:
-        return "inf"
+        if dtype.is_floating_point:
+            return "inf"
+        return 1 if dtype is torch.bool else torch.iinfo(dtype).max
     if reduction_type in {"welford_reduce"}:
         return f"0.0"
     raise AssertionError(reduction_type)
@@ -114,6 +120,7 @@ class ExtensionWrapperCodegen(wrapper.PythonWrapperCodegen):
                 inductor_ops = torch.ops.inductor
                 assert_size_stride = torch._C._dynamo.guards.assert_size_stride
                 assert_alignment = torch._C._dynamo.guards.assert_alignment
+                empty_strided_cpu = torch._C._dynamo.guards._empty_strided_cpu
                 alloc_from_pool = torch.ops.inductor._alloc_from_pool
                 reinterpret_tensor = torch.ops.inductor._reinterpret_tensor
                 custom_async_compile = CustomAsyncCompile()
@@ -1321,16 +1328,19 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
                 local_tile_desc.set_tile_size([kg_tile_desc.get_dim_size(dim) for dim in local_dims])
                 local_tile_desc.vmap.vlane_split_axis = local_vlane_split_axis
                 local_tile_desc.vmap.vlane_stride = kg_tile_desc.vmap.vlane_stride
-        # Case 4. Tile is 4-D tile (e.g., Convolution epilogue)
-        elif len(local_dims) == 4:
-            is_reduction = self.reduction_depth < 3 and not store_reduction
-            if is_reduction:
-                raise NotImplementedError("Currently not implemented... ;)")
-            local_tile_desc.set_tile_size([kg_tile_desc.get_dim_size(dim) for dim in local_dims])
-            local_tile_desc.vmap.vlane_split_axis = local_vlane_split_axis
-            local_tile_desc.vmap.vlane_stride = kg_tile_desc.vmap.vlane_stride
+        # Case 4+. Tile is 4-D or higher (Convolution epilogue, gathered attention bias,
+        # var_mean over an axis whose batch dims got split into many loop vars).
         else:
-            local_tile_desc.set_tile_size([kg_tile_desc.get_dim_size(dim) for dim in local_dims])
+            # A reduction tile must place the reduction axis-group OUTERMOST in the
+            # per-lane layout, so the 2-D [reduction | batch] multi_reduction reduces the
+            # reduction axis rather than a batch axis left inner by row-major order.
+            is_reduction = any(d >= self.reduction_depth for d in local_dims) and not store_reduction
+            if is_reduction:
+                r = self.get_nr_rdim()
+                axis_order = list(range(r, len(local_dims))) + list(range(r - 1, -1, -1))
+                local_tile_desc.set_tile_size([kg_tile_desc.get_dim_size(dim) for dim in local_dims], axis_order)
+            else:
+                local_tile_desc.set_tile_size([kg_tile_desc.get_dim_size(dim) for dim in local_dims])
             local_tile_desc.vmap.vlane_split_axis = local_vlane_split_axis
             local_tile_desc.vmap.vlane_stride = kg_tile_desc.vmap.vlane_stride
 

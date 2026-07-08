@@ -1646,6 +1646,12 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
                 if arg.is_Mul and arg.args[0].is_number:
                     offset_stride = int(arg.args[0])
                 index = index.replace(arg, 0)
+            # A bare indirect index (e.g. x[idx]: index IS the symbol, so index.args is empty)
+            # is not caught by the loop above. Zero any remaining indirect symbol so the dram
+            # base offset does not reference the loop-local index value (the per-position gather
+            # is carried by the offset spad); otherwise the DMA offset affine.apply uses %sym
+            # before it is defined.
+            index = index.subs({s: 0 for s in index.free_symbols if str(s) in self.indirect_symbols})
             sram_var, _, _, _, tile_shape, _ = self.spad_buffer_dict[first_dim]
             return index, (sram_var, tile_shape, offset_stride)
 

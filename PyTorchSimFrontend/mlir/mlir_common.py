@@ -411,7 +411,8 @@ class TileAdjustMixin():
             return [1]
         tile_size = [1] * nr_dim
         if nr_dim == 1:
-            tile_size[0] = 1 if ranges[0] == 1 else 2 * vlane_stride * vector_lane
+            # Cap to extent so the tile never over-reads the DRAM buffer (extent 128 vs tile 512 -> 384 garbage folded into the reduction). No-op when extent >= tile.
+            tile_size[0] = 1 if ranges[0] == 1 else min(2 * vlane_stride * vector_lane, ranges[0])
         elif nr_dim == 2:
             tile_size[-1] = vlane_stride * vector_lane
             tile_size[-2] = 2 * vector_lane

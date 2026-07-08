@@ -15,9 +15,9 @@ from unittest.mock import patch
 
 from PyTorchSimFrontend import extension_config
 from torch._inductor.codegen.common import KernelTemplate, CSE, DeferredLine
-from torch._inductor.ir import Buffer, IRNode, TemplateBuffer, ChoiceCaller, ir_node_to_tensor
+from torch._inductor.ir import Buffer, IRNode, TemplateBuffer, ChoiceCaller, ir_node_to_tensor, TensorBox
 from torch._inductor.select_algorithm import PartialRender
-from torch._inductor.codegen.cuda.cuda_kernel import CUDATemplateCaller
+from torch._inductor.codegen.cuda.cuda_kernel import CUDATemplateCaller, CUDATemplateBuffer
 from torch._inductor.autotune_process import TensorMeta
 from torch._inductor.virtualized import V, NullHandler, _ops as ops
 from torch._inductor.utils import IndentedBuffer
@@ -1311,7 +1311,41 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
                 self.compute_body_loop.step = tile_desc.get_compute_vec_size()
         return tile_desc
 
+class MLIRTemplateBuffer(CUDATemplateBuffer):
+    """Template output buffer that can own extra MutationOutputs beyond its primary output.
+
+    The sort kernel's primary scheduler-visible output is the sorted values, but it also
+    writes the indices buffer in place (mlir_sort_template make_inplace). Registering that
+    write as a MutationOutput owned here -- so get_outputs() advertises it -- lets the
+    scheduler keep the kernel alive when only the indices are consumed (argsort), instead of
+    DCE-ing the whole sort. OperationBuffer.get_outputs() otherwise hardcodes [self].
+    """
+
+    def add_mutation_output(self, mutation: IRNode) -> None:
+        if not hasattr(self, "_extra_mutation_outputs"):
+            self._extra_mutation_outputs = []
+        self._extra_mutation_outputs.append(mutation)
+
+    def get_outputs(self) -> List[Buffer]:
+        return [self, *getattr(self, "_extra_mutation_outputs", [])]
+
+
 class MLIRTemplateCaller(CUDATemplateCaller):
+    def output_node(self) -> TensorBox:
+        # Same as CUDATemplateCaller.output_node but builds a mutation-aware buffer so
+        # callers (e.g. the sort lowering) can attach in-place-write MutationOutputs.
+        self.bmreq.update_workspace_size()
+        return TensorBox.create(
+            MLIRTemplateBuffer(
+                layout=self.layout,
+                inputs=self.input_nodes,
+                make_kernel_render=self.make_kernel_render,
+                workspace_size=self.bmreq.workspace_size,
+                supports_epilogue_fusion=self.supports_epilogue_fusion,
+                template=self.template,
+            )
+        )
+
     def __init__(self, name, category, input_nodes, layout, make_kernel_render, supports_epilogue_fusion, template, info_kwargs, description):
         bmreq = MLIRBenchmarkRequest(
             kernel_name=name,

@@ -106,6 +106,10 @@ def gen_hbm2_tpuv2():
     dram = ramulator.dram.HBM2(org_preset="HBM2_8Gb", timing_preset="HBM2_1400Mbps")
     return make_config(dram, clock_ratio=1, refresh_scope="PseudoChannel")
 
+def gen_hbm3_tpuv6e():
+    dram = ramulator.dram.HBM3(org_preset="HBM3_8Gb", timing_preset="HBM3_6400Mbps")
+    return make_config(dram, clock_ratio=1, refresh_scope="PseudoChannel")
+
 def gen_ddr4():
     # Available timing presets — check python/ramulator/dram/ddr4.py
     dram = ramulator.dram.DDR4(org_preset="DDR4_8Gb_x8", timing_preset="DDR4_3200AA")
@@ -128,6 +132,7 @@ CONFIGS = {
     "HBM2_TPUv4.yaml":  gen_hbm2_tpuv4,
     "HBM2_TPUv3.yaml":  gen_hbm2_tpuv3,
     "HBM2_TPUv2.yaml":  gen_hbm2_tpuv2,
+    "HBM3_TPUv6e.yaml": gen_hbm3_tpuv6e,
     "DDR4.yaml":        gen_ddr4,
     "LPDDR5.yaml":      gen_lpddr5,
     "LPDDR5X.yaml":     gen_lpddr5x,

@@ -144,7 +144,8 @@ class FunctionalSimulator():
         base_path= f"--base-path={runtime_path}"
         os.makedirs(os.path.join(runtime_path, "indirect_access"), exist_ok=True)
         os.makedirs(os.path.join(runtime_path, "dma_access"), exist_ok=True)
-        run = f'spike --isa rv64gcv_zfh --varch=vlen:256,elen:64 {vectorlane_option} {spad_option} {kernel_address} {base_path} /workspace/riscv-pk/build/pk {target_binary} {file_path_str}'
+        spike_vlen = extension_config.vpu_vector_length_bits
+        run = f'spike --isa rv64gcv_zfh --varch=vlen:{spike_vlen},elen:64 {vectorlane_option} {spad_option} {kernel_address} {base_path} /workspace/riscv-pk/build/pk {target_binary} {file_path_str}'
         if not silent_mode:
             logger.debug(f"[Spike] cmd> {run}")
             logger.info("[Spike] Running Spike simulator")

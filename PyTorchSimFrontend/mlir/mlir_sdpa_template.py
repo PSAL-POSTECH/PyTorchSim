@@ -625,7 +625,9 @@ class MLIRFlashSDPATemplate(MLIRTemplate):
 
         # FIXME: Update the method for getting tile candidates once TestDmaFineGrained pass works correctly with Flash Attention.
         # tile_candidates = kernel.flash_sdpa_mapping(l, s, e, n_extra_node=n_extra_node)
-        tile_candidates = [[kernel.vector_lane, kernel.vector_lane, e]]
+        tile_l = min(kernel.vector_lane, l)
+        tile_s = min(kernel.vector_lane, s)
+        tile_candidates = [[tile_l, tile_s, e]]
 
         for idx, (tile_l, tile_s, tile_e) in enumerate(tile_candidates):
             subtile_l = tile_l # if (tile_l < kernel.vector_lane) or n_prologue_node else kernel.vector_lane

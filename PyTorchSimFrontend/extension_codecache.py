@@ -142,7 +142,7 @@ class MLIRCodeCache:
         tog_path = os.path.join(write_path, "tile_graph.onnx")
         sample_mlir_path = new_input_path + "_sample"
         validation_binary_path = os.path.join(write_path, validation_binary_name)
-        gem5_cmds = mlir_gem5_compile_command(new_input_path, sample_mlir_path, raw_tog_path, vectorlane_size)
+        gem5_cmds = mlir_gem5_compile_command(new_input_path, sample_mlir_path, raw_tog_path, vectorlane_size, vlen=vlen)
 
         from filelock import FileLock
         os.makedirs(write_path, exist_ok=True)

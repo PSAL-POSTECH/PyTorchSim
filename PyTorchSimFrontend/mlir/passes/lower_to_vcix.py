@@ -1,7 +1,7 @@
 """Python port of the C++ `-test-pytorchsim-to-vcix` conversion pass
 (TestPyTorchSimToVCIXConversion.cpp).
 
-Lowers `linalg.matmul` and the transcendental math ops (exp/erf/tanh/sin/cos) to
+Lowers `linalg.matmul` and the transcendental math ops (exp/erf/tanh/sin/cos/log/atan) to
 VCIX dialect ops (RISC-V vector custom instructions). The C++ pass is a
 dialect-conversion (`applyPartialConversion`); the MLIR Python bindings expose no
 conversion framework, so each matchAndRewrite is reimplemented as imperative IR
@@ -14,7 +14,7 @@ have vcix registered) re-parse the `{}`-attr generic form fine, and the existing
 `allow_unregistered_dialects` -- so emitting generic vcix ops here is consistent
 with the current pipeline.
 
-Covers all 6 C++ patterns: linalg.matmul (gemm + conv2d) and exp/erf/tanh/sin/cos.
+Covers all 8 C++ patterns: linalg.matmul (gemm + conv2d) and exp/erf/tanh/sin/cos/log/atan.
 Wired into extension_codecache (run_to_vcix) after fine-grained, before the standard
 lowering; mlir-opt then runs only -test-loop-padding. Validated structurally against
 `mlir-opt -test-pytorchsim-to-vcix` (non-constant ops byte-identical incl. dma_wait tag
@@ -31,15 +31,20 @@ import mlir.ir as ir  # noqa: E402
 
 from ._mlir_util import walk_ops, i32, i64, attr_bool
 
-MARKERS = ("linalg.matmul", "math.exp", "math.erf", "math.tanh", "math.sin", "math.cos")
+MARKERS = ("linalg.matmul", "math.exp", "math.erf", "math.tanh", "math.sin",
+           "math.cos", "math.log", "math.atan")
 
-# math op name -> (opcode, imm) for the vcix.v.iv lowering (mirror Math*ToVCIX).
+# math op name -> (opcode, imm) for the vcix.v.iv lowering (mirror Math*ToVCIX). The
+# sf.vc.v.iv opcode field is 2 bits: erf(0)/tanh(1)/sin,cos,log,atan(2)/exp(3), and
+# the shared opcode 2 is disambiguated by imm (sin=0, cos=1, log=2, atan=3).
 _MATH_VIV = {
     "math.exp":  (0b000011, 0),
     "math.erf":  (0b000000, 0),
     "math.tanh": (0b000001, 0),
     "math.sin":  (0b000010, 0),
     "math.cos":  (0b000010, 1),
+    "math.log":  (0b000010, 2),
+    "math.atan": (0b000010, 3),
 }
 
 

@@ -39,4 +39,7 @@ if __name__ == "__main__":
         test_conv2d(device, batch_size=1, in_channels=128, out_channels=256, input_size=2, kernel_size=1, stride=1, padding=0)
         test_conv2d(device, batch_size=1, in_channels=128, out_channels=256, input_size=14, kernel_size=1, stride=2, padding=0)
         test_conv2d(device, batch_size=1, in_channels=3, out_channels=768, input_size=224, kernel_size=16,stride=16, padding=0)
+        # batch>1 patch conv (large kernel/out-channels): the multi-tile mapping's
+        # full-kernel tile overflows SPAD while smaller-k_h tiles still fit (issue #252)
+        test_conv2d(device, batch_size=2, in_channels=3, out_channels=768, input_size=64, kernel_size=32, stride=32, padding=0)
         test_conv2d(device, batch_size=1, in_channels=8, out_channels=16, input_size=1, kernel_size=1,stride=1, padding=0)

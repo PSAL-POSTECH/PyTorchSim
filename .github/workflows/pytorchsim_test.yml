@@ -57,6 +57,24 @@ jobs:
             -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/ops/elementwise/test_transcendental.py
 
+  test_pointwise:
+    name: Run test_pointwise.py
+    runs-on: ubuntu-latest
+    steps:
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run test_pointwise.py
+        run: |
+          echo "Running test_pointwise.py"
+          docker run --rm \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
+            ${{ inputs.image_name }} python3 PyTorchSim/tests/ops/elementwise/test_pointwise.py
+
   test_activation:
     name: Run test_activation.py
     runs-on: ubuntu-latest

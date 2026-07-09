@@ -152,11 +152,13 @@ func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[X, W, Bias], outputs=[Y]
 """
 
 class MLIRBMMTemplate(MLIRTemplate):
+    # 3-D frame (batch x M x N): batch + M row indices + the reduced N index.
+    REDUCTION_EPILOGUE_ALIASING = {"index0": "index0", "index1": "index2", "index2": "index1"}
+
     def __init__(self, input_nodes, layout, input_reorder=None):
         super().__init__("kernel", input_nodes, layout, input_reorder)
         self.support_epilogue_fusion = True
         self.support_prologue_fusion = True
-        self.support_reduction_fusion = True
 
     def render(self,
                kernel: MLIRTemplateKernel,
@@ -179,7 +181,7 @@ class MLIRBMMTemplate(MLIRTemplate):
         nr_reduction_nodes = [node for node in epilogue_nodes if node.is_reduction()] if epilogue_nodes is not None else []
         if nr_reduction_nodes:
             template = BMM_REDUCTION_TEMPLATE
-            epilogue_dim_aliasing = {"index0":"index0", "index1":"index2", "index2": "index1"}
+            epilogue_dim_aliasing = self.REDUCTION_EPILOGUE_ALIASING
             nr_rdim = 1
         elif prologue_nodes:
             template = BMM_PROLOGUE_TEMPLATE

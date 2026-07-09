@@ -10,7 +10,9 @@ from functools import reduce
 import operator
 from collections import OrderedDict
 
-from typing import List, Optional
+import logging
+from dataclasses import dataclass
+from typing import Callable, List, Optional
 from unittest.mock import patch
 
 from PyTorchSimFrontend import extension_config
@@ -91,6 +93,65 @@ class IndentedBufferGroup:
                 yield self
         finally:
             self.restore_buffers()
+
+fusion_log = logging.getLogger(__name__)
+
+
+@dataclass
+class FusionPlan:
+    """What the scheduler must do to commit a fusion that a template approved.
+
+    `MLIRTemplate.try_fuse_*` is a pure predicate (the scheduler calls it speculatively
+    for many candidate pairs), so any node mutation the fusion needs -- a loop merge, a
+    group re-derivation -- is deferred here and applied by `MLIRScheduling.fuse()` once
+    the fusion is actually committed.
+    """
+    remap: Optional[Callable] = None      # zero-arg thunk, invoked from fuse()
+
+
+def realign_node_group(node_to_realign, args=None, var_ranges=None):
+    """Re-derive a node's loop body/sizes/group from its data size.
+
+    `simplify_and_reorder()` may have reordered the node's loops away from the template's
+    iteration order; rebuilding the body puts them back. Used as a `FusionPlan.remap` (so
+    it runs from `MLIRScheduling.fuse()`, never from a can_fuse predicate) and by
+    axis-split, which re-traces a node over split ranges.
+    """
+    from torch._inductor.ir import LoopBody
+    from torch._inductor import dependencies
+    from torch._inductor.virtualized import V as _V
+
+    for node in node_to_realign.get_nodes():
+        if args is None or var_ranges is None:
+            args, var_ranges = dependencies.index_vars_no_squeeze(
+                node.node.data.get_size(), node.node.data.get_reduction_size(), prefix="q")
+        body = LoopBody(
+            node.node.get_store_function(),
+            (args if node.node.get_reduction_type() else args[:1]),
+            var_ranges, args[0], args[1])
+        index_size, reduce_size = [], []
+        for v, s in var_ranges.items():
+            (index_size if v in args[0] else reduce_size).append(s)
+        ranges = (index_size, reduce_size)
+        group = tuple(tuple(map(_V.graph.sizevars.simplify, s)) for s in ranges)
+        node._sizes, node._body, node.group = ranges, body, (node.get_device(), group)
+
+
+def merge_node_loops(node_to_merge):
+    """Collapse a node's contiguous loops so its iteration fits the template's frame."""
+    node_to_merge.get_nodes()[0].merge_loops()
+
+
+def why_no_fuse(template_node, node_to_fuse, reason):
+    """Record why a fusion was declined, and return the 'declined' value (None).
+
+    Declining is a normal outcome -- upstream CUTLASS/CPP decline every reduction
+    epilogue outright -- so every decline carries a reason to keep the decision
+    debuggable (cf. Inductor's WhyNoFuseNames).
+    """
+    fusion_log.debug("cannot fuse %s into template %s: %s", node_to_fuse, template_node, reason)
+    return None
+
 
 class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
     def __init__(self,
@@ -1378,6 +1439,12 @@ class MLIRTemplateCaller(CUDATemplateCaller):
 class MLIRTemplate(KernelTemplate):
     index_counter = itertools.count()
 
+    # Maps a fused reduction epilogue's loop indices onto this template's tile axes.
+    # `render()` hands it to the kernel, and its LENGTH is the number of loop ranges the
+    # epilogue codegen can address (set_ranges asserts len(dim_aliasing) == len(ranges)).
+    # None means this template cannot absorb a reduction epilogue.
+    REDUCTION_EPILOGUE_ALIASING = None
+
     def __init__(self, name, input_nodes, layout, input_reorder = None):
         """
         Baseclass for MLIR Templates, derived from KernelTemplate. Not to be instantiated directly.
@@ -1399,7 +1466,147 @@ class MLIRTemplate(KernelTemplate):
         # Fusion support flags (default to False)
         self.support_epilogue_fusion = False
         self.support_prologue_fusion = False
-        self.support_reduction_fusion = False
+
+    def try_fuse_epilogue(self, template_node, existing_epilogues, node_to_fuse):
+        """Decide whether `node_to_fuse` can be fused as this template's epilogue.
+
+        Only the template knows its output coordinate frame, so every fusion condition
+        that depends on it lives here -- the scheduler only identifies the template and
+        the direction, then asks. MUST BE PURE: the scheduler calls this speculatively
+        for many candidate pairs, so it may not mutate any node. Anything that has to
+        mutate goes into the returned plan's `remap`, which the scheduler applies from
+        `fuse()` when the fusion is actually committed.
+
+        `existing_epilogues` are the epilogues already fused onto this template (always
+        empty for now; the argument is here so chained epilogue fusion can be enabled
+        later without changing every implementation).
+
+        Returns a FusionPlan to fuse, or None to decline (declining is a normal result:
+        upstream CUTLASS/CPP decline every reduction epilogue outright)."""
+        if existing_epilogues:
+            return why_no_fuse(template_node, node_to_fuse, "chained epilogue fusion is not supported yet")
+        if node_to_fuse.is_reduction():
+            if self.REDUCTION_EPILOGUE_ALIASING is None:
+                return why_no_fuse(template_node, node_to_fuse, "template does not fuse reduction epilogues")
+            return self._try_fuse_reduction_epilogue(template_node, node_to_fuse)
+        if not self.support_epilogue_fusion:
+            return why_no_fuse(template_node, node_to_fuse, "template does not support epilogue fusion")
+        return self._try_fuse_pointwise_epilogue(template_node, node_to_fuse)
+
+    def _try_fuse_reduction_epilogue(self, template_node, epi):
+        """Frame-independent conditions for absorbing a reduction epilogue, plus the one
+        frame-dependent question: does it fit REDUCTION_EPILOGUE_ALIASING? Pure."""
+        def why(reason):
+            return why_no_fuse(template_node, epi, reason)
+
+        if not extension_config.CONFIG_FUSION_REDUCTION_EPILOGUE:
+            return why("reduction-epilogue fusion is disabled")
+        if epi.has_aliasing_or_mutation():
+            return why("epilogue has aliasing or mutation")
+
+        tnode = template_node.get_nodes()[0].node
+        esched = epi.get_nodes()[0]
+        enode = esched.node
+
+        # The epilogue must iterate exactly the template output (rows x reduced cols).
+        if tnode.get_numel() != math.prod(enode.get_size()) * math.prod(enode.get_reduction_size()):
+            return why("epilogue does not iterate the whole template output")
+        if not all(d.get_numel() == tnode.get_numel() for d in epi.read_writes.reads):
+            return why("epilogue reads a buffer whose size differs from the template output")
+
+        # It must read the template output at exactly one index expression (the CPP backend's
+        # template_fusion_with_epilogues_supported applies the same rule). Read the expressions
+        # off the LoopBody: a MemoryDep's index is normalized to a flat contiguous access and
+        # no longer carries the per-axis strides.
+        body = esched._body
+        template_bufs = {d.name for d in template_node.read_writes.writes}
+        read_exprs = {e for name in template_bufs for e in body.get_all_read_expr(name)}
+        if not read_exprs:
+            return why("epilogue does not read the template output")
+        if len(read_exprs) != 1:
+            return why("epilogue reads the template output at more than one index")
+        index = next(iter(read_exprs))
+
+        # The reduced axis must not be the contiguous (stride-1) column, and the output must
+        # not carry a size-1 dim.
+        reduce_vars = body.vars[1]
+        if len(reduce_vars) != 1:
+            return why("more than one reduction axis")
+        if index.coeff(reduce_vars[0]) == 1:
+            return why("reduces the contiguous (stride-1) axis")
+        if 1 in template_node.node.get_size():
+            return why("template output has a size-1 dimension")
+
+        # The only frame-dependent question: does the epilogue's iteration fit the coordinate
+        # map this template's reduction-epilogue codegen addresses? `set_ranges` asserts
+        # len(dim_aliasing) == len(ranges), so the map's length IS the frame's capacity, and
+        # checking it here is that assert, raised as a decline instead of a crash. See #255.
+        addressable = len(self.REDUCTION_EPILOGUE_ALIASING)
+        needed = len(esched._sizes[0]) + len(reduce_vars)
+        if needed <= addressable:
+            return FusionPlan()
+
+        # It does not fit as-is. merge_loops() returns a NEW body, so ask whether merging the
+        # node's contiguous loops would make it fit -- without mutating anything.
+        merged = len(body.merge_loops().sizes[0]) + len(reduce_vars)
+        if merged > addressable:
+            # e.g. ConvNextV2's channels-first LayerNorm reduces the middle C axis, so batch
+            # and spatial are not contiguous and no loop merge can flatten them.
+            return why(f"epilogue needs {needed} loop ranges ({merged} after a loop merge) but "
+                       f"this template's reduction epilogue addresses {addressable}")
+        return FusionPlan(remap=functools.partial(merge_node_loops, epi))
+
+    def _try_fuse_pointwise_epilogue(self, template_node, epi):
+        """Generic (frame-independent) pointwise-epilogue conditions. Pure."""
+        def why(reason):
+            return why_no_fuse(template_node, epi, reason)
+
+        # The epilogue must sweep exactly as many elements as the template output.
+        tmpl_iter, epi_iter = template_node.group[1][0], epi.group[1][0]
+        if (math.prod(tmpl_iter) if len(tmpl_iter) else 0) != (math.prod(epi_iter) if len(epi_iter) else 0):
+            return why("epilogue iterates a different number of elements than the template")
+
+        # Everything the epilogue still needs must come from the template's outputs, and
+        # it must not overwrite anything the template reads.
+        template_writes = {dep for n in template_node.get_nodes() for dep in n.read_writes.writes}
+        if not template_writes:
+            return why("template writes nothing")
+        if not {dep for dep in epi.unmet_dependencies}.issubset(template_writes):
+            return why("epilogue depends on buffers the template does not produce")
+        if {d.name for d in template_node.read_writes.reads} & {d.name for d in epi.read_writes.writes}:
+            return why("epilogue overwrites a buffer the template reads")
+
+        if template_node.group == epi.group:
+            return FusionPlan()
+
+        # simplify_and_reorder() moved the epilogue's loops; they can be put back only if
+        # its data size still matches the template's iteration.
+        if self.support_prologue_fusion and template_node.group[1][0][0] == 1:
+            return why("degenerate first iteration dim on a prologue-fusing template")
+        if list(template_node.group[1][0]) != list(epi.get_nodes()[0].node.data.get_size()):
+            return why("epilogue loop order cannot be realigned to the template")
+        return FusionPlan(remap=functools.partial(realign_node_group, epi))
+
+    def try_fuse_prologue(self, template_node, node_to_fuse):
+        """Prologue counterpart of `try_fuse_epilogue`. Same purity contract.
+
+        The scheduler has already established that `node_to_fuse` is a lone non-template
+        node feeding this lone template node."""
+        def why(reason):
+            return why_no_fuse(template_node, node_to_fuse, reason)
+
+        if not self.support_prologue_fusion:
+            return why("template does not support prologue fusion")
+        if len(node_to_fuse.read_writes.writes) != 1:
+            return why("prologue writes more than one buffer")
+        target = template_node.get_nodes()[0].node
+        if node_to_fuse.node not in target.inputs:
+            return why("prologue output is not a template input")
+        if any("view" in str(origin) for origin in node_to_fuse.node.origins):
+            return why("prologue is a view")
+        if template_node.group[1][0][0] == 1:
+            return why("template has a degenerate first iteration dim")
+        return FusionPlan(remap=functools.partial(realign_node_group, node_to_fuse))
 
     def generate(self, **kwargs) -> ChoiceCaller:
         kernel_name = f"mlir_{self.name}"

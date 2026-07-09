@@ -103,11 +103,13 @@ func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[X, W, Bias], outputs=[Y]
 """
 
 class MLIRGemmTemplate(MLIRTemplate):
+    # 2-D frame (M rows x N cols): one row index + the reduced N index.
+    REDUCTION_EPILOGUE_ALIASING = {"index0": "index1", "index1": "index0"}
+
     def __init__(self, input_nodes, layout, input_reorder=None):
         super().__init__("kernel", input_nodes, layout, input_reorder)
         self.support_epilogue_fusion = True
         self.support_prologue_fusion = True
-        self.support_reduction_fusion = True
 
     def render(self,
                kernel: MLIRTemplateKernel,
@@ -130,7 +132,7 @@ class MLIRGemmTemplate(MLIRTemplate):
             epilogue_dim_aliasing = {}
         elif n_epilogue_node>=1 and epilogue_nodes[0].is_reduction():
             template = GEMM_REDUCTION_TEMPLATE
-            epilogue_dim_aliasing = {"index0":"index1", "index1":"index0"}
+            epilogue_dim_aliasing = self.REDUCTION_EPILOGUE_ALIASING
             nr_rdim = 1
         else:
             template = GEMM_TEMPLATE

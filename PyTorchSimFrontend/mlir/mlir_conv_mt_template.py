@@ -100,12 +100,15 @@ func.func @{{ KERNEL_NAME }}{{kernel.def_conv_kernel(inputs=[X, W, BIAS], output
 class MLIRConvMultiTileTemplate(MLIRConvCommonTemplate):
     WRAPPER_TEMPLATE = r"""
 def {{ FUNC_NAME }}{{kernel.def_wrapper()}}:
+    # Rebuild the logical NCHW inputs from the layout codegen assumed. The runtime argument
+    # may be the base buffer of a ReinterpretView (different rank/shape), so geometry is
+    # never inferred from X.shape.
+    X = reinterpret_tensor(X, {{ X_SIZE }}, {{ X_STRIDE }}, {{ X_OFFSET }})
+    W = reinterpret_tensor(W, {{ W_SIZE }}, {{ W_STRIDE }}, {{ W_OFFSET }})
+
     # Padding input
-    padded_shape = list(X.shape)
-    padded_shape[2] += 2 * {{ PADDING_H }}
-    padded_shape[3] += 2 * {{ PADDING_W }}
-    X_padding = torch.zeros(padded_shape).to(device=X.device)
-    X_padding[:, :, {{ PADDING_H }}:X.shape[2] + {{ PADDING_H }}, {{ PADDING_W }}:X.shape[3] + {{ PADDING_W }}] = X
+    X_padding = torch.zeros({{ X_PADDED_SIZE }}, device=X.device, dtype=X.dtype)
+    X_padding[:, :, {{ PADDING_H }}:{{ PADDING_H + I_H }}, {{ PADDING_W }}:{{ PADDING_W + I_W }}] = X
 
     # Tanspose inputs
     {%- for buf, name in kernel.get_conv_inputs().items() %}

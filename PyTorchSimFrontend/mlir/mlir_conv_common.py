@@ -92,6 +92,19 @@ class MLIRConvCommonTemplate(MLIRTemplate):
         Y = self.output_node
         Bias = None if len(self.input_nodes) == 2 else self.input_nodes[2]
 
+        # The wrapper must not infer geometry from the runtime tensor: an input node can be
+        # a ReinterpretView, in which case call_kernel hands the wrapper the *base buffer*
+        # (possibly a different rank).  Bake the layout codegen assumed into the wrapper and
+        # rebuild the logical view from it, so the wrapper is correct for either argument.
+        def _layout(node):
+            return (tuple(int(s) for s in node.get_size()),
+                    tuple(int(s) for s in node.get_stride()),
+                    int(node.layout.offset))
+
+        X_size, X_stride, X_offset = _layout(X)
+        W_size, W_stride, W_offset = _layout(W)
+        _, _, I_H, I_W = X_size
+
         options = dict(
             kernel=self.kernel,
             KERNEL_NAME=kernel_name,
@@ -102,6 +115,16 @@ class MLIRConvCommonTemplate(MLIRTemplate):
             OUTPUT=Y,
             PADDING_H=self.padding[0],
             PADDING_W=self.padding[1],
+            X_SIZE=X_size,
+            X_STRIDE=X_stride,
+            X_OFFSET=X_offset,
+            W_SIZE=W_size,
+            W_STRIDE=W_stride,
+            W_OFFSET=W_offset,
+            I_H=I_H,
+            I_W=I_W,
+            X_PADDED_SIZE=(X_size[0], X_size[1],
+                           I_H + 2 * self.padding[0], I_W + 2 * self.padding[1]),
             VALIDATION_MODE=extension_config.pytorchsim_functional_mode,
             input_reorder=self.input_reorder
         )

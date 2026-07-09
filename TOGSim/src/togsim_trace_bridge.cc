@@ -121,6 +121,11 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(
   // -- buffers are work-item-local, so distinct work-items are independent
   // (-> parallel).
   std::map<int64_t, std::vector<std::shared_ptr<Instruction>>> writers;       // buffer id -> current producers (DONE-handles)
+  // The non-MATMUL subset of writers(b) (the accumulator's init/bias seed). An
+  // is_mm_accum UNION only ever appends MATMULs, so this set is fixed between
+  // REPLACEs -- keeping it lets the UNION skip re-scanning the whole (O(K)-long)
+  // writers(b) on every one of the K accumulating matmuls, which was O(K^2).
+  std::map<int64_t, std::vector<std::shared_ptr<Instruction>>> seeds;
   // An async dma is paired with its explicit memory_barrier(s) by the runtime tag
   // (tag_id, tag_slot). It is 1 load : N barriers (the load happens once per
   // reduction iteration; each consumer in that iteration is preceded by a wait on
@@ -155,6 +160,7 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(
     sg.reset();
     tile.reset();
     writers.clear();
+    seeds.clear();
     current_dma.clear();
     bar_for_load.clear();
     cur_tile_bufs.clear();
@@ -181,6 +187,13 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(
     for (int64_t w : writes) if (w == b) return true;
     return false;
   };
+  // REPLACE writers(b) and recompute its seed set in one place.
+  auto set_writer = [&](int64_t b, const std::shared_ptr<Instruction>& w) {
+    writers[b] = { w };
+    auto& sd = seeds[b];
+    sd.clear();
+    if (w->get_compute_type() != MATMUL_CT) sd.push_back(w);
+  };
   auto link = [&](std::shared_ptr<Instruction> inst,
                   const std::vector<int64_t>& reads,
                   const std::vector<int64_t>& writes) {
@@ -199,14 +212,13 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(
     }
     for (int64_t b : writes) {
       if (is_mm_accum(inst, b, writes)) {            // UNION (commutative accumulate)
-        auto it = writers.find(b);
-        if (it != writers.end())
+        auto it = seeds.find(b);
+        if (it != seeds.end())
           for (auto& s : it->second)
-            if (s->get_compute_type() != MATMUL_CT)
-              s->add_dep(inst, DepEvent::DONE);   // wait the init/bias seed only
+            s->add_dep(inst, DepEvent::DONE);   // wait the init/bias seed only
         writers[b].push_back(inst);        // join; no reset, no co-matmul edge
       } else {                             // REPLACE (normal output; resets the producer set)
-        writers[b] = { inst };
+        set_writer(b, inst);
       }
     }
     tile->append_instuction(inst);
@@ -322,7 +334,7 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(
           // single-buffering and kill the overlap the spad permits. (The
           // accumulator Y is NOT a load buffer -> its cross-tile WAR is handled by
           // the REPLACE branch of link() when the next tile's init overwrites it.)
-          writers[b] = { inst };
+          set_writer(b, inst);
           sram_on_load(b, inst);                         // occupy spad
         }
       }
@@ -341,7 +353,7 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(
       // so the buffer's consumers gate on it, instead of emitting a redundant barrier.
       auto bf = bar_for_load.find({t.tag_id, t.tag_slot});
       if (bf != bar_for_load.end() && bf->second.first == uniq) {
-        for (int64_t b : t.write_bufs) writers[b] = { bf->second.second };
+        for (int64_t b : t.write_bufs) set_writer(b, bf->second.second);
         return;
       }
       auto bar = make_mem_bar(t, uniq);
@@ -350,7 +362,7 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(
       tile->append_instuction(bar);
       // the bar is the load's DONE-handle: REPLACE writers(b) with it (no WAR -- the
       // load already WAR'd the prior readers when it wrote).
-      for (int64_t b : t.write_bufs) writers[b] = { bar };
+      for (int64_t b : t.write_bufs) set_writer(b, bar);
       bar_for_load[{t.tag_id, t.tag_slot}] = {uniq, bar};
     } else if (t.kind == TraceRec::COMPUTE) {
       auto inst = make_compute(t);

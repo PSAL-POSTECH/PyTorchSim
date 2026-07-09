@@ -208,11 +208,11 @@ class MLIRCodeCache:
             # the shared spad. Matches the GEMM tiling gate (max_spad_size = spad/2).
             spad_budget = extension_config.CONFIG_SPAD_INFO["spad_size"] // 2
             if spad_budget < spad_usage:
-                logger.debug(
-                    f"Scratchpad size exceeded: required {spad_usage} bytes, but only "
-                    f"{spad_budget} bytes (spad/2, double-buffer budget) available."
+                raise SpadOverflowError(
+                    f"Scratchpad size exceeded: kernel needs {spad_usage} bytes/lane, but only "
+                    f"{spad_budget} bytes/lane (spad/2, double-buffer budget) are available. "
+                    f"tile_size={kwargs.get('tile_size')}, origins={origins}, path={write_path}"
                 )
-                raise SpadOverflowError()
 
             # Launch tile graph generator
             gem5_pad_cmd = shlex.split(gem5_cmds[0])

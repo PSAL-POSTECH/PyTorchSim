@@ -35,6 +35,9 @@ struct EmitCtx {
   // mutable run state
   int32_t  rr = 0;            // round-robin cursor into `cores`
   int32_t  cur_core = -1;     // current work-item's core
+  // Exactly one of these is active. With a sink the record is consumed and dropped
+  // (streaming, O(1) memory); without one it is appended (legacy run_producer).
+  const togsim::TraceSink* sink = nullptr;
   std::vector<togsim::TraceRec> trace;
 };
 
@@ -44,6 +47,10 @@ inline togsim::TraceRec blank(togsim::TraceRec::Kind k, int32_t core) {
   r.kind = k;
   r.core = core;
   return r;
+}
+inline void emit_rec(EmitCtx* ctx, const togsim::TraceRec& r) {
+  if (ctx->sink) (*ctx->sink)(r);
+  else ctx->trace.push_back(r);
 }
 }  // namespace
 
@@ -59,9 +66,9 @@ void togsim_dispatch(EmitCtx* ctx, togsim_tile_fn fn, int64_t* iv, int32_t n_iv)
   // TILE_BEGIN/TILE_END; the ops fn emits records under ctx->cur_core.
   ctx->cur_core = ctx->cores.empty() ? 0
                 : ctx->cores[ctx->rr++ % (int32_t)ctx->cores.size()];
-  ctx->trace.push_back(blank(togsim::TraceRec::TILE_BEGIN, ctx->cur_core));
+  emit_rec(ctx, blank(togsim::TraceRec::TILE_BEGIN, ctx->cur_core));
   fn(ctx, iv, n_iv);
-  ctx->trace.push_back(blank(togsim::TraceRec::TILE_END, ctx->cur_core));
+  emit_rec(ctx, blank(togsim::TraceRec::TILE_END, ctx->cur_core));
 }
 
 void togsim_dma(EmitCtx* ctx, int32_t dir, int32_t arg_id,
@@ -82,7 +89,7 @@ void togsim_dma(EmitCtx* ctx, int32_t dir, int32_t arg_id,
   }
   for (int32_t i = 0; i < n_read; ++i) r.read_bufs.push_back(read_bufs[i]);
   for (int32_t i = 0; i < n_write; ++i) r.write_bufs.push_back(write_bufs[i]);
-  ctx->trace.push_back(r);
+  emit_rec(ctx, r);
 }
 
 void togsim_compute(EmitCtx* ctx, uint64_t tile_id, int32_t compute_type,
@@ -97,7 +104,7 @@ void togsim_compute(EmitCtx* ctx, uint64_t tile_id, int32_t compute_type,
   for (int32_t i = 0; i < n_write; ++i) r.write_bufs.push_back(write_bufs[i]);
   if (ctx->cyc && (int32_t)tile_id < ctx->n_tiles) r.cycle = ctx->cyc[tile_id];
   if (ctx->ovl && (int32_t)tile_id < ctx->n_tiles) r.overlapping = ctx->ovl[tile_id];
-  ctx->trace.push_back(r);
+  emit_rec(ctx, r);
 }
 
 void togsim_memory_barrier(EmitCtx* ctx, int32_t tag_id, uint64_t tag_slot,
@@ -105,12 +112,33 @@ void togsim_memory_barrier(EmitCtx* ctx, int32_t tag_id, uint64_t tag_slot,
   togsim::TraceRec r = blank(togsim::TraceRec::MEMORY_BAR, ctx->cur_core);
   r.tag_id = tag_id; r.tag_slot = tag_slot;
   for (int32_t i = 0; i < n_write; ++i) r.write_bufs.push_back(write_bufs[i]);
-  ctx->trace.push_back(r);
+  emit_rec(ctx, r);
 }
 
 }  // extern "C"
 
 namespace togsim {
+
+namespace {
+void init_ctx(EmitCtx& ctx, const uint64_t* tensor_base, int32_t n_tensors,
+              const int64_t* cyc, const int64_t* ovl, int32_t n_tiles,
+              const int32_t* partition_cores, int32_t n_partition_cores) {
+  ctx.tensor_base = tensor_base; ctx.n_tensors = n_tensors;
+  ctx.cyc = cyc; ctx.ovl = ovl; ctx.n_tiles = n_tiles;
+  ctx.cores.assign(partition_cores, partition_cores + (n_partition_cores > 0 ? n_partition_cores : 0));
+  if (ctx.cores.empty()) ctx.cores.push_back(0);
+}
+// dlopen the producer and run its togsim_kernel against `ctx`.
+bool load_and_run(const char* so_path, const int64_t* shape_args, int32_t n_shape,
+                  EmitCtx& ctx) {
+  void* lib = dlopen(so_path, RTLD_NOW | RTLD_GLOBAL);
+  if (!lib) { fprintf(stderr, "togsim: dlopen failed: %s\n", dlerror()); return false; }
+  auto emit = (void (*)(EmitCtx*, int64_t*, int32_t))dlsym(lib, "togsim_kernel");
+  if (!emit) { fprintf(stderr, "togsim: dlsym togsim_kernel failed: %s\n", dlerror()); return false; }
+  emit(&ctx, (int64_t*)shape_args, n_shape);
+  return true;
+}
+}  // namespace
 
 RunResult run_producer(const char* so_path,
                        const int64_t* shape_args, int32_t n_shape,
@@ -118,21 +146,24 @@ RunResult run_producer(const char* so_path,
                        const int64_t* cyc, const int64_t* ovl, int32_t n_tiles,
                        const int32_t* partition_cores, int32_t n_partition_cores) {
   RunResult res;
-  void* lib = dlopen(so_path, RTLD_NOW | RTLD_GLOBAL);
-  if (!lib) { fprintf(stderr, "togsim: dlopen failed: %s\n", dlerror()); return res; }
-  auto emit = (void (*)(EmitCtx*, int64_t*, int32_t))dlsym(lib, "togsim_kernel");
-  if (!emit) { fprintf(stderr, "togsim: dlsym togsim_kernel failed: %s\n", dlerror()); return res; }
-
   EmitCtx ctx;
-  ctx.tensor_base = tensor_base; ctx.n_tensors = n_tensors;
-  ctx.cyc = cyc; ctx.ovl = ovl; ctx.n_tiles = n_tiles;
-  ctx.cores.assign(partition_cores, partition_cores + (n_partition_cores > 0 ? n_partition_cores : 0));
-  if (ctx.cores.empty()) ctx.cores.push_back(0);
-  emit(&ctx, (int64_t*)shape_args, n_shape);
-
+  init_ctx(ctx, tensor_base, n_tensors, cyc, ovl, n_tiles, partition_cores, n_partition_cores);
+  if (!load_and_run(so_path, shape_args, n_shape, ctx)) return res;
   res.ok = true;
   res.trace = std::move(ctx.trace);
   return res;
+}
+
+bool run_producer_stream(const char* so_path,
+                         const int64_t* shape_args, int32_t n_shape,
+                         const uint64_t* tensor_base, int32_t n_tensors,
+                         const int64_t* cyc, const int64_t* ovl, int32_t n_tiles,
+                         const int32_t* partition_cores, int32_t n_partition_cores,
+                         const TraceSink& sink) {
+  EmitCtx ctx;
+  init_ctx(ctx, tensor_base, n_tensors, cyc, ovl, n_tiles, partition_cores, n_partition_cores);
+  ctx.sink = &sink;
+  return load_and_run(so_path, shape_args, n_shape, ctx);
 }
 
 SimResult simulate(const RunResult& run, const TimingParams& params) {

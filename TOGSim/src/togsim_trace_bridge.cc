@@ -73,9 +73,40 @@ std::shared_ptr<Instruction> make_compute(const togsim::TraceRec& t) {
 
 }  // namespace
 
-std::unique_ptr<TileGraph> trace_to_tilegraph(const togsim::RunResult& run,
-                                              const std::string& name) {
+std::unique_ptr<TileGraph> trace_to_tilegraph(
+    const char* so_path, const int64_t* shape_args, int32_t n_shape,
+    const uint64_t* tensor_base, int32_t n_tensors,
+    const int64_t* cyc, const int64_t* ovl, int32_t n_tiles,
+    const int32_t* partition_cores, int32_t n_partition_cores,
+    const std::string& name) {
   using togsim::TraceRec;
+  // The record stream is never materialized: each pass replays the producer and
+  // consumes records as they are emitted. togsim_kernel is a pure emitter, so the
+  // replay is identical; retaining the stream would double peak memory (a large
+  // 8x8 conv OOMs). See togsim_loader.h run_producer_stream.
+  auto run_pass = [&](const togsim::TraceSink& sink) {
+    return togsim::run_producer_stream(so_path, shape_args, n_shape,
+                                       tensor_base, n_tensors, cyc, ovl, n_tiles,
+                                       partition_cores, n_partition_cores, sink);
+  };
+
+  // Spad bytes per buffer id, taken from the DMA records that touch it (load fills
+  // its dst, store drains its src) -- the authoritative tile size. A compute output
+  // (never DMA-loaded but stored) gets its footprint from its store record. Built
+  // in a pre-pass so it is known before the producing compute is processed.
+  auto rec_bytes = [](const TraceRec& t) {        // single source of the tile footprint
+    size_t numel = 1;
+    for (auto d : t.dims) numel *= (size_t)d;
+    return numel * (t.elem_bits / 8);
+  };
+  std::map<int64_t, size_t> buf_bytes;
+  if (!run_pass([&](const TraceRec& t) {          // PASS 1 -- footprints only
+        if (t.kind != TraceRec::DMA) return;
+        const auto& bs = (t.dir == 1) ? t.read_bufs : t.write_bufs;  // store reads spad, load writes spad
+        for (int64_t b : bs) buf_bytes[b] = rec_bytes(t);
+      }))
+    return nullptr;
+
   auto tg = std::make_unique<TileGraph>(name, name);
   // Empty cache plan (no L2/CMEM persistence) -- append_subgraph propagates it
   // to each subgraph, and DMA::is_cacheable dereferences it, so it must be a
@@ -195,21 +226,6 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(const togsim::RunResult& run,
   std::map<int64_t, bool> open_ver;       // buf -> version still accepting writes
   struct Ver { std::vector<std::shared_ptr<Instruction>> loads, readers; };
   std::map<int64_t, Ver> vers;
-  // Spad bytes per buffer id, taken from the DMA records that touch it (load fills
-  // its dst, store drains its src) -- the authoritative tile size. A compute output
-  // (never DMA-loaded but stored) gets its footprint from its store record. Built
-  // in a pre-pass so it is known before the producing compute is processed.
-  auto rec_bytes = [](const TraceRec& t) {        // single source of the tile footprint
-    size_t numel = 1;
-    for (auto d : t.dims) numel *= (size_t)d;
-    return numel * (t.elem_bits / 8);
-  };
-  std::map<int64_t, size_t> buf_bytes;
-  for (const auto& t : run.trace) {
-    if (t.kind != TraceRec::DMA) continue;
-    const auto& bs = (t.dir == 1) ? t.read_bufs : t.write_bufs;  // store reads spad, load writes spad
-    for (int64_t b : bs) buf_bytes[b] = rec_bytes(t);
-  }
   // Add each buffer once to the current tile's footprint (reloads in a K-loop reuse the same id).
   auto note_bufs = [&](const std::vector<int64_t>& bufs) {
     for (int64_t b : bufs)
@@ -261,7 +277,7 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(const togsim::RunResult& run,
     }
   };
 
-  for (const auto& t : run.trace) {
+  auto feed = [&](const TraceRec& t) {            // PASS 2 -- build, one record at a time
     if (t.kind == TraceRec::TILE_BEGIN) {
       // togsim_dispatch opened a work-item -> new subgraph (bound to its core) +
       // tile. The scope runs until the matching TILE_END (the dispatch wrapper
@@ -271,13 +287,13 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(const togsim::RunResult& run,
       sg->set_core_id(t.core);
       tile = std::make_shared<Tile>(Tile::Status::INITIALIZED);
       cur_tile_group++;
-      continue;
+      return;
     }
     if (t.kind == TraceRec::TILE_END) {
       flush();   // close the work-item explicitly (scope = the tile fn call)
-      continue;
+      return;
     }
-    if (!tile) continue;  // defensive: ops before the first TILE_BEGIN
+    if (!tile) return;  // defensive: ops before the first TILE_BEGIN
 
     if (t.kind == TraceRec::DMA) {
       int64_t uniq = next_tag++;                         // fresh Core tag key per dma record
@@ -326,7 +342,7 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(const togsim::RunResult& run,
       auto bf = bar_for_load.find({t.tag_id, t.tag_slot});
       if (bf != bar_for_load.end() && bf->second.first == uniq) {
         for (int64_t b : t.write_bufs) writers[b] = { bf->second.second };
-        continue;
+        return;
       }
       auto bar = make_mem_bar(t, uniq);
       bar->set_tile_group(cur_tile_group);
@@ -350,7 +366,8 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(const togsim::RunResult& run,
       for (int64_t b : t.read_bufs)  if (!in(t.write_bufs, b)) sram_on_read(b, inst);   // consuming reads
       for (int64_t b : t.write_bufs) if (!in(t.read_bufs, b))  sram_on_write(b, inst);  // fresh outputs
     }
-  }
+  };
+  if (!run_pass(feed)) return nullptr;
   flush();
   sram_finalize();   // readers per version are now final -> set each version's refcount
   return tg;

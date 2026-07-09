@@ -43,12 +43,11 @@ std::unique_ptr<TileGraph> build_trace_tilegraph(Simulator* simulator,
     while (ct >> c >> o) { cyc.push_back(c); ovl.push_back(o); }
   }
   if (cyc.empty()) { cyc.assign(256, 128); ovl.assign(256, 0); }
-  auto run = togsim::run_producer(trace_so_path.c_str(), nullptr, 0,
-                                  bases.data(), (int)bases.size(),
-                                  cyc.data(), ovl.data(), (int)cyc.size(),
-                                  partition_cores.data(), (int32_t)partition_cores.size());
-  if (!run.ok) return nullptr;
-  return trace_to_tilegraph(run, "trace_kernel");
+  return trace_to_tilegraph(trace_so_path.c_str(), nullptr, 0,
+                            bases.data(), (int)bases.size(),
+                            cyc.data(), ovl.data(), (int)cyc.size(),
+                            partition_cores.data(), (int32_t)partition_cores.size(),
+                            "trace_kernel");
 }
 
 void launchKernel(Simulator* simulator, unsigned int kernel_id, std::string onnx_path, std::string attribute_path, const YAML::Node& config_yaml, cycle_type request_time=0, int partition_id=0, int device_id=0) {

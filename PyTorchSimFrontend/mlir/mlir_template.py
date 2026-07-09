@@ -645,11 +645,22 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
             code = self.def_dma_op("MVOUT", dram_var, index_list, tile_desc, lazy_mode=False)
             self.cse.generate(self.dma_stores, code, assignment = False)
 
+        def template_buffer_live():
+            # Inductor's remove_kernel_local_buffers() drops the template buffer only if
+            # every user lives inside this fused kernel. If it survived, some user is
+            # outside it, so store it to DRAM even if a fused epilogue also stores.
+            name = getattr(self, "template_buffer_name", None)
+            assert name is not None, (
+                "store_output() used by a template that never declared its output buffer; "
+                "call def_kernel()/def_conv_kernel() with outputs=[...] first"
+            )
+            return name not in self.removed_buffers
+
         body = IndentedBuffer()
         with self.epilogue_buffer_group.as_local():
             # Do dma store first to overlap epilogue nodes
             if self.reduction_fusion:
-                if len(self.stores._lines) == 0:
+                if template_buffer_live():
                     template_store()
                     body.splice(self.dma_stores)
                     self.dma_stores.clear()
@@ -668,7 +679,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
                 else:
                     compute_body.splice(self.loads)
                     compute_body.splice(self.compute)
-                    if len(self.stores._lines) == 0:
+                    if template_buffer_live():
                         template_store()
                 compute_body.splice(self.stores)
             if (compute_body.getvalue()):
@@ -689,6 +700,12 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
             raise RuntimeError(
                 f"{len(inputs) + len(outputs)=} != {len(names)=}, {inputs=}, {outputs=}, {names=}"
             )
+
+        # The template's own output buffer. codegen_epilogue_body() stores it to DRAM iff
+        # it survived Inductor's kernel-local buffer removal -- i.e. it still has a user
+        # outside this fused kernel.
+        if outputs:
+            self.template_buffer_name = outputs[0].get_name()
 
         if input_reorder is not None:
             assert len(inputs) == len(input_reorder)
@@ -757,6 +774,12 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
             raise RuntimeError(
                 f"{len(inputs) + len(outputs)=} != {len(names)=}, {inputs=}, {outputs=}, {names=}"
             )
+
+        # The template's own output buffer. codegen_epilogue_body() stores it to DRAM iff
+        # it survived Inductor's kernel-local buffer removal -- i.e. it still has a user
+        # outside this fused kernel.
+        if outputs:
+            self.template_buffer_name = outputs[0].get_name()
 
         if input_reorder is not None:
             assert len(inputs) == len(input_reorder)

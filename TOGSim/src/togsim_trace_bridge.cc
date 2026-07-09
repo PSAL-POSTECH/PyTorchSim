@@ -10,6 +10,17 @@
 #include "Instruction.h"
 
 namespace {
+#include <cstdio>
+#include <cstdlib>
+#include <ctime>
+#include <sys/resource.h>
+#include <sys/time.h>
+static unsigned long long g_rec=0;
+static double g_w0=0;
+static inline double wall_now(){ struct timeval tv; gettimeofday(&tv,0); return tv.tv_sec + tv.tv_usec*1e-6; }
+static inline void cpu_now(double* u, double* s){ struct rusage r; getrusage(RUSAGE_SELF,&r);
+  *u = r.ru_utime.tv_sec + r.ru_utime.tv_usec*1e-6; *s = r.ru_stime.tv_sec + r.ru_stime.tv_usec*1e-6; }
+static unsigned long long g_tiles=0,g_cur=0,g_maxper=0,g_maxw=0,g_dma=0,g_comp=0,g_bar=0,g_edge=0;
 
 // `uniq` is a per-DMA-record unique tag-key id minted by the caller. The Core
 // tag table keys completion on [addr_id, ..., sum(tag_idx*stride)]; using `uniq`
@@ -41,6 +52,7 @@ std::shared_ptr<Instruction> make_dma(const togsim::TraceRec& t, int64_t uniq) {
       op, /*compute_cycle=*/0, /*num_parents=*/0, /*dram_addr=*/t.addr,
       tile_size, tile_stride, (size_t)t.elem_bits, tag_idx, tag_stride,
       /*accum_tag_idx_list=*/std::vector<int64_t>{});
+  ++g_dma;
   inst->set_is_async(t.is_async != 0);
   inst->set_addr_name("tag" + std::to_string(uniq), uniq);
   inst->prepare_tag_key();
@@ -56,6 +68,7 @@ std::shared_ptr<Instruction> make_mem_bar(const togsim::TraceRec& t, int64_t uni
       std::vector<size_t>{}, std::vector<int>{}, 0,
       std::vector<int64_t>{(int64_t)t.tag_slot}, std::vector<int64_t>{1},
       std::vector<int64_t>{});
+  ++g_bar;
   bar->set_addr_name("tag" + std::to_string(uniq), uniq);
   bar->prepare_tag_key();
   return bar;
@@ -66,6 +79,7 @@ std::shared_ptr<Instruction> make_compute(const togsim::TraceRec& t) {
       Opcode::COMP, /*compute_cycle=*/(cycle_type)t.cycle, /*num_parents=*/0,
       /*dram_addr=*/0, std::vector<size_t>{}, std::vector<int>{}, /*elem_bits=*/0,
       std::vector<int64_t>{}, std::vector<int64_t>{}, std::vector<int64_t>{});
+  ++g_comp;
   inst->set_overlapping_cycle((cycle_type)t.overlapping);
   inst->set_compute_type(t.compute_type);  // route to VPU vs systolic array
   return inst;
@@ -207,7 +221,7 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(
           DepEvent on = (inst->get_compute_type() == MATMUL_CT &&
                          (pct == MATMUL_CT || pct == PRELOAD_CT))
                             ? DepEvent::ISSUE : DepEvent::DONE;
-          w->add_dep(inst, on);
+          w->add_dep(inst, on); ++g_edge;
         }
     }
     for (int64_t b : writes) {
@@ -215,8 +229,9 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(
         auto it = seeds.find(b);
         if (it != seeds.end())
           for (auto& s : it->second)
-            s->add_dep(inst, DepEvent::DONE);   // wait the init/bias seed only
-        writers[b].push_back(inst);        // join; no reset, no co-matmul edge
+            { s->add_dep(inst, DepEvent::DONE); ++g_edge; }
+        writers[b].push_back(inst); ++g_cur;
+        if (writers[b].size() > g_maxw) g_maxw = writers[b].size();
       } else {                             // REPLACE (normal output; resets the producer set)
         set_writer(b, inst);
       }
@@ -290,11 +305,20 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(
   };
 
   auto feed = [&](const TraceRec& t) {            // PASS 2 -- build, one record at a time
+    if (g_w0==0) g_w0=wall_now();
+    if (++g_rec % 500000 == 0) {
+      double u,sy; cpu_now(&u,&sy);
+      fprintf(stderr, "[PROG] rec=%.1fM wall=%.1f user=%.1f sys=%.1f inst=%llu edges=%llu maxw=%llu wi=%llu\n",
+              g_rec/1e6, wall_now()-g_w0, u, sy,
+              g_dma+g_comp+g_bar, g_edge, g_maxw, g_tiles);
+      fflush(stderr);
+    }
     if (t.kind == TraceRec::TILE_BEGIN) {
       // togsim_dispatch opened a work-item -> new subgraph (bound to its core) +
       // tile. The scope runs until the matching TILE_END (the dispatch wrapper
       // brackets the tile fn call), not until the next begin.
       flush();
+      ++g_tiles; if (g_cur > g_maxper) g_maxper = g_cur; g_cur = 0;
       sg = std::make_shared<TileSubGraph>();
       sg->set_core_id(t.core);
       tile = std::make_shared<Tile>(Tile::Status::INITIALIZED);
@@ -381,6 +405,10 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(
   };
   if (!run_pass(feed)) return nullptr;
   flush();
+  if (g_cur > g_maxper) g_maxper = g_cur;
+  fprintf(stderr, "[WI] work_items=%llu max_writers_vec=%llu | dma=%llu comp=%llu bar=%llu inst=%llu edges=%llu\n",
+          g_tiles, g_maxw, g_dma, g_comp, g_bar, g_dma+g_comp+g_bar, g_edge);
+  if (getenv("TOGSIM_BUILD_ONLY")) { fflush(stderr); _exit(0); }
   sram_finalize();   // readers per version are now final -> set each version's refcount
   return tg;
 }

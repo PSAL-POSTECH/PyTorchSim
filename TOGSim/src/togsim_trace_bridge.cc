@@ -58,6 +58,28 @@ std::shared_ptr<Instruction> make_compute(const togsim::TraceRec& t) {
   return inst;
 }
 
+// Core's compute-unit enum, as the producer encodes it in TraceRec::compute_type.
+constexpr int MATMUL_CT = 1, PRELOAD_CT = 2;
+
+// The current producers of one SRAM buffer. Normally a write REPLACEs them, but
+// the K matmuls of Y += X@W commute: each only waits on whoever INITIALIZED the
+// accumulator, so it JOINs the set and reads initializer() in O(1), not O(K).
+class BufferWriters {
+ public:
+  void replace(const std::shared_ptr<Instruction>& w) {   // normal write: sole producer
+    _all.assign(1, w);
+    _initializer = (w->get_compute_type() != MATMUL_CT) ? w : nullptr;
+  }
+  void accumulate(const std::shared_ptr<Instruction>& mm) { _all.push_back(mm); }
+
+  const std::vector<std::shared_ptr<Instruction>>& all() const { return _all; }
+  const std::shared_ptr<Instruction>& initializer() const { return _initializer; }
+
+ private:
+  std::vector<std::shared_ptr<Instruction>> _all;
+  std::shared_ptr<Instruction> _initializer;   // the non-MATMUL member of _all, if any
+};
+
 }  // namespace
 
 std::unique_ptr<TileGraph> trace_to_tilegraph(const togsim::RunResult& run,
@@ -74,10 +96,16 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(const togsim::RunResult& run,
   // The explicit dependency DAG (sec 10): per SRAM buffer, writers(b) is the SET of
   // current producers' DONE-handles and readers(b) its consumers. Scoped per
   // work-item, so distinct work-items are independent (-> parallel).
-  std::map<int64_t, std::vector<std::shared_ptr<Instruction>>> writers;       // buffer id -> current producers (DONE-handles)
-  // 1 load : N barriers, so track the CURRENT load per (tag_id, tag_slot), not a
-  // FIFO. Each load takes a fresh `uniq` and its iteration's barriers reuse it.
-  // Correct only because a load nest and its consumers run in order. Per work-item.
+  std::map<int64_t, BufferWriters> writers;
+  // An async dma is paired with its explicit memory_barrier(s) by the runtime tag
+  // (tag_id, tag_slot). It is 1 load : N barriers (the load happens once per
+  // reduction iteration; each consumer in that iteration is preceded by a wait on
+  // the same tag), so we track the CURRENT (most recent) load per (tag_id,
+  // tag_slot) -- not a FIFO. Each load gets a fresh `uniq` Core key, so successive
+  // reduction iterations (multi-tile-K, conv) never collide in the tag table; the
+  // iteration's barriers reuse that load's uniq. Correct because the load nest and
+  // its consumer nest run in order within the reduction body (no cross-iteration
+  // prefetch). Scoped per work-item.
   std::map<std::pair<int32_t, uint64_t>,
            std::pair<int64_t, std::shared_ptr<Instruction>>> current_dma;
   // Dedup barriers on the CURRENT load of a (tag_id, tag_slot): a conv reads one
@@ -109,8 +137,8 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(const togsim::RunResult& run,
 
   // The single dataflow rule (sec 10.3). READ b: depend on all writers(b), ISSUE
   // when both are SA ops else DONE. WRITE b: replace writers(b), except a commutative
-  // matmul accumulator, which waits only the seed and unions. WAR: resource models.
-  const int MATMUL_CT = 1, PRELOAD_CT = 2;
+  // matmul accumulator, which joins them and waits only the initializer. WAR:
+  // resource models.
   auto is_mm_accum = [&](const std::shared_ptr<Instruction>& inst, int64_t b,
                          const std::vector<int64_t>& writes) {
     if (inst->get_compute_type() != MATMUL_CT) return false;
@@ -124,7 +152,7 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(const togsim::RunResult& run,
       if (is_mm_accum(inst, b, writes)) continue;   // accumulator read -> handled in WRITE (UNION)
       auto it = writers.find(b);
       if (it != writers.end())
-        for (auto& w : it->second) {
+        for (auto& w : it->second.all()) {
           int pct = w->get_compute_type();
           // both SA ops -> occupancy (overlap on the SA pipeline); else latency.
           DepEvent on = (inst->get_compute_type() == MATMUL_CT &&
@@ -134,15 +162,12 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(const togsim::RunResult& run,
         }
     }
     for (int64_t b : writes) {
-      if (is_mm_accum(inst, b, writes)) {            // UNION (commutative accumulate)
-        auto it = writers.find(b);
-        if (it != writers.end())
-          for (auto& s : it->second)
-            if (s->get_compute_type() != MATMUL_CT)
-              s->add_dep(inst, DepEvent::DONE);   // wait the init/bias seed only
-        writers[b].push_back(inst);        // join; no reset, no co-matmul edge
-      } else {                             // REPLACE (normal output; resets the producer set)
-        writers[b] = { inst };
+      auto& w = writers[b];
+      if (is_mm_accum(inst, b, writes)) {   // JOIN: commutative, waits only the init
+        if (const auto& init = w.initializer()) init->add_dep(inst, DepEvent::DONE);
+        w.accumulate(inst);
+      } else {                              // REPLACE: a normal output resets the set
+        w.replace(inst);
       }
     }
     tile->append_instuction(inst);
@@ -253,10 +278,14 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(const togsim::RunResult& run,
         // so consumers gate on arrival. A sync load blocks to arrival itself.
         if (t.is_async) current_dma[{t.tag_id, t.tag_slot}] = {uniq, inst};
         for (int64_t b : t.write_bufs) {
-          // No hard WAR edge: load-buffer reuse is modeled by the SRAM version/
-          // capacity machinery (sec 10.4); an edge would force single-buffering. The
-          // accumulator is not a load buffer -- link()'s REPLACE branch handles it.
-          writers[b] = { inst };
+          // No hard WAR edge here: load-buffer reuse (double-buffering, X_spad/
+          // W_spad reloaded each reduction iter) is modeled by the SRAM
+          // version/capacity machinery (sram_on_load), which sizes how many
+          // versions physically coexist. A latency WAR edge would force
+          // single-buffering and kill the overlap the spad permits. (The
+          // accumulator Y is NOT a load buffer -> its cross-tile WAR is handled by
+          // the REPLACE branch of link() when the next tile's init overwrites it.)
+          writers[b].replace(inst);
           sram_on_load(b, inst);                         // occupy spad
         }
       }
@@ -272,7 +301,7 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(const togsim::RunResult& run,
       // so the buffer's consumers gate on it, instead of emitting a redundant barrier.
       auto bf = bar_for_load.find({t.tag_id, t.tag_slot});
       if (bf != bar_for_load.end() && bf->second.first == uniq) {
-        for (int64_t b : t.write_bufs) writers[b] = { bf->second.second };
+        for (int64_t b : t.write_bufs) writers[b].replace(bf->second.second);
         continue;
       }
       auto bar = make_mem_bar(t, uniq);
@@ -281,7 +310,7 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(const togsim::RunResult& run,
       tile->append_instuction(bar);
       // the bar is the load's DONE-handle: REPLACE writers(b) with it (no WAR -- the
       // load already WAR'd the prior readers when it wrote).
-      for (int64_t b : t.write_bufs) writers[b] = { bar };
+      for (int64_t b : t.write_bufs) writers[b].replace(bar);
       bar_for_load[{t.tag_id, t.tag_slot}] = {uniq, bar};
     } else if (t.kind == TraceRec::COMPUTE) {
       auto inst = make_compute(t);

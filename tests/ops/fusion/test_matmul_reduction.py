@@ -25,6 +25,21 @@ def test_matmul_reduce(device, M=512, N=512, K=512):
     test_result("Matmul Reduction Fusion activation", res[0], y[0])
     test_result("Matmul Reduction Fusion reduction", res[1], y[1])
 
+def test_matmul_reduce_last_dim(device, M=256, N=96, K=96):
+    """Reducing the matmul output's contiguous (last) axis cannot be expressed in the GEMM's
+    2-D reduction-epilogue frame, so the reduction has to run as its own kernel. Fusing it
+    anyway silently produces wrong values, so this only checks the numbers."""
+    def matmul_fused(a, b):
+        result = torch.matmul(a, b)
+        return result - result.mean(dim=-1, keepdim=True)
+    torch.manual_seed(0)
+    input = torch.randn(M, K)
+    weight = torch.randn(K, N)
+    opt_fn = torch.compile(dynamic=False)(matmul_fused)
+    res = opt_fn(input.to(device=device), weight.to(device=device))
+    y = matmul_fused(input.to("cpu"), weight.to("cpu"))
+    test_result("Matmul reduce over contiguous axis", res, y)
+
 def test_matmul_var_mean(device, size=512):
     def matmul_fused(a, b, c):
         result = torch.matmul(a, b.T)
@@ -76,5 +91,6 @@ def test_matmul_add_var_mean(device, M=768, N=512, K=3072):
 if __name__ == "__main__":
     device = torch.device("npu:0")
     test_matmul_reduce(device, 3072, 512, 768)
+    test_matmul_reduce_last_dim(device)
     test_matmul_var_mean(device)
     test_matmul_add_var_mean(device)

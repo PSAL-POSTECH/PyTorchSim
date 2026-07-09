@@ -51,6 +51,7 @@ PyTorchSim **supports**:
 | DeepSeek-V3 (base) | 🤗 | ✅ | `tests/models/DeepSeek/` — several ops(e.g., gate ops) are not cycle-modeled |
 | SwinV2 | 🤗 | ✅ | `tests/models/test_swinv2.py` (shifted-window attention) |
 | CLIP (vision) | 🤗 | ✅ | `tests/models/test_clip.py` |
+| ConvNeXt V2 | 🤗 | ✅ | `tests/models/test_convnextv2.py` (channels-first LayerNorm, depthwise conv) |
 | Llama-4 | 🤗 | ⏳ | In development |
 | Broader model support | — | ⏳ | In development |
 <!-- ## Requirements

@@ -347,7 +347,10 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
                             max_used_spad_size = used_spad_size
                             max_k_h_w = k_h
                             mapping = (k_h, K_W, o_h, o_w, M, N, K)
-        if max_used_spad_size == 0:
+        # Raise only when NO tile fits SPAD. Guarding on max_used_spad_size instead
+        # (it only tracks the largest-k_h tile, and is not what we return) wrongly
+        # rejected convs whose full-kernel tile overflows SPAD. See issue #252.
+        if not tile_candidates:
             raise RuntimeError("Cannot find a valid mapping")
         tile_candidates = sorted(tile_candidates, key=lambda x: x[0], reverse=True)
         tile_candidates = [v for _, v in tile_candidates]
@@ -383,7 +386,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
                             max_used_spad_size = used_spad_size
                             max_k_h_w = k_h * k_w
                             mapping = (k_h, k_w, o_h, M, M, N, K)
-        if max_used_spad_size == 0:
+        if not tile_candidates:
             raise RuntimeError("Cannot find a valid mapping")
         tile_candidates = sorted(tile_candidates, key=lambda x: x[0], reverse=True)
         tile_candidates = [v for _, v in tile_candidates]

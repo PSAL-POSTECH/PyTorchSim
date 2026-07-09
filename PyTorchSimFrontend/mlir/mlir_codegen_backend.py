@@ -933,8 +933,11 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         c_type = "uint64_t"
         new_name = f"index_expr_{compute_vec_size}"
         if new_name not in self.global_vars_dict:
-            self.header.writeline(f"{c_type} {new_name}_spad[{compute_vec_size*self.vector_lane}] __attribute__ ((section(\".spad\")));")
-            self.gem5_header.writeline(f"{c_type} {new_name}_spad[{compute_vec_size}] __attribute__((aligned(64)));")
+            # The initializer below stores two elements per iteration, so its last
+            # iteration writes one slot past compute_vec_size.
+            numel_per_lane = compute_vec_size + 1
+            self.header.writeline(f"{c_type} {new_name}_spad[{numel_per_lane}] __attribute__ ((section(\".spad\")));")
+            self.gem5_header.writeline(f"{c_type} {new_name}_spad[{numel_per_lane*self.vector_lane}] __attribute__((aligned(64)));")
             self.global_vars.writeline(f"memref.global @{new_name}_spad : {tile_shape}")
             self.global_vars_dict[new_name] = dict()
         sram_var = self.spad_cse.generate(self.spad_buffer, f"memref.get_global @{new_name}_spad : {tile_shape}")

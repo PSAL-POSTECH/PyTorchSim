@@ -18,8 +18,9 @@ on:
 
 # Runner policy: the CPU-only CI image is small enough to pull on GitHub-hosted
 # runners, so op and model tests run on ubuntu-latest. The memory/time-intensive
-# jobs stay on self-hosted: test_deepseek (largest model), test_diffusion (UNet2D
-# simulation OOMs the hosted runner), and test_accuracy (accuracy + speedup).
+# jobs stay on self-hosted: test_deepseek (largest model), test_swinv2 (SwinV2
+# shifted-window backbone), test_diffusion (UNet2D simulation OOMs the hosted
+# runner), and test_accuracy (accuracy + speedup).
 jobs:
   test_add:
     name: Run test_add.py
@@ -742,6 +743,26 @@ jobs:
           docker run --rm \
             -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             ${{ inputs.image_name }} python3 PyTorchSim/tests/models/DeepSeek/test_deepseek_v3_base.py
+
+  test_swinv2:
+    name: Run test_swinv2.py
+    # SwinV2 backbone (shifted-window attention) is heavy; keep it on a
+    # self-hosted runner like the other model tests.
+    runs-on: self-hosted
+    steps:
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run test_swinv2.py
+        run: |
+          echo "Running test_swinv2.py"
+          docker run --rm \
+            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
+            ${{ inputs.image_name }} python3 PyTorchSim/tests/models/test_swinv2.py
 
   test_eager:
     name: Run test_eager.py

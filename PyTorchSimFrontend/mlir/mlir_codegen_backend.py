@@ -120,6 +120,7 @@ class ExtensionWrapperCodegen(wrapper.PythonWrapperCodegen):
                 inductor_ops = torch.ops.inductor
                 assert_size_stride = torch._C._dynamo.guards.assert_size_stride
                 assert_alignment = torch._C._dynamo.guards.assert_alignment
+                empty_strided_cpu = torch._C._dynamo.guards._empty_strided_cpu
                 alloc_from_pool = torch.ops.inductor._alloc_from_pool
                 reinterpret_tensor = torch.ops.inductor._reinterpret_tensor
                 custom_async_compile = CustomAsyncCompile()

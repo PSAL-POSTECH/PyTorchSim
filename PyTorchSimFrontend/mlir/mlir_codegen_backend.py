@@ -1330,16 +1330,23 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
                 local_tile_desc.set_tile_size([kg_tile_desc.get_dim_size(dim) for dim in local_dims])
                 local_tile_desc.vmap.vlane_split_axis = local_vlane_split_axis
                 local_tile_desc.vmap.vlane_stride = kg_tile_desc.vmap.vlane_stride
-        # Case 4. Tile is 4-D tile (e.g., Convolution epilogue)
-        elif len(local_dims) == 4:
-            is_reduction = self.reduction_depth < 3 and not store_reduction
-            if is_reduction:
-                raise NotImplementedError("Currently not implemented... ;)")
-            local_tile_desc.set_tile_size([kg_tile_desc.get_dim_size(dim) for dim in local_dims])
-            local_tile_desc.vmap.vlane_split_axis = local_vlane_split_axis
-            local_tile_desc.vmap.vlane_stride = kg_tile_desc.vmap.vlane_stride
+        # Case 4+. Tile is 4-D or higher (Convolution epilogue, gathered attention bias,
+        # var_mean over an axis whose batch dims got split into many loop vars).
         else:
-            local_tile_desc.set_tile_size([kg_tile_desc.get_dim_size(dim) for dim in local_dims])
+            # A reduction tile carries the reduction axis (loop dims >= reduction_depth).
+            # It must place that axis-group OUTERMOST in the per-lane layout so the 2-D
+            # [reduction | batch] multi_reduction reduces the reduction axis (not a batch
+            # axis). Same reorder the 3-D case does, generalized to any rank: an indirect
+            # attention-bias gather blocks a head*query dim-merge and leaves head in-lane,
+            # and a var_mean's token axis can split into several batch loop vars -- both
+            # leave a batch axis inner-to-reduction under the default row-major order.
+            is_reduction = any(d >= self.reduction_depth for d in local_dims) and not store_reduction
+            if is_reduction:
+                r = self.get_nr_rdim()
+                axis_order = list(range(r, len(local_dims))) + list(range(r - 1, -1, -1))
+                local_tile_desc.set_tile_size([kg_tile_desc.get_dim_size(dim) for dim in local_dims], axis_order)
+            else:
+                local_tile_desc.set_tile_size([kg_tile_desc.get_dim_size(dim) for dim in local_dims])
             local_tile_desc.vmap.vlane_split_axis = local_vlane_split_axis
             local_tile_desc.vmap.vlane_stride = kg_tile_desc.vmap.vlane_stride
 

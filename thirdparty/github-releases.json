@@ -3,7 +3,7 @@
   "pytorch_image": "ubuntu:22.04",
   "gem5": {
     "repository": "PSAL-POSTECH/gem5",
-    "release_tag": "v1.0.1",
+    "release_tag": "v1.0.2",
     "asset_name": "gem5-release.tar.gz"
   },
   "llvm_project": {
@@ -13,7 +13,7 @@
   },
   "spike": {
     "repository": "PSAL-POSTECH/riscv-isa-sim",
-    "release_tag": "v1.0.5",
+    "release_tag": "v1.0.6",
     "asset_name": "spike-release.tar.gz"
   }
 }

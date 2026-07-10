@@ -7,6 +7,7 @@ from torch._inductor.virtualized import V
 from torch._inductor.codegen import common
 
 from PyTorchSimFrontend.mlir import mlir_common
+from PyTorchSimFrontend.mlir.tile_axis import Axis, build_tile
 from PyTorchSimFrontend.mlir.mlir_template import MLIRTemplate, MLIRTemplateKernel
 from PyTorchSimFrontend.mlir.mlir_common import LoopLevel
 
@@ -260,22 +261,20 @@ class MLIRSortTemplate(MLIRTemplate):
         # indent for DMA ops = 2 (inside func) + 2 per outer loop
         indent_size = 2 + len(output_dim) * 2 + 4
 
-        vlane_stride = 1
-        vlane_split_axis = 0
-        x_tile_desc = mlir_common.MLIRMultiDimTile(tile_sizes, kernel.vector_lane, vlane_split_axis, vlane_stride)
-        x_tile_desc.set_tile_size_stride(tile_sizes, [sort_size, 1])
-        x_tile_desc.set_name("X_buffer")
-        x_tile_desc.offset = x_layout.offset
+        # One row per lane; the sorted axis is contiguous inside a lane. Every operand
+        # shares that shape and differs only in its DRAM strides.
+        def sort_axes(dram_stride):
+            return {"tile": Axis(tile_sizes[0], dram_stride[0]),
+                    "sort": Axis(tile_sizes[1], dram_stride[1])}
 
-        xi_tile_desc = mlir_common.MLIRMultiDimTile(tile_sizes, kernel.vector_lane, vlane_split_axis, vlane_stride)
-        xi_tile_desc.set_tile_size_stride(tile_sizes, [sort_size, 1])
-        xi_tile_desc.set_name("XI_buffer")
-        xi_tile_desc.offset = xi_layout.offset
+        def sort_tile(buffer, dram_stride, offset):
+            desc, _ = build_tile(buffer, kernel.vector_lane, sort_axes(dram_stride),
+                                 sram_order=("tile", "sort"), lane="tile", offset=offset)
+            return desc
 
-        yv_tile_desc = mlir_common.MLIRMultiDimTile(tile_sizes, kernel.vector_lane, vlane_split_axis, vlane_stride)
-        yv_tile_desc.set_tile_size_stride(tile_sizes, [sort_size, 1])
-        yv_tile_desc.set_name("YV_buffer")
-        yv_tile_desc.offset = yv_layout.offset
+        x_tile_desc = sort_tile("X_buffer", x_dram_stride, x_layout.offset)
+        xi_tile_desc = sort_tile("XI_buffer", xi_dram_stride, xi_layout.offset)
+        yv_tile_desc = sort_tile("YV_buffer", yv_dram_stride, yv_layout.offset)
 
         data_stype = mlir_common.DTYPE_TO_MLIR[x.get_dtype()]
         idx_stype = mlir_common.DTYPE_TO_MLIR[xi.get_dtype()]

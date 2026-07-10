@@ -6,6 +6,7 @@ import sympy
 from torch._inductor.ir import IRNode
 
 from PyTorchSimFrontend.mlir import mlir_common
+from PyTorchSimFrontend.mlir.tile_axis import Axis, build_tile
 from PyTorchSimFrontend.mlir.mlir_template import MLIRTemplate, MLIRTemplateKernel
 
 
@@ -262,14 +263,10 @@ class MLIRCatTemplate(MLIRTemplate):
             excluded_dims = set()
 
         def make_tile_desc(tile_sz, vector_lane, name, offset):
-            desc = mlir_common.MLIRMultiDimTile(
-                tile_sz, vector_lane,
-                vlane_split_axis=len(tile_sz) - 1,
-                vlane_stride=1
-            )
-            desc.set_tile_size(tile_sz)
-            desc.set_name(name)
-            desc.offset = offset
+            # A plain row-major tile: the innermost axis is contiguous and rides the lanes.
+            axes = {f"d{i}": Axis(sz) for i, sz in enumerate(tile_sz)}
+            desc, _ = build_tile(name, vector_lane, axes, sram_order=tuple(axes),
+                                 lane=f"d{len(tile_sz) - 1}", offset=offset)
             return desc
 
         output_offset = output_node.get_layout().offset

@@ -12,6 +12,7 @@ from torch.backends.cuda import flash_sdp_enabled, mem_efficient_sdp_enabled
 
 from PyTorchSimFrontend import extension_config
 from PyTorchSimFrontend.mlir import mlir_common
+from PyTorchSimFrontend.mlir.tile_axis import Axis, build_tile
 from PyTorchSimFrontend.mlir.mlir_template import MLIRTemplate
 from PyTorchSimFrontend.mlir.mlir_template import MLIRTemplateKernel
 
@@ -372,14 +373,11 @@ class MLIRFlashSDPATemplate(MLIRTemplate):
 
         # Hardware constraint: The tile split axis is restricted.
         # To accommodate this, we compute (key @ query.t) instead of (query @ key.t).
-        # SRAM settings
-        vlane_split_axis = 1
-        q_tile_size = [1, tile_l, tile_e]
-        q_tile_stride = [0, tile_e, 1]
-        q_tile_desc = mlir_common.MLIRMultiDimTile(q_tile_size, kernel.vector_lane, vlane_split_axis, vlane_stride)
-        q_tile_desc.set_tile_size_stride(q_tile_size, q_tile_stride)
-        q_tile_desc.set_name("q_buffer")
-        q_tile_desc.offset = query.get_layout().offset
+        # SRAM settings. Batch is degenerate; the sequence axis rides the lanes.
+        q_tile_desc, _ = build_tile(
+            "q_buffer", kernel.vector_lane,
+            axes={"b": Axis(1), "l": Axis(tile_l), "e": Axis(tile_e)},
+            sram_order=("b", "l", "e"), lane="l", offset=query.get_layout().offset)
         # DRAM settings
         q_stride = q_tensor.stride()
 
@@ -387,67 +385,54 @@ class MLIRFlashSDPATemplate(MLIRTemplate):
         # the split axis of the first operand differs from a standard linear algebra matmul.
         # The first operand (key) must be split along the column axis.
         # This logic aligns with the relationship between the dot product's summation direction and the hardware's accumulation direction in the SA.
-        # SRAM settings
-        vlane_split_axis = 2
-        k_tile_size = [1, tile_s, tile_e]
-        k_tile_stride = [0, 1, tile_s]
-        k_tile_desc = mlir_common.MLIRMultiDimTile(k_tile_size, kernel.vector_lane, vlane_split_axis, vlane_stride)
-        k_tile_desc.set_tile_size_stride(k_tile_size, k_tile_stride)
-        k_tile_desc.set_name("k_buffer")
-        k_tile_desc.offset = key.get_layout().offset
+        # SRAM settings. The embedding axis rides the lanes here, and the sequence axis is
+        # the contiguous one -- key is the stationary operand, so it is laid out transposed.
+        k_tile_desc, _ = build_tile(
+            "k_buffer", kernel.vector_lane,
+            axes={"b": Axis(1), "s": Axis(tile_s), "e": Axis(tile_e)},
+            sram_order=("b", "e", "s"), lane="e", offset=key.get_layout().offset)
         # DRAM settings
         k_stride = k_tensor.stride()
 
         # Since we compute mul = key @ query.t, we perform out.t = (value.t @ Softmax(mul).t).t,
         # which simplifies to (value.t @ Softmax(mul))
         # SRAM settings
-        vlane_split_axis = 1
-        v_tile_size = [1, tile_s, tile_e]
-        v_tile_stride = [0, tile_e, 1]
-        v_tile_desc = mlir_common.MLIRMultiDimTile(v_tile_size, kernel.vector_lane, vlane_split_axis, vlane_stride)
-        v_tile_desc.set_tile_size_stride(v_tile_size, v_tile_stride)
-        v_tile_desc.set_name("v_buffer")
-        v_tile_desc.offset = value.get_layout().offset
+        v_tile_desc, _ = build_tile(
+            "v_buffer", kernel.vector_lane,
+            axes={"b": Axis(1), "s": Axis(tile_s), "e": Axis(tile_e)},
+            sram_order=("b", "s", "e"), lane="s", offset=value.get_layout().offset)
         # DRAM settings
         v_stride = v_tensor.stride()
 
         # Output is also stored in transposed format to match the value.t @ Softmax(mul) operation.
         # SRAM settings
-        vlane_split_axis = 1
-        out_tile_size = [1, tile_l, tile_e]
-        out_tile_stride=[0, tile_e, 1]
-        out_tile_desc = mlir_common.MLIRMultiDimTile(out_tile_size, kernel.vector_lane, vlane_split_axis, vlane_stride)
-        out_tile_desc.set_tile_size_stride(out_tile_size, out_tile_stride)
-        out_tile_desc.set_name("out_buffer")
+        out_tile_desc, _ = build_tile(
+            "out_buffer", kernel.vector_lane,
+            axes={"b": Axis(1), "l": Axis(tile_l), "e": Axis(tile_e)},
+            sram_order=("b", "l", "e"), lane="l")
         # DRAM settings
         out_stride = out.get_layout().stride[1:]
 
         # Intermediate buffers
 
         # For mul = key @ query.t
-        vlane_split_axis = 1
-        mul_tile_size = [tile_s, tile_l]
-        mul_tile_stride = [tile_l, 1]
-        mul_tile_desc = mlir_common.MLIRMultiDimTile(mul_tile_size, kernel.vector_lane, vlane_split_axis, vlane_stride)
-        mul_tile_desc.set_tile_size_stride(mul_tile_size, mul_tile_stride)
-        mul_tile_desc.set_name("mul_buffer")
         #FIXME. What is the offset? -> It doesn't matter at this time.
+        mul_tile_desc, _ = build_tile(
+            "mul_buffer", kernel.vector_lane,
+            axes={"s": Axis(tile_s), "l": Axis(tile_l)},
+            sram_order=("s", "l"), lane="l")
 
         # For storing maximum values per row
-        vlane_split_axis = 0
-        max_size = [tile_l, 2]
-        max_stride = [2, 1]
-        max_desc = mlir_common.MLIRMultiDimTile(max_size, kernel.vector_lane, vlane_split_axis, vlane_stride)
-        max_desc.set_tile_size_stride(max_size, max_stride)
-        max_desc.set_name("max_buffer")
+        max_desc, _ = build_tile(
+            "max_buffer", kernel.vector_lane,
+            axes={"l": Axis(tile_l), "pair": Axis(2)},
+            sram_order=("l", "pair"), lane="l")
 
         # For storing summation per row
-        vlane_split_axis = 0
-        sum_size = [tile_l, 2]
-        sum_stride = [2, 1]
-        sum_desc = mlir_common.MLIRMultiDimTile(sum_size, kernel.vector_lane, vlane_split_axis, vlane_stride)
-        sum_desc.set_tile_size_stride(sum_size, sum_stride)
-        sum_desc.set_name("sum_buffer")
+        sum_desc, _ = build_tile(
+            "sum_buffer", kernel.vector_lane,
+            axes={"l": Axis(tile_l), "pair": Axis(2)},
+            sram_order=("l", "pair"), lane="l")
 
         # For reduction
         chunk_size = 16

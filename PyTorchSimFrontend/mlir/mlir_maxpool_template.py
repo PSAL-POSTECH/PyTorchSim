@@ -5,6 +5,7 @@ from PyTorchSimFrontend.mlir.mlir_template import MLIRTemplateKernel
 from torch._inductor.ir import Buffer
 from torch._inductor.ir import IRNode
 from PyTorchSimFrontend.mlir import mlir_common
+from PyTorchSimFrontend.mlir.tile_axis import Axis, build_tile
 import sympy
 
 # This template only represents the DMA operations
@@ -55,22 +56,18 @@ class MLIRMaxPoolTemplate(MLIRTemplate):
         BCH = B * C * H
         kernel.loop_size = None
 
-        # Prepare tile descriptors
-        vlane_stride = 1 # Used dummy value
-        vlane_split_axis = 1
-        X_tile_size = [in_tile, in_tile]
-        X_tile_stride = [1, in_tile]
-        X_tile_desc = mlir_common.MLIRMultiDimTile(X_tile_size, kernel.vector_lane, vlane_split_axis, vlane_stride)
-        X_tile_desc.set_tile_size_stride(X_tile_size, X_tile_stride)
-        X_tile_desc.set_name("X_buffer")
-        X_idx = [sympy.Symbol("index0"), sympy.Symbol("index1")*W] # To keep index arguemnt order, we used index_list
+        # Prepare tile descriptors. Rows ride the lanes, columns are contiguous in a lane.
+        X_tile_desc, X_idx = build_tile(
+            "X_buffer", kernel.vector_lane,
+            axes={"col": Axis(in_tile, 1, loop="index0"),
+                  "row": Axis(in_tile, W, loop="index1")},
+            sram_order=("row", "col"), lane="row")
 
-        Y_tile_size = [out_tile, out_tile]
-        Y_tile_stride = [1, out_tile]
-        Y_tile_desc = mlir_common.MLIRMultiDimTile(X_tile_size, kernel.vector_lane, vlane_split_axis, vlane_stride)
-        Y_tile_desc.set_tile_size_stride(Y_tile_size, Y_tile_stride)
-        Y_tile_desc.set_name("W_buffer")
-        Y_idx = [sympy.Symbol("index0"), sympy.Symbol("index1")*W]
+        Y_tile_desc, Y_idx = build_tile(
+            "W_buffer", kernel.vector_lane,
+            axes={"col": Axis(out_tile, 1, loop="index0"),
+                  "row": Axis(out_tile, W, loop="index1")},
+            sram_order=("row", "col"), lane="row")
 
         kernel.render_options = dict(
             KERNEL_NAME=self.name,

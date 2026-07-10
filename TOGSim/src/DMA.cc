@@ -33,7 +33,7 @@ std::shared_ptr<std::vector<mem_fetch*>> DMA::get_memory_access(cycle_type core_
     bool is_cacheable =
       owner_subgraph->is_cacheable(base_daddr, base_daddr + _dram_req_size);
 
-    if (_l2_datacache_enabled) {
+    if (_l2_datacache_enabled && spdlog::should_log(spdlog::level::trace)) {
       spdlog::trace(
           "[{}][Core {}][{}][INST_ID={}] dram=0x{:016x} cacheable={}",
           core_cycle,
@@ -43,6 +43,7 @@ std::shared_ptr<std::vector<mem_fetch*>> DMA::get_memory_access(cycle_type core_
           base_daddr,
           is_cacheable);
     }
+    if (spdlog::should_log(spdlog::level::trace))
     spdlog::trace(
         "[{}][Core {}][{}][INST_ID={}] core_id={} subgraph_id={} numa_id={} addr_name={} is_write={}",
         core_cycle,

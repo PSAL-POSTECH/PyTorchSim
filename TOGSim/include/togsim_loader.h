@@ -64,16 +64,4 @@ RunResult run_producer(const char* so_path,
                        const int64_t* cyc, const int64_t* ovl, int32_t n_tiles,
                        const int32_t* partition_cores, int32_t n_partition_cores);
 
-// First-order reference timing over a recorded trace, to validate that the
-// stream carries enough to be scheduled (it is NOT the production Core -- no
-// DRAM/NoC/L2 contention; the real cycle-equivalence path feeds Tile/TileGraph
-// into Core). Models, per core: a DMA-engine timeline (DMAs serialize, overlap
-// compute), a compute timeline (serial = reduction accumulate, with the
-// finish = prev.finish + cycle - overlapped pipeline overlap of Core.cc), and
-// data dependencies (a compute waits the dmas whose handles its preceding
-// togsim_wait()s named).
-struct TimingParams { uint64_t dma_latency = 100; };
-struct SimResult { uint64_t total_cycle = 0; int n_compute = 0, n_dma = 0; };
-SimResult simulate(const RunResult& run, const TimingParams& params);
-
 }  // namespace togsim

@@ -7,6 +7,7 @@ from PyTorchSimFrontend.mlir.mlir_template import MLIRTemplate
 from PyTorchSimFrontend.mlir.mlir_template import MLIRTemplateKernel
 from torch._inductor.ir import IRNode
 from PyTorchSimFrontend.mlir import mlir_common
+from PyTorchSimFrontend.mlir.tile_axis import Axis, build_tile
 
 BMM_TEMPLATE = r"""
 // BMM kernel
@@ -192,53 +193,45 @@ class MLIRBMMTemplate(MLIRTemplate):
             epilogue_dim_aliasing = {"index0":"index0", "index1":"index1", "index2": "index2"}
             nr_rdim = 0
 
-        # Prepare tile descriptors
-        vlane_stride = 1
-        vlane_split_axis = 2
-        loop_dim = [sympy.Symbol("index0"), sympy.Symbol("index1"), sympy.Symbol("index2"), sympy.Symbol("index3")]
-        X_tile_size = [1, TILE_M, TILE_K]
-        X_tile_stride = [0, 1, TILE_M]
-        X_tile_desc = mlir_common.MLIRMultiDimTile(X_tile_size, kernel.vector_lane, vlane_split_axis, vlane_stride)
-        X_tile_desc.set_tile_size_stride(X_tile_size, X_tile_stride)
-        X_tile_desc.set_name("X_buffer")
-        X_tile_desc.offset = X.get_layout().offset
-        X_stride = X_tensor.stride()
-        X_idx = [loop_dim[0]*X_stride[0], loop_dim[1]*X_stride[1], loop_dim[3]*X_stride[2]] # To keep index arguemnt order, we used index_list
-
-        W_tile_size = [1, TILE_K, TILE_N]
-        W_tile_stride = [0, 1, TILE_K]
-        W_tile_desc = mlir_common.MLIRMultiDimTile(X_tile_size, kernel.vector_lane, vlane_split_axis, vlane_stride)
-        W_tile_desc.set_tile_size_stride(W_tile_size, W_tile_stride)
-        W_tile_desc.set_name("W_buffer")
-        W_tile_desc.offset = W.get_layout().offset
-        W_stride = W_tensor.stride()
-        W_idx = [loop_dim[0]*W_stride[0], loop_dim[3]*W_stride[1], loop_dim[2]*W_stride[2]]
-
-        vlane_split_axis = vlane_split_axis if nr_rdim==0 else 1
-        Y_tile_size = [1, TILE_M, TILE_N] if nr_rdim == 0 else [1, TILE_N, TILE_M]
-        Y_tile_stride=[0, 1, TILE_M] if nr_rdim == 0 else [0, TILE_M, 1]
-        Y_tile_desc = mlir_common.MLIRMultiDimTile(Y_tile_size, kernel.vector_lane, vlane_split_axis, vlane_stride)
-        Y_tile_desc.set_tile_size_stride(Y_tile_size, Y_tile_stride)
-        Y_tile_desc.set_name("Y_buffer")
+        # Prepare tile descriptors. Batch is the outermost SRAM axis and degenerate (one
+        # slice per tile), N rides the lanes and M is contiguous inside one lane.
+        X_stride, W_stride = X_tensor.stride(), W_tensor.stride()
         Y_stride = Y.get_layout().stride
-        if nr_rdim == 0:
-          Y_idx = [loop_dim[0]*Y_stride[0], loop_dim[1]*Y_stride[1], loop_dim[2]*Y_stride[2]]
-        else:
-          Y_idx = [loop_dim[0]*Y_stride[0], loop_dim[2]*Y_stride[2], loop_dim[1]*Y_stride[1]]
 
-        # Extract Bias info
-        Bias_tile_desc = mlir_common.MLIRMultiDimTile(Y_tile_size, kernel.vector_lane, vlane_split_axis, vlane_stride)
-        Bias_tile_desc.set_tile_size_stride(Y_tile_size, Y_tile_stride)
-        Bias_tile_desc.set_name("Y_buffer")
+        X_tile_desc, X_idx = build_tile(
+            "X_buffer", kernel.vector_lane,
+            axes={"b": Axis(1,      X_stride[0], loop="index0"),
+                  "m": Axis(TILE_M, X_stride[1], loop="index1"),
+                  "k": Axis(TILE_K, X_stride[2], loop="index3")},
+            sram_order=("b", "k", "m"), lane="k", offset=X.get_layout().offset)
+
+        W_tile_desc, W_idx = build_tile(
+            "W_buffer", kernel.vector_lane,
+            axes={"b": Axis(1,      W_stride[0], loop="index0"),
+                  "k": Axis(TILE_K, W_stride[1], loop="index3"),
+                  "n": Axis(TILE_N, W_stride[2], loop="index2")},
+            sram_order=("b", "n", "k"), lane="n", offset=W.get_layout().offset)
+
+        # The reduction template sweeps N outside M, so its tile is declared (B, N, M).
+        # Only the declaration flips; the SRAM order is (b, n, m) either way.
+        def y_axes(stride):
+            b = Axis(1,      stride[0], loop="index0")
+            m = Axis(TILE_M, stride[1], loop="index1")
+            n = Axis(TILE_N, stride[2], loop="index2")
+            return {"b": b, "n": n, "m": m} if nr_rdim else {"b": b, "m": m, "n": n}
+
+        Y_tile_desc, Y_idx = build_tile(
+            "Y_buffer", kernel.vector_lane, y_axes(Y_stride), sram_order=("b", "n", "m"), lane="n")
+
+        # Extract Bias info. It accumulates into the Y buffer, so it shares Y's axes.
         if Bias is not None:
-          Bias_stride = Bias.get_layout().stride
-          Bias_tile_desc.offset = Bias.get_layout().offset
-          if nr_rdim == 0:
-            Bias_idx = [loop_dim[0]*Bias_stride[0], loop_dim[1]*Bias_stride[1], loop_dim[2]*Bias_stride[2]]
-          else:
-            Bias_idx = [loop_dim[0]*Bias_stride[0], loop_dim[2]*Bias_stride[2], loop_dim[1]*Bias_stride[1]]
+            Bias_tile_desc, Bias_idx = build_tile(
+                "Y_buffer", kernel.vector_lane, y_axes(Bias.get_layout().stride),
+                sram_order=("b", "n", "m"), lane="n", offset=Bias.get_layout().offset)
         else:
-          Bias_idx = None
+            Bias_tile_desc, _ = build_tile(
+                "Y_buffer", kernel.vector_lane, y_axes(Y_stride), sram_order=("b", "n", "m"), lane="n")
+            Bias_idx = None
 
         data_stype = mlir_common.DTYPE_TO_MLIR[X.get_dtype()]
         kernel.render_options = dict(

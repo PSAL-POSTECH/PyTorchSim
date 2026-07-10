@@ -1,5 +1,7 @@
 #include "Instruction.h"
 
+#include <utility>
+
 #include <fmt/format.h>
 
 uint64_t Instruction::_next_global_inst_id = 0;
@@ -32,14 +34,16 @@ Instruction::Instruction(Opcode opcode, cycle_type compute_cycle, size_t num_par
             addr_type dram_addr, std::vector<size_t> tile_size, std::vector<int> tile_stride, size_t elem_bits,
             std::vector<int64_t> tag_idx_list, std::vector<int64_t> tag_stride_list,
             std::vector<int64_t> accum_tag_idx_list)
+  // The vectors are taken by value, so move them into the members: copying them
+  // allocated a second buffer per vector for every DMA and barrier instruction.
   : opcode(opcode), compute_cycle(compute_cycle), ready_counter(num_parents), dram_addr(dram_addr),
-    tile_size(tile_size), tile_stride(tile_stride), _elem_bits(elem_bits),
-    _tag_idx_list(tag_idx_list), _tag_stride_list(tag_stride_list),
-    _accum_tag_idx_list(accum_tag_idx_list) {
+    tile_size(std::move(tile_size)), tile_stride(std::move(tile_stride)), _elem_bits(elem_bits),
+    _tag_idx_list(std::move(tag_idx_list)), _tag_stride_list(std::move(tag_stride_list)),
+    _accum_tag_idx_list(std::move(accum_tag_idx_list)) {
   _global_inst_id = _next_global_inst_id++;
   assert(_tag_idx_list.size()==_tag_stride_list.size());
   _tile_numel = 1;
-  for (auto dim : tile_size)
+  for (auto dim : this->tile_size)   // the parameter was moved from
     _tile_numel *= dim;
 }
 
@@ -71,6 +75,9 @@ void Instruction::dec_waiting_request() {
 void Instruction::prepare_tag_key() {
   /* Calculate tag key */
   int64_t key_offset = 0;
+  // exact size: the two unconditional pushes otherwise grow 0 -> 1 -> 2, i.e. an
+  // allocate + reallocate + free for every DMA and barrier.
+  _tag_key.reserve(2 + _accum_tag_idx_list.size());
   _tag_key.push_back(_addr_id);
   for (size_t i = 0; i < _tag_idx_list.size(); i++)
     key_offset += _tag_idx_list.at(i) * _tag_stride_list.at(i);

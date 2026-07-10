@@ -6,6 +6,7 @@
 #include <list>
 #include <numeric>
 
+#include <algorithm>
 #include <array>
 #include <set>
 #include <cassert>
@@ -139,7 +140,13 @@ class Instruction : public std::enable_shared_from_this<Instruction> {
   // last reader frees it on issue via `_sram_release_allocs`.
   void set_sram_alloc(int64_t id) { _sram_alloc_id = id; }
   int64_t get_sram_alloc() const { return _sram_alloc_id; }
-  void add_sram_release(int64_t id) { _sram_release_allocs.push_back(id); }
+  // Keep the list ascending by version id. The Core frees each version regardless
+  // of order, but the invariant lets a builder that tags versions as they close be
+  // byte-comparable with one that walks the version map at the end.
+  void add_sram_release(int64_t id) {
+    auto& v = _sram_release_allocs;
+    v.insert(std::upper_bound(v.begin(), v.end(), id), id);
+  }
   const std::vector<int64_t>& get_sram_release() const { return _sram_release_allocs; }
   // bytes this instruction's buffer occupies in the spad. A DMA derives it from
   // the tile it moves; a compute output gets it set explicitly by the bridge (the

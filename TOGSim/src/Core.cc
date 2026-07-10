@@ -228,7 +228,7 @@ void Core::dma_cycle() {
         core_trace_log::log_error_dma_instruction_invalid(_core_cycle, _id);
         exit(EXIT_FAILURE);
       } else if (finished_inst->get_opcode() == Opcode::MEMORY_BAR) {
-        core_trace_log::trace_instruction_line(_core_cycle,
+        if (core_trace_log::trace_enabled()) core_trace_log::trace_instruction_line(_core_cycle,
                                                _id,
                                                TraceLogTag::pad15(TraceLogTag::kInstructionFinished),
                                                finished_inst->get_global_inst_id(),
@@ -307,7 +307,7 @@ void Core::cycle() {
                 finish_instruction(inst);
               else
                 _dma.register_tag_waiter(inst->subgraph_id, key, inst);
-              core_trace_log::trace_instruction_line(_core_cycle,
+              if (core_trace_log::trace_enabled()) core_trace_log::trace_instruction_line(_core_cycle,
                                                        _id,
                                                        TraceLogTag::pad15(
                                                            TraceLogTag::kInstructionSkipped),
@@ -320,7 +320,7 @@ void Core::cycle() {
             } else {
               // load occupies its spad bytes on issue; stall (retry next cycle) if full.
               if (!try_occupy_sram(inst)) break;
-              core_trace_log::trace_instruction_line(_core_cycle,
+              if (core_trace_log::trace_enabled()) core_trace_log::trace_instruction_line(_core_cycle,
                                                        _id,
                                                        TraceLogTag::pad15(
                                                            TraceLogTag::kInstructionIssued),
@@ -335,7 +335,7 @@ void Core::cycle() {
           }
         case Opcode::MOVOUT:
           release_sram(inst);   // store issued -> free the tiles it drained
-          core_trace_log::trace_instruction_line(_core_cycle,
+          if (core_trace_log::trace_enabled()) core_trace_log::trace_instruction_line(_core_cycle,
                                                    _id,
                                                    TraceLogTag::pad15(TraceLogTag::kInstructionIssued),
                                                    inst->get_global_inst_id(),
@@ -411,7 +411,7 @@ void Core::cycle() {
               continue;                      // old code fell through to it++ on the
                                              // erased (invalidated) iterator -> UB
             } else {
-              core_trace_log::trace_instruction_line(_core_cycle,
+              if (core_trace_log::trace_enabled()) core_trace_log::trace_instruction_line(_core_cycle,
                                                        _id,
                                                        TraceLogTag::pad15(
                                                            TraceLogTag::kInstructionIssued),
@@ -443,7 +443,7 @@ void Core::cycle() {
             } else {
               _dma.register_tag_waiter(inst->subgraph_id, key, inst);
             }
-            core_trace_log::trace_instruction_line(_core_cycle,
+            if (core_trace_log::trace_enabled()) core_trace_log::trace_instruction_line(_core_cycle,
                                                      _id,
                                                      TraceLogTag::pad15(
                                                          TraceLogTag::kInstructionIssued),
@@ -498,7 +498,7 @@ void Core::finish_instruction(std::shared_ptr<Instruction>& inst, InstFinishTrac
       core_trace_log::log_error_dram_responses_trace_not_finished(_core_cycle, _id);
       exit(EXIT_FAILURE);
     }
-    core_trace_log::trace_instruction_line(_core_cycle,
+    if (core_trace_log::trace_enabled()) core_trace_log::trace_instruction_line(_core_cycle,
                                              _id,
                                              TraceLogTag::pad15(TraceLogTag::kAllDramResponsesReceived),
                                              inst->get_global_inst_id(),
@@ -515,7 +515,7 @@ void Core::finish_instruction(std::shared_ptr<Instruction>& inst, InstFinishTrac
   const char* trace_tag = (tag == InstFinishTraceTag::DmaIssueComplete)
                               ? TraceLogTag::kAsyncDmaAllRequestsIssued
                               : TraceLogTag::kInstructionFinished;
-  core_trace_log::trace_instruction_line(_core_cycle,
+  if (core_trace_log::trace_enabled()) core_trace_log::trace_instruction_line(_core_cycle,
                                            _id,
                                            TraceLogTag::pad15(trace_tag),
                                            inst->get_global_inst_id(),
@@ -562,7 +562,7 @@ void Core::push_memory_response(mem_fetch* response) {
 
   if (!owner_inst->got_first_response()) {   // first data of this load arrived
     owner_inst->mark_first_response();
-    core_trace_log::trace_instruction_line(_core_cycle, _id,
+    if (core_trace_log::trace_enabled()) core_trace_log::trace_instruction_line(_core_cycle, _id,
         TraceLogTag::pad15(TraceLogTag::kFirstDramResponse),
         owner_inst->get_global_inst_id(),
         core_trace_log::format_instruction_detail_line(*owner_inst));

@@ -54,6 +54,17 @@ bool DepLess::operator()(const std::shared_ptr<Instruction>& a,
   return a->get_global_inst_id() < b->get_global_inst_id();
 }
 
+int Instruction::matmul_consumers() {
+  if (_n_matmul_consumers < 0) {
+    constexpr int kMatmul = 1;   // Core's MATMUL compute-unit enum
+    int n = 0;
+    for (auto& c : _deps[static_cast<size_t>(DepEvent::ISSUE)])
+      if (c->get_compute_type() == kMatmul) n++;
+    _n_matmul_consumers = n;
+  }
+  return _n_matmul_consumers;
+}
+
 void Instruction::finish_instruction() {
   fire(DepEvent::DONE);   // latency consumers
   finished = true;

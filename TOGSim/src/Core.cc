@@ -354,15 +354,16 @@ void Core::cycle() {
             int sa_idx = -1;
             if (ct == MATMUL || ct == PRELOAD) {
               if (ct == PRELOAD) {
-                int n_consumers = 0;   // matmuls reusing this weight
-                for (auto& c : inst->get_deps(DepEvent::ISSUE))
-                  if (c->get_compute_type() == MATMUL) n_consumers++;
+                // Ask for the slot FIRST: with none free the preload cannot issue,
+                // so nothing else about it is worth computing. Safe to reorder --
+                // try_occupy_sram above is a no-op for a preload (weights untracked).
+                sa_idx = pick_free_weight_sa();
+                if (sa_idx < 0) break;              // all weight slots full -> stall (retry)
+                const int n_consumers = inst->matmul_consumers();   // cached
                 if (n_consumers == 0) {            // weight-slot model needs >=1 consumer
                   spdlog::error("preload has no matmul consumer (weight-slot model invariant)");
                   exit(EXIT_FAILURE);
                 }
-                sa_idx = pick_free_weight_sa();
-                if (sa_idx < 0) break;              // all weight slots full -> stall (retry)
                 _weight_slots_used[sa_idx]++;
                 auto tok = std::make_shared<WeightToken>(WeightToken{sa_idx, n_consumers});
                 for (auto& c : inst->get_deps(DepEvent::ISSUE))

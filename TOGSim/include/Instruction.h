@@ -73,6 +73,10 @@ class Instruction : public std::enable_shared_from_this<Instruction> {
   void set_tile_group(int g) { _tile_group = g; }
   int get_tile_group() const { return _tile_group; }
   bool check_ready() { return ready_counter == 0; }
+  // This preload's weight-slot refcount: the MATMULs subscribed to its ISSUE event.
+  // Fixed once the tile is built, but Core's issue scan asks on every stalled cycle
+  // and one preload can have 300k subscribers -- so count once and cache.
+  int matmul_consumers();
   const Opcode get_opcode() { return opcode; }
   bool is_dma_read() { return opcode == Opcode::MOVIN; }
   bool is_dma_write() { return opcode == Opcode::MOVOUT; }
@@ -208,4 +212,5 @@ class Instruction : public std::enable_shared_from_this<Instruction> {
   int _assigned_sa = -1;
   std::shared_ptr<WeightToken> _weight_token;
   int _tile_group = -1;   // trace-only work-item id (see set_tile_group)
+  int _n_matmul_consumers = -1;   // lazily counted; see matmul_consumers()
 };

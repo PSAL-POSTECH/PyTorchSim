@@ -1,15 +1,6 @@
-// togsim_runtime.cc
-// -----------------------------------------------------------------------------
-// C6 runtime + loader for the compiled trace producer (P3 task 5). Implements
-// the producer ABI (togsim_runtime.h) and the TOGSim-side loader
-// (togsim_loader.h). See docs/design/togsim_cpp_trace.md sec 5.3 / 9.6.1 / 9.7.
-//
-// The producer `.so` calls the extern "C" togsim_* functions below; each one
-// records a TraceRec on the EmitCtx. EmitCtx is the opaque type the producer
-// only ever passes back to us. This is the "materializing sink": it resolves
-// addresses and per-tile cycles into a recorded instruction stream. Wiring the
-// stream into the existing timing core (Core/Simulator) is the remaining step.
-// -----------------------------------------------------------------------------
+// togsim_runtime.cc -- the producer ABI (togsim_runtime.h) and the loader
+// (togsim_loader.h). The producer's calls each record a TraceRec on the opaque
+// EmitCtx, resolving DRAM addresses and per-tile cycles as they go.
 
 #include "togsim_loader.h"
 
@@ -49,11 +40,9 @@ extern "C" {
 int32_t togsim_abi_version(void) { return TOGSIM_ABI_VERSION; }
 
 void togsim_dispatch(EmitCtx* ctx, togsim_tile_fn fn, int64_t* iv, int32_t n_iv) {
-  // Higher-order work-item wrapper (sec 9.3): round-robin over THIS partition's
-  // cores (a kernel is enqueued to one partition; partitions are independent, so
-  // a work-item must never land on another partition's core -- that subgraph would
-  // sit in this partition's scheduler forever). Bracket the work-item with
-  // TILE_BEGIN/TILE_END; the ops fn emits records under ctx->cur_core.
+  // Work-item wrapper (sec 9.3): round-robin over THIS partition's cores only --
+  // a work-item on another partition's core would sit in this partition's scheduler
+  // forever. TILE_BEGIN/TILE_END bracket the ops `fn` emits under ctx->cur_core.
   ctx->cur_core = ctx->cores.empty() ? 0
                 : ctx->cores[ctx->rr++ % (int32_t)ctx->cores.size()];
   ctx->trace.push_back(blank(togsim::TraceRec::TILE_BEGIN, ctx->cur_core));

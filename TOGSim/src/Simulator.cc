@@ -188,12 +188,9 @@ void Simulator::icnt_cycle() {
 // small). Generous so transient idle never false-fires; a true freeze is constant.
 static constexpr uint64_t kWedgeThreshold = 100000;
 
-// Frozen-state guard: work remains (running()) but nothing is in flight to
-// advance it -- the SRAM throttle can never satisfy a load because the kernel's
-// working set exceeds the whole per-core spad (core_spad_size_kb too small). The
-// state repeats every cycle, so after a margin error out instead of looping
-// forever. `stuck` is function-local-static (one running sim at a time; it resets
-// on any progress).
+// Frozen-state guard: work remains but nothing is in flight to advance it, because
+// the kernel's working set exceeds the whole per-core spad (core_spad_size_kb too
+// small). The state repeats every cycle, so error out instead of looping forever.
 void Simulator::check_frozen() {
   static uint64_t stuck = 0;
   // In flight = anything that will produce a future state change: icnt/dram busy,

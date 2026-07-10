@@ -16,12 +16,9 @@ namespace fs = std::filesystem;
 namespace po = boost::program_options;
 
 
-// Run a kernel's compiled trace producer (.so) and bridge it to a TileGraph,
-// targeting `partition_id` (its work-items round-robin only over that partition's
-// cores -- partitions are independent schedulers). The cycle-table TSV gives the
-// per-tile compute latency; a flat stub is used if it is missing. Returns nullptr
-// if the producer run fails. Shared by the standalone --trace_so path and the
-// multi-tenant launchKernel below.
+// Run a kernel's compiled trace producer (.so) and bridge it to a TileGraph for
+// `partition_id`, whose cores its work-items round-robin over. The cycle-table TSV
+// gives per-tile latency (a flat stub if absent). nullptr if the producer fails.
 std::unique_ptr<TileGraph> build_trace_tilegraph(Simulator* simulator,
                                                  const std::string& trace_so_path,
                                                  const std::string& cycle_table_path,

@@ -1,13 +1,7 @@
 #pragma once
-// togsim_trace_bridge.h
-// -----------------------------------------------------------------------------
-// Bridge from the recorded trace (togsim_loader.h RunResult) to a TileGraph the
-// existing Simulator/Core can run, for production cycle-equivalence (P3 task 5;
-// see togsim_cpp_trace.md sec 9.9). First cut: one Tile per work-item (the span
-// between two togsim_core_alloc markers), bound to that work-item's core; the
-// DMA/compute records become MOVIN/MOVOUT/COMP Instructions with the RAW
-// dependency edges (a compute waits the dmas its preceding waits named).
-// -----------------------------------------------------------------------------
+// togsim_trace_bridge.h -- turn a recorded trace into a TileGraph the existing
+// Simulator/Core can run: one Tile per work-item (a TILE_BEGIN/TILE_END span),
+// dependency edges by last-writer per SRAM buffer (sec 10).
 #include <memory>
 
 #include "TileGraph.h"

@@ -349,7 +349,7 @@ void Core::cycle() {
             const int ct = inst->get_compute_type();
             // a fresh-output compute occupies its spad bytes on issue; stall if full.
             if (!try_occupy_sram(inst)) break;
-            // SA selection (sec 10.x): a preload picks an SA with a free weight slot
+            // SA selection (sec 10.4): a preload picks an SA with a free weight slot
             // and pins its matmul consumers there; a matmul runs on its pinned SA.
             int sa_idx = -1;
             if (ct == MATMUL || ct == PRELOAD) {

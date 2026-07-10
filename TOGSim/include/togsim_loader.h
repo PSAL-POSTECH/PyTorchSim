@@ -1,18 +1,7 @@
 #pragma once
-// togsim_loader.h
-// -----------------------------------------------------------------------------
-// TOGSim-side loader for the compiled trace producer (C6, P3 task 5). NOT part
-// of the producer ABI (togsim_runtime.h) -- this is the TOGSim half that
-// `dlopen`s a producer `.so`, runs its `togsim_kernel`, and records the emitted
-// instruction stream. See docs/design/togsim_cpp_trace.md sec 5.3 / 9.7.
-//
-// This first cut is the "materializing sink": the callbacks resolve each tile's
-// DRAM address (base[arg_id] + offset*elem_bytes) and per-tile compute cost
-// (the cycle table), mint event handles, and append a TraceRec per modeled
-// instruction. Feeding the recorded stream into the existing timing core
-// (Core/Simulator) for cycle-equivalence vs the build_tog path is the remaining
-// task-5 step.
-// -----------------------------------------------------------------------------
+// togsim_loader.h -- the TOGSim half (not the producer ABI): `dlopen` a producer
+// `.so`, run its `togsim_kernel`, record the emitted instructions.  The
+// "materializing sink" of sec 5.3 / 9.7; the stream goes to togsim_trace_bridge.h.
 
 #include <cstdint>
 #include <vector>
@@ -36,7 +25,7 @@ struct TraceRec {
   uint64_t tag_slot;      // SRAM tile slot (double-buffer / capacity model)
   std::vector<int64_t> dims;     // tile extents (DMA)
   std::vector<int64_t> strides;  // tile strides (DMA)
-  std::vector<int64_t> read_bufs;   // SRAM buffer ids read  (sec 10 dataflow DAG)
+  std::vector<int64_t> read_bufs;   // SRAM buffer ids read  (sec 10 dependency model)
   std::vector<int64_t> write_bufs;  // SRAM buffer ids written (MEMORY_BAR: released bufs)
   // COMPUTE
   uint64_t tile_id;
@@ -50,14 +39,9 @@ struct RunResult {
   std::vector<TraceRec> trace;
 };
 
-// Load `so_path`, run its `togsim_kernel(shape_args, n_shape)` against a freshly
-// built EmitCtx, and return the recorded trace.
-//   tensor_base[arg_id] : DRAM base address of each kernel tensor argument
-//   cyc[tile_id] / ovl[tile_id] : the cycle table (cycle, overlapping_cycle)
-//   partition_cores : the core ids of the partition this kernel is enqueued to;
-//                     dispatch round-robins work-items only over THESE cores (a
-//                     kernel stays within its partition -- other partitions are
-//                     independent). Empty/null -> core 0.
+// Load `so_path`, run its `togsim_kernel`, and return the recorded trace.
+// `tensor_base` gives each tensor argument's DRAM base, `cyc`/`ovl` the cycle table.
+// Work-items round-robin only over `partition_cores` (empty/null -> core 0).
 RunResult run_producer(const char* so_path,
                        const int64_t* shape_args, int32_t n_shape,
                        const uint64_t* tensor_base, int32_t n_tensors,

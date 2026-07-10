@@ -21,7 +21,7 @@ enum class Opcode { MOVIN, MOVOUT, COMP, MEMORY_BAR, COUNT};
 // pipeline) or DONE (latency -- the consumer needs the producer's result).
 enum class DepEvent : uint8_t { ISSUE = 0, DONE = 1, COUNT = 2 };
 
-// One weight slot on systolic array `sa` (sec 10.x). A preload sets refcount =
+// One weight slot on systolic array `sa` (sec 10.4). A preload sets refcount =
 // the matmuls reusing the weight; each frees it at its streaming-end, the last
 // one releases the slot. Shared (shared_ptr) by the preload's matmul consumers.
 struct WeightToken { int sa; int refcount; };
@@ -125,13 +125,9 @@ class Instruction : public std::enable_shared_from_this<Instruction> {
   void set_sparse_state(bool state) { _is_sparse_inst = state; }
   uint64_t get_global_inst_id() const { return _global_inst_id; }
 
-  // SRAM-capacity model (sec 10.x). A load contributes its footprint to a
-  // buffer-version allocation; the version is freed when its LAST consumer (the
-  // program-order-last reader, tagged by the bridge) issues. The bridge fills
-  // these; Core enforces them.
-  //   _sram_alloc_id      : which buffer-version this load fills (-1 = untracked)
-  //   _sram_release_allocs: versions this consumer frees on issue (tagged only on
-  //                         each version's last reader)
+  // SRAM-capacity model (sec 10.4), filled by the bridge and enforced by Core: a
+  // load fills buffer-version `_sram_alloc_id` (-1 = untracked), and a version's
+  // last reader frees it on issue via `_sram_release_allocs`.
   void set_sram_alloc(int64_t id) { _sram_alloc_id = id; }
   int64_t get_sram_alloc() const { return _sram_alloc_id; }
   void add_sram_release(int64_t id) { _sram_release_allocs.push_back(id); }
@@ -163,8 +159,7 @@ class Instruction : public std::enable_shared_from_this<Instruction> {
   size_t ready_counter = 0;   // parents not yet finished; the minimal Instruction(Opcode)
                               // ctor (barriers) relies on this default + inc_ready_counter
   // Per-event subscriber sets: _deps[ISSUE] released at issue (occupancy),
-  // _deps[DONE] released at finish (latency). std::set dedups + keeps a stable
-  // iteration order (byte-identical release order).
+  // _deps[DONE] at finish (latency). std::set dedups + fixes the release order.
   std::array<std::set<std::shared_ptr<Instruction>>,
              static_cast<size_t>(DepEvent::COUNT)> _deps;
   std::vector<size_t> tile_size;

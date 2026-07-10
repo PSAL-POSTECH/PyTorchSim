@@ -67,13 +67,13 @@ class Core {
   void sa_cycle();
   bool can_issue_compute(std::shared_ptr<Instruction>& inst);
   void update_stats();
-  // SRAM-capacity throttle (sec 10.x): a consumer frees the buffer-versions it
+  // SRAM-capacity throttle (sec 10.4): a consumer frees the buffer-versions it
   // read (refcount -> 0 releases the spad bytes). Called when COMP/MOVOUT issue.
   void release_sram(const std::shared_ptr<Instruction>& inst);
   // Occupy inst's buffer-version footprint on issue; false if it would overflow
   // the spad this cycle (the caller stalls it). True for untracked insts.
   bool try_occupy_sram(const std::shared_ptr<Instruction>& inst);
-  // SA weight-buffer throttle (sec 10.x): pick a systolic array that has a free
+  // SA weight-buffer throttle (sec 10.4): pick a systolic array that has a free
   // weight slot (round-robin among free); -1 if all full -> the preload stalls.
   int pick_free_weight_sa();
   void process_due_events();   // drain _due_events due this cycle
@@ -116,10 +116,8 @@ class Core {
   std::queue<std::shared_ptr<Tile>> _finished_tiles;
 
   // Issue-scan re-arm (perf): cycle() skips the ready-queue scan unless this is set.
-  // EVERY event that can make a stalled instruction issuable must set it: a ready-set
-  // grow (Instruction::dec_ready_counter via _owner_dirty_ref), an SRAM free
-  // (release_sram), a weight-slot free (apply_due), or a new dispatch (issue). A new
-  // issue-gating throttle MUST set it on free or cycle() will skip the scan forever.
+  // EVERY event that can make a stalled instruction issuable must set it -- a new
+  // issue-gating throttle that forgets to will make cycle() skip the scan forever.
   bool _issue_dirty = true;
 
   std::queue<std::shared_ptr<Instruction>> _vu_compute_pipeline;
@@ -134,14 +132,14 @@ class Core {
   std::queue<mem_fetch*> _response_queue;
   uint32_t _waiting_write_reqs;
 
-  // SRAM-capacity throttle (sec 10.x). _sram_used = current per-core spad bytes;
+  // SRAM-capacity throttle (sec 10.4). _sram_used = current per-core spad bytes;
   // _sram_capacity = limit (0 = disabled); _sram_allocs maps a buffer-version id
   // to its accumulated footprint bytes (freed when its last reader issues).
   size_t _sram_used = 0;
   size_t _sram_capacity = 0;
   std::unordered_map<int64_t, size_t> _sram_allocs;
 
-  // SA weight-buffer throttle (sec 10.x). _weight_slots_used[s] = weights resident
+  // SA weight-buffer throttle (sec 10.4). _weight_slots_used[s] = weights resident
   // on SA s (loaded by a preload, not yet freed by their last matmul);
   // _weight_slot_depth = per-SA weight-slot capacity (must be > 0).
   std::vector<int> _weight_slots_used;

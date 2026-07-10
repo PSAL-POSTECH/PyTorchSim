@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <string>
 
+#include <spdlog/spdlog.h>
+
 #include "Instruction.h"
 #include "TraceLogTags.h"
 
@@ -11,6 +13,14 @@
  * Keeps Core.cc focused on simulation logic.
  */
 namespace core_trace_log {
+
+/** Whether the instruction trace is actually being emitted.
+ *
+ * The trace_* helpers below take formatted strings, so their arguments are
+ * built whether or not spdlog will keep them: every issued instruction paid two
+ * std::string constructions (fmt::format over its tile dims/strides) that
+ * spdlog::trace then dropped. Guard the call sites with this. */
+inline bool trace_enabled() { return spdlog::should_log(spdlog::level::trace); }
 
 std::string format_dma_inst_issued_detail(Instruction& inst);
 /** Opcode + (detail...) for DMA issue / skip traces. */

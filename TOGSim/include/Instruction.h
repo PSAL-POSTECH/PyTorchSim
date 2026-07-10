@@ -32,6 +32,15 @@ typedef uint64_t cycle_type;
 std::string opcode_to_string(Opcode opcode);
 std::string format_tag_key_list_hex(const std::vector<int64_t>& tag_keys);
 
+class Instruction;
+// Order dependents by creation order, NOT by heap address: std::set<shared_ptr>'s
+// default comparator sorts by pointer value, which makes fire()'s release order --
+// and with it the issue order and the reported cycle count -- allocator-dependent.
+struct DepLess {
+  bool operator()(const std::shared_ptr<Instruction>& a,
+                  const std::shared_ptr<Instruction>& b) const;
+};
+
 class Instruction : public std::enable_shared_from_this<Instruction> {
  public:
   Instruction(Opcode opcode, cycle_type compute_cycle, size_t num_parents, addr_type dram_addr,
@@ -51,7 +60,7 @@ class Instruction : public std::enable_shared_from_this<Instruction> {
     for (auto& c : _deps[static_cast<size_t>(e)]) c->dec_ready_counter();
     _deps[static_cast<size_t>(e)].clear();
   }
-  const std::set<std::shared_ptr<Instruction>>& get_deps(DepEvent e) {
+  const std::set<std::shared_ptr<Instruction>, DepLess>& get_deps(DepEvent e) {
     return _deps[static_cast<size_t>(e)];
   }
   void set_assigned_sa(int s) { _assigned_sa = s; }
@@ -159,8 +168,9 @@ class Instruction : public std::enable_shared_from_this<Instruction> {
   size_t ready_counter = 0;   // parents not yet finished; the minimal Instruction(Opcode)
                               // ctor (barriers) relies on this default + inc_ready_counter
   // Per-event subscriber sets: _deps[ISSUE] released at issue (occupancy),
-  // _deps[DONE] at finish (latency). std::set dedups + fixes the release order.
-  std::array<std::set<std::shared_ptr<Instruction>>,
+  // _deps[DONE] at finish (latency). std::set dedups and, via DepLess, iterates in
+  // instruction-id order, so the release order does not depend on the allocator.
+  std::array<std::set<std::shared_ptr<Instruction>, DepLess>,
              static_cast<size_t>(DepEvent::COUNT)> _deps;
   std::vector<size_t> tile_size;
   std::vector<int> tile_stride;

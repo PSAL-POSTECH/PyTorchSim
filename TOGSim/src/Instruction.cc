@@ -49,6 +49,11 @@ Instruction::Instruction(Opcode opcode)
   _tile_numel = 1;
 }
 
+bool DepLess::operator()(const std::shared_ptr<Instruction>& a,
+                         const std::shared_ptr<Instruction>& b) const {
+  return a->get_global_inst_id() < b->get_global_inst_id();
+}
+
 void Instruction::finish_instruction() {
   fire(DepEvent::DONE);   // latency consumers
   finished = true;

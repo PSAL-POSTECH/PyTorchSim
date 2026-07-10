@@ -63,5 +63,57 @@ bool run_producer_stream(const char* so_path,
                          const int64_t* cyc, const int64_t* ovl, int32_t n_tiles,
                          const int32_t* partition_cores, int32_t n_partition_cores,
                          const TraceSink& sink);
+// ---------------------------------------------------------------------------
+// On-demand (lazy) production of one work-item at a time.
+//
+// `togsim_dispatch(ctx, fn, iv, n)` hands us the work-item's function pointer
+// and its parallel induction variables, and the tile body reads nothing but
+// `ctx` and `iv`. So a single indexing pass -- which records (fn, iv, core) and
+// SKIPS the call -- is enough to invoke any work-item later, on its own, with no
+// replay of the others. That makes the TileGraph buildable one dispatch tile at
+// a time, single-threaded: peak memory is O(tiles in flight), not O(dispatches).
+//
+// Legal because a dispatch tile is dependency-closed: the bridge resets its
+// writers/seeds/tag maps at every tile boundary, so no dependency edge crosses
+// tiles (measured: cross_tile_edges == 0).
+struct WorkItem {
+  void* fn = nullptr;           // togsim_tile_fn
+  std::vector<int64_t> iv;      // the enclosing parallel loop indices
+  int32_t core = 0;             // round-robin binding, fixed at index time
+};
+
+class LazyProducer {
+ public:
+  LazyProducer() = default;
+  ~LazyProducer();
+  LazyProducer(const LazyProducer&) = delete;
+  LazyProducer& operator=(const LazyProducer&) = delete;
+
+  // dlopen the .so and run togsim_kernel once, in INDEX mode: every
+  // togsim_dispatch is recorded (so it can be re-invoked alone later) AND run,
+  // with every record streamed to `sink`. That single run doubles as the
+  // footprint pre-pass, so records emitted outside a dispatch are not lost.
+  bool open(const char* so_path, const int64_t* shape_args, int32_t n_shape,
+            const uint64_t* tensor_base, int32_t n_tensors,
+            const int64_t* cyc, const int64_t* ovl, int32_t n_tiles,
+            const int32_t* partition_cores, int32_t n_partition_cores,
+            const TraceSink* sink = nullptr);
+
+  size_t num_items() const { return _items.size(); }
+  // Emit work-item `i`'s record stream (TILE_BEGIN, body, TILE_END) into `sink`.
+  void run_item(size_t i, const TraceSink& sink);
+  // Records the producer emitted OUTSIDE any dispatch. The TileGraph builder
+  // drops these (they belong to no work-item) exactly as the eager builder did;
+  // they still reach the footprint pre-pass through open()'s sink.
+  uint64_t stray_records() const { return _stray; }
+
+ private:
+  struct EmitCtx* _ctx = nullptr;   // opaque; owned
+  void* _lib = nullptr;
+  std::vector<WorkItem> _items;
+  uint64_t _stray = 0;
+  std::vector<uint64_t> _bases;
+  std::vector<int64_t> _cyc, _ovl;
+};
 
 }  // namespace togsim

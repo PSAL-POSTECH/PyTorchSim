@@ -23,6 +23,14 @@ struct EmitCtx {
   // mutable run state
   int32_t  rr = 0;            // round-robin cursor into `cores`
   int32_t  cur_core = -1;     // current work-item's core
+  // INDEX mode (LazyProducer::open): togsim_dispatch additionally records the
+  // work-item so it can be re-invoked on its own later. Records emitted outside
+  // any dispatch (depth == 0) are counted; the TileGraph builder drops them, so
+  // only the footprint pre-pass ever sees them.
+  bool                  capture = false;
+  std::vector<togsim::WorkItem>* items = nullptr;
+  int                   depth = 0;
+  uint64_t              stray = 0;
   // Exactly one of these is active. With a sink the record is consumed and dropped
   // (streaming, O(1) memory); without one it is appended (legacy run_producer).
   const togsim::TraceSink* sink = nullptr;
@@ -37,6 +45,7 @@ inline togsim::TraceRec blank(togsim::TraceRec::Kind k, int32_t core) {
   return r;
 }
 inline void emit_rec(EmitCtx* ctx, const togsim::TraceRec& r) {
+  if (ctx->depth == 0) ++ctx->stray;            // emitted outside any dispatch
   if (ctx->sink) (*ctx->sink)(r);
   else ctx->trace.push_back(r);
 }
@@ -52,9 +61,18 @@ void togsim_dispatch(EmitCtx* ctx, togsim_tile_fn fn, int64_t* iv, int32_t n_iv)
   // forever. TILE_BEGIN/TILE_END bracket the ops `fn` emits under ctx->cur_core.
   ctx->cur_core = ctx->cores.empty() ? 0
                 : ctx->cores[ctx->rr++ % (int32_t)ctx->cores.size()];
+  if (ctx->capture) {   // index pass: remember the work-item so it can be re-run alone
+    togsim::WorkItem w;
+    w.fn = (void*)fn;
+    w.core = ctx->cur_core;
+    if (iv && n_iv > 0) w.iv.assign(iv, iv + n_iv);
+    ctx->items->push_back(std::move(w));
+  }
+  ++ctx->depth;
   emit_rec(ctx, blank(togsim::TraceRec::TILE_BEGIN, ctx->cur_core));
   fn(ctx, iv, n_iv);
   emit_rec(ctx, blank(togsim::TraceRec::TILE_END, ctx->cur_core));
+  --ctx->depth;
 }
 
 void togsim_dma(EmitCtx* ctx, int32_t dir, int32_t arg_id,
@@ -152,4 +170,55 @@ bool run_producer_stream(const char* so_path,
   return load_and_run(so_path, shape_args, n_shape, ctx);
 }
 
+LazyProducer::~LazyProducer() {
+  delete _ctx;   // _lib intentionally left open: the tile fns must stay callable
+}
+
+bool LazyProducer::open(const char* so_path, const int64_t* shape_args, int32_t n_shape,
+                        const uint64_t* tensor_base, int32_t n_tensors,
+                        const int64_t* cyc, const int64_t* ovl, int32_t n_tiles,
+                        const int32_t* partition_cores, int32_t n_partition_cores,
+                        const TraceSink* sink) {
+  // own the tables: the caller's buffers are its locals, and the tile fns are
+  // invoked long after it returns.
+  if (tensor_base && n_tensors > 0) _bases.assign(tensor_base, tensor_base + n_tensors);
+  if (cyc && n_tiles > 0) _cyc.assign(cyc, cyc + n_tiles);
+  if (ovl && n_tiles > 0) _ovl.assign(ovl, ovl + n_tiles);
+
+  _ctx = new EmitCtx();
+  init_ctx(*_ctx, _bases.empty() ? nullptr : _bases.data(), (int32_t)_bases.size(),
+           _cyc.empty() ? nullptr : _cyc.data(), _ovl.empty() ? nullptr : _ovl.data(),
+           (int32_t)_cyc.size(), partition_cores, n_partition_cores);
+
+  _lib = dlopen(so_path, RTLD_NOW | RTLD_GLOBAL);
+  if (!_lib) { fprintf(stderr, "togsim: dlopen failed: %s\n", dlerror()); return false; }
+  auto kernel = (void (*)(EmitCtx*, int64_t*, int32_t))dlsym(_lib, "togsim_kernel");
+  if (!kernel) { fprintf(stderr, "togsim: dlsym togsim_kernel failed: %s\n", dlerror()); return false; }
+
+  // One full producer run: it both indexes the dispatches and streams every
+  // record (including any emitted outside a dispatch) to `sink`. This is the
+  // footprint pre-pass the eager builder used to run, so nothing is missed.
+  _ctx->capture = true;
+  _ctx->items = &_items;
+  _ctx->sink = sink;
+  kernel(_ctx, (int64_t*)shape_args, n_shape);
+  _ctx->capture = false;
+  _ctx->items = nullptr;
+  _ctx->sink = nullptr;
+  _stray = _ctx->stray;
+  return true;
+}
+
+void LazyProducer::run_item(size_t i, const TraceSink& sink) {
+  if (i >= _items.size()) return;
+  WorkItem& w = _items[i];
+  _ctx->sink = &sink;
+  _ctx->cur_core = w.core;                     // the binding fixed at index time
+  _ctx->depth = 1;
+  emit_rec(_ctx, blank(TraceRec::TILE_BEGIN, w.core));
+  ((togsim_tile_fn)w.fn)(_ctx, w.iv.empty() ? nullptr : w.iv.data(), (int32_t)w.iv.size());
+  emit_rec(_ctx, blank(TraceRec::TILE_END, w.core));
+  _ctx->depth = 0;
+  _ctx->sink = nullptr;
+}
 }  // namespace togsim

@@ -347,12 +347,9 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
                             max_used_spad_size = used_spad_size
                             max_k_h_w = k_h
                             mapping = (k_h, K_W, o_h, o_w, M, N, K)
-        # Raise only when NO tile fits SPAD. The max_used_spad_size / max_k_h_w
-        # tracking above only records the largest-k_h tile (max_k_h_w starts at
-        # K_W, so it never fires unless the full-kernel tile fits) and is not
-        # returned -- the sorted tile_candidates is. Guarding on it wrongly
-        # rejected convs whose full-kernel tile overflows SPAD (e.g. a batched
-        # CLIP patch conv) even though smaller-k_h tiles fit. See issue #252.
+        # Raise only when NO tile fits SPAD. Guarding on max_used_spad_size instead
+        # (it only tracks the largest-k_h tile, and is not what we return) wrongly
+        # rejected convs whose full-kernel tile overflows SPAD. See issue #252.
         if not tile_candidates:
             raise RuntimeError("Cannot find a valid mapping")
         tile_candidates = sorted(tile_candidates, key=lambda x: x[0], reverse=True)
@@ -652,11 +649,9 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
             self.cse.generate(self.dma_stores, code, assignment = False)
 
         def template_buffer_live():
-            # Inductor's remove_kernel_local_buffers() drops the template buffer only when
-            # every one of its users lives inside this fused kernel
-            # (Scheduler.can_buffer_be_removed_through_fusion). If it survived, some user is
-            # outside the kernel, so we must store it to DRAM -- whether or not a fused
-            # epilogue also stores its own output.
+            # Inductor's remove_kernel_local_buffers() drops the template buffer only if
+            # every user lives inside this fused kernel. If it survived, some user is
+            # outside it, so store it to DRAM even if a fused epilogue also stores.
             name = getattr(self, "template_buffer_name", None)
             assert name is not None, (
                 "store_output() used by a template that never declared its output buffer; "
@@ -971,20 +966,12 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
                 sram_index_var = ", ".join([f"%{str(zero_cse)}"]*tile_desc.get_nr_dim())
 
                 # masked-DMA clamp: per tile dim, clamp to the real DRAM extent so a tile
-                # that pads past M/N/K (matmul) or a dim is filled with 0 instead of MAC-ing
-                # garbage. index_list[d] = iv * stride -> base iv; the extent comes from the
-                # kernel's loop_extents {iv_name: loop_bound} (the template's ranges/itervars
-                # equivalent -- needed for conv, whose repacked-weight strides do not match
-                # node_layout), else it is matched by that tile dim's stride (gemm).
-                # _emit_clamp skips dividing dims (no-op). Only a dim whose index is a single
-                # iv is clampable: the clamp base is that iv, and high/low are affine in it.
-                # A dim indexed by a SUM of ivs (e.g. an im2col spatial axis o_h + k_h) has
-                # no single base, so it is left unclamped -- correct here because such inputs
-                # are pre-padded (materialized), not masked.
-                # FIXME: loop_extents is declared by hand in each conv template (verbose,
-                # easy to drift from the affine.for bounds). Fold it into the template
-                # overhaul -- e.g. record each loop's (iv -> bound) as the affine.for is
-                # emitted, so def_dma_op derives extents the way pointwise uses ranges/itervars.
+                # padding past it is zero-filled, not MAC-ing garbage. Only a dim indexed by
+                # a SINGLE iv is clampable; a sum of ivs (im2col) is pre-padded instead.
+
+                # FIXME: loop_extents is declared by hand in each conv template and drifts
+                # from the affine.for bounds. Record each loop's (iv -> bound) as the
+                # affine.for is emitted, as pointwise does with ranges/itervars.
                 loop_ext = getattr(self, "loop_extents", None)
                 layout_sizes, layout_strides = node_layout.size, node_layout.stride
                 tile_sizes = tile_desc.get_tile_size()
@@ -1139,13 +1126,9 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         with self.override_buffer_cse(buffer=self.stores):
             ops._store(value, sram_var, compute_index_var, tile_shape, buffer_name=buffer_name)
 
-        # Generate DMA instruction. Clamp the output tail, else a non-dividing epilogue
-        # store writes the systolic pad region past the real output extent (fused matmul +
-        # relu/add on a non-dividing shape). The extent of each loop iv is ranges[k]; the
-        # tile dims are indexed by dim_aliasing (tile-dim order), so a dim whose iv extent
-        # does not divide the tile is clamped to [0, extent). Naming-agnostic (works for the
-        # index-N matmul epilogue and the c0/tile_n/... conv epilogue alike); _emit_clamp
-        # skips dividing dims, so a dividing output is a no-op.
+        # Generate the DMA. Clamp the output tail, else a non-dividing epilogue store
+        # writes the systolic pad region past the real output extent. Each iv's extent is
+        # ranges[k]; _emit_clamp skips dividing dims, so a dividing output is a no-op.
         iv_extent = {}
         for itervar, rng in zip(self.itervars, self.ranges):
             try:

@@ -25,20 +25,9 @@ def _lower_transfer(ir_text, timing=False):
         return str(m).strip()
 
 
-# INPUT: one masked MVOUT (store an SRAM tile back to DRAM) of a [1,2,8,8] tile.
-# The togsim.transfer operands are positional (see emit_transfer):
-#   %arg1  DRAM base buffer         %c0 dram_idx (element offset into it)
-#   %s     SRAM tile (the [1,2,8,8] spad global)   %c0 sram_idx
-#   %alloc async tag buffer         %c0 tag_idx
-#   %c3    dma_type (3 = MVOUT)     %c1 vlane_stride
-#   %c0, %c7  the masked clamp (low, high) -- ONE (low, high) pair per masked axis.
-# Attrs: dram_stride/tile_stride = row-major [1,2,8,8] strides; vlane_split_axis=3;
-# masked_axes=[2] clamps tile axis 2 to [low, high) = [0, 7); masked_fill=0. So on
-# store, axis-2 positions >= 7 (the ragged tail) are skipped instead of written.
-# masked_axes is a SPARSE overlay, NOT one pair per rank: the descriptor always carries
-# all 4 axes' dim_low/dim_high, defaulting to [0, dim_size) (= no clamp). Only axes that
-# are actually ragged are listed (the frontend skips axes that divide the tile evenly),
-# so a single-axis clamp on a 4D tile is the normal case, not a rank mismatch.
+# INPUT: one masked MVOUT of a [1,2,8,8] tile, with positional togsim.transfer operands
+# (see emit_transfer). masked_axes=[2] is a SPARSE overlay clamping tile axis 2 to
+# [0, 7), so the ragged tail is skipped on store; unlisted axes default to no clamp.
 _MASKED_MVOUT = """
 module {
   memref.global @buf1_spad : memref<1x2x8x8xf32, 1>
@@ -54,20 +43,9 @@ module {
   }
 }"""
 
-# OUTPUT (golden): the transfer lowers to a DMA descriptor + two RISC-V custom insns.
-# @dma_desc_0 is the descriptor as 36 i32 (= 18 packed i64 slots); the dense init reads:
-#   words[0:4]   = [1,2,8,8]  dim_size (the tile / config shape)
-#   words[4:8]   = [0,0,0,0]  dim_low  (default; runtime-overwritten below)
-#   words[8:12]  = [1,2,8,8]  dim_high (defaults to dim_size; runtime-overwritten)
-#   words[12:20] = dram_stride 128,64,8,1   words[20:28] = tile_stride 128,64,8,1 (i64 pairs)
-#   words[28:30] = 65540,131843 = the packed flags slot: elem_bytes 4 | vlane_stride 1 |
-#                  vlane_split_axis 3 | config_type 3 (MVOUT) | flags 2 (masked)
-#   words[30:36] = 0  (masked_fill / indirect, unused here)
-# Then the masked clamp is written at RUN TIME into the descriptor: low=%c0 -> i32 idx 6
-# (dim_low base 4 + axis 2), high=%c7 -> i32 idx 10 (dim_high base 8 + axis 2). The rest
-# is address arithmetic building the DRAM byte addr (%3) and SRAM byte addr (%12), then two
-# `.insn r CUSTOM_1` ops: func7=7 = CONFIG_DESC (hands the descriptor pointer to the DMA
-# engine), func7=3 = MVOUT (hands it the DRAM + SRAM addresses -> issues the store).
+# OUTPUT (golden): a 36-i32 @dma_desc_0 (dim_size, dim_low, dim_high, dram/tile strides,
+# a packed flags slot), the masked clamp written into it at RUN TIME, then two
+# `.insn r CUSTOM_1` ops: func7=7 CONFIG_DESC hands over the descriptor, func7=3 MVOUT.
 _MASKED_MVOUT_LOWERED = textwrap.dedent("""\
     module {
       memref.global "private" @dma_desc_0 : memref<36xi32> = dense<[1, 2, 8, 8, 0, 0, 0, 0, 1, 2, 8, 8, 128, 0, 64, 0, 8, 0, 1, 0, 128, 0, 64, 0, 8, 0, 1, 0, 65540, 131843, 0, 0, 0, 0, 0, 0]>

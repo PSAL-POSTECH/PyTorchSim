@@ -374,13 +374,9 @@ def decompose_native_multi_head_attention(
         return (output, None)
 
 
-# Lower roll ourselves as narrow + cat, then REALIZE the result. roll has no Inductor lowering; it
-# is decomposed (torch's default is index_select(fmod(...)), i.e. a modular gather the affine-only
-# DMA cannot express). Even our narrow+cat rewrite lets the slice offset fuse into a downstream
-# modular reshape, re-creating a shifted index like (p+60)%8. copy_input forces a hard buffer
-# boundary so the consumer reads a plain affine index -- a plain .contiguous()/clone is inlined by
-# Inductor and does NOT create the boundary. Remove roll from the decomp table so it reaches this
-# lowering instead of being decomposed first.
+# Lower roll as narrow + cat, then REALIZE: torch's decomposition is a modular gather the
+# affine-only DMA cannot express, and even narrow+cat fuses into a modular reshape.
+# copy_input forces the buffer boundary .contiguous() does not.
 from torch._inductor.decomposition import decompositions as _inductor_decompositions
 from torch._inductor import lowering as _ind_lowering
 from torch._inductor import ir as _ind_ir

@@ -376,15 +376,9 @@ def _rewrite_togsim_ops(ctx, kernel, ctx_val):
         ipo = ir.InsertionPoint(op)
         if name == ts.DMA:
             dims = attr_i64_array(op, ts.ATTR_DIMS)
-            # The DRAM element offset is the togsim.dma operand (the original
-            # affine index, kept live by build_skeleton); pass it as a call
-            # operand so convert-arith-to-emitc lowers the address arithmetic
-            # into the producer (P3 approach A). The runtime adds the tensor base.
-            # Operands carried by build_skeleton: [dram_index, tag_index] (each
-            # optional). Pass each as a call operand so convert-arith-to-emitc
-            # lowers it; reference it from `args` by its operand position. offset
-            # -> DRAM byte address (runtime adds the tensor base); tag_slot -> the
-            # SRAM tile slot (runtime uses it for double-buffer/SRAM-capacity).
+            # build_skeleton carries [dram_index, tag_index] (each optional) as
+            # operands. Pass each as a call operand so convert-arith-to-emitc lowers
+            # the address arithmetic into the producer; the runtime adds the base.
             ins = list(op.operation.operands)
             dram_operand = ins[0] if len(ins) >= 1 else None
             tag_operand = ins[1] if len(ins) >= 2 else None

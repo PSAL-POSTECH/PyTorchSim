@@ -41,8 +41,8 @@ the same `tag_id` + tag index. They pair at runtime by `(tag_id, tag_slot)` via
 the Core's tag table (the dma signals the tag at data-arrival; the barrier waits
 it). `tag_id` (which tag memref) is distinct from `tag_slot` (the SRAM tile slot,
 used for the double-buffer / capacity model). A sync (non-async) dma is blocking,
-so it needs no barrier. (Supersedes the earlier static `event_id` + `togsim.wait`
-design, which could not express per-iteration pairing.)
+so it needs no barrier. The key must carry a runtime component: one static dma op
+runs once per loop iteration, so a compile-time id cannot express the pairing.
 
 Keep this in lockstep with TOGSim/include/togsim_runtime.h (TOGSIM_ABI_VERSION).
 """
@@ -70,9 +70,8 @@ ENTRY_SYMBOL = "togsim_kernel"
 TILE_SYMBOL = "togsim_kernel_tile"
 
 #: runtime callees emitted directly by lower_to_emitc (not skeleton ops), kept in
-#: lockstep with togsim_runtime.h. DISPATCH_CALLEE is the higher-order wrapper the
-#: dispatcher loop calls per work-item (round-robins a core + TILE_BEGIN/END);
-#: TILE_SYMBOL is passed to it as the function pointer.
+#: lockstep with togsim_runtime.h. DISPATCH_CALLEE is the per-work-item wrapper the
+#: dispatcher loop calls, with TILE_SYMBOL as its function pointer.
 DISPATCH_CALLEE = "togsim_dispatch"
 
 # ---- attribute keys -------------------------------------------------------

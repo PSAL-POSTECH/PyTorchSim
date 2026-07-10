@@ -564,10 +564,9 @@ class TOGSimulator():
             os.fsync(trace_file.fileno())
 
         try:
-            # Drive the simulation from the emitted trace.so (the C++ TOG path).
-            # The ONNX --models_list path remains only for callers that pass an ONNX
-            # TOG without a trace.so (the STONNE sparse path); the normal compile
-            # always emits trace.so next to write_path.
+            # Drive the simulation from the emitted trace.so (the C++ TOG path). The
+            # ONNX --models_list path remains only for callers without a trace.so (the
+            # STONNE sparse path); the normal compile always emits one.
             trace_so = os.path.join(os.path.dirname(str(model_path)), "trace.so")
             cycle_tsv = os.path.join(os.path.dirname(str(model_path)), "trace_cycles.tsv")
             base_cmd = TOGSimulator.get_togsim_command(config_path, togsim_path)

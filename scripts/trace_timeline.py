@@ -35,11 +35,9 @@ _LANE = {"MOVIN": "dma", "MOVOUT": "dma"}
 _HIDE = {"MEMORY_BAR", "COMPUTE_BAR", "TILE_BEGIN", "TILE_END"}
 _CT_NAME = {0: "vector", 1: "matmul", 2: "preload"}
 
-# Perfetto/catapult reserved color names; slices are tinted by tile (= the
-# togsim_dispatch work-item / output tile) so one tile's ops share a color across
-# lanes/cores. 16 names so a core's tiles (which stride by num_cores) stay
-# distinct -- an 8-name palette collapsed to 4 colors per core under 2-core
-# even/odd assignment.
+# Perfetto/catapult reserved color names. Slices are tinted per work-item tile, so one
+# tile's ops share a color across lanes. 16 names, because a core's tiles stride by
+# num_cores and an 8-name palette collapses to 4 colors per core on 2 cores.
 _TILE_PALETTE = ["good", "bad", "terrible", "yellow", "olive", "rail_response",
                  "rail_load", "rail_animation", "rail_idle", "thread_state_running",
                  "thread_state_runnable", "thread_state_iowait",
@@ -167,12 +165,9 @@ def to_chrome(insts, num_sa=1):
 
     nsa = max(num_sa, 1)
     for core, u in sorted(by_core.items()):
-        # DMA data crossing the DRAM bus, split by direction (reads and writes are
-        # asymmetric). A LOAD's data comes back on the response, so its bar runs
-        # [first DRAM response, data-ready]. A STORE's data goes out with the
-        # request (fire-and-forget; its acks arrive after it has finished), so its
-        # bar runs [issued, finished]. Serialized per direction so each op is one
-        # visible bar: a packed row = the bus is saturated, gaps = it is idle.
+        # DMA data on the DRAM bus, split by direction: a LOAD's data returns on the
+        # response, so its bar is [first response, data-ready]; a STORE's goes out with
+        # the request, so its bar is [issued, finished]. Serialized per direction.
         for lane, op, sk, ek in (("dram-rd", "MOVIN", "first_resp", "resp"),
                                  ("dram-wr", "MOVOUT", "issued", "finished")):
             free = 0

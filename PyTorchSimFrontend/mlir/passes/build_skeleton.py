@@ -268,11 +268,9 @@ def _strip_loop_iter_args(block):
     iter_args: body uses of an iter_arg become its init value, the loop result
     becomes its init, and the now-orphaned accumulate ops are removed by _dce.
     """
-    # Only strip a loop whose RESULTS are unused (dead for the trace): the carried
-    # value goes nowhere live, so dropping it is safe. A loop whose result still
-    # feeds a kept op (e.g. an index accumulator consumed by a togsim.dma address)
-    # is left untouched. Run after _dce so the result store is already gone; then
-    # nested reductions free up inner results round by round (outer stripped first).
+    # Only strip a loop whose RESULTS are unused: a loop whose result still feeds a
+    # kept op (an index accumulator behind a togsim.dma address) is left alone. Run
+    # after _dce, so nested reductions free up inner results round by round.
     while True:
         tgt = None
         for op in walk_ops(block):

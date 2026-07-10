@@ -632,9 +632,8 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
                 self.kernel_group.args.make_inplace(arg_name, arg_name)
 
             # index_add: let the MVOUT do out[idx] += val. The DMA processes positions
-            # sequentially, so duplicate indices accumulate correctly regardless of tile
-            # size -- unlike the compute gather-add-overwrite, which loses duplicates that
-            # land in the same (non-dividing) tile.
+            # sequentially, so duplicate indices accumulate correctly -- unlike the compute
+            # gather-add-overwrite, which loses duplicates landing in the same tile.
             accumulate = (mode == "atomic_add")
             index, offset_desc = self.convert_indirect_indexing(index)
         dram_var = self.kernel_group.args.output(name)
@@ -1216,10 +1215,9 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         src_code, meta_code = super().codegen_nodes(nodes, kernel_name)
         self._prepare_simulator_headers(src_code)
         if "autotune" in extension_config.codegen_mapping_strategy and extension_config.pytorchsim_timing_mode:
-            # Use temporaries: autotune returns [None, None, None] when it cannot
-            # autotune (e.g. a size-1 pointwise kernel with ranges == [1]), and
-            # unpacking into meta_code would clobber the valid arg_attributes that
-            # the fall-through below returns.
+            # Use temporaries: autotune returns [None, None, None] when it cannot autotune
+            # (a size-1 pointwise kernel with ranges == [1]), and unpacking into meta_code
+            # would clobber the valid arg_attributes the fall-through below returns.
             optimal_src_code, optimal_meta_code = self.autotune(nodes, kernel_name)[:2]
             if optimal_src_code is not None:
                 return optimal_src_code, optimal_meta_code
@@ -1333,13 +1331,9 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         # Case 4+. Tile is 4-D or higher (Convolution epilogue, gathered attention bias,
         # var_mean over an axis whose batch dims got split into many loop vars).
         else:
-            # A reduction tile carries the reduction axis (loop dims >= reduction_depth).
-            # It must place that axis-group OUTERMOST in the per-lane layout so the 2-D
-            # [reduction | batch] multi_reduction reduces the reduction axis (not a batch
-            # axis). Same reorder the 3-D case does, generalized to any rank: an indirect
-            # attention-bias gather blocks a head*query dim-merge and leaves head in-lane,
-            # and a var_mean's token axis can split into several batch loop vars -- both
-            # leave a batch axis inner-to-reduction under the default row-major order.
+            # A reduction tile must place the reduction axis-group OUTERMOST in the
+            # per-lane layout, so the 2-D [reduction | batch] multi_reduction reduces the
+            # reduction axis rather than a batch axis left inner by row-major order.
             is_reduction = any(d >= self.reduction_depth for d in local_dims) and not store_reduction
             if is_reduction:
                 r = self.get_nr_rdim()
@@ -1648,11 +1642,9 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
                 if arg.is_Mul and arg.args[0].is_number:
                     offset_stride = int(arg.args[0])
                 index = index.replace(arg, 0)
-            # A bare indirect index (e.g. x[idx]: index IS the symbol, so index.args is empty)
-            # is not caught by the loop above. Zero any remaining indirect symbol so the dram
-            # base offset does not reference the loop-local index value (the per-position gather
-            # is carried by the offset spad); otherwise the DMA offset affine.apply uses %sym
-            # before it is defined.
+            # A bare indirect index (x[idx]: index IS the symbol, so index.args is empty)
+            # escapes the loop above. Zero any remaining indirect symbol -- the per-position
+            # gather rides the offset spad -- else affine.apply uses %sym before it exists.
             index = index.subs({s: 0 for s in index.free_symbols if str(s) in self.indirect_symbols})
             sram_var, _, _, _, tile_shape, _ = self.spad_buffer_dict[first_dim]
             return index, (sram_var, tile_shape, offset_stride)

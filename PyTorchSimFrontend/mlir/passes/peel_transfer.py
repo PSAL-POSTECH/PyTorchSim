@@ -123,10 +123,9 @@ def run(module, vectorlane=128, **_):
             op.erase()
             continue
 
-        # >4 effective dims: peel the outer effective dims into an affine.for nest and
-        # keep the innermost 4. The SRAM slice offset is the lane-banked physical offset
-        # (dims outer than the vlane axis rescaled by stride/split_extent*new_size),
-        # delivered as the transfer's sram_idx; the DRAM offset folds into dram_idx.
+        # >4 effective dims: peel the outer ones into an affine.for nest, keep the
+        # innermost 4. The SRAM slice offset is the lane-banked physical offset,
+        # delivered as sram_idx; the DRAM offset folds into dram_idx.
         peeled, inner = eff[:-4], eff[-4:]
         ndim = len(tile_shape)
         inner_shape = [tile_shape[d] for d in inner]

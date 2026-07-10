@@ -77,12 +77,9 @@ class _GoldenInterpreter(torch.fx.Interpreter):
 
     def run_node(self, n):
         out = super().run_node(n)
-        # Move EVERY tensor output to CPU (preserving dtype) and return it, so a
-        # device-baked op (e.g. arange(device=npu)) or a downstream consumer
-        # (e.g. aten.index, which requires its index tensors on the indexed
-        # tensor's device) sees CPU operands. Only the recorded golden is cast to
-        # float32 for the allclose compare; the propagated value keeps its dtype
-        # so int index tensors stay usable.
+        # Move EVERY tensor output to CPU, preserving dtype, so a device-baked op
+        # (arange(device=npu)) or a consumer that needs co-located operands (aten.index)
+        # sees CPU tensors. Only the recorded golden is cast to float32 for allclose.
         out = torch.utils._pytree.tree_map(
             lambda x: x.detach().to("cpu") if isinstance(x, torch.Tensor) else x, out)
         if isinstance(out, torch.Tensor):

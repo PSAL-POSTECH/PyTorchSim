@@ -42,8 +42,7 @@ from .lower_to_vcix import run_to_vcix  # noqa: F401 (re-exported; standalone/CL
 
 # Module rewrite passes around the one remaining mlir-opt pass (-test-loop-padding).
 # Each exposes MARKERS + run(module, **opts); run_module_passes parses once per phase.
-# togsim.transfer stays through the pipeline (no more memref.dma_start): it lowers
-# directly to Gemmini at the end (lower_transfer_to_gemmini); loop-padding runs opaquely.
+# togsim.transfer survives to lower_transfer_to_gemmini; loop-padding runs opaquely.
 PRE_OPT_PASSES = [
     lower_vlane_idx,
 ]
@@ -79,10 +78,9 @@ def run_module_passes(in_path, out_path, passes, **opts):
             p.run(module, **opts)
         out = str(module)
 
-    # Atomic write: run_python_passes rewrites the kernel .mlir in place outside
-    # load()'s FileLock, so a concurrent compile of the same source must never see a
-    # truncated file -- mlir-opt would parse it to an empty module and silently drop
-    # the kernel (-> undefined reference to wrapper_kernel at link).
+    # Atomic write: this rewrites the kernel .mlir in place outside load()'s FileLock,
+    # and a concurrent compile must never see a truncated file -- mlir-opt would parse
+    # it to an empty module and silently drop the kernel.
     from torch._inductor.codecache import write_atomic
     write_atomic(out_path, out)
     return True

@@ -1,4 +1,4 @@
-"""dep_analysis.py -- dependency-edge analysis for the C++ trace pipeline (P3, sec 10).
+"""dep_analysis.py -- dependency-edge analysis for the C++ trace pipeline (sec 10).
 
 The current TOG pass does NO dependency analysis (it emits a lexical loop tree +
 runtime tags). This module derives the producer->consumer edges that the explicit
@@ -42,11 +42,9 @@ def _global_of(memref_val):
     return None
 
 
-# Ops that touch SRAM-buffer DATA, by category. A view op (subview/reinterpret_cast)
-# instead PRODUCES a memref -- pure address computation, skipped here; the real access
-# is the load/store using it, whose memref operand _global_of traces back through the
-# view to the @global. Anything else carrying a memref operand raises, so a NEW fusion
-# pattern is caught at compile time rather than as a silent runtime deadlock.
+# Ops that touch SRAM-buffer DATA, by category. A view op only computes an address,
+# so it is skipped; the real access is the load/store using it. Anything else with a
+# memref operand raises, catching a new fusion pattern at compile time.
 _LOAD_OPS = {"vector.transfer_read", "affine.vector_load", "vector.load",
              "memref.load", "affine.load"}
 _STORE_OPS = {"vector.transfer_write", "affine.vector_store", "vector.store",

@@ -34,10 +34,9 @@ from ._mlir_util import walk_ops, i32, i64, attr_bool
 MARKERS = ("linalg.matmul", "math.exp", "math.erf", "math.tanh", "math.sin",
            "math.cos", "math.log", "math.atan")
 
-# math op name -> (opcode, imm) for the vcix.v.iv lowering (mirror Math*ToVCIX).
-# The sf.vc.v.iv opcode field is only 2 bits (uimm2, 0-3): erf(0)/tanh(1)/
-# sin,cos,log,atan(2)/exp(3). Opcode 2 is shared and disambiguated by imm
-# (sin=0, cos=1, log=2, atan=3), matching the spike rs1 / gem5 VS1 sub-opcodes.
+# math op name -> (opcode, imm) for the vcix.v.iv lowering (mirror Math*ToVCIX). The
+# sf.vc.v.iv opcode field is 2 bits: erf(0)/tanh(1)/sin,cos,log,atan(2)/exp(3), and
+# the shared opcode 2 is disambiguated by imm (sin=0, cos=1, log=2, atan=3).
 _MATH_VIV = {
     "math.exp":  (0b000011, 0),
     "math.erf":  (0b000000, 0),
@@ -372,10 +371,9 @@ def _lower_matmul(op, SS, vlen):
     BiasIdx = None
     subtileM, subtileN, subtileK = M, N, K
     a_subk = b_subk = None
-    # Mirror the C++ isAInitialized / isBInitialized flags: an operand is
-    # "initialized" either by an MVIN togsim.transfer (tag found below) or by a
-    # preceding affine.vector_store into its root memref (the fused case, e.g.
-    # SDPA scores.V where B is the softmax output produced in-place, not DMAed).
+    # Mirror the C++ isAInitialized / isBInitialized flags: an operand is initialized
+    # either by an MVIN togsim.transfer (tag found below) or by a preceding
+    # affine.vector_store into its root memref (the fused case, e.g. SDPA scores.V).
     isAInit = isBInit = False
 
     def _root(v):
@@ -483,14 +481,9 @@ def _lower_matmul(op, SS, vlen):
         # --- B dma_wait ---
         nacc = len(acc)
         acc_ivs = [_loop_iv(l) for l in acc]
-        # LEGACY behavior: coefficient -1 on each accumulation (reduction) loop var
-        # is a SENTINEL marking "this tag dim is the reduction axis", not an
-        # arithmetic offset. The legacy TOG path (TileGraphParser.cc) honors it by
-        # routing those vars to a separate accum tag component and skipping stride
-        # -1. The C++ trace path does NOT honor it: build_skeleton._strip_accum_terms
-        # drops these -1 terms so the memory_barrier slot stays subtile-only and
-        # pairs with its async load. Kept here for byte-identity with the C++
-        # -test-pytorchsim-to-vcix pass; remove (do not flag) once legacy retires.
+        # LEGACY: coefficient -1 on an accumulation loop var is a SENTINEL for "this
+        # tag dim is the reduction axis", not an offset. The trace path strips it
+        # (build_skeleton._strip_accum_terms); remove here once legacy retires.
         bexpr = ir.AffineDimExpr.get(0) * -1
         for i in range(1, nacc):
             bexpr = bexpr + ir.AffineDimExpr.get(i) * -1
@@ -547,10 +540,8 @@ def _lower_matmul(op, SS, vlen):
 
     with body_ip:
         # --- A dma_wait ---
-        # LEGACY behavior (see the B dma_wait above): the -1 coefficients mark the
-        # reduction axis for the legacy TOG path; the trace path strips them in
-        # build_skeleton._strip_accum_terms. Kept for byte-identity with the C++
-        # -test-pytorchsim-to-vcix pass; remove once legacy retires.
+        # LEGACY: as for the B dma_wait above, the -1 coefficients mark the reduction
+        # axis; the trace path strips them. Remove once legacy retires.
         aexpr = ir.AffineDimExpr.get(0) * -1
         for i in range(1, nacc):
             aexpr = aexpr + ir.AffineDimExpr.get(i) * -1

@@ -1,6 +1,5 @@
-"""cycle_table (C3): the precomputed tile_id -> (cycle, overlapping_cycle) table
-the C++ trace pipeline looks up at runtime (docs/design/togsim_cpp_trace.md sec
-6, sec 9.8 task 4).
+"""cycle_table: the precomputed tile_id -> (cycle, overlapping_cycle) table the
+C++ trace pipeline looks up at runtime (docs/design/togsim_cpp_trace.md sec 6).
 
 A `togsim.compute(tile_id=...)` in the trace says *which* tile to compute, not
 how long it takes. Because tiles are fixed size, each tile's cost is invariant
@@ -21,7 +20,7 @@ keyed by `tile_id`. Two numbers per tile, mirroring the legacy TOG:
                               type 2 (MatmulPreload)  -> max(cycle - w_offset, 0)
 
 This module only *builds/serializes* the table from a cycle_list; obtaining the
-cycle_list reuses the existing sample-mode + gem5 path (wired in P3 task 5). The
+cycle_list reuses the existing sample-mode + gem5 path. The
 `tile_id` order matches build_skeleton's `compute_nodes` order, which matches the
 legacy TOG, so the same sampling keys both paths.
 

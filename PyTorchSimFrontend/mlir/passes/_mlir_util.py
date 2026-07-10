@@ -55,11 +55,8 @@ def str_attr(v):
     return ir.StringAttr.get(str(v))
 
 
-# ---------------------------------------------------------------------------
-# attribute readers -- accept an OpView or an Operation; `default` is returned
-# when `key` is absent (callers that want the strict "must be present" behaviour
-# simply never pass an absent key).
-# ---------------------------------------------------------------------------
+# attribute readers -- accept an OpView or an Operation; `default` is returned when
+# `key` is absent.
 def _attrs(op):
     return getattr(op, "operation", op).attributes
 

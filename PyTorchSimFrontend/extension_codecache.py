@@ -141,11 +141,9 @@ class MLIRCodeCache:
         gem5_global_var_header = kwargs.get("gem5_global_var_header")
         if gem5_global_var_header is not None:
             write_atomic(os.path.join(write_path, "gem5_global_var.h"), gem5_global_var_header)
-        # The compile rewrites the kernel .mlir in place (run_python_passes) and reads
-        # it back (mlir-opt). Two compiles of the same source -- the autotune's chosen
-        # candidate and the final kernel -- share a write_path, so hold the per-path
-        # lock across the whole build to keep them from interleaving, and skip the
-        # rebuild when a prior build already finished (its trace.so exists).
+        # The compile rewrites the kernel .mlir in place and reads it back, and two
+        # compiles of the same source share a write_path. Hold the per-path lock across
+        # the build, and skip it when a prior build finished (its trace.so exists).
         from filelock import FileLock
         from PyTorchSimFrontend.mlir.passes import (
             run_python_passes, run_module_passes, POST_OPT_PASSES,
@@ -172,11 +170,8 @@ class MLIRCodeCache:
             else:
                 link_option = ""
             # Compile a validation binary and measure its .spad section to reject
-            # over-spad tilings (SpadOverflowError) -- this must run even in
-            # timing-only / autotune (non-functional) mode, so a tiling that does not
-            # fit the spad is scored infeasible instead of wedging TOGSim. The Spike
-            # *execution* itself stays gated on functional_mode (run_spike, below).
-            # Use custom malloc to avoid size error
+            # over-spad tilings, even in timing-only mode -- else the tiling wedges
+            # TOGSim. Spike *execution* stays gated on functional_mode (run_spike).
             new_link_option = link_option + " -Wl,--wrap=malloc -Wl,--wrap=free"
             cmds = mlir_compile_command(new_input_path, vectorlane_size, vlen=vlen)
             opt_pad_cmd = shlex.split(cmds[0])
@@ -225,12 +220,9 @@ class MLIRCodeCache:
             gem5_llc_cmd = shlex.split(gem5_cmds[2])
 
             try:
-                # mlir-opt now runs only loop-padding/dma-fine-grained/pytorchsim-to-vcix
-                # and writes the post-vcix IR. The tile-operation-graph pass is ported
-                # to Python: run_tog reads that IR, writes the TOG (_tog.py) and the
-                # mutated IR (_custom.mlir: sample-mode step rewrite + compute markers),
-                # replacing the C++ -test-tile-operation-graph pass.
-                # loop-padding(timing, mlir-opt) -> Python fine-grained + vcix (one parse/print)
+                # mlir-opt now runs only loop-padding and writes the post-vcix IR; the
+                # tile-operation-graph pass is ported to Python. run_tog reads that IR and
+                # writes the TOG plus the mutated IR (step rewrite + compute markers).
                 subprocess.check_call(gem5_pad_cmd)
                 run_module_passes(sample_mlir_path + "_padded.mlir",
                                   sample_mlir_path + "_postvcix.mlir",

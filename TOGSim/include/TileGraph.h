@@ -4,6 +4,7 @@
 #include <map>
 #include <queue>
 #include <set>
+#include <functional>
 #include "Tile.h"
 #include "IntervalTree.h"
 
@@ -39,7 +40,22 @@ class TileGraph {
  public:
   TileGraph(std::string path, std::string name) : _path(path), _name(name), _subgraph_vec(), _cpu_graph_map() {}
   void append_subgraph(std::shared_ptr<TileSubGraph> subgraph);
+
+  // --- on-demand construction (single-threaded) --------------------------
+  // `_pull` materializes the NEXT dispatch tile and returns its subgraph, or
+  // nullptr when the producer is exhausted. It is called from allocate_subgraph,
+  // i.e. only when a core actually needs new work, so at most a couple of tiles
+  // are alive at once: peak memory becomes O(tiles in flight), not O(dispatches).
+  // Safe because a dispatch tile is dependency-closed -- the bridge resets its
+  // writers/seeds/tag maps at every tile boundary, so no edge crosses tiles
+  // (measured: cross_tile_edges == 0).
+  void set_tile_source(std::function<std::shared_ptr<TileSubGraph>()> pull) {
+    _pull = std::move(pull);
+  }
+  bool on_demand() const { return (bool)_pull; }
+
   bool empty(int core_id) {
+    if (_pull && !_exhausted) return false;    // more tiles can still be made
     if (_vec_index != _subgraph_vec.size()) {
         return false;
     }
@@ -132,13 +148,15 @@ class TileGraph {
 
  private:
   int _vec_index=0;
+  std::function<std::shared_ptr<TileSubGraph>()> _pull;   // empty -> legacy
+  bool _exhausted = false;
+  bool refill();
   std::string _path;
   std::string _name = "?";
   unsigned int _kernel_id = 0;
   std::vector<std::string> _loop_index_list;
   std::vector<std::tuple<int, int, int>> _ranges;
   std::vector<std::shared_ptr<TileSubGraph>> _subgraph_vec;
-  std::vector<std::shared_ptr<TileSubGraph>> _finished_subgraph_vec;
   std::map<int, std::map<int, std::shared_ptr<TileSubGraph>>> _cpu_graph_map;
   std::shared_ptr<IntervalTree<unsigned long long, int>> _cache_plan;
   cycle_type _arrival_time;

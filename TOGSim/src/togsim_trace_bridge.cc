@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <map>
+#include <set>
 #include <utility>
 #include <vector>
 
@@ -58,86 +59,108 @@ std::shared_ptr<Instruction> make_compute(const togsim::TraceRec& t) {
   return inst;
 }
 
-}  // namespace
 
-std::unique_ptr<TileGraph> trace_to_tilegraph(
-    const char* so_path, const int64_t* shape_args, int32_t n_shape,
-    const uint64_t* tensor_base, int32_t n_tensors,
-    const int64_t* cyc, const int64_t* ovl, int32_t n_tiles,
-    const int32_t* partition_cores, int32_t n_partition_cores,
-    const std::string& name) {
+// All builder state for one kernel. Heap-allocated and owned by the TileGraph's
+// tile source, so it survives between on-demand materializations of a tile.
+struct BuildState {
+  togsim::LazyProducer prod;
+  size_t next = 0;               // next work-item to materialize
+  std::map<int64_t, size_t> buf_bytes;
+  std::shared_ptr<TileSubGraph> sg_out;   // the tile just built
+
+  std::shared_ptr<TileSubGraph> sg;
+  std::shared_ptr<Tile> tile;
+  std::map<int64_t, std::vector<std::shared_ptr<Instruction>>> writers;
+  std::map<int64_t, std::vector<std::shared_ptr<Instruction>>> seeds;
+  std::map<std::pair<int32_t, uint64_t>,
+           std::pair<int64_t, std::shared_ptr<Instruction>>> current_dma;
+  std::map<std::pair<int32_t, uint64_t>,
+           std::pair<int64_t, std::shared_ptr<Instruction>>> bar_for_load;
+  int64_t next_tag = 0;
+  int cur_tile_group = -1;
+  std::set<int64_t> cur_tile_bufs;
+  size_t cur_tile_footprint = 0;
+
+  // SRAM buffer versions. A version is NOT scoped to a work-item -- the spad is
+  // one physical resource, so a buffer reused by the next tile is a new version
+  // that must wait for the old one to free. The version *schedule* is therefore
+  // precomputed by sram_schedule(), which allocates nothing: the builder can tag
+  // a version's last reader as it goes instead of retaining every reader until
+  // end-of-stream (which is what forced the whole graph to stay in memory).
+  int64_t next_alloc = 0;
+  std::map<int64_t, int64_t> cur_alloc;   // buf -> current version id
+  std::map<int64_t, bool> open_ver;       // buf -> version still accepting writes
+  std::vector<char> has_readers;                        // version -> ever read?
+  std::vector<std::pair<size_t, size_t>> last_reader;   // version -> (work-item, record)
+  size_t item = 0, rec = 0;               // position of the record being fed
+};
+
+// Walk the record stream once, allocating nothing, and work out for each SRAM
+// buffer version (a) whether anything ever reads it and (b) where its LAST
+// reader sits. Mirrors sram_on_load / sram_on_write / sram_on_read exactly, so
+// the version ids it mints are the ones the builder will mint.
+void sram_schedule(BuildState& S) {
   using togsim::TraceRec;
-  // The record stream is never materialized: each pass replays the producer and
-  // consumes records as they are emitted. togsim_kernel is a pure emitter, so the
-  // replay is identical; retaining the stream would double peak memory (a large
-  // 8x8 conv OOMs). See togsim_loader.h run_producer_stream.
-  auto run_pass = [&](const togsim::TraceSink& sink) {
-    return togsim::run_producer_stream(so_path, shape_args, n_shape,
-                                       tensor_base, n_tensors, cyc, ovl, n_tiles,
-                                       partition_cores, n_partition_cores, sink);
+  int64_t next_alloc = 0;
+  std::map<int64_t, int64_t> cur_alloc;
+  std::map<int64_t, bool> open_ver;
+  size_t item = 0, rec = 0, pos = 0;
+  auto on_open = [&](int64_t b) {
+    if (!cur_alloc.count(b) || !open_ver[b]) {
+      cur_alloc[b] = next_alloc++;
+      open_ver[b] = true;
+      S.has_readers.push_back(0);
+      S.last_reader.emplace_back((size_t)-1, (size_t)-1);
+    }
   };
+  auto on_read = [&](int64_t b) {
+    auto it = cur_alloc.find(b);
+    if (it == cur_alloc.end()) return;
+    S.has_readers[it->second] = 1;
+    S.last_reader[it->second] = {item, pos};
+    open_ver[b] = false;
+  };
+  auto in = [](const std::vector<int64_t>& v, int64_t b) {
+    return std::find(v.begin(), v.end(), b) != v.end();
+  };
+  togsim::TraceSink sink = [&](const TraceRec& t) {
+    pos = rec++;
+    if (t.kind == TraceRec::DMA) {
+      if (t.dir == 1) { for (int64_t b : t.read_bufs) on_read(b); }            // store drains the spad
+      else            { for (int64_t b : t.write_bufs) on_open(b); }           // load fills it
+    } else if (t.kind == TraceRec::COMPUTE) {
+      for (int64_t b : t.read_bufs)  if (!in(t.write_bufs, b)) on_read(b);
+      for (int64_t b : t.write_bufs) if (!in(t.read_bufs, b) && S.buf_bytes.count(b)) on_open(b);
+    }
+  };
+  for (item = 0; item < S.prod.num_items(); item++) { rec = 0; S.prod.run_item(item, sink); }
+}
 
-  // Spad bytes per buffer id, taken from the DMA records that touch it (load fills
-  // its dst, store drains its src) -- the authoritative tile size. A compute output
-  // (never DMA-loaded but stored) gets its footprint from its store record. Built
-  // in a pre-pass so it is known before the producing compute is processed.
-  auto rec_bytes = [](const TraceRec& t) {        // single source of the tile footprint
+// Materialize exactly one dispatch tile (work-item `S.next`) and return its
+// subgraph; nullptr once the producer is exhausted.
+std::shared_ptr<TileSubGraph> build_one_tile(BuildState& S) {
+  using togsim::TraceRec;
+  if (S.next >= S.prod.num_items()) return nullptr;
+  auto& sg = S.sg; auto& tile = S.tile;
+  auto& writers = S.writers; auto& seeds = S.seeds;
+  auto& current_dma = S.current_dma; auto& bar_for_load = S.bar_for_load;
+  auto& next_tag = S.next_tag; auto& cur_tile_group = S.cur_tile_group;
+  auto& cur_tile_bufs = S.cur_tile_bufs; auto& cur_tile_footprint = S.cur_tile_footprint;
+  auto& next_alloc = S.next_alloc; auto& cur_alloc = S.cur_alloc;
+  auto& open_ver = S.open_ver;
+  auto& buf_bytes = S.buf_bytes;
+  auto rec_bytes = [](const TraceRec& t) {
     size_t numel = 1;
     for (auto d : t.dims) numel *= (size_t)d;
     return numel * (t.elem_bits / 8);
   };
-  std::map<int64_t, size_t> buf_bytes;
-  if (!run_pass([&](const TraceRec& t) {          // PASS 1 -- footprints only
-        if (t.kind != TraceRec::DMA) return;
-        const auto& bs = (t.dir == 1) ? t.read_bufs : t.write_bufs;  // store reads spad, load writes spad
-        for (int64_t b : bs) buf_bytes[b] = rec_bytes(t);
-      }))
-    return nullptr;
-
-  auto tg = std::make_unique<TileGraph>(name, name);
-  // Empty cache plan (no L2/CMEM persistence) -- append_subgraph propagates it
-  // to each subgraph, and DMA::is_cacheable dereferences it, so it must be a
-  // valid (if empty) IntervalTree rather than null.
-  tg->init_cache_plan({});
-
-  std::shared_ptr<TileSubGraph> sg;
-  std::shared_ptr<Tile> tile;
-  // The explicit dependency DAG (sec 10): per SRAM buffer, writers(b) is the SET of
-  // current producers' DONE-handles and readers(b) its consumers. Scoped per
-  // work-item, so distinct work-items are independent (-> parallel).
-  std::map<int64_t, std::vector<std::shared_ptr<Instruction>>> writers;       // buffer id -> current producers (DONE-handles)
-  // The non-MATMUL subset of writers(b) (the accumulator's init/bias seed). An
-  // is_mm_accum UNION only ever appends MATMULs, so this set is fixed between
-  // REPLACEs -- keeping it lets the UNION skip re-scanning the whole (O(K)-long)
-  // writers(b) on every one of the K accumulating matmuls, which was O(K^2).
-  std::map<int64_t, std::vector<std::shared_ptr<Instruction>>> seeds;
-  // An async dma is paired with its explicit memory_barrier(s) by the runtime tag
-  // (tag_id, tag_slot). It is 1 load : N barriers (the load happens once per
-  // reduction iteration; each consumer in that iteration is preceded by a wait on
-  // the same tag), so we track the CURRENT (most recent) load per (tag_id,
-  // tag_slot) -- not a FIFO. Each load gets a fresh `uniq` Core key, so successive
-  // reduction iterations (multi-tile-K, conv) never collide in the tag table; the
-  // iteration's barriers reuse that load's uniq. Correct because the load nest and
-  // its consumer nest run in order within the reduction body (no cross-iteration
-  // prefetch). Scoped per work-item.
-  std::map<std::pair<int32_t, uint64_t>,
-           std::pair<int64_t, std::shared_ptr<Instruction>>> current_dma;
-  // Dedup barriers on the CURRENT load of a (tag_id, tag_slot): a conv reads one
-  // loaded subtile from many matmuls, so its per-consumer waits collapse to one bar.
-  // A new load bumps uniq, so a genuine new wait still gets its own bar.
-  std::map<std::pair<int32_t, uint64_t>,
-           std::pair<int64_t, std::shared_ptr<Instruction>>> bar_for_load;
-  int64_t next_tag = 0;   // mints a unique Core tag key per dma record
-  int cur_tile_group = -1;   // work-item index, bumped per TILE_BEGIN (trace grouping)
-  std::set<int64_t> cur_tile_bufs;   // distinct spad buffers this tile touches
-  size_t cur_tile_footprint = 0;     // their footprint sum = the tile's resident set
 
   auto flush = [&]() {
     if (sg && tile) {
       tile->set_spad_footprint(cur_tile_footprint);   // distinct-buffer resident set (1- vs 2-dispatch)
       sg->add_tile(tile);
       tile->set_owner(sg);
-      tg->append_subgraph(sg);
+      S.sg_out = sg;   // hand this tile to the consumer
     }
     sg.reset();
     tile.reset();
@@ -197,14 +220,15 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(
     tile->append_instuction(inst);
   };
 
-  // SRAM-capacity tracking (sec 10.4): a coarse tile is one version of its buffer,
-  // freed once all its consumers have issued. NOT reset in flush() -- the spad is a
-  // physical per-core resource. v1 is single-core; multi-core would key by (core, buf).
-  int64_t next_alloc = 0;
-  std::map<int64_t, int64_t> cur_alloc;   // buf -> current version id
-  std::map<int64_t, bool> open_ver;       // buf -> version still accepting writes
-  struct Ver { std::vector<std::shared_ptr<Instruction>> loads, readers; };
-  std::map<int64_t, Ver> vers;
+  // --- SRAM-capacity tracking (buffer-version allocations, sec 10.4) ---
+  // A coarse tile = one version of its buffer; the fine DMAs that fill it share
+  // one allocation, freed once all the version's consumers have issued (refcount
+  // -> 0). NOT reset in flush(): the spad is one physical per-core resource, so a
+  // buffer reused by the next reduction iter / work-item is a NEW version that
+  // must wait for the old one to free (WAR / double-buffer). Both DMA-loaded
+  // buffers AND compute outputs (the accumulator, vector epilogue results) are
+  // tracked; the virtual SA-weights are not (weight slots model them). (v1:
+  // single-core; multi-core would key cur_alloc/vers by (core, buf).)
   // Add each buffer once to the current tile's footprint (reloads in a K-loop reuse the same id).
   auto note_bufs = [&](const std::vector<int64_t>& bufs) {
     for (int64_t b : bufs)
@@ -213,14 +237,14 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(
         if (it != buf_bytes.end()) cur_tile_footprint += it->second;
       }
   };
+  // a version nothing ever reads is never freed -> leave it untracked
+  auto tracked = [&](int64_t a) { return S.has_readers[a] ? a : (int64_t)-1; };
   auto sram_on_load = [&](int64_t b, const std::shared_ptr<Instruction>& ld) {
     if (!cur_alloc.count(b) || !open_ver[b]) {   // a read closed it -> new version
       cur_alloc[b] = next_alloc++;
       open_ver[b] = true;
-      vers[cur_alloc[b]] = {};
     }
-    ld->set_sram_alloc(cur_alloc[b]);
-    vers[cur_alloc[b]].loads.push_back(ld);
+    ld->set_sram_alloc(tracked(cur_alloc[b]));
   };
   // A compute that freshly produces b opens a version like a load, carrying b's
   // footprint; its last reader frees it -- identical lifecycle to a load.
@@ -230,31 +254,23 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(
     if (!cur_alloc.count(b) || !open_ver[b]) {   // a consuming read closed it -> new version
       cur_alloc[b] = next_alloc++;
       open_ver[b] = true;
-      vers[cur_alloc[b]] = {};
-      w->set_sram_alloc(cur_alloc[b]);
+      w->set_sram_alloc(tracked(cur_alloc[b]));
       w->set_sram_footprint(bb->second);
-      vers[cur_alloc[b]].loads.push_back(w);
     }
     // already-open version (further producing writes): same physical bytes, no re-add.
   };
   auto sram_on_read = [&](int64_t b, const std::shared_ptr<Instruction>& rd) {
     auto it = cur_alloc.find(b);
     if (it == cur_alloc.end()) return;           // not a load buffer -> untracked
-    vers[it->second].readers.push_back(rd);
+    // The version's LAST reader frees it. sram_schedule() already found where
+    // that reader sits, so tag it now rather than retaining every reader.
+    if (S.last_reader[it->second] == std::make_pair(S.item, S.rec))
+      rd->add_sram_release(it->second);
     open_ver[b] = false;                          // next write starts a new version
   };
-  auto sram_finalize = [&]() {                    // tag only each version's LAST reader
-    for (auto& kv : vers) {
-      auto& v = kv.second;
-      if (v.readers.empty()) {                    // no consumer -> never freed: untrack
-        for (auto& ld : v.loads) ld->set_sram_alloc(-1);
-        continue;
-      }
-      v.readers.back()->add_sram_release(kv.first);  // it frees the whole version on issue
-    }
-  };
 
-  auto feed = [&](const TraceRec& t) {            // PASS 2 -- build, one record at a time
+  auto feed = [&](const TraceRec& t) {            // build, one record at a time
+    struct RecTick { size_t& r; ~RecTick() { ++r; } } tick{S.rec};
     if (t.kind == TraceRec::TILE_BEGIN) {
       // togsim_dispatch opened a work-item -> new subgraph (bound to its core) +
       // tile. The scope runs until the matching TILE_END (the dispatch wrapper
@@ -338,8 +354,52 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(
       for (int64_t b : t.write_bufs) if (!in(t.read_bufs, b))  sram_on_write(b, inst);  // fresh outputs
     }
   };
-  if (!run_pass(feed)) return nullptr;
-  flush();
-  sram_finalize();   // readers per version are now final -> set each version's refcount
+
+  S.item = S.next; S.rec = 0;
+  S.prod.run_item(S.next++, feed);
+  auto out = std::move(S.sg_out);
+  S.sg_out.reset();
+  return out;
+}
+
+}  // namespace
+
+std::unique_ptr<TileGraph> trace_to_tilegraph(
+    const char* so_path, const int64_t* shape_args, int32_t n_shape,
+    const uint64_t* tensor_base, int32_t n_tensors,
+    const int64_t* cyc, const int64_t* ovl, int32_t n_tiles,
+    const int32_t* partition_cores, int32_t n_partition_cores,
+    const std::string& name) {
+  using togsim::TraceRec;
+  auto S = std::make_shared<BuildState>();
+
+  // Indexing pass, which doubles as the spad-footprint pre-pass: one full
+  // producer run that records each togsim_dispatch (tile fn, induction vars,
+  // core) so the work-item can be re-invoked on its own later, while streaming
+  // every record -- including any emitted outside a dispatch, which belong to no
+  // work-item and never enter the graph -- into the footprint sink. It builds no
+  // Instruction.
+  auto rec_bytes = [](const TraceRec& t) {        // single source of the tile footprint
+    size_t numel = 1;
+    for (auto d : t.dims) numel *= (size_t)d;
+    return numel * (t.elem_bits / 8);
+  };
+  togsim::TraceSink footprint = [&](const TraceRec& t) {
+    if (t.kind != TraceRec::DMA) return;
+    const auto& bs = (t.dir == 1) ? t.read_bufs : t.write_bufs;  // store reads spad, load writes spad
+    for (int64_t b : bs) S->buf_bytes[b] = rec_bytes(t);
+  };
+  if (!S->prod.open(so_path, shape_args, n_shape, tensor_base, n_tensors,
+                    cyc, ovl, n_tiles, partition_cores, n_partition_cores, &footprint))
+    return nullptr;
+
+  sram_schedule(*S);   // buffer-version lifetimes, materializing no Instruction
+
+  auto tg = std::make_unique<TileGraph>(name, name);
+  // Empty cache plan (no L2/CMEM persistence) -- the tile source propagates it
+  // to each subgraph, and DMA::is_cacheable dereferences it, so it must be a
+  // valid (if empty) IntervalTree rather than null.
+  tg->init_cache_plan({});
+  tg->set_tile_source([S]() { return build_one_tile(*S); });
   return tg;
 }

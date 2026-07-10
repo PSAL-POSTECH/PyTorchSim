@@ -158,18 +158,6 @@ RunResult run_producer(const char* so_path,
   return res;
 }
 
-bool run_producer_stream(const char* so_path,
-                         const int64_t* shape_args, int32_t n_shape,
-                         const uint64_t* tensor_base, int32_t n_tensors,
-                         const int64_t* cyc, const int64_t* ovl, int32_t n_tiles,
-                         const int32_t* partition_cores, int32_t n_partition_cores,
-                         const TraceSink& sink) {
-  EmitCtx ctx;
-  init_ctx(ctx, tensor_base, n_tensors, cyc, ovl, n_tiles, partition_cores, n_partition_cores);
-  ctx.sink = &sink;
-  return load_and_run(so_path, shape_args, n_shape, ctx);
-}
-
 LazyProducer::~LazyProducer() {
   delete _ctx;   // _lib intentionally left open: the tile fns must stay callable
 }

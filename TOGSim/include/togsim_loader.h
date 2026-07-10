@@ -53,16 +53,9 @@ RunResult run_producer(const char* so_path,
 // The whole recorded stream is O(#tiles) and, for a small systolic array, that is
 // millions of records -- materializing it in a RunResult AND then building the
 // TileGraph from it means both live at peak (measured: ~equal halves of peak RSS,
-// SIGKILL on large 8x8 convs). Callers that need two passes over the stream simply
-// run the producer twice; togsim_kernel is a pure emitter, so replaying it is
-// cheap and yields an identical stream. Returns ok.
+// SIGKILL on large 8x8 convs). The TileGraph builder therefore consumes records
+// through a sink, one work-item at a time (see LazyProducer below).
 using TraceSink = std::function<void(const TraceRec&)>;
-bool run_producer_stream(const char* so_path,
-                         const int64_t* shape_args, int32_t n_shape,
-                         const uint64_t* tensor_base, int32_t n_tensors,
-                         const int64_t* cyc, const int64_t* ovl, int32_t n_tiles,
-                         const int32_t* partition_cores, int32_t n_partition_cores,
-                         const TraceSink& sink);
 // ---------------------------------------------------------------------------
 // On-demand (lazy) production of one work-item at a time.
 //

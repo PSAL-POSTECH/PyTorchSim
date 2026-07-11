@@ -7,7 +7,7 @@ from PyTorchSimFrontend.mlir.mlir_template import MLIRTemplate
 from PyTorchSimFrontend.mlir.mlir_template import MLIRTemplateKernel
 from torch._inductor.ir import IRNode
 from PyTorchSimFrontend.mlir import mlir_common
-from PyTorchSimFrontend.mlir.tile_axis import Axis, build_tile
+from PyTorchSimFrontend.mlir.tile_axis import Axis, build_tile, aliasing
 
 BMM_TEMPLATE = r"""
 // BMM kernel
@@ -180,15 +180,12 @@ class MLIRBMMTemplate(MLIRTemplate):
         nr_reduction_nodes = [node for node in epilogue_nodes if node.is_reduction()] if epilogue_nodes is not None else []
         if nr_reduction_nodes:
             template = BMM_REDUCTION_TEMPLATE
-            epilogue_dim_aliasing = {"index0":"index0", "index1":"index2", "index2": "index1"}
             nr_rdim = 1
         elif prologue_nodes:
             template = BMM_PROLOGUE_TEMPLATE
-            epilogue_dim_aliasing = {"index0":"index0", "index1":"index1", "index2": "index2"}
             nr_rdim = 0
         else:
             template = BMM_TEMPLATE
-            epilogue_dim_aliasing = {"index0":"index0", "index1":"index1", "index2": "index2"}
             nr_rdim = 0
 
         # Prepare tile descriptors. Batch is the outermost SRAM axis and degenerate (one
@@ -196,18 +193,18 @@ class MLIRBMMTemplate(MLIRTemplate):
         X_stride, W_stride = X_tensor.stride(), W_tensor.stride()
         Y_stride = Y.get_layout().stride
 
-        X_tile_desc, X_idx = build_tile(
-            "X_buffer", kernel.vector_lane,
-            axes={"b": Axis(1,      X_stride[0], loop="index0"),
+        X_axes = {"b": Axis(1,      X_stride[0], loop="index0"),
                   "m": Axis(TILE_M, X_stride[1], loop="index1"),
-                  "k": Axis(TILE_K, X_stride[2], loop="index3")},
+                  "k": Axis(TILE_K, X_stride[2], loop="index3")}
+        X_tile_desc, X_idx = build_tile(
+            "X_buffer", kernel.vector_lane, X_axes,
             sram_order=("b", "k", "m"), lane="k", offset=X.get_layout().offset)
 
-        W_tile_desc, W_idx = build_tile(
-            "W_buffer", kernel.vector_lane,
-            axes={"b": Axis(1,      W_stride[0], loop="index0"),
+        W_axes = {"b": Axis(1,      W_stride[0], loop="index0"),
                   "k": Axis(TILE_K, W_stride[1], loop="index3"),
-                  "n": Axis(TILE_N, W_stride[2], loop="index2")},
+                  "n": Axis(TILE_N, W_stride[2], loop="index2")}
+        W_tile_desc, W_idx = build_tile(
+            "W_buffer", kernel.vector_lane, W_axes,
             sram_order=("b", "n", "k"), lane="n", offset=W.get_layout().offset)
 
         # The reduction template sweeps N outside M, so its tile is declared (B, N, M).
@@ -218,8 +215,10 @@ class MLIRBMMTemplate(MLIRTemplate):
             n = Axis(TILE_N, stride[2], loop="index2")
             return {"b": b, "n": n, "m": m} if nr_rdim else {"b": b, "m": m, "n": n}
 
+        Y_axes = y_axes(Y_stride)
         Y_tile_desc, Y_idx = build_tile(
-            "Y_buffer", kernel.vector_lane, y_axes(Y_stride), sram_order=("b", "n", "m"), lane="n")
+            "Y_buffer", kernel.vector_lane, Y_axes, sram_order=("b", "n", "m"), lane="n")
+        epilogue_dim_aliasing = aliasing(Y_axes)
 
         # Extract Bias info. It accumulates into the Y buffer, so it shares Y's axes.
         if Bias is not None:
@@ -253,35 +252,26 @@ class MLIRBMMTemplate(MLIRTemplate):
 
         if prologue_nodes:
           prologue_output_name = list(prologue_nodes[0].read_writes.writes)[0].name
-          if prologue_output_name == X.get_name():
-            # Input fusion case
-            prologue_var = "X"
-            prologue_sram_var = "X_buffer"
-            prologue_tile_desc = X_tile_desc
-            prologue_dim_aliasing = {"index0":"index0", "index1":"index1", "index2":"index3"}
-            is_input_fused = True
+          is_input_fused = prologue_output_name == X.get_name()
+          if is_input_fused:
+              prologue_var, prologue_sram_var = "X", "X_buffer"
+              prologue_tile_desc, prologue_dim_aliasing = X_tile_desc, aliasing(X_axes)
           else:
-            # Weight fusion case
-            prologue_var = "W"
-            prologue_sram_var = "W_buffer"
-            prologue_tile_desc = W_tile_desc
-            prologue_dim_aliasing = {"index0":"index0", "index1":"index3", "index2":"index2"}
-            is_input_fused = False
- 
+              prologue_var, prologue_sram_var = "W", "W_buffer"
+              prologue_tile_desc, prologue_dim_aliasing = W_tile_desc, aliasing(W_axes)
+
           kernel.prologue_info = dict (
               input_dram_var = "X",
               input_sram_var = "X_buffer",
               input_tile_desc = X_tile_desc,
               input_idx = X_idx,
               input_subtile_size = [1, TILE_M, TILE_K], # TODO. Curently, Subtiling is not supported for prologue template
-              input_dim_aliasing = {"index0":"index0", "index1":"index1", "index2":"index3"},
 
               weight_dram_var = "W",
               weight_sram_var = "W_buffer",
               weight_tile_desc = W_tile_desc,
               weight_idx = W_idx,
               weight_subtile_size = [1, TILE_K, TILE_N], # TODO. Curently, Subtiling is not supported for prologue template
-              weight_dim_aliasing = {"index0":"index0", "index1":"index3", "index2":"index2"},
 
               # Descriptor for fusion
               dram_var = prologue_var,

@@ -5,7 +5,7 @@ from PyTorchSimFrontend.mlir.mlir_conv_common import MLIRConvCommonTemplate
 from PyTorchSimFrontend.mlir.mlir_template import MLIRTemplateKernel
 from torch._inductor.ir import IRNode
 from PyTorchSimFrontend.mlir import mlir_common
-from PyTorchSimFrontend.mlir.tile_axis import Axis, build_tile
+from PyTorchSimFrontend.mlir.tile_axis import Axis, build_tile, aliasing
 
 CONV_TEMPLATE = r"""
 // Single Batch Conv2D (Stride != 1) kernel
@@ -179,9 +179,9 @@ def {{ FUNC_NAME }}{{kernel.def_wrapper()}}:
                     "m":   Axis(TILE_M,   m_stride, loop=loops[3])}
 
         Y_SRAM_ORDER = ("b", "o_h", "n", "m")
+        Y_axes = y_axes(0, O_H*O_W, O_W, 1, ["c0", "tile_n", "o_h", "tile_m"])
         Y_tile_desc, Y_idx = build_tile(
-            "output_buffer", kernel.vector_lane,
-            y_axes(0, O_H*O_W, O_W, 1, [None, "tile_n", "o_h", "tile_m"]),
+            "output_buffer", kernel.vector_lane, Y_axes,
             sram_order=Y_SRAM_ORDER, lane="n")
 
         # Extract Bias info. It accumulates into the output buffer, and only walks channels.
@@ -244,7 +244,7 @@ def {{ FUNC_NAME }}{{kernel.def_wrapper()}}:
             dram_var = "Y",
             dram_idx = Y_idx,
             dram_tile_desc = Y_tile_desc,
-            dim_aliasing = {"index0":"c0", "index1":"tile_n", "index2":"o_h", "index3":"tile_m"}
+            dim_aliasing = aliasing(Y_axes)
         )
         kernel.exception_nodes["X"] = {"numel" : (I_W+2*PADDING_W)*(I_H+2*PADDING_H)*I_C*BATCH}
         code = self._template_from_string(conv_template).render(**kernel.render_options)

@@ -58,6 +58,16 @@ def dram_index(axes):
             for a in axes.values()]
 
 
+def aliasing(axes):
+    """The loop name of each axis, in the tile's declared order.
+
+    This is exactly what a fused epilogue or prologue needs to rename its loop
+    variables to (set_ranges), and the order the reduction MVOUT reads the DRAM
+    strides in -- so the hand-written `dim_aliasing` dicts are just this list.
+    """
+    return [a.loop for a in axes.values()]
+
+
 def build_tile(buffer, vector_lane, axes, sram_order, lane, lane_chunk=1, offset=0):
     """Build the tile descriptor and the DRAM index expression for one operand.
 

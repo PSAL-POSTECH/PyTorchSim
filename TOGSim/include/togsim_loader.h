@@ -1,7 +1,7 @@
 #pragma once
 // togsim_loader.h -- the TOGSim half (not the producer ABI): `dlopen` a producer
-// `.so`, run its `togsim_kernel`, record the emitted instructions.  The
-// "materializing sink" of sec 5.3 / 9.7; the stream goes to togsim_trace_bridge.h.
+// `.so`, run its `togsim_kernel`, and record the emitted instructions as
+// TraceRecs (sec 5.3 / 9.7). togsim_trace_bridge.h turns them into a TileGraph.
 
 #include <cstdint>
 #include <vector>
@@ -34,18 +34,52 @@ struct TraceRec {
   int64_t  overlapping;   // looked up from the cycle table
 };
 
+// Eager whole-kernel run. Transitional: the only caller is the TileGraph builder,
+// which switches to LazyProducer in the next commit -- this goes away with it.
 struct RunResult {
   bool ok = false;
   std::vector<TraceRec> trace;
 };
-
-// Load `so_path`, run its `togsim_kernel`, and return the recorded trace.
-// `tensor_base` gives each tensor argument's DRAM base, `cyc`/`ovl` the cycle table.
-// Work-items round-robin only over `partition_cores` (empty/null -> core 0).
 RunResult run_producer(const char* so_path,
                        const int64_t* shape_args, int32_t n_shape,
                        const uint64_t* tensor_base, int32_t n_tensors,
                        const int64_t* cyc, const int64_t* ovl, int32_t n_tiles,
                        const int32_t* partition_cores, int32_t n_partition_cores);
+
+// The producer is run ON DEMAND, one work-item at a time (materializing the whole
+// record stream cost 12.7 GiB on a large 8x8 conv). A tile body reads only ctx and
+// iv, so a work-item is (fn, iv, core) -- replayable on its own, whenever needed.
+struct WorkItem {
+  void* fn = nullptr;           // togsim_tile_fn
+  std::vector<int64_t> iv;      // the enclosing parallel loop indices
+  int32_t core = 0;             // round-robin binding, fixed when it is registered
+};
+
+class LazyProducer {
+ public:
+  LazyProducer() = default;
+  ~LazyProducer();
+  LazyProducer(const LazyProducer&) = delete;
+  LazyProducer& operator=(const LazyProducer&) = delete;
+
+  // dlopen the .so and run togsim_kernel once: every togsim_dispatch registers
+  // its work-item and returns without running the tile body, so num_items() is
+  // known but no record is emitted yet.
+  bool open(const char* so_path, const int64_t* shape_args, int32_t n_shape,
+            const uint64_t* tensor_base, int32_t n_tensors,
+            const int64_t* cyc, const int64_t* ovl, int32_t n_tiles,
+            const int32_t* partition_cores, int32_t n_partition_cores);
+
+  size_t num_items() const;
+  // Replay work-item `i` and return its record stream (TILE_BEGIN, body,
+  // TILE_END). The returned vector is a buffer reused by the next call.
+  const std::vector<TraceRec>& run_item(size_t i);
+
+ private:
+  struct EmitCtx* _ctx = nullptr;   // opaque; owns the work-item list
+  void* _lib = nullptr;
+  std::vector<uint64_t> _bases;
+  std::vector<int64_t> _cyc, _ovl;
+};
 
 }  // namespace togsim

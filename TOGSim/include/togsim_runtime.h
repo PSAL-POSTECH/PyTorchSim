@@ -14,8 +14,8 @@ extern "C" {
 #define TOGSIM_ABI_VERSION 12
 int32_t togsim_abi_version(void);
 
-// Opaque per-invocation context owned by TOGSim. Holds the record sink and the
-// tile_id->cycle lookup. Never dereferenced by the producer.
+// Opaque per-invocation context owned by TOGSim. Holds the recorded trace and
+// the tile_id->cycle lookup. Never dereferenced by the producer.
 typedef struct EmitCtx EmitCtx;
 
 // Direction for togsim_dma.

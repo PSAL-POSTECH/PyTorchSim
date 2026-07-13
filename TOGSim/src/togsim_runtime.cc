@@ -164,24 +164,4 @@ const std::vector<TraceRec>& LazyProducer::run_item(size_t i) {
   emit_rec(_ctx, blank(TraceRec::TILE_END, w.core));
   return _ctx->trace;   // one work-item's records; overwritten by the next call
 }
-
-// The eager whole-kernel trace, now just every work-item's records concatenated.
-// Transitional (togsim_loader.h): its one caller switches to LazyProducer next.
-RunResult run_producer(const char* so_path,
-                       const int64_t* shape_args, int32_t n_shape,
-                       const uint64_t* tensor_base, int32_t n_tensors,
-                       const int64_t* cyc, const int64_t* ovl, int32_t n_tiles,
-                       const int32_t* partition_cores, int32_t n_partition_cores) {
-  RunResult res;
-  LazyProducer p;
-  if (!p.open(so_path, shape_args, n_shape, tensor_base, n_tensors,
-              cyc, ovl, n_tiles, partition_cores, n_partition_cores))
-    return res;
-  for (size_t i = 0; i < p.num_items(); i++) {
-    const std::vector<TraceRec>& recs = p.run_item(i);
-    res.trace.insert(res.trace.end(), recs.begin(), recs.end());
-  }
-  res.ok = true;
-  return res;
-}
 }  // namespace togsim

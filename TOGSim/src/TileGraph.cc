@@ -51,8 +51,20 @@ void TileGraph::append_subgraph(std::shared_ptr<TileSubGraph> subgraph) {
   _subgraph_vec.push_back(std::move(subgraph));
 }
 
+// Materialize the next dispatch tile, on demand. Returns false once the producer
+// is exhausted. Called only when a core has no work left, so the builder never
+// runs ahead of the simulation.
+bool TileGraph::refill() {
+  if (!_pull || _exhausted) return false;
+  auto sg = _pull();
+  if (!sg) { _exhausted = true; return false; }
+  sg->init_cache_plan(_cache_plan);
+  _subgraph_vec.push_back(std::move(sg));
+  return true;
+}
+
 bool TileGraph::is_finished() {
-  bool finished = _subgraph_vec.empty();
+  bool finished = _subgraph_vec.empty() && (!_pull || _exhausted);
   /* Check all outer loop is allocated */
   if (!finished)
     return finished;
@@ -104,18 +116,21 @@ std::shared_ptr<Tile> TileGraph::get_tile(int core_id, int slot_id) {
 }
 
 void TileGraph::allocate_subgraph(int core_id, int slot_id) {
-  if (_cpu_graph_map[core_id][slot_id] != nullptr) {
-    _finished_subgraph_vec.push_back(_cpu_graph_map[core_id][slot_id]);
+  // Drop the finished subgraph: this releases its Instructions.
+  if (_cpu_graph_map[core_id][slot_id] != nullptr)
     _cpu_graph_map[core_id][slot_id] = nullptr;
-  }
 
-  for (auto it = _subgraph_vec.begin(); it != _subgraph_vec.end(); ++it) {
-    if ((*it)->get_core_id() == -1 || (*it)->get_core_id() == core_id) {
-      std::shared_ptr<TileSubGraph> subgraph = *it;
-      _cpu_graph_map[core_id][slot_id] = subgraph;
-      _subgraph_vec.erase(it);
-      return;
+  // Work-items round-robin over the partition's cores, so the next tile for THIS
+  // core may be a few dispatches ahead: keep pulling until one turns up.
+  for (;;) {
+    for (auto it = _subgraph_vec.begin(); it != _subgraph_vec.end(); ++it) {
+      if ((*it)->get_core_id() == -1 || (*it)->get_core_id() == core_id) {
+        std::shared_ptr<TileSubGraph> subgraph = *it;
+        _cpu_graph_map[core_id][slot_id] = subgraph;
+        _subgraph_vec.erase(it);
+        return;
+      }
     }
+    if (!refill()) return;      // exhausted: leave the slot empty
   }
-  return;
 }

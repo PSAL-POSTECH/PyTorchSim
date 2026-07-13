@@ -34,18 +34,6 @@ struct TraceRec {
   int64_t  overlapping;   // looked up from the cycle table
 };
 
-// Eager whole-kernel run. Transitional: the only caller is the TileGraph builder,
-// which switches to LazyProducer in the next commit -- this goes away with it.
-struct RunResult {
-  bool ok = false;
-  std::vector<TraceRec> trace;
-};
-RunResult run_producer(const char* so_path,
-                       const int64_t* shape_args, int32_t n_shape,
-                       const uint64_t* tensor_base, int32_t n_tensors,
-                       const int64_t* cyc, const int64_t* ovl, int32_t n_tiles,
-                       const int32_t* partition_cores, int32_t n_partition_cores);
-
 // The producer is run ON DEMAND, one work-item at a time (materializing the whole
 // record stream cost 12.7 GiB on a large 8x8 conv). A tile body reads only ctx and
 // iv, so a work-item is (fn, iv, core) -- replayable on its own, whenever needed.

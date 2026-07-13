@@ -24,6 +24,7 @@ Core::Core(uint32_t id, SimulationConfig config)
     exit(EXIT_FAILURE);
   }
   _weight_slots_used.resize(_num_systolic_array_per_core, 0);
+  _weight_free = _num_systolic_array_per_core * (int)_weight_slot_depth;
 }
 
 // Round-robin a systolic array that still has a free weight slot; -1 if all full
@@ -42,7 +43,7 @@ int Core::pick_free_weight_sa() {
 void Core::apply_due(const DueAction& a) {
   switch (a.kind) {
     case DueAction::FreeWeightSlot:
-      if (--a.token->refcount <= 0) { _weight_slots_used[a.token->sa]--; _issue_dirty = true; }  // weight slot freed -> re-arm
+      if (--a.token->refcount <= 0) { _weight_slots_used[a.token->sa]--; _weight_free++; _issue_dirty = true; }  // weight slot freed -> re-arm
       break;
     case DueAction::WakeBar: {
       auto bar = a.bar;            // async load data arrived -> fire its MEMORY_BAR
@@ -286,7 +287,8 @@ void Core::cycle() {
 
   for (int i=0; i<_tiles.size() && !issued; i++) {
     auto& instructions = _tiles[i]->get_ready_instructions();
-    for (auto it=instructions.begin(); it!=instructions.end();) {
+    // Resume after the prefix already known to be blocked (Tile::scan_from).
+    for (auto it=_tiles[i]->scan_from(_sram_used, _weight_free); it!=instructions.end();) {
       auto& inst = *it;
 
       switch (inst->get_opcode()) {
@@ -365,6 +367,7 @@ void Core::cycle() {
                   exit(EXIT_FAILURE);
                 }
                 _weight_slots_used[sa_idx]++;
+                _weight_free--;
                 auto tok = std::make_shared<WeightToken>(WeightToken{sa_idx, n_consumers});
                 for (auto& c : inst->get_deps(DepEvent::ISSUE))
                   if (c->get_compute_type() == MATMUL) {
@@ -408,6 +411,7 @@ void Core::cycle() {
               inst->finish_instruction();
               static_cast<Tile*>(inst->get_owner())->inc_finished_inst();
               _stat_tot_skipped_inst.at(static_cast<size_t>(inst->get_opcode()))++;
+              if (_tiles[i]->is_scan_cursor(it)) _tiles[i]->drop_scan_cursor();
               it = instructions.erase(it);   // erase returns the next iterator; the
               continue;                      // old code fell through to it++ on the
                                              // erased (invalidated) iterator -> UB
@@ -461,9 +465,12 @@ void Core::cycle() {
 
       if (issued) {
         _stat_inst_count.at(static_cast<size_t>(inst->get_opcode()))++;
+        if (_tiles[i]->is_scan_cursor(it)) _tiles[i]->drop_scan_cursor();
         instructions.erase(it);
         break;
       }
+      // Did not issue -> blocked on spad or a weight slot (the only two stalls).
+      _tiles[i]->note_blocked(it, _sram_used, _weight_free);
       it++;
     }
   }

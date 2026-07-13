@@ -137,6 +137,9 @@ class Core {
   // to its accumulated footprint bytes (freed when its last reader issues).
   size_t _sram_used = 0;
   size_t _sram_capacity = 0;
+  // Free SA weight slots. With _sram_used it keys the issue scan's cursor: an
+  // instruction it walked past wakes only if one of the two grows.
+  int _weight_free = 0;
   std::unordered_map<int64_t, size_t> _sram_allocs;
 
   // SA weight-buffer throttle (sec 10.4). _weight_slots_used[s] = weights resident

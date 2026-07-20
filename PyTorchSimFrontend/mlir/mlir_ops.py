@@ -369,6 +369,7 @@ class ExtensionOverrides(common.OpOverrides):
         # Type check & auto cast
         if dtype.startswith("f"):
             operand = ops.to_dtype(operand, "f32")
+            dtype = "f32"
 
         shape = f"vector<{tile_size}x{dtype}>" if tile_size > 1 else dtype
         return format_mlir_op(f'math.sqrt %{operand}', shape, **kwargs), [tile_size, dtype]
@@ -419,6 +420,7 @@ class ExtensionOverrides(common.OpOverrides):
         # Type check & auto cast
         if dtype.startswith("f"):
             operand = ops.to_dtype(operand, "f32")
+            dtype = "f32"
         shape = f"vector<{tile_size}x{dtype}>" if tile_size > 1 else dtype
         return format_mlir_op(f'math.cos %{operand}', shape, **kwargs), [tile_size, dtype]
 
@@ -440,6 +442,7 @@ class ExtensionOverrides(common.OpOverrides):
         # Type check & auto cast
         if dtype.startswith("f"):
             operand = ops.to_dtype(operand, "f32")
+            dtype = "f32"
         shape = f"vector<{tile_size}x{dtype}>" if tile_size > 1 else dtype
         return format_mlir_op(f'math.sin %{operand}', shape, **kwargs), [tile_size, dtype]
 
@@ -1045,6 +1048,7 @@ class ExtensionOverrides(common.OpOverrides):
         # Type check & auto cast
         if dtype.startswith("f"):
             operand = ops.to_dtype(operand, "f32")
+            dtype = "f32"
         op_str = f"arith.negf %{operand}"
         shape = f"vector<{tile_size}x{dtype}>" if tile_size > 1 else dtype
         return format_mlir_op(op_str, shape, **kwargs), [tile_size, dtype]

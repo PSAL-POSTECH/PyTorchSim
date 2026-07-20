@@ -35,7 +35,12 @@ for ATTRIBUTE in "$@"; do
     fi
     ATTRIBUTE_FILES+=("$ATTRIBUTE_FILE")
 done
-MODELS_LIST="$GEMM_PATH/tile_graph.onnx"
+# Trace (C++ TOG) path. NOTE: TOGSim currently stubs per-tensor addresses for the
+# trace path (build_trace_tilegraph), so chiplet NoC/DRAM-partition accuracy is
+# approximate until the trace path consumes real addresses; --attributes_list is
+# no longer a Simulator option.
+TRACE_SO="$GEMM_PATH/trace.so"
+CYCLE_TABLE="$GEMM_PATH/trace_cycles.tsv"
 ATTRIBUTE_PATH="$GEMM_PATH/runtime_0000/attribute"
 
 for CONFIG in "${CONFIG_LIST[@]}"; do
@@ -49,8 +54,7 @@ for CONFIG in "${CONFIG_LIST[@]}"; do
         OUTPUT_FILE="$RESULTS_DIR/${CONFIG_NAME}_result.txt"
 
         # Run Simulator
-        echo "$SIMULATOR_PATH" --config "$CONFIG" --models_list "$MODELS_LIST" --attributes_list "$ATTRIBUTE_PATH/$ATTRIBUTE_NAME"
-        "$SIMULATOR_PATH" --config "$CONFIG" --models_list "$MODELS_LIST" --log_level trace --attributes_list "$ATTRIBUTE_PATH/$ATTRIBUTE_NAME" > "$OUTPUT_FILE" &
+        echo "$SIMULATOR_PATH" --config "$CONFIG" --trace_so "$TRACE_SO" --cycle_table "$CYCLE_TABLE"        "$SIMULATOR_PATH" --config "$CONFIG" --trace_so "$TRACE_SO" --cycle_table "$CYCLE_TABLE" --log_level trace --attributes_list "$ATTRIBUTE_PATH/$ATTRIBUTE_NAME" > "$OUTPUT_FILE" &
         echo "[TOGSim] for $CONFIG stored to \"$(pwd)/$OUTPUT_FILE\""
     done
 done
@@ -63,8 +67,7 @@ for CONFIG in "${CONFIG_LIST2[@]}"; do
     OUTPUT_FILE="$RESULTS_DIR/${CONFIG_NAME}_result.txt"
 
     # Run Simulator
-    # echo "$SIMULATOR_PATH" --config "$CONFIG" --models_list "$MODELS_LIST" --attributes_list "$ATTRIBUTE_PATH/$ATTRIBUTE_NAME"
-    "$SIMULATOR_PATH" --config "$CONFIG" --models_list "$MODELS_LIST" --log_level trace --attributes_list "$ATTRIBUTE_PATH/$ATTRIBUTE_NAME" > "$OUTPUT_FILE" &
+    # echo "$SIMULATOR_PATH" --config "$CONFIG" --trace_so "$TRACE_SO" --cycle_table "$CYCLE_TABLE"    "$SIMULATOR_PATH" --config "$CONFIG" --trace_so "$TRACE_SO" --cycle_table "$CYCLE_TABLE" --log_level trace --attributes_list "$ATTRIBUTE_PATH/$ATTRIBUTE_NAME" > "$OUTPUT_FILE" &
     echo "[TOGSim] for $CONFIG stored to \"$(pwd)/$OUTPUT_FILE\""
 done
 wait

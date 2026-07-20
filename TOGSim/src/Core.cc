@@ -17,23 +17,97 @@ Core::Core(uint32_t id, SimulationConfig config)
   _stat_sa_compute_idle_cycle.resize(_num_systolic_array_per_core);
   _stat_inst_count.resize(static_cast<size_t>(Opcode::COUNT), 0);
   _stat_tot_skipped_inst.resize(static_cast<size_t>(Opcode::COUNT), 0);
+  _sram_capacity = (size_t)config.core_spad_size_kb * 1024;  // 0 = throttle disabled
+  _weight_slot_depth = config.sa_weight_buffer_depth;        // per-SA weight slots (>0)
+  if (_weight_slot_depth == 0) {
+    spdlog::error("sa_weight_buffer_depth must be > 0 (raise it to loosen the preload throttle)");
+    exit(EXIT_FAILURE);
+  }
+  _weight_slots_used.resize(_num_systolic_array_per_core, 0);
+  _weight_free = _num_systolic_array_per_core * (int)_weight_slot_depth;
+}
+
+// Round-robin a systolic array that still has a free weight slot; -1 if all full
+// (the preload must stall). Advances _systolic_array_rr past the chosen SA.
+int Core::pick_free_weight_sa() {
+  for (uint32_t i = 0; i < _num_systolic_array_per_core; i++) {
+    uint32_t s = (_systolic_array_rr + i) % _num_systolic_array_per_core;
+    if (_weight_slots_used[s] < (int)_weight_slot_depth) {
+      _systolic_array_rr = (s + 1) % _num_systolic_array_per_core;
+      return (int)s;
+    }
+  }
+  return -1;
+}
+
+void Core::apply_due(const DueAction& a) {
+  switch (a.kind) {
+    case DueAction::FreeWeightSlot:
+      if (--a.token->refcount <= 0) { _weight_slots_used[a.token->sa]--; _weight_free++; _issue_dirty = true; }  // weight slot freed -> re-arm
+      break;
+    case DueAction::WakeBar: {
+      auto bar = a.bar;            // async load data arrived -> fire its MEMORY_BAR
+      finish_instruction(bar);
+      break;
+    }
+  }
+}
+
+void Core::process_due_events() {
+  while (!_due_events.empty() && _due_events.begin()->first <= _core_cycle) {
+    apply_due(_due_events.begin()->second);
+    _due_events.erase(_due_events.begin());
+  }
+}
+
+// The LAST reader of a buffer-version issued (bridge tags only that consumer):
+// free the version's bytes back to the per-core spad.
+void Core::release_sram(const std::shared_ptr<Instruction>& inst) {
+  if (!_sram_capacity) return;
+  for (int64_t id : inst->get_sram_release()) {
+    auto it = _sram_allocs.find(id);
+    if (it == _sram_allocs.end()) continue;
+    _sram_used -= it->second;
+    _sram_allocs.erase(it);
+    _issue_dirty = true;   // freed spad bytes -> re-arm
+  }
+}
+
+bool Core::try_occupy_sram(const std::shared_ptr<Instruction>& inst) {
+  if (!_sram_capacity || inst->get_sram_alloc() < 0) return true;   // untracked
+  size_t F = inst->sram_footprint();
+  if (_sram_used + F > _sram_capacity) return false;                // would overflow -> stall
+  _sram_used += F;
+  _sram_allocs[inst->get_sram_alloc()] += F;                        // accumulate version footprint
+  return true;
 }
 
 bool Core::can_issue(const std::shared_ptr<Tile>& op) {
-  /* Check SRAM is enough to run tile */
-  return _tiles.size() < 4  && !op->is_stonne_tile();
+  /* Bound concurrent dispatches so their combined spad working set fits. Two run
+   * concurrently (double-buffer) only if each fits half the spad; a dispatch whose
+   * footprint exceeds spad/2 runs alone with the whole spad (else two would compete
+   * for the shared spad and deadlock). spad_footprint = codegen .spad x lanes; 0
+   * (unknown) falls back to 2. */
+  size_t M = op->get_spad_footprint();
+  int max_concurrent = (_sram_capacity && M > _sram_capacity / 2) ? 1 : 2;
+  return (int)_tiles.size() < max_concurrent && !op->is_stonne_tile();
 }
 
 void Core::issue(std::shared_ptr<Tile> op) {
   if (op->get_instructions().size()) {
+    size_t M = op->get_spad_footprint();
+    int max_dispatch = (_sram_capacity && M > _sram_capacity / 2) ? 1 : 2;
     core_trace_log::trace_tile_scheduled(_core_cycle, _id,
-                                         TraceLogTag::pad15(TraceLogTag::kTileScheduled));
+                                         TraceLogTag::pad15(TraceLogTag::kTileScheduled),
+                                         M, max_dispatch);
   }
   for (const auto& inst : op->get_instructions()) {
+    inst->set_owner_dirty(&_issue_dirty);   // dep-resolved enqueues re-arm THIS core
     if (inst->is_ready())
       op->enqueue_ready(inst);
   }
   _tiles.push_back(std::move(op));
+  _issue_dirty = true;   // new dispatch -> re-arm
 }
 
 std::shared_ptr<Tile> Core::pop_finished_tile() {
@@ -135,7 +209,7 @@ void Core::dma_cycle() {
       finish_instruction(instruction, InstFinishTraceTag::DmaRespComplete);
       for (auto & wait_inst : _dma.get_tag_waiter(instruction->subgraph_id, key)) {
         _dma.mark_tag_used(instruction->subgraph_id, key);
-        finish_instruction(wait_inst);
+        _due_events.emplace(_core_cycle, DueAction{DueAction::WakeBar, nullptr, wait_inst});
       }
     }
     _dma_finished_queue.erase(_dma_finished_queue.begin());
@@ -154,8 +228,8 @@ void Core::dma_cycle() {
       } else if(!finished_inst->is_dma_read()) {
         core_trace_log::log_error_dma_instruction_invalid(_core_cycle, _id);
         exit(EXIT_FAILURE);
-      } else if (finished_inst->get_opcode() == Opcode::BAR) {
-        core_trace_log::trace_instruction_line(_core_cycle,
+      } else if (finished_inst->get_opcode() == Opcode::MEMORY_BAR) {
+        if (core_trace_log::trace_enabled()) core_trace_log::trace_instruction_line(_core_cycle,
                                                _id,
                                                TraceLogTag::pad15(TraceLogTag::kInstructionFinished),
                                                finished_inst->get_global_inst_id(),
@@ -200,16 +274,22 @@ void Core::cycle() {
   /* Increase core cycle counter */
   _core_cycle++;
 
+  process_due_events();  // weight-slot frees + DMA-arrival wakeups due this cycle
+
   /* Iterate tile while an instruction is issued */
   bool issued = false;
 
+  // Re-arm gate: skip the scan unless _issue_dirty was set since the last scan (a
+  // ready-set grow or a resource free; else it re-walks the same blocked instructions
+  // and issues nothing). Issue-identical.
+  if (_issue_dirty) {
+  _issue_dirty = false;
+
   for (int i=0; i<_tiles.size() && !issued; i++) {
     auto& instructions = _tiles[i]->get_ready_instructions();
-    for (auto it=instructions.begin(); it!=instructions.end();) {
+    // Resume after the prefix already known to be blocked (Tile::scan_from).
+    for (auto it=_tiles[i]->scan_from(_sram_used, _weight_free); it!=instructions.end();) {
       auto& inst = *it;
-      /* Skip instruction is not ready  */
-      //if (!inst->is_ready())
-      //  continue;
 
       switch (inst->get_opcode()) {
         case Opcode::MOVIN:
@@ -229,7 +309,7 @@ void Core::cycle() {
                 finish_instruction(inst);
               else
                 _dma.register_tag_waiter(inst->subgraph_id, key, inst);
-              core_trace_log::trace_instruction_line(_core_cycle,
+              if (core_trace_log::trace_enabled()) core_trace_log::trace_instruction_line(_core_cycle,
                                                        _id,
                                                        TraceLogTag::pad15(
                                                            TraceLogTag::kInstructionSkipped),
@@ -240,7 +320,9 @@ void Core::cycle() {
               _stat_tot_skipped_inst.at(static_cast<size_t>(inst->get_opcode()))++;
               break;
             } else {
-              core_trace_log::trace_instruction_line(_core_cycle,
+              // load occupies its spad bytes on issue; stall (retry next cycle) if full.
+              if (!try_occupy_sram(inst)) break;
+              if (core_trace_log::trace_enabled()) core_trace_log::trace_instruction_line(_core_cycle,
                                                        _id,
                                                        TraceLogTag::pad15(
                                                            TraceLogTag::kInstructionIssued),
@@ -254,7 +336,8 @@ void Core::cycle() {
             }
           }
         case Opcode::MOVOUT:
-          core_trace_log::trace_instruction_line(_core_cycle,
+          release_sram(inst);   // store issued -> free the tiles it drained
+          if (core_trace_log::trace_enabled()) core_trace_log::trace_instruction_line(_core_cycle,
                                                    _id,
                                                    TraceLogTag::pad15(TraceLogTag::kInstructionIssued),
                                                    inst->get_global_inst_id(),
@@ -265,7 +348,43 @@ void Core::cycle() {
           break;
         case Opcode::COMP:
           {
-            auto& target_pipeline = get_compute_pipeline(inst->get_compute_type());
+            const int ct = inst->get_compute_type();
+            // a fresh-output compute occupies its spad bytes on issue; stall if full.
+            if (!try_occupy_sram(inst)) break;
+            // SA selection (sec 10.4): a preload picks an SA with a free weight slot
+            // and pins its matmul consumers there; a matmul runs on its pinned SA.
+            int sa_idx = -1;
+            if (ct == MATMUL || ct == PRELOAD) {
+              if (ct == PRELOAD) {
+                // Ask for the slot FIRST: with none free the preload cannot issue,
+                // so nothing else about it is worth computing. Safe to reorder --
+                // try_occupy_sram above is a no-op for a preload (weights untracked).
+                sa_idx = pick_free_weight_sa();
+                if (sa_idx < 0) break;              // all weight slots full -> stall (retry)
+                const int n_consumers = inst->matmul_consumers();   // cached
+                if (n_consumers == 0) {            // weight-slot model needs >=1 consumer
+                  spdlog::error("preload has no matmul consumer (weight-slot model invariant)");
+                  exit(EXIT_FAILURE);
+                }
+                _weight_slots_used[sa_idx]++;
+                _weight_free--;
+                auto tok = std::make_shared<WeightToken>(WeightToken{sa_idx, n_consumers});
+                for (auto& c : inst->get_deps(DepEvent::ISSUE))
+                  if (c->get_compute_type() == MATMUL) {
+                    c->set_assigned_sa(sa_idx);
+                    c->set_weight_token(tok);
+                  }
+              } else {                              // MATMUL
+                sa_idx = inst->get_assigned_sa();   // pinned by its preload
+                if (sa_idx < 0) {                   // unpinned -> no preload set its SA
+                  spdlog::error("matmul was not pinned to an SA by a preload (weight-slot model invariant)");
+                  exit(EXIT_FAILURE);
+                }
+              }
+              inst->set_assigned_sa(sa_idx);         // record the SA actually used (for the trace)
+            }
+            auto& target_pipeline = (ct == VECTOR_UNIT) ? _vu_compute_pipeline
+                                                        : _sa_compute_pipeline.at(sa_idx);
             if (target_pipeline.empty()) {
               inst->finish_cycle = _core_cycle + inst->get_compute_cycle();
               inst->bubble_cycle = inst->get_overlapping_cycle();
@@ -275,14 +394,29 @@ void Core::cycle() {
               inst->finish_cycle = target_pipeline.back()->finish_cycle + inst->get_compute_cycle() - overlapped_cycle;
               inst->bubble_cycle = bubble_cycle;
             }
+            // release the occupancy (ISSUE) dependents so a successor overlaps this op.
+            inst->fire(DepEvent::ISSUE);
 
+            // Release this matmul's weight slot at its streaming-end (finish -
+            // overlapping), not at full finish (the drain tail does not read it).
+            if (ct == MATMUL && inst->get_weight_token()) {
+              cycle_type rel = inst->finish_cycle > inst->get_overlapping_cycle()
+                                 ? inst->finish_cycle - inst->get_overlapping_cycle() : _core_cycle;
+              _due_events.emplace(rel, DueAction{DueAction::FreeWeightSlot,
+                                                 inst->get_weight_token(), nullptr});
+            }
+
+            release_sram(inst);   // free the tiles it read (before the skip path)
             if (inst->get_compute_cycle() == 0) {
               inst->finish_instruction();
               static_cast<Tile*>(inst->get_owner())->inc_finished_inst();
               _stat_tot_skipped_inst.at(static_cast<size_t>(inst->get_opcode()))++;
-              instructions.erase(it);
+              if (_tiles[i]->is_scan_cursor(it)) _tiles[i]->drop_scan_cursor();
+              it = instructions.erase(it);   // erase returns the next iterator; the
+              continue;                      // old code fell through to it++ on the
+                                             // erased (invalidated) iterator -> UB
             } else {
-              core_trace_log::trace_instruction_line(_core_cycle,
+              if (core_trace_log::trace_enabled()) core_trace_log::trace_instruction_line(_core_cycle,
                                                        _id,
                                                        TraceLogTag::pad15(
                                                            TraceLogTag::kInstructionIssued),
@@ -297,12 +431,12 @@ void Core::cycle() {
             }
           }
           break;
-        case Opcode::BAR:
+        case Opcode::MEMORY_BAR:
           {
             auto& key = inst->get_tag_id();
             uint32_t finished = _dma.get_tag_finish(inst->subgraph_id, key);
             if (finished == -1) {
-              for (auto child_inst : inst->get_child_inst()) {
+              for (auto child_inst : inst->get_deps(DepEvent::DONE)) {
                 if (child_inst->get_opcode() == Opcode::COMP && child_inst->get_compute_type() == MATMUL) {
                   child_inst->set_compute_cycle(0);
                 }
@@ -314,7 +448,7 @@ void Core::cycle() {
             } else {
               _dma.register_tag_waiter(inst->subgraph_id, key, inst);
             }
-            core_trace_log::trace_instruction_line(_core_cycle,
+            if (core_trace_log::trace_enabled()) core_trace_log::trace_instruction_line(_core_cycle,
                                                      _id,
                                                      TraceLogTag::pad15(
                                                          TraceLogTag::kInstructionIssued),
@@ -331,12 +465,21 @@ void Core::cycle() {
 
       if (issued) {
         _stat_inst_count.at(static_cast<size_t>(inst->get_opcode()))++;
+        if (_tiles[i]->is_scan_cursor(it)) _tiles[i]->drop_scan_cursor();
         instructions.erase(it);
         break;
       }
+      // Did not issue -> blocked on spad or a weight slot (the only two stalls).
+      _tiles[i]->note_blocked(it, _sram_used, _weight_free);
       it++;
     }
   }
+
+  // Keep dirty after an issue: the scan breaks at the first issue (!issued loop
+  // guard), so ready instructions in later tiles were not scanned this cycle. Needed
+  // for that early-break even when the issue woke no new dependent.
+  if (issued) _issue_dirty = true;
+  }  // if (_issue_dirty)
 
   /* Remove finshed tiles */
   bool retry = true;
@@ -363,7 +506,7 @@ void Core::finish_instruction(std::shared_ptr<Instruction>& inst, InstFinishTrac
       core_trace_log::log_error_dram_responses_trace_not_finished(_core_cycle, _id);
       exit(EXIT_FAILURE);
     }
-    core_trace_log::trace_instruction_line(_core_cycle,
+    if (core_trace_log::trace_enabled()) core_trace_log::trace_instruction_line(_core_cycle,
                                              _id,
                                              TraceLogTag::pad15(TraceLogTag::kAllDramResponsesReceived),
                                              inst->get_global_inst_id(),
@@ -380,11 +523,24 @@ void Core::finish_instruction(std::shared_ptr<Instruction>& inst, InstFinishTrac
   const char* trace_tag = (tag == InstFinishTraceTag::DmaIssueComplete)
                               ? TraceLogTag::kAsyncDmaAllRequestsIssued
                               : TraceLogTag::kInstructionFinished;
-  core_trace_log::trace_instruction_line(_core_cycle,
+  if (core_trace_log::trace_enabled()) core_trace_log::trace_instruction_line(_core_cycle,
                                            _id,
                                            TraceLogTag::pad15(trace_tag),
                                            inst->get_global_inst_id(),
                                            core_trace_log::format_instruction_detail_line(*inst));
+}
+
+bool Core::has_inflight() {
+  // running() without the "_tiles.size() > 0" term: work that will produce a
+  // finish event on its own (so the sim is NOT frozen). If this is false but
+  // tiles remain, only stalled ready instructions are left.
+  if (!_vu_compute_pipeline.empty()) return true;
+  for (int i = 0; i < _num_systolic_array_per_core; i++)
+    if (!_sa_compute_pipeline.at(i).empty()) return true;
+  if (!_dma_waiting_queue.empty() || !_dma_finished_queue.empty()) return true;
+  if (!_dma.empty()) return true;
+  if (!_ld_inst_queue.empty() || !_st_inst_queue.empty()) return true;
+  return false;
 }
 
 bool Core::running() {
@@ -412,6 +568,13 @@ void Core::push_memory_response(mem_fetch* response) {
   Instruction* owner_inst = static_cast<Instruction*>(response->get_custom_data());
   assert(owner_inst->get_waiting_request());
 
+  if (!owner_inst->got_first_response()) {   // first data of this load arrived
+    owner_inst->mark_first_response();
+    if (core_trace_log::trace_enabled()) core_trace_log::trace_instruction_line(_core_cycle, _id,
+        TraceLogTag::pad15(TraceLogTag::kFirstDramResponse),
+        owner_inst->get_global_inst_id(),
+        core_trace_log::format_instruction_detail_line(*owner_inst));
+  }
   owner_inst->dec_waiting_request();
   if (!owner_inst->get_waiting_request()) {
     auto it = _dma_waiting_queue.find(owner_inst);

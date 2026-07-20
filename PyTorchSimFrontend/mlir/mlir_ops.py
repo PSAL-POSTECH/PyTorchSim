@@ -13,10 +13,15 @@ def reduction_combine_vec(reduction_type, vector_value, init_value, axis, shape,
         return f"vector.multi_reduction <add>, %{vector_value}, %{init_value} [{axis}] : {shape} to {reduced_shape}"
     if reduction_type == "prod":
         return f"vector.multi_reduction <mul>, %{vector_value}, %{init_value} [{axis}] : {shape} to {reduced_shape}"
+    # element type of the reduced vector (e.g. "vector<8x2xi64>" -> "i64"); int max/min use
+    # the signed-integer reduction kinds, not the float ones (maximumf/minimumf reject ints).
+    _is_int = shape.rsplit("x", 1)[-1].rstrip(">").strip().startswith("i")
     if reduction_type == "max":
-        return f"vector.multi_reduction <maximumf>, %{vector_value}, %{init_value} [{axis}] : {shape} to {reduced_shape}"
+        kind = "maxsi" if _is_int else "maximumf"
+        return f"vector.multi_reduction <{kind}>, %{vector_value}, %{init_value} [{axis}] : {shape} to {reduced_shape}"
     if reduction_type == "min":
-        return f"vector.multi_reduction <minimumf>, %{vector_value}, %{init_value} [{axis}] : {shape} to {reduced_shape}"
+        kind = "minsi" if _is_int else "minimumf"
+        return f"vector.multi_reduction <{kind}>, %{vector_value}, %{init_value} [{axis}] : {shape} to {reduced_shape}"
     if reduction_type == "any":
         return f"vector.multi_reduction <or>, %{vector_value}, %{init_value} [{axis}] : {shape} to {reduced_shape}"
     raise AssertionError(reduction_type)
@@ -145,7 +150,7 @@ class ExtensionOverrides(common.OpOverrides):
             operand2 = ops.broadcast(operand2, cond_type[0])
         tile_size, ret_type = V.kernel.var_info[operand1]
         shape = f"vector<{tile_size}x{ret_type}>" if tile_size > 1 else ret_type
-        cond_shape = f"vector<{tile_size}xi1>" if tile_size > 1 else ""
+        cond_shape = f"vector<{tile_size}xi1>" if tile_size > 1 else "i1"
 
         op_str = f"arith.select %{condition}, %{operand1}, %{operand2}"
         shape = f"{cond_shape}, {shape}"
@@ -265,7 +270,7 @@ class ExtensionOverrides(common.OpOverrides):
 
         # Data type check
         if op_type1[1] != op_type2[1]:
-            if op_type1[1] == "index" or op_type1 == "index":
+            if op_type1[1] == "index" or op_type2[1] == "index":
                 if op_type1[1] == "index":
                     # index -> target type: 2-step casting if target is float
                     if op_type2[1][0] == "f":
@@ -309,7 +314,10 @@ class ExtensionOverrides(common.OpOverrides):
 
     @staticmethod
     def abs(operand, *args, **kwargs):
-        raise NotImplementedError
+        tile_size, dtype = V.kernel.var_info[operand]
+        shape = f"vector<{tile_size}x{dtype}>" if tile_size > 1 else dtype
+        opcode = "math.absf" if dtype.startswith("f") else "math.absi"
+        return format_mlir_op(f'{opcode} %{operand}', shape, **kwargs), [tile_size, dtype]
 
     @staticmethod
     def exp(operand, *args, **kwargs):
@@ -361,6 +369,7 @@ class ExtensionOverrides(common.OpOverrides):
         # Type check & auto cast
         if dtype.startswith("f"):
             operand = ops.to_dtype(operand, "f32")
+            dtype = "f32"
 
         shape = f"vector<{tile_size}x{dtype}>" if tile_size > 1 else dtype
         return format_mlir_op(f'math.sqrt %{operand}', shape, **kwargs), [tile_size, dtype]
@@ -411,6 +420,7 @@ class ExtensionOverrides(common.OpOverrides):
         # Type check & auto cast
         if dtype.startswith("f"):
             operand = ops.to_dtype(operand, "f32")
+            dtype = "f32"
         shape = f"vector<{tile_size}x{dtype}>" if tile_size > 1 else dtype
         return format_mlir_op(f'math.cos %{operand}', shape, **kwargs), [tile_size, dtype]
 
@@ -432,6 +442,7 @@ class ExtensionOverrides(common.OpOverrides):
         # Type check & auto cast
         if dtype.startswith("f"):
             operand = ops.to_dtype(operand, "f32")
+            dtype = "f32"
         shape = f"vector<{tile_size}x{dtype}>" if tile_size > 1 else dtype
         return format_mlir_op(f'math.sin %{operand}', shape, **kwargs), [tile_size, dtype]
 
@@ -463,68 +474,263 @@ class ExtensionOverrides(common.OpOverrides):
 
     @staticmethod
     def cosh(operand, *args, **kwargs):
-        raise NotImplementedError
+        tile_size, dtype = V.kernel.var_info[operand]
+        
+        # Check scalar
+        if tile_size == 1:
+            operand = ops.broadcast(operand, 4)
+            val = ops.cosh(operand)
+            result = ops.extractelement(val, 0)
+            return result, V.kernel.var_info[result]
+        
+        # Float-only instruction: promote non-float inputs (e.g. integers) to f32
+        # to run it. Native float widths (f16/f64) are left untouched.
+        if not dtype.startswith("f"):
+            operand = ops.to_dtype(operand, "f32")
+            dtype = "f32"
+        
+        exp_pos = ops.exp(operand)
+        exp_neg = ops.exp(ops.neg(operand))
+        
+        sum_exp = ops.add(exp_pos, exp_neg)
+        half_const = ops.constant(0.5, dtype)
+        
+        res = ops.mul(sum_exp, half_const)
+        return res, V.kernel.var_info[res]
 
     @staticmethod
     def sinh(operand, *args, **kwargs):
-        raise NotImplementedError
+        tile_size, dtype = V.kernel.var_info[operand]
+        
+        # Check scalar
+        if tile_size == 1:
+            operand = ops.broadcast(operand, 4)
+            val = ops.sinh(operand)
+            result = ops.extractelement(val, 0)
+            return result, V.kernel.var_info[result]
+        
+        # Float-only instruction: promote non-float inputs (e.g. integers) to f32
+        # to run it. Native float widths (f16/f64) are left untouched.
+        if not dtype.startswith("f"):
+            operand = ops.to_dtype(operand, "f32")
+            dtype = "f32"
+        
+        exp_pos = ops.exp(operand)
+        exp_neg = ops.exp(ops.neg(operand))
+        
+        sub_exp = ops.sub(exp_pos, exp_neg)
+        half_const = ops.constant(0.5, dtype)
+        
+        res = ops.mul(sub_exp, half_const)
+        return res, V.kernel.var_info[res]
 
     @staticmethod
     def tanh(operand, *args, **kwargs):
         op_type = V.kernel.var_info[operand]
+        tile_size = op_type[0]
+        dtype = op_type[1]
 
         # Check scalar
-        op_type = V.kernel.var_info[operand]
         if op_type[0] == 1:
             operand = ops.broadcast(operand, 4)
             val = ops.tanh(operand)
             result = ops.extractelement(val, 0)
             return result, V.kernel.var_info[result]
-        op_type = V.kernel.var_info[operand]
-        tile_size = op_type[0]
-        dtype = op_type[1]
 
-        # Type check & auto cast
-        if dtype.startswith("f"):
+        # Float-only instruction: promote non-float inputs (e.g. integers) to f32
+        # to run it. Native float widths (f16/f64) are left untouched.
+        if not dtype.startswith("f"):
             operand = ops.to_dtype(operand, "f32")
+            dtype = "f32"
         shape = f"vector<{tile_size}x{dtype}>" if tile_size > 1 else dtype
         return format_mlir_op(f'math.tanh %{operand}', shape, **kwargs), [tile_size, dtype]
 
     @staticmethod
     def acos(operand, *args, **kwargs):
-        raise NotImplementedError
+        tile_size, dtype = V.kernel.var_info[operand]
+
+        # Check scalar
+        if tile_size == 1:
+            operand = ops.broadcast(operand, 4)
+            val = ops.acos(operand)
+            result = ops.extractelement(val, 0)
+            return result, V.kernel.var_info[result]
+
+        # Float-only instruction: promote non-float inputs (e.g. integers) to f32
+        # to run it. Native float widths (f16/f64) are left untouched.
+        if not dtype.startswith("f"):
+            operand = ops.to_dtype(operand, "f32")
+            dtype = "f32"
+
+        asin_val = ops.asin(operand)
+        res = ops.sub(ops.constant(math.pi / 2, dtype), asin_val)
+        return res, V.kernel.var_info[res]
 
     @staticmethod
     def acosh(operand, *args, **kwargs):
-        raise NotImplementedError
+        tile_size, dtype = V.kernel.var_info[operand]
+        
+        # Check scalar
+        if tile_size == 1:
+            operand = ops.broadcast(operand, 4)
+            val = ops.acosh(operand)
+            result = ops.extractelement(val, 0)
+            return result, V.kernel.var_info[result]
+        
+        # Float-only instruction: promote non-float inputs (e.g. integers) to f32
+        # to run it. Native float widths (f16/f64) are left untouched.
+        if not dtype.startswith("f"):
+            operand = ops.to_dtype(operand, "f32")
+            dtype = "f32"
+        
+        x2 = ops.square(operand)
+        val = ops.sub(x2, ops.constant(1.0, dtype))
+        sqrt_val = ops.sqrt(val)
+        sum_val = ops.add(operand, sqrt_val)
+        
+        res = ops.log(sum_val)
+        return res, V.kernel.var_info[res]
 
     @staticmethod
     def asin(operand, *args, **kwargs):
-        raise NotImplementedError
+        tile_size, dtype = V.kernel.var_info[operand]
+
+        # Check scalar
+        if tile_size == 1:
+            operand = ops.broadcast(operand, 4)
+            val = ops.asin(operand)
+            result = ops.extractelement(val, 0)
+            return result, V.kernel.var_info[result]
+
+        # Float-only instruction: promote non-float inputs (e.g. integers) to f32
+        # to run it. Native float widths (f16/f64) are left untouched.
+        if not dtype.startswith("f"):
+            operand = ops.to_dtype(operand, "f32")
+            dtype = "f32"
+
+        x2 = ops.square(operand)
+        denom = ops.sqrt(ops.sub(ops.constant(1.0, dtype), x2))
+        res = ops.atan(ops.truediv(operand, denom))
+        return res, V.kernel.var_info[res]
 
     @staticmethod
     def asinh(operand, *args, **kwargs):
-        raise NotImplementedError
+        tile_size, dtype = V.kernel.var_info[operand]
+        
+        # Check scalar
+        if tile_size == 1:
+            operand = ops.broadcast(operand, 4)
+            val = ops.asinh(operand)
+            result = ops.extractelement(val, 0)
+            return result, V.kernel.var_info[result]
+        
+        # Float-only instruction: promote non-float inputs (e.g. integers) to f32
+        # to run it. Native float widths (f16/f64) are left untouched.
+        if not dtype.startswith("f"):
+            operand = ops.to_dtype(operand, "f32")
+            dtype = "f32"
+        
+        x2 = ops.square(operand)
+        val = ops.add(x2, ops.constant(1.0, dtype))
+        sqrt_val = ops.sqrt(val)
+        sum_val = ops.add(operand, sqrt_val)
+        
+        res = ops.log(sum_val)
+        return res, V.kernel.var_info[res]
 
     @staticmethod
     def atan2(operand1, operand2, *args, **kwargs):
-        raise NotImplementedError
+        tile_size, ret_type, y, x = ExtensionOverrides.binary_elementwise_common(operand1, operand2)
+        if not ret_type.startswith("f"):
+            y = ops.to_dtype(y, "f32")
+            x = ops.to_dtype(x, "f32")
+            ret_type = "f32"
+
+        pi = ops.constant(math.pi, ret_type)
+        zero = ops.constant(0.0, ret_type)
+
+        base = ops.atan(ops.truediv(y, x))
+        corrected = ops.add(base, ops.copysign(pi, y))
+        res = ops.where(ops.lt(x, zero), corrected, base)
+        return res, [tile_size, ret_type]
 
     @staticmethod
     def atan(operand, *args, **kwargs):
-        raise NotImplementedError
+        tile_size, dtype = V.kernel.var_info[operand]
+        
+        # Check scalar
+        if tile_size == 1:
+            operand = ops.broadcast(operand, 4)
+            val = ops.atan(operand)
+            result = ops.extractelement(val, 0)
+            return result, V.kernel.var_info[result]
+        
+        # Float-only instruction: promote non-float inputs (e.g. integers) to f32
+        # to run it. Native float widths (f16/f64) are left untouched.
+        if not dtype.startswith("f"):
+            operand = ops.to_dtype(operand, "f32")
+            dtype = "f32"
+
+        shape = f"vector<{tile_size}x{dtype}>" if tile_size > 1 else dtype
+        return format_mlir_op(f'math.atan %{operand}', shape, **kwargs), [tile_size, dtype]
 
     @staticmethod
     def atanh(operand, *args, **kwargs):
-        raise NotImplementedError
+        tile_size, dtype = V.kernel.var_info[operand]
+        
+        # Check scalar
+        if tile_size == 1:
+            operand = ops.broadcast(operand, 4)
+            val = ops.atanh(operand)
+            result = ops.extractelement(val, 0)
+            return result, V.kernel.var_info[result]
+        
+        # Float-only instruction: promote non-float inputs (e.g. integers) to f32
+        # to run it. Native float widths (f16/f64) are left untouched.
+        if not dtype.startswith("f"):
+            operand = ops.to_dtype(operand, "f32")
+            dtype = "f32"
+        
+        one_const = ops.constant(1.0, dtype)
+        val1 = ops.add(one_const, operand)
+        val2 = ops.sub(one_const, operand)
+        div_val = ops.truediv(val1, val2)
+
+        half_const = ops.constant(0.5, dtype)
+        res = ops.mul(ops.log(div_val), half_const)
+        return res, V.kernel.var_info[res]
 
     @staticmethod
     def copysign(operand1, operand2, *args, **kwargs):
-        raise NotImplementedError
+        tile_size, ret_type, operand1, operand2 = ExtensionOverrides.binary_elementwise_common(operand1, operand2)
+        if not ret_type.startswith("f"):
+            raise ValueError("copysign is only supported for floats")
+        shape = f"vector<{tile_size}x{ret_type}>" if tile_size > 1 else ret_type
+        op_str = f'math.copysign %{operand1}, %{operand2}'
+        return format_mlir_op(op_str, shape, **kwargs), [tile_size, ret_type]
 
     @staticmethod
     def erfc(operand, *args, **kwargs):
-        raise NotImplementedError
+        """
+            There is no direct MLIR operation for erfc, so we can implement it using the relationship:
+            erfc(x) = 1 - erf(x)
+        """
+        op_type = V.kernel.var_info[operand]
+        
+        # Check scalar
+        if op_type[0] == 1:
+            operand = ops.broadcast(operand, 4)
+            val = ops.erfc(operand)
+            result = ops.extractelement(val, 0)
+            return result, V.kernel.var_info[result]
+
+        tile_size = op_type[0]
+        dtype = op_type[1]
+        erf_val = ops.erf(operand)
+        one_const = ops.constant(1.0, dtype)
+        res = ops.sub(one_const, erf_val)
+        
+        return res, V.kernel.var_info[res]
 
     @staticmethod
     def erfinv(operand, *args, **kwargs):
@@ -536,7 +742,15 @@ class ExtensionOverrides(common.OpOverrides):
 
     @staticmethod
     def hypot(operand1, operand2, *args, **kwargs):
-        raise NotImplementedError
+        tile_size, ret_type, operand1, operand2 = ExtensionOverrides.binary_elementwise_common(operand1, operand2)
+        if not ret_type.startswith("f"):
+            raise ValueError("hypot is only supported for floats")
+
+        x_sq = ops.square(operand1)
+        y_sq = ops.square(operand2)
+        sum_sq = ops.add(x_sq, y_sq)
+        res = ops.sqrt(sum_sq)
+        return res, V.kernel.var_info[res]
 
     @staticmethod
     def log10(operand, *args, **kwargs):
@@ -564,12 +778,20 @@ class ExtensionOverrides(common.OpOverrides):
     @staticmethod
     def log(operand, *args, **kwargs):
         op_type = V.kernel.var_info[operand]
+        if op_type[0] == 1:
+            operand = ops.broadcast(operand, 4)
+            val = ops.log(operand)
+            result = ops.extractelement(val, 0)
+            return result, V.kernel.var_info[result]
         tile_size = op_type[0]
         dtype = op_type[1]
 
         # Type check & auto cast
-        if dtype.startswith("f"):
+        # Float-only instruction: promote non-float inputs (e.g. integers) to f32
+        # to run it. Native float widths (f16/f64) are left untouched.
+        if not dtype.startswith("f"):
             operand = ops.to_dtype(operand, "f32")
+            dtype = "f32"
 
         shape = f"vector<{tile_size}x{dtype}>" if tile_size > 1 else dtype
         return format_mlir_op(f'math.log %{operand}', shape, **kwargs), [tile_size, dtype]
@@ -660,11 +882,21 @@ class ExtensionOverrides(common.OpOverrides):
 
     @staticmethod
     def bitwise_left_shift(operand1, operand2, *args, **kwargs):
-        raise NotImplementedError
+        tile_size, ret_type, operand1, operand2 = ExtensionOverrides.binary_elementwise_common(operand1, operand2)
+        if ret_type.startswith("f"):
+            raise ValueError("Bitwise left shift not supported for floats")
+        shape = f"vector<{tile_size}x{ret_type}>" if tile_size > 1 else ret_type
+        op_str = f'arith.shli %{operand1}, %{operand2}'
+        return format_mlir_op(op_str, shape, **kwargs), [tile_size, ret_type]
 
     @staticmethod
     def bitwise_right_shift(operand1, operand2, *args, **kwargs):
-        raise NotImplementedError
+        tile_size, ret_type, operand1, operand2 = ExtensionOverrides.binary_elementwise_common(operand1, operand2)
+        if ret_type.startswith("f"):
+            raise ValueError("Bitwise right shift not supported for floats")
+        shape = f"vector<{tile_size}x{ret_type}>" if tile_size > 1 else ret_type
+        op_str = f'arith.shrsi %{operand1}, %{operand2}'
+        return format_mlir_op(op_str, shape, **kwargs), [tile_size, ret_type]
 
     @staticmethod
     def rsqrt(operand, *args, **kwargs):
@@ -689,15 +921,51 @@ class ExtensionOverrides(common.OpOverrides):
 
     @staticmethod
     def fmod(operand1, operand2, *args, **kwargs):
-        raise NotImplementedError
+        tile_size, ret_type, operand1, operand2 = ExtensionOverrides.binary_elementwise_common(operand1, operand2)
+        
+        if ret_type.startswith("f"):
+            div_val = ops.truediv(operand1, operand2)
+            trunc_val = ops.trunc(div_val)
+            mul_val = ops.mul(trunc_val, operand2)
+            res = ops.sub(operand1, mul_val)
+            return res, V.kernel.var_info[res]
+        else:
+            shape = f"vector<{tile_size}x{ret_type}>" if tile_size > 1 else ret_type
+            op_str = f'arith.remsi %{operand1}, %{operand2}'
+            return format_mlir_op(op_str, shape, **kwargs), [tile_size, ret_type]
 
     @staticmethod
     def isinf(operand, *args, **kwargs):
-        raise NotImplementedError
+        tile_size, dtype = V.kernel.var_info[operand]
+
+        if dtype.startswith("f"):
+            abs_val = ops.abs(operand)
+            inf_val = ops.constant("inf", dtype)
+            res = ops.eq(abs_val, inf_val)
+            return res, V.kernel.var_info[res]
+        else:
+            const_false = ops.constant(False, "i1")
+            if tile_size > 1:
+                const_false = ops.broadcast(const_false, tile_size)
+            return const_false, V.kernel.var_info[const_false]
 
     @staticmethod
     def isnan(operand, *args, **kwargs):
-        raise NotImplementedError
+        tile_size, dtype = V.kernel.var_info[operand]
+        if dtype.startswith("f"):
+            # Unordered comparison (uno) to detect NaN (uno returns true if either operand is NaN)
+            operand_shape = f"vector<{tile_size}x{dtype}>" if tile_size > 1 else dtype
+            op_str = f"arith.cmpf uno, %{operand}, %{operand}"
+            res = format_mlir_op(op_str, operand_shape, **kwargs)
+            
+            V.kernel.var_info[res] = [tile_size, "i1"]
+            return res, [tile_size, "i1"]
+        else:
+            # Integers cannot be NaN
+            const_false = ops.constant(False, "i1")
+            if tile_size > 1:
+                const_false = ops.broadcast(const_false, tile_size)
+            return const_false, V.kernel.var_info[const_false]
 
     @staticmethod
     def round(operand, *args, **kwargs):
@@ -723,7 +991,30 @@ class ExtensionOverrides(common.OpOverrides):
 
     @staticmethod
     def sign(operand, *args, **kwargs):
-        raise NotImplementedError
+        tile_size, dtype = V.kernel.var_info[operand]
+        
+        if dtype.startswith("f"):
+            v_zero, v_one, v_neg_one = 0.0, 1.0, -1.0
+        else:
+            v_zero, v_one, v_neg_one = 0, 1, -1
+            
+        const_zero = ops.constant(v_zero, dtype)
+        const_one = ops.constant(v_one, dtype)
+        const_neg_one = ops.constant(v_neg_one, dtype)
+        
+        if tile_size > 1:
+            const_zero = ops.broadcast(const_zero, tile_size)
+            const_one = ops.broadcast(const_one, tile_size)
+            const_neg_one = ops.broadcast(const_neg_one, tile_size)
+
+        is_pos = ops.gt(operand, const_zero)
+        is_neg = ops.lt(operand, const_zero)
+        
+        V.kernel.var_info[is_pos] = [tile_size, "i1"]
+        V.kernel.var_info[is_neg] = [tile_size, "i1"]
+
+        res = ops.where(is_pos, const_one, ops.where(is_neg, const_neg_one, const_zero))
+        return res, V.kernel.var_info[res]
 
     @staticmethod
     def trunc(operand, *args, **kwargs):
@@ -757,6 +1048,7 @@ class ExtensionOverrides(common.OpOverrides):
         # Type check & auto cast
         if dtype.startswith("f"):
             operand = ops.to_dtype(operand, "f32")
+            dtype = "f32"
         op_str = f"arith.negf %{operand}"
         shape = f"vector<{tile_size}x{dtype}>" if tile_size > 1 else dtype
         return format_mlir_op(op_str, shape, **kwargs), [tile_size, dtype]
@@ -933,11 +1225,11 @@ class ExtensionOverrides(common.OpOverrides):
 
     @staticmethod
     def lshift(operand1, operand2, *args, **kwargs):
-        raise NotImplementedError
+        return ops.bitwise_left_shift(operand1, operand2)
 
     @staticmethod
     def rshift(operand1, operand2, *args, **kwargs):
-        raise NotImplementedError
+        return ops.bitwise_right_shift(operand1, operand2)
 
     @staticmethod
     def truncdiv(operand1, operand2, *args, **kwargs):
@@ -1135,11 +1427,19 @@ class ExtensionOverrides(common.OpOverrides):
 
     @staticmethod
     def vlane_offset(operand1, operand2, *args, **kwargs):
+        # Emit a dedicated torchsim.vlane_idx op (generic form; torchsim is an
+        # unregistered dialect) instead of overloading arith.addi with a
+        # vlane_offset attribute. A Python out-of-line pass lowers it to
+        # (vcix.v.i per-lane index * offset); see
+        # PyTorchSimFrontend/mlir/passes/lower_vlane_idx.py.
         tile_size, ret_type, operand1, operand2 = ExtensionOverrides.binary_elementwise_common(operand1, operand2)
         shape = f"vector<{tile_size}x{ret_type}>" if tile_size > 1 else ret_type
-        opcode = f'arith.add{ret_type[0]}'
-        op_str = f'{opcode} %{operand1}, %{operand2}'
-        return format_mlir_op(op_str, shape, **kwargs), [tile_size, ret_type]
+        offset = kwargs.get("attributes", {}).get("vlane_offset", 0)
+        op_str = '"torchsim.vlane_idx"()'
+        func_type = f'() -> {shape}'
+        return format_mlir_op(op_str, func_type,
+                              attributes={"vlane_offset": f"{offset} : i64"},
+                              comment=kwargs.get("comment")), [tile_size, ret_type]
 
     @staticmethod
     def multi_reduction(acc, init, vec_size, red_size, red_shape, red_type, type_name, *args, **kwargs):

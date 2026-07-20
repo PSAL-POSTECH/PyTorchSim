@@ -40,15 +40,18 @@ PyTorchSim **supports**:
 |---|:-:|:-:|---|
 | ResNet-18 | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | channel last format |
 | ResNet-50 | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | channel last format |
-| MobileNet-v2 | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | `tests/MobileNet/` (torchvision) |
-| YOLOv5 | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | `tests/Yolov5/` |
+| MobileNet-v2 | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | `tests/models/MobileNet/` (torchvision) |
+| YOLOv5 | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | `tests/models/Yolov5/` |
 | BERT | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ |  |
 | GPT-2 | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ |  |
-| ViT | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | `tests/test_vit.py` |
+| ViT | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | `tests/models/test_vit.py` |
 | Mistral | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | |
 | Stable-diffusion v1 | 🤗 | ✅ |  |
-| Llama 2/3 | 🤗 | ✅ | `tests/Llama/` (blocks & decode-style paths) |
-| DeepSeek-V3 (base) | 🤗 | ✅ | `tests/DeepSeek/` — several ops(e.g., gate ops) are not cycle-modeled |
+| Llama 2/3 | 🤗 | ✅ | `tests/models/Llama/` (blocks & decode-style paths) |
+| DeepSeek-V3 (base) | 🤗 | ✅ | `tests/models/DeepSeek/` — several ops(e.g., gate ops) are not cycle-modeled |
+| SwinV2 | 🤗 | ✅ | `tests/models/test_swinv2.py` (shifted-window attention) |
+| CLIP (vision) | 🤗 | ✅ | `tests/models/test_clip.py` |
+| ConvNeXt V2 | 🤗 | ✅ | `tests/models/test_convnextv2.py` (channels-first LayerNorm, depthwise conv) |
 | Llama-4 | 🤗 | ⏳ | In development |
 | Broader model support | — | ⏳ | In development |
 <!-- ## Requirements
@@ -100,10 +103,11 @@ This script builds [Gem5](https://github.com/PSAL-POSTECH/gem5.git), [LLVM](http
 ```bash
 bash scripts/build_from_source.sh
 ```
+The script clones each dep at the tag pinned in [`thirdparty/github-releases.json`](thirdparty/github-releases.json), the same manifest the CI docker image uses, so a from-source build matches the docker env.
 ### Run Examples
 The `tests` directory contains several AI workload examples.
 ```bash
-python tests/test_matmul.py 
+python tests/ops/gemm/test_matmul.py 
 ```
 The result is written to `${TORCHSIM_LOG_PATH}/togsim_result/XXX.log`. The log file contains detailed core, memory, and interconnect stats.
 
@@ -200,7 +204,7 @@ optimizer.zero_grad()
 loss.backward()
 compiled_step()
 ```
-`tests/test_mlp.py` provides an example of MLP training.
+`tests/models/test_mlp.py` provides an example of MLP training.
 
 ## One TOGSim session, one continuous log
 
@@ -242,7 +246,7 @@ with TOGSimulator(config_path=config):
 Here `synchronize()` acts as a barrier: it does not return until every `launch_model` issued **above** it has finished in the simulator. The later pair of `launch_model` calls therefore runs only after those earlier models have fully completed—so the sync is the point in the timeline where **all preceding launches are done**.
 
 ```bash
-python tests/test_scheduler.py
+python tests/system/test_scheduler.py
 ```
 
 Use a TOGSim config(`.yml`) that defines **partitions** when mapping queues to cores, for example:
@@ -384,6 +388,7 @@ num_cores: 1
 core_freq_mhz: 940
 core_stats_print_period_cycles: 10000
 num_systolic_array_per_core: 2
+sa_weight_buffer_depth: 2   # per-SA resident weight slots; must be > 0 (default 2). Raise to loosen the preload throttle.
 # Optional: one entry per core, default ws_mesh
 # core_type: [ws_mesh, ws_mesh]
 # Optional STONNE cores: stonne_config_path, num_stonne_per_core, num_stonne_port
@@ -452,7 +457,7 @@ codegen_compiler_optimization: all    # all | none | list of option names
 
 One-line meaning for each group (details in the YAML block above).
 
-- **Core (`num_cores`, `core_freq_mhz`, `core_stats_print_period_cycles`, `num_systolic_array_per_core`, optional `core_type`, STONNE keys)**: how many cores, their clock, stats cadence, systolic count per core, and optional non-default mesh vs STONNE mix.
+- **Core (`num_cores`, `core_freq_mhz`, `core_stats_print_period_cycles`, `num_systolic_array_per_core`, `sa_weight_buffer_depth`, optional `core_type`, STONNE keys)**: how many cores, their clock, stats cadence, systolic count per core, the per-SA resident weight-slot count (must be > 0; bounds preload run-ahead—raise it to loosen the throttle), and optional non-default mesh vs STONNE mix.
 - **VPU (`vpu_*`)**: vector lane count, per-lane scratchpad (KB), and vector register width—**compiler** uses these for tiling/codegen.
 - **DRAM (`dram_type`, `dram_channels`, …)**: `ramulator2` uses `ramulator_config_path`; `simple` uses fixed latency and optional bandwidth caps (`dram_bandwidth_gbps_*`, `dram_freq_mhz` when capped). `dram_num_partitions` splits channels for NUMA-style addressing.
 - **Interconnect (`icnt_*`, `booksim_config_path`)**: `simple` adds fixed hop latency (`icnt_latency_cycles`); `booksim2` points at a BookSim2 topology file.

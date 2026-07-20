@@ -10,18 +10,19 @@ from functools import reduce
 import operator
 from collections import OrderedDict
 
-from typing import List, Optional
+import logging
+from dataclasses import dataclass
+from typing import Callable, List, Optional
 from unittest.mock import patch
 
 from PyTorchSimFrontend import extension_config
 from torch._inductor.codegen.common import KernelTemplate, CSE, DeferredLine
-from torch._inductor.ir import Buffer, IRNode, TemplateBuffer, ChoiceCaller, ir_node_to_tensor
+from torch._inductor.ir import Buffer, IRNode, TemplateBuffer, ChoiceCaller, ir_node_to_tensor, TensorBox
 from torch._inductor.select_algorithm import PartialRender
-from torch._inductor.codegen.cuda.cuda_kernel import CUDATemplateCaller
+from torch._inductor.codegen.cuda.cuda_kernel import CUDATemplateCaller, CUDATemplateBuffer
 from torch._inductor.autotune_process import TensorMeta
 from torch._inductor.virtualized import V, NullHandler, _ops as ops
 from torch._inductor.utils import IndentedBuffer
-from torch._inductor.codecache import write_atomic
 
 import PyTorchSimFrontend.extension_codecache as extension_codecache
 from PyTorchSimFrontend.mlir.mlir_autotune import MLIRBenchmarkRequest
@@ -92,6 +93,65 @@ class IndentedBufferGroup:
                 yield self
         finally:
             self.restore_buffers()
+
+fusion_log = logging.getLogger(__name__)
+
+
+@dataclass
+class FusionPlan:
+    """What the scheduler must do to commit a fusion that a template approved.
+
+    `MLIRTemplate.try_fuse_*` is a pure predicate (the scheduler calls it speculatively
+    for many candidate pairs), so any node mutation the fusion needs -- a loop merge, a
+    group re-derivation -- is deferred here and applied by `MLIRScheduling.fuse()` once
+    the fusion is actually committed.
+    """
+    remap: Optional[Callable] = None      # zero-arg thunk, invoked from fuse()
+
+
+def realign_node_group(node_to_realign, args=None, var_ranges=None):
+    """Re-derive a node's loop body/sizes/group from its data size.
+
+    `simplify_and_reorder()` may have reordered the node's loops away from the template's
+    iteration order; rebuilding the body puts them back. Used as a `FusionPlan.remap` (so
+    it runs from `MLIRScheduling.fuse()`, never from a can_fuse predicate) and by
+    axis-split, which re-traces a node over split ranges.
+    """
+    from torch._inductor.ir import LoopBody
+    from torch._inductor import dependencies
+    from torch._inductor.virtualized import V as _V
+
+    for node in node_to_realign.get_nodes():
+        if args is None or var_ranges is None:
+            args, var_ranges = dependencies.index_vars_no_squeeze(
+                node.node.data.get_size(), node.node.data.get_reduction_size(), prefix="q")
+        body = LoopBody(
+            node.node.get_store_function(),
+            (args if node.node.get_reduction_type() else args[:1]),
+            var_ranges, args[0], args[1])
+        index_size, reduce_size = [], []
+        for v, s in var_ranges.items():
+            (index_size if v in args[0] else reduce_size).append(s)
+        ranges = (index_size, reduce_size)
+        group = tuple(tuple(map(_V.graph.sizevars.simplify, s)) for s in ranges)
+        node._sizes, node._body, node.group = ranges, body, (node.get_device(), group)
+
+
+def merge_node_loops(node_to_merge):
+    """Collapse a node's contiguous loops so its iteration fits the template's frame."""
+    node_to_merge.get_nodes()[0].merge_loops()
+
+
+def why_no_fuse(template_node, node_to_fuse, reason):
+    """Record why a fusion was declined, and return the 'declined' value (None).
+
+    Declining is a normal outcome -- upstream CUTLASS/CPP decline every reduction
+    epilogue outright -- so every decline carries a reason to keep the decision
+    debuggable (cf. Inductor's WhyNoFuseNames).
+    """
+    fusion_log.debug("cannot fuse %s into template %s: %s", node_to_fuse, template_node, reason)
+    return None
+
 
 class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
     def __init__(self,
@@ -205,7 +265,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
 
         return inner_I, inner_J, inner_K
 
-    def gemm_combination_mapping(self, M, N, K, n_extra_node=0, n_prologue_node=0, pad_k=True, min_tile=False, is_conv=False, precision_bytes=4):
+    def gemm_combination_mapping(self, M, N, K, n_extra_node=0, n_prologue_node=0, n_prologue_extra_read=0, pad_k=True, min_tile=False, is_conv=False, precision_bytes=4):
         tile_candidates = []
         spad_size_per_lane = self.spad_info["spad_size"]
         spad_size = spad_size_per_lane * self.vector_lane
@@ -233,8 +293,8 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
                 tile_M = i * self.vector_lane if M > self.vector_lane else M_padded
                 for j in tile_N_range:
                     tile_N = j * self.vector_lane if N > self.vector_lane else N_padded
-                    used_spad_size = (tile_M * tile_K * (1 + n_prologue_node) + tile_K * tile_N + tile_M * tile_N * (1 + n_extra_node)) * precision_bytes
-                    weight_size_per_lane = self.get_spad_size_per_lane(tile_K, tile_N)
+                    used_spad_size = (tile_M * tile_K * (1 + n_prologue_node) + tile_K * tile_N * (1 + n_prologue_extra_read) + tile_M * tile_N * (1 + n_extra_node)) * precision_bytes
+                    weight_size_per_lane = self.get_spad_size_per_lane(tile_K, tile_N) * (1 + n_prologue_extra_read)
                     input_size_per_lane = self.get_spad_size_per_lane(tile_M * (1 + n_prologue_node), tile_K)
                     output_size_per_lane = self.get_spad_size_per_lane(tile_M * (1 + n_extra_node), tile_N)
                     used_spad_size_per_lane = (weight_size_per_lane + input_size_per_lane + output_size_per_lane) * precision_bytes
@@ -259,8 +319,8 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
                 tile_M = i * self.vector_lane if M > self.vector_lane else M_padded
                 for j in tile_N_range:
                     tile_N = j * self.vector_lane if N > self.vector_lane else N_padded
-                    used_spad_size = (tile_M * tile_K * (1 + n_prologue_node) + tile_K * tile_N + tile_M * tile_N * (1 + n_extra_node)) * precision_bytes
-                    weight_size_per_lane = self.get_spad_size_per_lane(tile_K, tile_N)
+                    used_spad_size = (tile_M * tile_K * (1 + n_prologue_node) + tile_K * tile_N * (1 + n_prologue_extra_read) + tile_M * tile_N * (1 + n_extra_node)) * precision_bytes
+                    weight_size_per_lane = self.get_spad_size_per_lane(tile_K, tile_N) * (1 + n_prologue_extra_read)
                     input_size_per_lane = self.get_spad_size_per_lane(tile_M * (1 + n_prologue_node), tile_K)
                     output_size_per_lane = self.get_spad_size_per_lane(tile_M * (1 + n_extra_node), tile_N)
                     used_spad_size_per_lane = (weight_size_per_lane + input_size_per_lane + output_size_per_lane) * precision_bytes
@@ -348,7 +408,10 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
                             max_used_spad_size = used_spad_size
                             max_k_h_w = k_h
                             mapping = (k_h, K_W, o_h, o_w, M, N, K)
-        if max_used_spad_size == 0:
+        # Raise only when NO tile fits SPAD. Guarding on max_used_spad_size instead
+        # (it only tracks the largest-k_h tile, and is not what we return) wrongly
+        # rejected convs whose full-kernel tile overflows SPAD. See issue #252.
+        if not tile_candidates:
             raise RuntimeError("Cannot find a valid mapping")
         tile_candidates = sorted(tile_candidates, key=lambda x: x[0], reverse=True)
         tile_candidates = [v for _, v in tile_candidates]
@@ -384,7 +447,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
                             max_used_spad_size = used_spad_size
                             max_k_h_w = k_h * k_w
                             mapping = (k_h, k_w, o_h, M, M, N, K)
-        if max_used_spad_size == 0:
+        if not tile_candidates:
             raise RuntimeError("Cannot find a valid mapping")
         tile_candidates = sorted(tile_candidates, key=lambda x: x[0], reverse=True)
         tile_candidates = [v for _, v in tile_candidates]
@@ -613,22 +676,11 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         return src_code, meta_code
 
     def _prepare_simulator_headers(self, src_code):
-        from filelock import FileLock
-
         spad_end_symbol = f"int spad_end[0] __attribute__ ((section(\".spad\")));\n"
         spad_section_end_symbol = f"int spad_section_end[0] __attribute__ ((section(\".spad\"), aligned({self.spad_info['spad_size']*self.vector_lane})));"
-
-        write_path = extension_codecache.get_write_path(src_code)
-        os.makedirs(write_path, exist_ok=True)
-        spike_write_path = os.path.join(write_path, "global_var.h")
-        gem5_write_path = os.path.join(write_path, "gem5_global_var.h")
-
-        lock = FileLock(extension_codecache.get_lock_path(write_path), timeout=extension_codecache.LOCK_TIMEOUT)
-        with lock:
-            if not os.path.exists(spike_write_path):
-                write_atomic(spike_write_path, self.header.getvalue()+spad_end_symbol+spad_section_end_symbol)
-            if not os.path.exists(gem5_write_path):
-                write_atomic(gem5_write_path, self.gem5_header.getvalue())
+        spike_content = self.header.getvalue()+spad_end_symbol+spad_section_end_symbol
+        gem5_content = self.gem5_header.getvalue()
+        extension_codecache.store_header(src_code, spike_content, gem5_content)
 
     def codegen_prologue_body(self):
         body = IndentedBuffer()
@@ -657,11 +709,22 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
             code = self.def_dma_op("MVOUT", dram_var, index_list, tile_desc, lazy_mode=False)
             self.cse.generate(self.dma_stores, code, assignment = False)
 
+        def template_buffer_live():
+            # Inductor's remove_kernel_local_buffers() drops the template buffer only if
+            # every user lives inside this fused kernel. If it survived, some user is
+            # outside it, so store it to DRAM even if a fused epilogue also stores.
+            name = getattr(self, "template_buffer_name", None)
+            assert name is not None, (
+                "store_output() used by a template that never declared its output buffer; "
+                "call def_kernel()/def_conv_kernel() with outputs=[...] first"
+            )
+            return name not in self.removed_buffers
+
         body = IndentedBuffer()
         with self.epilogue_buffer_group.as_local():
             # Do dma store first to overlap epilogue nodes
             if self.reduction_fusion:
-                if len(self.stores._lines) == 0:
+                if template_buffer_live():
                     template_store()
                     body.splice(self.dma_stores)
                     self.dma_stores.clear()
@@ -673,7 +736,6 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
             with contextlib.ExitStack() as stack:
                 stack.enter_context(compute_body.indent(attribute="{inner_loop=false}",suffix=self.compute_body_loop.epilogue_line()))
                 if self.reduction_fusion:
-                    compute_body.splice(self.masks)
                     compute_body.writelines(self.reduction_body_loop.lines())
                     stack.enter_context(compute_body.indent(attribute="{inner_loop=false}"))
                     compute_body.splice(self.loads)
@@ -681,7 +743,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
                 else:
                     compute_body.splice(self.loads)
                     compute_body.splice(self.compute)
-                    if len(self.stores._lines) == 0:
+                    if template_buffer_live():
                         template_store()
                 compute_body.splice(self.stores)
             if (compute_body.getvalue()):
@@ -702,6 +764,12 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
             raise RuntimeError(
                 f"{len(inputs) + len(outputs)=} != {len(names)=}, {inputs=}, {outputs=}, {names=}"
             )
+
+        # The template's own output buffer. codegen_epilogue_body() stores it to DRAM iff
+        # it survived Inductor's kernel-local buffer removal -- i.e. it still has a user
+        # outside this fused kernel.
+        if outputs:
+            self.template_buffer_name = outputs[0].get_name()
 
         if input_reorder is not None:
             assert len(inputs) == len(input_reorder)
@@ -770,6 +838,12 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
             raise RuntimeError(
                 f"{len(inputs) + len(outputs)=} != {len(names)=}, {inputs=}, {outputs=}, {names=}"
             )
+
+        # The template's own output buffer. codegen_epilogue_body() stores it to DRAM iff
+        # it survived Inductor's kernel-local buffer removal -- i.e. it still has a user
+        # outside this fused kernel.
+        if outputs:
+            self.template_buffer_name = outputs[0].get_name()
 
         if input_reorder is not None:
             assert len(inputs) == len(input_reorder)
@@ -952,18 +1026,35 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
                 zero_cse = self.get_const_cse(0, "index")
                 sram_index_var = ", ".join([f"%{str(zero_cse)}"]*tile_desc.get_nr_dim())
 
-                if subtile_size:
-                    attribute = mlir_common.format_dma_op_attributes(
-                        _dram_stride,
-                        sram_strides,
-                        int(padding),
-                        subtile_size=subtile_size,
-                        async_type=int(async_type) if async_type is not None else None,
-                    )
-                else:
-                    attribute = mlir_common.format_dma_op_attributes(_dram_stride, sram_strides, int(padding))
-                code = self.get_dma_code(dma_type, vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
-                                        dram_shape, tile_shape, attribute)
+                # masked-DMA clamp: per tile dim, clamp to the real DRAM extent so a tile
+                # padding past it is zero-filled, not MAC-ing garbage. Only a dim indexed by
+                # a SINGLE iv is clampable; a sum of ivs (im2col) is pre-padded instead.
+
+                # FIXME: loop_extents is declared by hand in each conv template and drifts
+                # from the affine.for bounds. Record each loop's (iv -> bound) as the
+                # affine.for is emitted, as pointwise does with ranges/itervars.
+                loop_ext = getattr(self, "loop_extents", None)
+                layout_sizes, layout_strides = node_layout.size, node_layout.stride
+                tile_sizes = tile_desc.get_tile_size()
+                clamp_axes = []
+                for d, idx_expr in enumerate(index_list):
+                    syms = list(idx_expr.free_symbols)
+                    if len(syms) != 1 or d >= len(tile_sizes):
+                        continue
+                    base_iv = str(syms[0])
+                    if loop_ext:
+                        extent = loop_ext.get(base_iv)      # explicit: clamp only known ivs
+                    else:
+                        extent = next((int(layout_sizes[j]) for j, st in enumerate(layout_strides)
+                                       if layout_sizes[j].is_number and int(st) == int(_dram_stride[d])), None)
+                    if extent is not None:
+                        clamp_axes.append((d, base_iv, 0, int(extent), int(tile_sizes[d])))
+                masked_bounds = self._emit_clamp(clamp_axes, local_code)
+
+                code = self.emit_transfer(dma_type, vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
+                                          dram_shape, tile_shape, _dram_stride, sram_strides, int(padding),
+                                          subtile_size=subtile_size if subtile_size else None, async_type=async_type,
+                                          masked_bounds=masked_bounds, masked_fill=0)
                 local_code.writeline(code)
             return textwrap.indent(local_code.getvalue(), " "*indent_size).strip()
 
@@ -1030,9 +1121,8 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
             # Allocate sram buffer
             dram_shape = mlir_common.MLIRKernelArgs.get_mlir_shape(self.buffer_types[name])
             sram_var, sram_index_var = self.get_scratchpad_buffer(dtype, name, self.kernel_group.tile_desc, index)
-            attribute = mlir_common.format_dma_op_attributes(dram_stride, tile_stride, 0)
-            code = self.get_dma_code("MVIN", vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
-                                     dram_shape, tile_shape, attribute)
+            code = self.emit_transfer("MVIN", vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
+                                      dram_shape, tile_shape, dram_stride, tile_stride, 0)
             self.cse.generate(self.dma_loads, code, assignment = False)
             self.buffer_names[name] = sram_var
         else:
@@ -1097,10 +1187,22 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         with self.override_buffer_cse(buffer=self.stores):
             ops._store(value, sram_var, compute_index_var, tile_shape, buffer_name=buffer_name)
 
-        # Generate DMA instruction
-        attribute = mlir_common.format_dma_op_attributes(dram_stride, tile_stride, 0)
-        code = self.get_dma_code("MVOUT", vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
-                                 dram_shape, tile_shape, attribute)
+        # Generate the DMA. Clamp the output tail, else a non-dividing epilogue store
+        # writes the systolic pad region past the real output extent. Each iv's extent is
+        # ranges[k]; _emit_clamp skips dividing dims, so a dividing output is a no-op.
+        iv_extent = {}
+        for itervar, rng in zip(self.itervars, self.ranges):
+            try:
+                iv_extent[str(itervar)] = int(rng)
+            except (TypeError, ValueError):
+                pass
+        tile_sizes = self.kernel_group.tile_desc.get_tile_size()
+        clamp_axes = [(d, iv, 0, iv_extent[iv], int(tile_sizes[d]))
+                      for d, iv in enumerate(self.dim_aliasing.values())
+                      if d < len(tile_sizes) and iv in iv_extent]
+        masked_bounds = self._emit_clamp(clamp_axes, self.dma_stores)
+        code = self.emit_transfer("MVOUT", vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
+                                  dram_shape, tile_shape, dram_stride, tile_stride, 0, masked_bounds=masked_bounds)
         self.dma_stores.writeline(DeferredLine(name, code))
 
     def reduction_epilogue(self, dtype, src_dtype, reduction_type, value):
@@ -1249,9 +1351,8 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
 
         # MVOUT Encoding
         # Generate DMA instruction
-        attribute = mlir_common.format_dma_op_attributes(dram_stride, final_tile_stride, 0)
-        code = self.get_dma_code("MVOUT", vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
-                                dram_shape, final_tile_shape, attribute)
+        code = self.emit_transfer("MVOUT", vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
+                                  dram_shape, final_tile_shape, dram_stride, final_tile_stride, 0)
         self.reductions_suffix.writeline(DeferredLine(name, code))
 
     def set_tile_size(self, template_fusion_info, prologue=False):
@@ -1285,7 +1386,41 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
                 self.compute_body_loop.step = tile_desc.get_compute_vec_size()
         return tile_desc
 
+class MLIRTemplateBuffer(CUDATemplateBuffer):
+    """Template output buffer that can own extra MutationOutputs beyond its primary output.
+
+    The sort kernel's primary scheduler-visible output is the sorted values, but it also
+    writes the indices buffer in place (mlir_sort_template make_inplace). Registering that
+    write as a MutationOutput owned here -- so get_outputs() advertises it -- lets the
+    scheduler keep the kernel alive when only the indices are consumed (argsort), instead of
+    DCE-ing the whole sort. OperationBuffer.get_outputs() otherwise hardcodes [self].
+    """
+
+    def add_mutation_output(self, mutation: IRNode) -> None:
+        if not hasattr(self, "_extra_mutation_outputs"):
+            self._extra_mutation_outputs = []
+        self._extra_mutation_outputs.append(mutation)
+
+    def get_outputs(self) -> List[Buffer]:
+        return [self, *getattr(self, "_extra_mutation_outputs", [])]
+
+
 class MLIRTemplateCaller(CUDATemplateCaller):
+    def output_node(self) -> TensorBox:
+        # Same as CUDATemplateCaller.output_node but builds a mutation-aware buffer so
+        # callers (e.g. the sort lowering) can attach in-place-write MutationOutputs.
+        self.bmreq.update_workspace_size()
+        return TensorBox.create(
+            MLIRTemplateBuffer(
+                layout=self.layout,
+                inputs=self.input_nodes,
+                make_kernel_render=self.make_kernel_render,
+                workspace_size=self.bmreq.workspace_size,
+                supports_epilogue_fusion=self.supports_epilogue_fusion,
+                template=self.template,
+            )
+        )
+
     def __init__(self, name, category, input_nodes, layout, make_kernel_render, supports_epilogue_fusion, template, info_kwargs, description):
         bmreq = MLIRBenchmarkRequest(
             kernel_name=name,
@@ -1303,6 +1438,12 @@ class MLIRTemplateCaller(CUDATemplateCaller):
 
 class MLIRTemplate(KernelTemplate):
     index_counter = itertools.count()
+
+    # Maps a fused reduction epilogue's loop indices onto this template's tile axes.
+    # `render()` hands it to the kernel, and its LENGTH is the number of loop ranges the
+    # epilogue codegen can address (set_ranges asserts len(dim_aliasing) == len(ranges)).
+    # None means this template cannot absorb a reduction epilogue.
+    REDUCTION_EPILOGUE_ALIASING = None
 
     def __init__(self, name, input_nodes, layout, input_reorder = None):
         """
@@ -1325,7 +1466,147 @@ class MLIRTemplate(KernelTemplate):
         # Fusion support flags (default to False)
         self.support_epilogue_fusion = False
         self.support_prologue_fusion = False
-        self.support_reduction_fusion = False
+
+    def try_fuse_epilogue(self, template_node, existing_epilogues, node_to_fuse):
+        """Decide whether `node_to_fuse` can be fused as this template's epilogue.
+
+        Only the template knows its output coordinate frame, so every fusion condition
+        that depends on it lives here -- the scheduler only identifies the template and
+        the direction, then asks. MUST BE PURE: the scheduler calls this speculatively
+        for many candidate pairs, so it may not mutate any node. Anything that has to
+        mutate goes into the returned plan's `remap`, which the scheduler applies from
+        `fuse()` when the fusion is actually committed.
+
+        `existing_epilogues` are the epilogues already fused onto this template (always
+        empty for now; the argument is here so chained epilogue fusion can be enabled
+        later without changing every implementation).
+
+        Returns a FusionPlan to fuse, or None to decline (declining is a normal result:
+        upstream CUTLASS/CPP decline every reduction epilogue outright)."""
+        if existing_epilogues:
+            return why_no_fuse(template_node, node_to_fuse, "chained epilogue fusion is not supported yet")
+        if node_to_fuse.is_reduction():
+            if self.REDUCTION_EPILOGUE_ALIASING is None:
+                return why_no_fuse(template_node, node_to_fuse, "template does not fuse reduction epilogues")
+            return self._try_fuse_reduction_epilogue(template_node, node_to_fuse)
+        if not self.support_epilogue_fusion:
+            return why_no_fuse(template_node, node_to_fuse, "template does not support epilogue fusion")
+        return self._try_fuse_pointwise_epilogue(template_node, node_to_fuse)
+
+    def _try_fuse_reduction_epilogue(self, template_node, epi):
+        """Frame-independent conditions for absorbing a reduction epilogue, plus the one
+        frame-dependent question: does it fit REDUCTION_EPILOGUE_ALIASING? Pure."""
+        def why(reason):
+            return why_no_fuse(template_node, epi, reason)
+
+        if not extension_config.CONFIG_FUSION_REDUCTION_EPILOGUE:
+            return why("reduction-epilogue fusion is disabled")
+        if epi.has_aliasing_or_mutation():
+            return why("epilogue has aliasing or mutation")
+
+        tnode = template_node.get_nodes()[0].node
+        esched = epi.get_nodes()[0]
+        enode = esched.node
+
+        # The epilogue must iterate exactly the template output (rows x reduced cols).
+        if tnode.get_numel() != math.prod(enode.get_size()) * math.prod(enode.get_reduction_size()):
+            return why("epilogue does not iterate the whole template output")
+        if not all(d.get_numel() == tnode.get_numel() for d in epi.read_writes.reads):
+            return why("epilogue reads a buffer whose size differs from the template output")
+
+        # It must read the template output at exactly one index expression (the CPP backend's
+        # template_fusion_with_epilogues_supported applies the same rule). Read the expressions
+        # off the LoopBody: a MemoryDep's index is normalized to a flat contiguous access and
+        # no longer carries the per-axis strides.
+        body = esched._body
+        template_bufs = {d.name for d in template_node.read_writes.writes}
+        read_exprs = {e for name in template_bufs for e in body.get_all_read_expr(name)}
+        if not read_exprs:
+            return why("epilogue does not read the template output")
+        if len(read_exprs) != 1:
+            return why("epilogue reads the template output at more than one index")
+        index = next(iter(read_exprs))
+
+        # The reduced axis must not be the contiguous (stride-1) column, and the output must
+        # not carry a size-1 dim.
+        reduce_vars = body.vars[1]
+        if len(reduce_vars) != 1:
+            return why("more than one reduction axis")
+        if index.coeff(reduce_vars[0]) == 1:
+            return why("reduces the contiguous (stride-1) axis")
+        if 1 in template_node.node.get_size():
+            return why("template output has a size-1 dimension")
+
+        # The only frame-dependent question: does the epilogue's iteration fit the coordinate
+        # map this template's reduction-epilogue codegen addresses? `set_ranges` asserts
+        # len(dim_aliasing) == len(ranges), so the map's length IS the frame's capacity, and
+        # checking it here is that assert, raised as a decline instead of a crash. See #255.
+        addressable = len(self.REDUCTION_EPILOGUE_ALIASING)
+        needed = len(esched._sizes[0]) + len(reduce_vars)
+        if needed <= addressable:
+            return FusionPlan()
+
+        # It does not fit as-is. merge_loops() returns a NEW body, so ask whether merging the
+        # node's contiguous loops would make it fit -- without mutating anything.
+        merged = len(body.merge_loops().sizes[0]) + len(reduce_vars)
+        if merged > addressable:
+            # e.g. ConvNextV2's channels-first LayerNorm reduces the middle C axis, so batch
+            # and spatial are not contiguous and no loop merge can flatten them.
+            return why(f"epilogue needs {needed} loop ranges ({merged} after a loop merge) but "
+                       f"this template's reduction epilogue addresses {addressable}")
+        return FusionPlan(remap=functools.partial(merge_node_loops, epi))
+
+    def _try_fuse_pointwise_epilogue(self, template_node, epi):
+        """Generic (frame-independent) pointwise-epilogue conditions. Pure."""
+        def why(reason):
+            return why_no_fuse(template_node, epi, reason)
+
+        # The epilogue must sweep exactly as many elements as the template output.
+        tmpl_iter, epi_iter = template_node.group[1][0], epi.group[1][0]
+        if (math.prod(tmpl_iter) if len(tmpl_iter) else 0) != (math.prod(epi_iter) if len(epi_iter) else 0):
+            return why("epilogue iterates a different number of elements than the template")
+
+        # Everything the epilogue still needs must come from the template's outputs, and
+        # it must not overwrite anything the template reads.
+        template_writes = {dep for n in template_node.get_nodes() for dep in n.read_writes.writes}
+        if not template_writes:
+            return why("template writes nothing")
+        if not {dep for dep in epi.unmet_dependencies}.issubset(template_writes):
+            return why("epilogue depends on buffers the template does not produce")
+        if {d.name for d in template_node.read_writes.reads} & {d.name for d in epi.read_writes.writes}:
+            return why("epilogue overwrites a buffer the template reads")
+
+        if template_node.group == epi.group:
+            return FusionPlan()
+
+        # simplify_and_reorder() moved the epilogue's loops; they can be put back only if
+        # its data size still matches the template's iteration.
+        if self.support_prologue_fusion and template_node.group[1][0][0] == 1:
+            return why("degenerate first iteration dim on a prologue-fusing template")
+        if list(template_node.group[1][0]) != list(epi.get_nodes()[0].node.data.get_size()):
+            return why("epilogue loop order cannot be realigned to the template")
+        return FusionPlan(remap=functools.partial(realign_node_group, epi))
+
+    def try_fuse_prologue(self, template_node, node_to_fuse):
+        """Prologue counterpart of `try_fuse_epilogue`. Same purity contract.
+
+        The scheduler has already established that `node_to_fuse` is a lone non-template
+        node feeding this lone template node."""
+        def why(reason):
+            return why_no_fuse(template_node, node_to_fuse, reason)
+
+        if not self.support_prologue_fusion:
+            return why("template does not support prologue fusion")
+        if len(node_to_fuse.read_writes.writes) != 1:
+            return why("prologue writes more than one buffer")
+        target = template_node.get_nodes()[0].node
+        if node_to_fuse.node not in target.inputs:
+            return why("prologue output is not a template input")
+        if any("view" in str(origin) for origin in node_to_fuse.node.origins):
+            return why("prologue is a view")
+        if template_node.group[1][0][0] == 1:
+            return why("template has a degenerate first iteration dim")
+        return FusionPlan(remap=functools.partial(realign_node_group, node_to_fuse))
 
     def generate(self, **kwargs) -> ChoiceCaller:
         kernel_name = f"mlir_{self.name}"

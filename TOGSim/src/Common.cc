@@ -64,6 +64,10 @@ SimulationConfig initialize_config(const YAML::Node& config,
   parsed_config.core_freq_mhz = get_config_value<uint32_t>(config, "core_freq_mhz");
   if (config["num_systolic_array_per_core"])
     parsed_config.num_systolic_array_per_core = config["num_systolic_array_per_core"].as<uint32_t>();
+  if (config["core_spad_size_kb"])
+    parsed_config.core_spad_size_kb = config["core_spad_size_kb"].as<uint32_t>();
+  if (config["sa_weight_buffer_depth"])
+    parsed_config.sa_weight_buffer_depth = config["sa_weight_buffer_depth"].as<uint32_t>();
   if (config["num_stonne_per_core"])
     parsed_config.num_stonne_per_core = config["num_stonne_per_core"].as<uint32_t>();
   if (config["num_stonne_port"])

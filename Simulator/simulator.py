@@ -319,7 +319,9 @@ class TOGSimulator():
             command_type: Type of command ("LAUNCH_KERNEL" or "DEVICE_SYNC")
             device_index: Device index
             stream_index: Stream index
-            tog_path: Path to TOG file (ONNX model) - empty for DEVICE_SYNC
+            tog_path: kernel-dir handle; TOGSim derives trace.so/trace_cycles.tsv from
+                its directory (the ONNX file itself is only read on the STONNE sparse
+                path) - empty for DEVICE_SYNC
             attribute_path: Path to attribute file - empty for DEVICE_SYNC
             timestamp: Timestamp in nanoseconds (default: 0)
 
@@ -410,7 +412,8 @@ class TOGSimulator():
         Args:
             device_index: Device index
             stream_index: Stream index
-            tog_path: Path to TOG file (ONNX model)
+            tog_path: kernel-dir handle; TOGSim derives trace.so from its directory
+                (the ONNX file itself is only read on the STONNE sparse path)
             attribute_path: Path to attribute file
             timestamp: Timestamp in nanoseconds (default: 0)
 
@@ -523,7 +526,8 @@ class TOGSimulator():
         For streaming multiple kernels, use launch_kernel() instead.
 
         Args:
-            model_path: Path to TOG file (ONNX model)
+            model_path: kernel-dir handle; trace.so/trace_cycles.tsv are derived from
+                its directory (the ONNX file itself is only read on the STONNE sparse path)
             attribute_path: Path to attribute file
             autotune_mode: If True, run in autotune mode (silent)
             config_path: Path to TOGSim config file (required)
@@ -560,7 +564,16 @@ class TOGSimulator():
             os.fsync(trace_file.fileno())
 
         try:
-            cmd = f"{TOGSimulator.get_togsim_command(config_path, togsim_path)} --models_list {trace_file_path}"
+            # Drive the simulation from the emitted trace.so (the C++ TOG path). The
+            # ONNX --models_list path remains only for callers without a trace.so (the
+            # STONNE sparse path); the normal compile always emits one.
+            trace_so = os.path.join(os.path.dirname(str(model_path)), "trace.so")
+            cycle_tsv = os.path.join(os.path.dirname(str(model_path)), "trace_cycles.tsv")
+            base_cmd = TOGSimulator.get_togsim_command(config_path, togsim_path)
+            if os.path.exists(trace_so):
+                cmd = f"{base_cmd} --trace_so {trace_so} --cycle_table {cycle_tsv}"
+            else:  # ONNX TOG path (STONNE sparse)
+                cmd = f"{base_cmd} --models_list {trace_file_path}"
             if extension_config.CONFIG_TOGSIM_DEBUG_LEVEL:
                 cmd += f" --log_level {extension_config.CONFIG_TOGSIM_DEBUG_LEVEL}"
 

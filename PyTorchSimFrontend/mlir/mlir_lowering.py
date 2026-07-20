@@ -324,6 +324,17 @@ def _mlir_custom_sort_default(
         stable=stable_required,
     )
     sorted_values = mlir_template.generate(template_buffer_node=value).output_node()
+
+    def _unwrap(t):
+        t = t.data if isinstance(t, ir.TensorBox) else t
+        t = t.data if isinstance(t, ir.StorageBox) else t
+        return t
+    # The sort kernel writes `indices` in place, but only `sorted_values` is a
+    # scheduler-visible output. Advertise the indices write as a MutationOutput owned by
+    # the sort op, so argsort (values dead) does not DCE the whole kernel.
+    sort_op = _unwrap(sorted_values)
+    idx_buf = _unwrap(indices)
+    sort_op.add_mutation_output(ir.MutationOutput(idx_buf.get_layout(), idx_buf, sort_op))
     return sorted_values, indices
 
 

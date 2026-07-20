@@ -1,3 +1,6 @@
+# DEPRECATED (timing path): the legacy ONNX Tile-Operation-Graph producer, superseded
+# by the C++ trace pipeline (build_skeleton + lower_to_emitc + cycle_table -> trace.so).
+# Retired once the trace path is stable. See docs/design/togsim_cpp_trace.md.
 import os
 import sys
 import importlib.util

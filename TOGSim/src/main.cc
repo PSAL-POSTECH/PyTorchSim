@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include <fstream>
 #include <chrono>
 #include <filesystem>
@@ -8,18 +9,68 @@
 #include "Simulator.h"
 #include "TileGraphParser.h"
 #include "helper/CommandLineParser.h"
+#include "togsim_loader.h"        // P3 trace pipeline: run a compiled producer .so
+#include "togsim_trace_bridge.h"  // ... and bridge its trace to a TileGraph
 
 namespace fs = std::filesystem;
 namespace po = boost::program_options;
 
 
+// Run a kernel's compiled trace producer (.so) and bridge it to a TileGraph for
+// `partition_id`, whose cores its work-items round-robin over. The cycle-table TSV
+// gives per-tile latency (a flat stub if absent). nullptr if the producer fails.
+std::unique_ptr<TileGraph> build_trace_tilegraph(Simulator* simulator,
+                                                 const std::string& trace_so_path,
+                                                 const std::string& cycle_table_path,
+                                                 int partition_id) {
+  const auto& cfg = simulator->get_hardware_config_yaml();
+  int num_cores = cfg["num_cores"] ? cfg["num_cores"].as<int>() : 1;
+  std::vector<int32_t> partition_cores;
+  for (int c = 0; c < num_cores; c++)
+    if (simulator->get_partition_id(c) == partition_id) partition_cores.push_back(c);
+  if (partition_cores.empty()) partition_cores.push_back(0);
+  // First cut: stub tensor bases (real per-tensor addresses come later).
+  std::vector<uint64_t> bases(16);
+  for (size_t i = 0; i < bases.size(); ++i) bases[i] = 0x100000ull * (i + 1);
+  // Cycle table: load the per-tile_id TSV sidecar if present, else a flat stub.
+  std::vector<int64_t> cyc, ovl;
+  std::ifstream ct(cycle_table_path);
+  if (ct.is_open()) {
+    int64_t c, o;
+    while (ct >> c >> o) { cyc.push_back(c); ovl.push_back(o); }
+  }
+  if (cyc.empty()) { cyc.assign(256, 128); ovl.assign(256, 0); }
+  return trace_to_tilegraph(trace_so_path.c_str(), nullptr, 0,
+                            bases.data(), (int)bases.size(),
+                            cyc.data(), ovl.data(), (int)cyc.size(),
+                            partition_cores.data(), (int32_t)partition_cores.size(),
+                            "trace_kernel");
+}
+
 void launchKernel(Simulator* simulator, unsigned int kernel_id, std::string onnx_path, std::string attribute_path, const YAML::Node& config_yaml, cycle_type request_time=0, int partition_id=0, int device_id=0) {
-  auto graph_praser = TileGraphParser(onnx_path, attribute_path, config_yaml);
-  std::unique_ptr<TileGraph>& tile_graph = graph_praser.get_tile_graph();
+  std::unique_ptr<TileGraph> tile_graph;
+  std::string tog_path = onnx_path;  // for the log line
+  // The C++ trace path is the supported one: the kernel's trace.so / trace_cycles.tsv
+  // sit next to its tile_graph.onnx (same write_path). The legacy ONNX parser below is
+  // DEPRECATED -- only used via TORCHSIM_LEGACY_TOG=1 or when the .so is absent / fails.
+  const char* legacy = std::getenv("TORCHSIM_LEGACY_TOG");
+  std::string dir = fs::path(onnx_path).parent_path().string();
+  std::string trace_so = dir + "/trace.so";
+  std::string cycle_tsv = dir + "/trace_cycles.tsv";
+  if ((!legacy || std::string(legacy) != "1") && fs::exists(trace_so)) {
+    tile_graph = build_trace_tilegraph(simulator, trace_so, cycle_tsv, partition_id);
+    if (tile_graph) tog_path = trace_so;
+    else spdlog::warn("[TOGSim] trace.so run failed for {}; falling back to ONNX", trace_so);
+  }
+  if (!tile_graph) {
+    spdlog::warn("[TOGSim] using the DEPRECATED legacy ONNX TOG path for {}", onnx_path);
+    auto graph_praser = TileGraphParser(onnx_path, attribute_path, config_yaml);
+    tile_graph = std::move(graph_praser.get_tile_graph());
+  }
   tile_graph->set_arrival_time(request_time ? request_time : simulator->get_core_cycle());
   tile_graph->set_kernel_id(kernel_id);
   spdlog::info("[Scheduler {}] Enqueued kernel_id: {}, tog_path: {}, operation: {}, request_time_cycles: {}",
-               partition_id, kernel_id, onnx_path, tile_graph->get_name(), request_time);
+               partition_id, kernel_id, tog_path, tile_graph->get_name(), request_time);
   simulator->enqueue_graph(partition_id, std::move(tile_graph));
 }
 
@@ -104,6 +155,11 @@ int main(int argc, char** argv) {
       "models_list", "Path for the trace file (.trace)");
   cmd_parser.add_command_line_option<std::string>(
       "log_level", "Set for log level [trace, debug, info], default = info");
+  cmd_parser.add_command_line_option<std::string>(
+      "trace_so", "Path to a compiled trace producer .so (P3 trace pipeline)");
+  cmd_parser.add_command_line_option<std::string>(
+      "cycle_table", "Path to a 'cycle<TAB>overlapping' per-tile_id sidecar (TSV) "
+                     "for --trace_so; falls back to a flat stub if omitted");
   try {
     cmd_parser.parse(argc, argv);
   } catch (const CommandLineParser::ParsingError& e) {
@@ -145,6 +201,27 @@ int main(int argc, char** argv) {
   if (!simulator) {
     spdlog::error("[TOGSim] Failed to load config file: {}", config_path);
     exit(1);
+  }
+
+  // P3 trace pipeline: if a compiled producer .so is given, run it, bridge the
+  // recorded trace to a TileGraph, and run the existing Simulator on it.
+  std::string trace_so_path;
+  cmd_parser.set_if_defined("trace_so", &trace_so_path);
+  if (!trace_so_path.empty()) {
+    // Standalone single-kernel trace run: enqueue to partition 0 (its work-items
+    // round-robin over partition 0's cores only; see build_trace_tilegraph).
+    std::string cycle_table_path;
+    cmd_parser.set_if_defined("cycle_table", &cycle_table_path);
+    auto tg = build_trace_tilegraph(simulator, trace_so_path, cycle_table_path, 0);
+    if (!tg) { spdlog::error("[TOGSim] trace producer run failed"); exit(1); }
+    tg->set_arrival_time(simulator->get_core_cycle());
+    tg->set_kernel_id(0);
+    simulator->enqueue_graph(0, std::move(tg));
+    simulator->run_simulator();
+    spdlog::info("[TOGSim-trace] Total cycles: {}", simulator->get_core_cycle());
+    spdlog::info("Simulation finished");
+    simulator->print_core_stat();
+    return 0;
   }
 
   // Get trace file path

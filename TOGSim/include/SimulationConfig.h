@@ -27,6 +27,14 @@ struct SimulationConfig {
   uint32_t num_systolic_array_per_core = 1;
   uint32_t num_stonne_per_core = 1;
   uint32_t num_stonne_port = 1;
+  // Per-core VMEM/spad capacity (KB) for the trace-path DMA throttle (sec 10.4): a
+  // load that would overflow the spad waits for a consumer to free a tile. 0 = unset
+  // -> disabled. Legacy TileGraphParser insts have alloc id -1 and are never gated.
+  uint32_t core_spad_size_kb = 0;
+  // SA weight-buffer depth (sec 10.4): weight tiles a systolic array holds; a
+  // preload stalls until a slot frees (its matmuls finished). 2 = weight
+  // double-buffer (convention default, tunable). 0 = disabled.
+  uint32_t sa_weight_buffer_depth = 2;
 
   /* DRAM config */
   DramType dram_type;

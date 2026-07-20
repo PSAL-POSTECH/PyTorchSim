@@ -528,7 +528,10 @@ def build_skeleton(module):
     """
     _reset_ids()
     builder = TogBuilder()
-    _build(module, builder)  # populates loop/compute nodes + op back-pointers
+    # serialize=False: we only need the builder side effects (loop/compute/DMA
+    # nodes), not the TOG string -- and display() needs a constant loop_end, which
+    # is None for a dynamic loop. The loop bound stays on the affine.for in the IR.
+    _build(module, builder, serialize=False)
 
     block = _kernel_block(module)
     if block is None:

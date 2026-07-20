@@ -91,15 +91,17 @@ class FunctionalSimulator():
         os.makedirs(dump_path, exist_ok=True)
         index = self.get_biggest_filename(dump_path)
 
+        data_path = os.path.join(dump_path, f'{index}.raw')
         if (isinstance(arg, torch.Tensor)):
-            data_path = os.path.join(dump_path, f'{index}.raw')
             tensor = arg.cpu().detach()
             buffer_size = tensor.untyped_storage().size()
             buffer = (ctypes.c_char * buffer_size).from_address(tensor.data_ptr())
             t_arr = np.frombuffer(buffer, dtype=TORCH_TO_NUMPY[tensor.dtype], count=buffer_size // tensor.element_size())
             t_arr.tofile(data_path)
         else:
-            assert(0)
+            # Dynamic shape: a scalar size argument (a runtime extent, e.g. s52).
+            # The kernel reads it from a memref<1xi64> buffer, so write one int64.
+            np.array([int(arg)], dtype=np.int64).tofile(data_path)
         return index
 
     def dump_args(self, args, arg_attributes, load_path, dump_path):
@@ -108,7 +110,9 @@ class FunctionalSimulator():
         for (arg_name, arg_attribute), arg in zip(arg_attributes, args):
             size = arg_attribute[2] if arg_attribute[1] != torch.bool else (arg_attribute[2] + 7) // 8
             array_size.append(size)
-            if MLIRKernelArgs.is_mlir_arg_in(arg_attribute[0]):
+            # A size symbol arg (MLIR_ARGS_VAR, e.g. a dynamic extent s52) is a kernel
+            # INPUT: the kernel loads it for its loop bound, so dump it like an input.
+            if MLIRKernelArgs.is_mlir_arg_in(arg_attribute[0]) or MLIRKernelArgs.is_mlir_arg_var(arg_attribute[0]):
                 index = self.write_arg(arg, load_path, arg_name)
                 file_path.append(os.path.join(load_path, arg_name, f'{index}.raw'))
             elif MLIRKernelArgs.is_mlir_arg_out(arg_attribute[0]):
@@ -470,9 +474,18 @@ class TOGSimulator():
         index = str(len(os.listdir(attribute_dir)))
         attribute_file = os.path.join(attribute_dir, index)
 
+        # Tensors carry an address; a scalar (e.g. a dynamic-shape size arg s52)
+        # carries a runtime extent -- collect those into shape_args, in arg order,
+        # which is the order the trace producer reads shape_args[k].
+        shape_args = []
         for idx, tensor in enumerate(inputs):
-            address_info[f"arg{idx}"] = tensor.data_ptr()
+            if isinstance(tensor, torch.Tensor):
+                address_info[f"arg{idx}"] = tensor.data_ptr()
+            else:
+                shape_args.append(int(tensor))
         yaml_content["address_info"] = address_info
+        if shape_args:
+            yaml_content["shape_args"] = shape_args
 
         for buf_name, range in alloc_pool.items():
             sram_buffer[buf_name] = range
@@ -572,6 +585,11 @@ class TOGSimulator():
             base_cmd = TOGSimulator.get_togsim_command(config_path, togsim_path)
             if os.path.exists(trace_so):
                 cmd = f"{base_cmd} --trace_so {trace_so} --cycle_table {cycle_tsv}"
+                # Carry the per-kernel attribute YAML (address_info + a dynamic
+                # kernel's shape_args) into the trace path, the same file the legacy
+                # path passes via the models_list command.
+                if attribute_path:
+                    cmd += f" --attribute {attribute_path}"
             else:  # ONNX TOG path (STONNE sparse)
                 cmd = f"{base_cmd} --models_list {trace_file_path}"
             if extension_config.CONFIG_TOGSIM_DEBUG_LEVEL:

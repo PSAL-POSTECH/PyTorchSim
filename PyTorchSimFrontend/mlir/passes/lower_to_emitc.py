@@ -136,23 +136,57 @@ def _strip_aux(module):
 def _rewrite_signature(kernel, ctx):
     """Replace @kernel's memref tensor args with the ABI args
     (EmitCtx*, int64_t* shape_args, int32_t n) and rename it to togsim_kernel.
-    Returns the ctx Value."""
+    Returns the ctx Value.
+
+    Dynamic shape: any original arg still USED after build_skeleton's DCE is a size
+    symbol (memref<1xi64>) whose load feeds a loop bound -- tensor args are
+    referenced by name in the togsim.dma attrs, not by SSA value, so they DCE to
+    unused. Re-source each such `memref.load %argSize[..]` from `shape_args[k]`
+    (k = the size arg's order; the runtime fills shape_args in the same order), so
+    the producer's loop bound reads the runtime extent and the arg can be dropped.
+    """
     block = kernel.regions[0].blocks[0]
-    for arg in block.arguments:
-        if len(list(arg.uses)) > 0:
-            raise ValueError(
-                "kernel arg still used after build_skeleton; cannot drop it "
-                "(expected the DCE to have removed all tensor-data ops)")
-    # erase existing (memref) args high-to-low, then append the ABI args.
-    for i in reversed(range(len(block.arguments))):
-        block.erase_argument(i)
+    orig_args = list(block.arguments)
+    loc = ir.Location.unknown(ctx)
     ptr = ir.Type.parse(CTX_TYPE, ctx)
     i64ptr = ir.Type.parse("!emitc.ptr<i64>", ctx)
     i32 = ir.IntegerType.get_signless(32)
-    loc = ir.Location.unknown(ctx)
+    # Append the ABI args first so shape_args exists to re-source size reads from.
     block.add_argument(ptr, loc)
     block.add_argument(i64ptr, loc)
     block.add_argument(i32, loc)
+    shape_args = block.arguments[len(orig_args) + 1]
+
+    idx_t = ir.IndexType.get()
+    i64_t = ir.IntegerType.get_signless(64)
+    k = 0
+    for a in orig_args:
+        if not list(a.uses):
+            continue
+        for use in list(a.uses):
+            ld = use.owner
+            if ld.name != "memref.load":
+                raise ValueError(
+                    "kernel arg still used after build_skeleton by %s; only a size "
+                    "load (memref.load) is expected under dynamic shape" % ld.name)
+            ip = ir.InsertionPoint(ld)
+            kc = ir.Operation.create(
+                "arith.constant", results=[idx_t],
+                attributes={"value": ir.IntegerAttr.get(idx_t, k)}, ip=ip, loc=loc)
+            sub = ir.Operation.create(
+                "emitc.subscript", results=[i64_t],
+                operands=[shape_args, kc.results[0]], ip=ip, loc=loc)
+            ld.results[0].replace_all_uses_with(sub.results[0])
+            ld.erase()
+        k += 1
+
+    # every original arg is unused now -> drop them, leaving only the ABI args.
+    for a in orig_args:
+        if len(list(a.uses)) > 0:
+            raise ValueError(
+                "kernel arg still used after the shape rewrite; cannot drop it")
+    for i in reversed(range(len(orig_args))):
+        block.erase_argument(i)
     kernel.operation.attributes["function_type"] = ir.TypeAttr.get(
         ir.FunctionType.get([ptr, i64ptr, i32], []))
     kernel.operation.attributes["sym_name"] = ir.StringAttr.get(ENTRY)

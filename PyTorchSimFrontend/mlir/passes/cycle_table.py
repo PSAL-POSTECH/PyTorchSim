@@ -48,6 +48,55 @@ def overlapping_cycle(cycle, compute_type, x_offset, w_offset):
     return max(int(cycle) - int(offset), 0)
 
 
+def pin_loops_to_one_tile(module):
+    """Pin every affine.for that would run more than once to a SINGLE tile, by
+    forcing its upper bound to the loop's step (one iteration). The cpp-TOG cycle
+    sampling needs only per-tile compute cost, which is shape-invariant -- one tile
+    is enough -- so this is the general sampling reduction for BOTH static and
+    dynamic kernels (it replaces the legacy sample-mode step rewrite for the trace
+    path):
+
+      * static bound C > step S  -> set bound = S (was ceil(C/S) iterations).
+      * symbolic bound (%..._bound, dynamic dim) -> set bound = S (runtime extent
+        unknown; one tile suffices and avoids needing the extent at all).
+      * bound already <= step (e.g. the innermost compute loop) -> left as is.
+
+    Run this on a COPY used only for gem5 sampling; the original module is kept for
+    the producer .so / cycle_table (both stay shape-agnostic). Mutates `module` in
+    place. Returns the largest pinned step (tile element count) for sizing the
+    sampling host buffers.
+    """
+    tile = 1
+    idx_t = ir.IndexType.get()
+    for op in list(walk_ops(module.body)):
+        o = op.operation
+        if o.name != "affine.for":
+            continue
+        step = ir.IntegerAttr(o.attributes["step"]).value
+        ub_map = ir.AffineMapAttr(o.attributes["upperBoundMap"]).value
+        const_ub = (len(ub_map.results) == 1
+                    and ir.AffineConstantExpr.isinstance(ub_map.results[0]))
+        if const_ub:
+            ub = ir.AffineConstantExpr(ub_map.results[0]).value
+            if ub <= step:
+                continue                           # already a single iteration
+            # constant, multi-iteration: rewrite the bound map to the step
+            o.attributes["upperBoundMap"] = ir.AffineMapAttr.get(
+                ir.AffineMap.get_constant(step))
+        else:
+            # symbolic bound: replace its SSA upper-bound operand with a constant=step
+            seg = o.attributes["operandSegmentSizes"]
+            n_lb = seg[0]                           # [lb operands, ub operands, iter operands]
+            ub_val = o.operands[n_lb]
+            cst = ir.Operation.create(
+                "arith.constant", results=[idx_t],
+                attributes={"value": ir.IntegerAttr.get(idx_t, step)},
+                ip=ir.InsertionPoint(op), loc=ir.Location.unknown())
+            ub_val.replace_all_uses_with(cst.results[0])
+        tile = max(tile, step)
+    return tile
+
+
 def _compute_types(skeleton_module):
     """tile_id-ordered list of compute_type ints, from the skeleton's
     togsim.compute ops."""

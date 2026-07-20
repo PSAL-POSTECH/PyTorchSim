@@ -965,6 +965,15 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         code.splice(self.const_buffer)
         code.splice(self.alloc_buffer)
         code.splice(self.spad_buffer)
+        # Dynamic shape: materialize each symbolic dim's runtime extent as an index SSA at
+        # the function top level (a valid affine symbol). The bound vars were registered in
+        # set_ranges (self.dyn_bound_cses); load each memref<1xi64> size arg and index_cast
+        # it into its registered %<name>_bound, which the loop bound and masked-DMA clamp use.
+        if self.dyn_bound_cses:
+            code.writeline("%dyn_zero = arith.constant 0 : index")
+            for nm, bound in self.dyn_bound_cses.items():
+                code.writeline(f"%{nm}_val = memref.load %{nm}[%dyn_zero] : memref<1xi64>")
+                code.writeline(f"%{bound} = arith.index_cast %{nm}_val : i64 to index")
         # Outerloop
         with contextlib.ExitStack() as stack:
             for loop in loops.loops:
@@ -1042,8 +1051,12 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
                 for axis in list(candidate_axes):
                     prev_tile_sz = self.kernel_group.tile_desc.get_tile_size()
 
-                    # If tile size is maximized for this axis, remove from candidate axes
-                    if prev_tile_sz[axis] >= prev_ranges[axis] * 2 or prev_tile_sz[axis] >= 2 ** 13:
+                    # If tile size is maximized for this axis, remove from candidate axes.
+                    # Dynamic shape: a symbolic dim has no compile-time bound to grow the
+                    # tile toward, so drop the axis (keep the fixed tile) rather than
+                    # comparing tile >= sympy*2 (cannot determine truth value).
+                    if mlir_common.is_symbolic_dim(prev_ranges[axis]) or \
+                            prev_tile_sz[axis] >= prev_ranges[axis] * 2 or prev_tile_sz[axis] >= 2 ** 13:
                         candidate_axes.remove(axis)
                         self.reset(None)
                         continue
@@ -1392,7 +1405,15 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
             if d >= len(tile_size) or k >= len(self.ranges):
                 continue
             iv = str(self.itervars[k])
-            glo, ghi = 0, int(self.ranges[k])
+            rng = self.ranges[k]
+            # Dynamic shape: a symbolic extent has no compile-time int, so carry the symbol
+            # and let _emit_clamp use its runtime loop-bound SSA (%<sym>_bound) as high. The
+            # clamp is then unconditional (divisibility is unknown at compile time), so the
+            # last partial tile falls out at runtime.
+            if isinstance(rng, sympy.Symbol) and rng.name in self.dyn_bound_cses:
+                glo, ghi = 0, rng
+            else:
+                glo, ghi = 0, int(rng)
             axes.append((d, iv, glo, ghi, int(tile_size[d])))
         return self._emit_clamp(axes, buffer)
 
@@ -1403,10 +1424,20 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
         Returns [(tile_axis, low_var, high_var), ...] for the non-trivial axes only."""
         result = []
         for d, iv, glo, ghi, tile in axes:
-            if glo == 0 and ghi % tile == 0:      # every tile fully valid -> no clamp
+            ghi_sym = not isinstance(ghi, int) and mlir_common.is_symbolic_dim(ghi)
+            if not ghi_sym and glo == 0 and ghi % tile == 0:  # every tile fully valid -> no clamp
                 continue
-            high_var = self.apply_cse.generate(
-                buffer, f"affine.min affine_map<(d0) -> ({tile}, {ghi} - d0)>(%{iv})")
+            if ghi_sym:
+                # Dynamic shape: high = min(tile, extent - base), with the runtime extent as
+                # an affine SYMBOL operand -- the registered bound SSA (set_ranges), the same
+                # value the loop uses. Divisibility is unknown at compile time, so this clamp
+                # is always emitted (unlike the static branch, which no-ops a dividing dim).
+                bound = self.dyn_bound_cses[ghi.name]
+                high_var = self.apply_cse.generate(
+                    buffer, f"affine.min affine_map<(d0)[s0] -> ({tile}, s0 - d0)>(%{iv})[%{bound}]")
+            else:
+                high_var = self.apply_cse.generate(
+                    buffer, f"affine.min affine_map<(d0) -> ({tile}, {ghi} - d0)>(%{iv})")
             self.register_var_info(high_var, [1, "index"])
             if glo > 0:
                 low_var = self.apply_cse.generate(

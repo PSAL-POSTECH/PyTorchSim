@@ -230,6 +230,20 @@ class MLIRScheduling(BaseScheduling):
                 wrapper.header.writeline(code)
                 self.outer_function.add(function_name)
 
+    @staticmethod
+    def _literalize_meta(obj):
+        """Render meta (arg_attributes) as a valid Python literal for the generated
+        wrapper. Dynamic shapes put sympy symbols (e.g. s52) in the shape/stride
+        fields; emitted bare they are undefined at module scope -> NameError on
+        import. Stringify them ('s52'); the real extent arrives as a runtime kernel
+        arg (see the wrapper's call() body), so the compile-time descriptor only
+        needs to be import-safe and shape-agnostic."""
+        if isinstance(obj, sympy.Expr):
+            return str(obj)
+        if isinstance(obj, (list, tuple)):
+            return type(obj)(MLIRScheduling._literalize_meta(x) for x in obj)
+        return obj
+
     def define_kernel(self, src_code, meta_code, kernel_name, vector_lane, spad_info, loop_size=None, origins={}):
         wrapper = V.graph.wrapper_code
         if src_code in wrapper.src_to_kernel:
@@ -242,7 +256,7 @@ class MLIRScheduling(BaseScheduling):
             codecache_def.writeline(f"loop_size={loop_size},")
             codecache_def.writeline(f"spad_info={spad_info},")
             codecache_def.writeline(f"origins={origins},")
-            codecache_def.writeline(f"arg_attributes={meta_code},")
+            codecache_def.writeline(f"arg_attributes={self._literalize_meta(meta_code)},")
             headers = extension_codecache.get_header(src_code)
             if headers is not None:
                 codecache_def.writeline(f"global_var_header='''{headers[0]}''',")

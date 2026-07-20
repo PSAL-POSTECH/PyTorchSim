@@ -22,6 +22,7 @@ namespace po = boost::program_options;
 std::unique_ptr<TileGraph> build_trace_tilegraph(Simulator* simulator,
                                                  const std::string& trace_so_path,
                                                  const std::string& cycle_table_path,
+                                                 const std::string& attribute_path,
                                                  int partition_id) {
   const auto& cfg = simulator->get_hardware_config_yaml();
   int num_cores = cfg["num_cores"] ? cfg["num_cores"].as<int>() : 1;
@@ -40,7 +41,21 @@ std::unique_ptr<TileGraph> build_trace_tilegraph(Simulator* simulator,
     while (ct >> c >> o) { cyc.push_back(c); ovl.push_back(o); }
   }
   if (cyc.empty()) { cyc.assign(256, 128); ovl.assign(256, 0); }
-  return trace_to_tilegraph(trace_so_path.c_str(), nullptr, 0,
+  // Dynamic shape: the producer reads its loop bounds from shape_args[k]. Read them
+  // from the per-kernel attribute YAML (the same file that carries address_info),
+  // under the `shape_args` sequence. Absent (static kernel) -> nullptr, as before.
+  std::vector<int64_t> shape_args;
+  if (!attribute_path.empty()) {
+    YAML::Node attr = YAML::LoadFile(attribute_path);
+    if (attr["shape_args"]) {
+      for (const auto& v : attr["shape_args"]) shape_args.push_back(v.as<int64_t>());
+      spdlog::info("[TOGSim-trace] shape_args: {} values from {}",
+                   shape_args.size(), attribute_path);
+    }
+  }
+  return trace_to_tilegraph(trace_so_path.c_str(),
+                            shape_args.empty() ? nullptr : shape_args.data(),
+                            (int32_t)shape_args.size(),
                             bases.data(), (int)bases.size(),
                             cyc.data(), ovl.data(), (int)cyc.size(),
                             partition_cores.data(), (int32_t)partition_cores.size(),
@@ -58,7 +73,7 @@ void launchKernel(Simulator* simulator, unsigned int kernel_id, std::string onnx
   std::string trace_so = dir + "/trace.so";
   std::string cycle_tsv = dir + "/trace_cycles.tsv";
   if ((!legacy || std::string(legacy) != "1") && fs::exists(trace_so)) {
-    tile_graph = build_trace_tilegraph(simulator, trace_so, cycle_tsv, partition_id);
+    tile_graph = build_trace_tilegraph(simulator, trace_so, cycle_tsv, attribute_path, partition_id);
     if (tile_graph) tog_path = trace_so;
     else spdlog::warn("[TOGSim] trace.so run failed for {}; falling back to ONNX", trace_so);
   }
@@ -160,6 +175,10 @@ int main(int argc, char** argv) {
   cmd_parser.add_command_line_option<std::string>(
       "cycle_table", "Path to a 'cycle<TAB>overlapping' per-tile_id sidecar (TSV) "
                      "for --trace_so; falls back to a flat stub if omitted");
+  cmd_parser.add_command_line_option<std::string>(
+      "attribute", "Path to the per-kernel attribute YAML (address_info, "
+                   "shape_args) for --trace_so; carries a dynamic kernel's runtime "
+                   "shape the same way the legacy path carries address_info");
   try {
     cmd_parser.parse(argc, argv);
   } catch (const CommandLineParser::ParsingError& e) {
@@ -212,7 +231,12 @@ int main(int argc, char** argv) {
     // round-robin over partition 0's cores only; see build_trace_tilegraph).
     std::string cycle_table_path;
     cmd_parser.set_if_defined("cycle_table", &cycle_table_path);
-    auto tg = build_trace_tilegraph(simulator, trace_so_path, cycle_table_path, 0);
+    // Dynamic shape: the producer reads its loop bounds from shape_args[k], which
+    // build_trace_tilegraph loads from the per-kernel attribute YAML (the same
+    // file that carries address_info for the legacy path).
+    std::string attribute_path;
+    cmd_parser.set_if_defined("attribute", &attribute_path);
+    auto tg = build_trace_tilegraph(simulator, trace_so_path, cycle_table_path, attribute_path, 0);
     if (!tg) { spdlog::error("[TOGSim] trace producer run failed"); exit(1); }
     tg->set_arrival_time(simulator->get_core_cycle());
     tg->set_kernel_id(0);

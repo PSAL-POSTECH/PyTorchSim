@@ -113,7 +113,7 @@ def _relayout_args(args):
         if len(contrib) < 2:
             continue                             # single grouping -> axis-split handles
         union = {b for _, s in contrib for b in s}
-        if axis_split._is_chain(union, E):
+        if axis_split._ordered_chain(union, E) is not None:
             continue                             # compatible -> axis-split handles
         victim = min(contrib, key=lambda c: _numel(tbs[c[0]]))[0]
         break

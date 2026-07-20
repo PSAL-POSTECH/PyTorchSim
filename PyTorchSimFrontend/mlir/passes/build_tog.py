@@ -1072,8 +1072,15 @@ def _find_kernel(module):
     return None
 
 
-def _build(module, builder):
-    """Build the graph and return its display string, populating `builder`."""
+def _build(module, builder, serialize=True):
+    """Build the graph, populating `builder`; return its display string.
+
+    `serialize=False` skips the bfs/display string pass and returns "". The
+    skeleton path (build_skeleton) only needs the builder side effects (loop /
+    compute / DMA nodes), not the serialized TOG, and display() formats a constant
+    `loop_end` -- which is None for a dynamic (runtime-extent) loop. The loop bound
+    itself is carried by the affine.for op in the IR (lowered to a runtime-bounded
+    loop downstream), so the skeleton does not need it serialized here."""
     func_op = _find_kernel(module)
     if func_op is None:
         return ""
@@ -1088,7 +1095,8 @@ def _build(module, builder):
         root = TOGNode("root")
         builder._reset_matmul_fsm()
         builder.print_operation(op, root)
-        root.bfs(out)
+        if serialize:
+            root.bfs(out)
     return "".join(out)
 
 

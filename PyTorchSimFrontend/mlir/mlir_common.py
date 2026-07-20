@@ -97,6 +97,31 @@ def get_dtype_nbytes(dtype):
         raise NotImplementedError(f"Unsupported dtype for precision calculation: {dtype}")
     return MLIR_TO_BIT[mlir_dtype] // 8
 
+def is_symbolic_dim(x):
+    """True if `x` is a runtime (symbolic) dimension -- a sympy expression that is
+    not a compile-time constant. Dynamic shape (torch.compile(dynamic=True)) makes a
+    loop range / dim such a symbol (e.g. ks0); the tiling and bound-emission paths
+    must skip their concrete-int arithmetic for it. Single predicate for every such
+    guard (a concrete sympy.Integer is NOT symbolic)."""
+    return isinstance(x, sympy.Expr) and not x.is_number
+
+def dyn_bound_name(sym_name):
+    """The index-SSA name (without the leading '%') holding a dynamic dim's runtime
+    extent. Single source of the %<name>_bound convention: the CSE var registered in
+    set_ranges, the codegen_loops materialization, and the loop bound all go through here."""
+    return f"{sym_name}_bound"
+
+
+def mlir_dim(d):
+    return "?" if is_symbolic_dim(d) else str(d)
+
+
+def mlir_memref_type(dims, dtype, memspace=None):
+    body = "x".join(mlir_dim(d) for d in dims)
+    suffix = f", {memspace}" if memspace is not None else ""
+    return f"memref<{body}x{DTYPE_TO_MLIR[dtype]}{suffix}>"
+
+
 DTYPE_LOWP_FP = [
     torch.bfloat16,
     torch.float16,
@@ -176,9 +201,13 @@ class MLIRKernelArgs(common.KernelArgs):
         return MLIRKernelArgs.MLIR_ARGS_INOUT & value
 
     @staticmethod
+    def is_mlir_arg_var(value):
+        # A size-symbol arg (a dynamic extent passed as a scalar), not a tensor.
+        return bool(MLIRKernelArgs.MLIR_ARGS_VAR & value)
+
+    @staticmethod
     def get_mlir_shape(info):
-        tensor_type = DTYPE_TO_MLIR[info[0]]
-        return f"memref<{info[1]}x{tensor_type}>"
+        return mlir_memref_type([info[1]], info[0])
 
     def mlir_argdefs(self, extra_node=dict()):
         buffer_types = {}
@@ -225,7 +254,15 @@ class MLIRKernelArgs(common.KernelArgs):
                 continue
             set_info(outer, inner, self.MLIR_ARGS_OUT)
         for outer, inner in self.sizevars.items():
-            set_info(outer, inner, self.MLIR_ARGS_VAR)
+            # Dynamic shape: a size symbol (e.g. s52) is not a buffer/graph_input/
+            # constant, so buffer_types has no entry for it. Key it by its NAME (str)
+            # like a buffer -- the symbol's name is also the host-side SymInt variable
+            # the wrapper passes at the call site -- and describe it as a scalar int
+            # (-> memref<1x i64>), mirroring the sympy graph_input case above.
+            name = str(outer)
+            if name not in buffer_types:
+                buffer_types[name] = [get_sympy_Expr_dtype(outer), 1, [1], [1]]
+            set_info(name, inner, self.MLIR_ARGS_VAR)
         return arg_defs, call_args, arg_attributes, buffer_types
 
 class VectorLaneMapping():
@@ -361,6 +398,13 @@ class TileAdjustMixin():
             constraint = self.tile_constraint[i]
             if constraint.fixed:
                 continue
+            # Dynamic shape: the tail-padding heuristic exists only to shave the tile
+            # to a KNOWN dim and minimize wasted tail. With a symbolic dim the tail
+            # extent is unknown, so keep the fixed init tile and let the tail become a
+            # runtime remainder tile (masked). Skipping also avoids %/comparison on a
+            # sympy symbol (cannot determine truth value).
+            if is_symbolic_dim(dim_range):
+                continue
 
             padding_ratio = TileAdjustMixin.get_padding_ratio(tile_range, dim_range)
             if padding_ratio < self.tail_ratio_threshold:
@@ -412,7 +456,14 @@ class TileAdjustMixin():
         tile_size = [1] * nr_dim
         if nr_dim == 1:
             # Cap to extent so the tile never over-reads the DRAM buffer (extent 128 vs tile 512 -> 384 garbage folded into the reduction). No-op when extent >= tile.
-            tile_size[0] = 1 if ranges[0] == 1 else min(2 * vlane_stride * vector_lane, ranges[0])
+            # Dynamic shape: a symbolic extent has no compile-time value to cap against
+            # (min() on a sympy symbol is undecidable). Keep the full tile -- the over-read
+            # this cap guards against is trimmed at runtime instead, by the masked-DMA clamp
+            # that a symbolic extent always emits (_masked_bounds -> _emit_clamp).
+            if is_symbolic_dim(ranges[0]):
+                tile_size[0] = 2 * vlane_stride * vector_lane
+            else:
+                tile_size[0] = 1 if ranges[0] == 1 else min(2 * vlane_stride * vector_lane, ranges[0])
         elif nr_dim == 2:
             tile_size[-1] = vlane_stride * vector_lane
             tile_size[-2] = 2 * vector_lane
@@ -425,6 +476,10 @@ class TileAdjustMixin():
 
     @staticmethod
     def get_padding_ratio(tile_range: int, dim_range: int) -> float:
+        # Dynamic shape: a symbolic dim has no compile-time tail, so report zero
+        # padding waste ("nothing to trim") rather than doing %/<= on a sympy symbol.
+        if is_symbolic_dim(dim_range) or is_symbolic_dim(tile_range):
+            return 0.0
         if tile_range <= 0 or dim_range <= 0:
             raise ValueError("tile_range and dim_range must be positive integers")
         tail = dim_range % tile_range
@@ -550,6 +605,10 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
         self.reduction_depth = None
         self.itervars = None
         self.itervar_cses = None
+        # Dynamic shape: {size-symbol name -> the index CSE var holding its runtime extent}.
+        # Populated in set_ranges (early), materialized once in the codegen_loops prologue,
+        # and read by the loop bound and the masked-DMA clamp -- one source for %<name>_bound.
+        self.dyn_bound_cses = {}
         # Code buffer
         self.vector_compute = IndentedBuffer()
         self.reductions_suffix = IndentedBuffer()
@@ -585,6 +644,15 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
                 self.itervars = [sympy.Symbol(str(n)) for n in index_names]
 
             self.itervar_cses = {str(index) : self.register_var_cse(str(index), 1, "index") for index in self.itervars}
+            # Dynamic shape: register each symbolic dim's runtime-extent SSA up front, keyed
+            # by symbol name. This is the single source of the %<name>_bound value; the loop
+            # bound and the masked-DMA clamp look it up here instead of rebuilding the name,
+            # and codegen_loops materializes it (memref.load + index_cast) in the prologue.
+            self.dyn_bound_cses = {
+                r.name: self.register_var_cse(dyn_bound_name(r.name), 1, "index")
+                for r in self.ranges
+                if isinstance(r, sympy.Symbol) and is_symbolic_dim(r)
+            }
             self.reduction_depth = len(lengths)
         return (
             self.itervars[: self.reduction_depth],
@@ -975,14 +1043,26 @@ class LoopLevel:
     reduction_vars: Dict[str, str] = dataclasses.field(default_factory=dict)
     affine_yield: Dict[str, str] = dataclasses.field(default_factory=dict)
 
+    def _bound_str(self):
+        # Dynamic shape: a symbolic upper bound is emitted as an index SSA value
+        # (%<name>_bound, materialized at the function top level by codegen_loops),
+        # which is a valid affine symbol; a concrete bound stays an integer literal.
+        if is_symbolic_dim(self.size):
+            if not isinstance(self.size, sympy.Symbol):
+                raise NotImplementedError(
+                    f"dynamic loop bound must be a single size symbol, got {self.size}")
+            return f"%{dyn_bound_name(self.size.name)}"
+        return f"{self.size}"
+
     def lines(self):
+        bound = self._bound_str()
         if len(self.reduction_vars):
             acc = ', '.join([f"%{acc.name}" for acc in self.reduction_vars.keys()])
             args = ', '.join([f"%{iter.name} = %{init.name}" for (_, iter, init, _) in self.reduction_vars.values()])
             dtype = ', '.join([f"{dtype}" for (_, _, _, dtype) in self.reduction_vars.values()])
-            line = f"{acc} = affine.for %{self.var} = {self.start} to {self.size} step {self.step} iter_args({args}) -> ({dtype})"
+            line = f"{acc} = affine.for %{self.var} = {self.start} to {bound} step {self.step} iter_args({args}) -> ({dtype})"
         else:
-            line = f"affine.for %{self.var} = {self.start} to {self.size} step {self.step}"
+            line = f"affine.for %{self.var} = {self.start} to {bound} step {self.step}"
 
         return [line]
 

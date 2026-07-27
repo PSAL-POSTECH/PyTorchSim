@@ -35,10 +35,18 @@ torch.compile
         │  a tnpu kernel file (KernelSpec)       kernel_spec.py
         ▼
     run.py <spec> --to binary   (subprocess)     tnpu_bridge.py
-        │  01-ttir → 02-ttshared → 03-adapted → 04-lowered → 05-*.elf
+        │  01-ttir → 02-ttshared → 03-adapted → 04-custom → 05-*.elf
         ▼
-    TritonNPULauncher.__call__                   ← NOT WIRED YET
+    TritonNPULauncher.__call__                   codecache.py
+        ├ timing      04-custom.mlir → trace.so + trace_cycles.tsv → TOGSim
+        │              cycles measured by gem5 on a one-tile binary
+        └ functional  ← NOT WIRED YET
 ```
+
+The timing half reuses PyTorchSim's trace pipeline unchanged. The one structural
+difference is that a Triton kernel body is a single program instance, so the grid
+that enumerates instances is supplied by `lower_to_emitc.WorkItem` instead of
+being read out of the kernel -- see "The grid is not in the kernel" below.
 
 Artifacts land in one directory per source hash under the dump path
 (`outputs/triton_<hash>/`), alongside the unmodified Inductor source
@@ -54,7 +62,18 @@ Artifacts land in one directory per source hash under the dump path
 - the lowering is correct in shape: `tl.load/store` became three
   `togsim.transfer` ops, and Inductor's `xmask` came through as a **masked DMA**
   (`masked_axes = [0]`, `masked_fill`), which tnpu already supports
-- the run stops in `TritonNPULauncher.__call__`, by design
+- the trace producer comes out in the shape the design calls for: a
+  `togsim_kernel_tile` computing `offset = iv[0]*128` around three `togsim_dma`
+  and one `togsim_compute`, and a `togsim_kernel` looping `p < 8` over
+  `togsim_dispatch`
+- **TOGSim runs it: 650 cycles**, with channel-0 DRAM traffic of 16 reads x 32 B
+  x 16 channels = 8192 B, exactly the 8 work-items x 2 loads x 512 B the kernel
+  should move. The MLIR route on the same `x + y` reports 251 cycles -- the same
+  order, and higher here because tnpu emits synchronous DMA, so nothing overlaps
+  (gap 2)
+- the tile's compute cost is a real measurement: gem5 samples **19 cycles** for
+  the vector-add tile, via `timing.measure_tile_cycles`
+- values are NOT produced: the functional launch is still open (gap 1)
 
 ## Gap list, in order
 
@@ -62,17 +81,18 @@ Artifacts land in one directory per source hash under the dump path
    `runtime/*.raw`, run Spike on the ELF, read outputs back. tnpu's stage 6 does
    this for its own kernels but generates inputs from the spec; here the tensors
    come from the caller.
-2. **Launch (timing).** Emit `trace.so` + `trace_cycles.tsv` and hand them to
-   TOGSim. Blocked on the `build_tog` adapters — the tnpu IR is structurally
-   invisible to it today (no top-level `affine.for`, `scf.for` instead of
-   `affine.for`, vcix as LLVM intrinsics rather than dialect ops, DMA addresses
-   as `arith` chains rather than `affine.apply`, grid outside the IR).
+2. **Double buffering.** tnpu emits synchronous DMA (`is_async=false`, no
+   `togsim.wait`), so load → compute → store serialize inside every work-item and
+   TOGSim has no overlap to model. This is the main remaining gap between the two
+   routes' cycle counts.
 3. **`triton_helpers`.** Any kernel using `triton_helpers.*` (reductions,
    clamps, `maximum`/`minimum`) cannot compile: the module lives in torch and
    the tnpu venv has none. `strip_for_tnpu` raises and names the helper. Needs a
    minimal vendored copy.
 4. **Reductions.** Independently blocked in tnpu itself — no lane-aware
    reduction path; see `triton-npu/kernels/reduce.py`.
+   Matmul is also still open on the timing side: `build_tog` finds compute nodes
+   by the `vcix.iv` op name, and tnpu emits `llvm.riscv.sf.vc.*` intrinsics.
 5. **Block-size policy.** `fixed_config_for` pins `XBLOCK` to the lane count and
    deliberately leaves reduction blocks unset. Real tile selection (the MLIR
    route's autotuner / `codegen_mapping_strategy`) has no equivalent here yet.
@@ -102,6 +122,17 @@ expect. What remains in `_triton_compat` is not a version shim: on a box with no
 GPU, `triton_hash_with_backend()` raises "0 active drivers" because it asks the
 triton runtime for the current target. We never launch through that runtime, so
 the value is short-circuited to a deterministic cache key.
+
+**The grid is not in the kernel.** PyTorchSim's codegen puts the tile loops
+inside the kernel; a Triton kernel describes one program instance and leaves the
+grid to the launch. The trace producer wants that same split already --
+`togsim_kernel_tile` per work-item, enumerated by `togsim_kernel` (design sec
+9.3) -- so the models agree and only the enumeration was missing.
+`_materialize_grid_loop` supplies it, on the trace artifact only: it wraps the
+body in a loop tagged `outer_loop` with each program-id argument replaced by the
+induction variable, and everything downstream is unchanged. It runs before
+`_rewrite_signature`, which erases the kernel arguments and first asserts none
+are still used -- that ordering is what decides where this can live.
 
 ## CI
 

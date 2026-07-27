@@ -49,6 +49,10 @@ _DTYPE = {
 }
 
 
+#: Triton scalar token -> C type, for the wrapper's kernel declaration.
+_C_TYPE = {"i32": "int32_t", "i64": "int64_t", "fp32": "float"}
+
+
 class SpecIncomplete(RuntimeError):
     """Metadata tnpu requires that this kernel did not provide.
 
@@ -247,6 +251,31 @@ def strip_for_tnpu(src):
     return prefix + body
 
 
+def scalar_args(meta):
+    """User scalar parameters, in kernel order, as [(name, c_type, value)].
+
+    triton-shared keeps these in the lowered signature ahead of its own six
+    grid/pid arguments, so the wrapper must pass them or every later argument
+    lands one slot early -- pidX then reads pidY and only program 0 runs.
+    """
+    numels = meta["numels"]
+    out = []
+    for name, token in meta["signature"].items():
+        if token.startswith("*") or token == "constexpr":
+            continue
+        ctype = _C_TYPE.get(token)
+        if ctype is None:
+            raise SpecIncomplete(
+                f"{meta['kernel_name']}: scalar '{name}' has type {token!r}, "
+                f"which has no C mapping in _C_TYPE")
+        if numels.get(name) is None:
+            raise SpecIncomplete(
+                f"{meta['kernel_name']}: no value for scalar '{name}' -- "
+                f"collect_meta resolves these from kernel.numels")
+        out.append((name, ctype, int(numels[name])))
+    return out
+
+
 def grid_of(meta):
     """Launch grid, from the numels and the pinned block sizes, outermost first.
 
@@ -329,6 +358,8 @@ SPEC = KernelSpec(
     grid={grid!r},
     reference=reference,
     make_inputs=make_inputs,
+    extra={{"scalar_args": {scalar_decls!r},
+           "scalar_values": {scalar_values!r}}},
     notes="generated from Inductor triton codegen",
 )
 '''
@@ -370,6 +401,7 @@ def write_spec_file(src_code, meta, path, tnpu_dir):
     with open(os.path.join(os.path.dirname(path), triton_module), "w") as f:
         f.write(strip_for_tnpu(src_code))
 
+    scalars = scalar_args(meta)
     text = SPEC_TEMPLATE.format(
         kernel_name=meta["kernel_name"],
         tnpu_dir=tnpu_dir,
@@ -379,6 +411,8 @@ def write_spec_file(src_code, meta, path, tnpu_dir):
         args_body=args_body,
         make_inputs_body=make_inputs_body,
         grid=grid_of(meta),
+        scalar_decls=[(n, c) for n, c, _ in scalars],
+        scalar_values={n: v for n, _, v in scalars},
     )
     with open(path, "w") as f:
         f.write(text)

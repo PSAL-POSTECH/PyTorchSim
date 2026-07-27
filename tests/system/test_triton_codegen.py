@@ -92,12 +92,38 @@ def check_multi_axis_grid():
     return not problems
 
 
+def check_reduction_is_refused():
+    """A reduction must fail LOUDLY, not compile into wrong numbers.
+
+    tnpu has no lane-aware reduction: the scratchpad is lane-banked, so the
+    reduced axis has to live inside a lane, and triton-shared hands over a
+    linalg.reduce (plus a linalg.transpose) that no pass lowers that way. Until
+    one does, reaching the launcher would mean simulating a kernel whose compute
+    is not what the hardware would do.
+
+    Passing this check means the attempt still stops. When the lane path lands,
+    this is the test to delete.
+    """
+    x = torch.randn(128, 64)
+    try:
+        torch.compile(lambda t: t.sum(dim=1))(x.to("npu:0"))
+    except Exception as e:  # noqa: BLE001 - any diagnosed stop is the point
+        first = (str(e).strip().splitlines() or [type(e).__name__])[0]
+        print(f"  reduction stops at: {type(e).__name__}: {first[:74]}")
+        return True
+    print("  reduction COMPILED -- if the lane-aware path landed, drop this "
+          "check; otherwise the numbers it produces are wrong")
+    return False
+
+
 def main():
     from PyTorchSimFrontend import extension_config
     from PyTorchSimFrontend.triton_backend import tnpu_bridge
 
     print(f"multi-axis grid          = "
           f"{'ok' if check_multi_axis_grid() else 'FAILED'}")
+    print(f"reduction refused        = "
+          f"{'ok' if check_reduction_is_refused() else 'FAILED'}")
     print(f"TORCHSIM_TRITON_CODEGEN = {extension_config.CONFIG_TRITON_CODEGEN}")
     print(f"TNPU_DIR                = {extension_config.CONFIG_TNPU_DIR}")
     ok, _out = tnpu_bridge.doctor()

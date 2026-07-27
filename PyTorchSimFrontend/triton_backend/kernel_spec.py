@@ -345,6 +345,12 @@ def write_spec_file(src_code, meta, path, tnpu_dir):
     signature = dict(meta["signature"])
     constexprs = dict(meta["constants"])
     for k, v in (meta.get("fixed_config") or {}).items():
+        if k not in signature:
+            # Inductor already fixed this one in the kernel BODY rather than
+            # taking it as a parameter -- a persistent reduction does that with
+            # R0_BLOCK. Passing it would not match the signature, and there is
+            # nothing left for us to choose.
+            continue
         if v is None:
             raise SpecIncomplete(
                 f"{meta['kernel_name']}: block size {k} is unset "

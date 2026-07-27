@@ -20,9 +20,55 @@ TRACE_SO = "trace.so"
 CYCLE_TSV = "trace_cycles.tsv"
 META_JSON = "meta.json"
 
-#: Stand-in per-tile cost until gem5 sampling lands. Deliberately not a
-#: plausible-looking number: only an obvious non-measurement gets fixed.
+#: Used only when gem5 sampling fails. Deliberately not a plausible-looking
+#: number: only an obvious non-measurement gets fixed.
 PLACEHOLDER_CYCLE = 1
+
+SAMPLE_MLIR = "04-sample.mlir"
+CYCLE_BIN = "cycle_bin"
+
+
+def measure_tile_cycles(workdir, meta):
+    """Per-compute-node cycle counts for ONE tile, measured under gem5.
+
+    build_tog's sample mode marks each compute node and makes every loop a
+    single trip; tnpu lowers that to a binary (in ITS process -- the Gemmini/VCIX
+    lowering and its LLVM live there); gem5 runs it. Returns None on any failure,
+    and the caller falls back to the placeholder table.
+    """
+    from PyTorchSimFrontend.mlir.passes.build_tog import run_tog
+
+    kernel_name = meta["kernel_name"]
+    spec = os.path.join(workdir, f"{kernel_name}_spec.py")
+    if not os.path.isfile(spec):
+        logger.warning("[Gem5] %s not found; cannot sample cycles", spec)
+        return None
+
+    run_tog(os.path.join(workdir, "04-custom.mlir"),
+            os.path.join(workdir, "tog_sample.py"),
+            os.path.join(workdir, SAMPLE_MLIR), sample_mode=True)
+
+    import subprocess
+
+    from . import tnpu_bridge
+    env = dict(os.environ)
+    env.pop("PYTHONPATH", None)          # keep tnpu on its own MLIR bindings
+    proc = subprocess.run(
+        [extension_config.CONFIG_TNPU_PYTHON, "-m", "tnpu.cycle", spec, workdir],
+        capture_output=True, text=True, cwd=tnpu_bridge.tnpu_dir(), env=env)
+    if proc.returncode != 0:
+        logger.warning("[Gem5] cycle binary build failed:\n%s",
+                       (proc.stdout + proc.stderr)[-2000:])
+        return None
+
+    from Simulator.simulator import CycleSimulator
+    try:
+        return CycleSimulator().compile_and_simulate(
+            os.path.join(workdir, CYCLE_BIN), int(extension_config.vpu_num_lanes),
+            silent_mode=True)
+    except Exception as e:  # noqa: BLE001 - fall back to the placeholder table
+        logger.warning("[Gem5] sampling failed: %s", e)
+        return None
 
 
 def _runtime_arg_layout(meta):
@@ -65,22 +111,41 @@ def emit_trace(workdir, meta):
             f"{postvcix} not found -- tnpu must have run at least to stage 4 "
             f"(the post-vcix IR is what the trace is built from)")
 
+    # Before build_skeleton: both read the post-vcix IR, which it rewrites in place.
+    cycles = measure_tile_cycles(workdir, meta)
+
     ctx = ir.Context()
     ctx.allow_unregistered_dialects = True
     with ctx:
         module = ir.Module.parse(open(postvcix).read(), ctx)
         bs.build_skeleton(module)
-        n_tiles = len(ct._compute_types(module))
+        compute_types = ct._compute_types(module)
+        n_tiles = len(compute_types)
+
+        if cycles:
+            # One numCycles per compute node; pad/truncate as the MLIR route does.
+            cl = list(cycles)
+            if len(cl) != n_tiles:
+                logger.warning("[Gem5] returned %d cycle(s) for %d "
+                               "tile(s); padding with the last", len(cl), n_tiles)
+                cl = (cl + [cl[-1]] * n_tiles)[:n_tiles]
+            # Systolic-array fill; only matmul tiles use it.
+            lanes = int(extension_config.vpu_num_lanes)
+            table = ct.build_cycle_table(module, cl, x_offset=lanes, w_offset=0)
+        else:
+            table = [(PLACEHOLDER_CYCLE, 0)] * n_tiles
+            logger.warning(
+                "[Gem5] %s holds PLACEHOLDER cycles (%d per tile x %d "
+                "tiles): gem5 sampling did not produce a measurement, so "
+                "compute latency is NOT modelled",
+                CYCLE_TSV, PLACEHOLDER_CYCLE, n_tiles)
+
         l2e.skeleton_to_so(module, os.path.join(workdir, TRACE_SO),
                            work_item=work_item_for(meta))
 
-    # Until gem5 sampling lands, every tile costs PLACEHOLDER_CYCLE: TOGSim
-    # models the DMA and the dependency structure but NOT compute latency.
-    table = [(PLACEHOLDER_CYCLE, 0)] * n_tiles
     ct.dump_cycle_table_tsv(table, os.path.join(workdir, CYCLE_TSV))
-    logger.warning("[Gem5] %s holds PLACEHOLDER cycles (%d per tile x %d tiles); "
-                   "compute latency is not modelled yet",
-                   CYCLE_TSV, PLACEHOLDER_CYCLE, n_tiles)
+    if cycles:
+        logger.info("[Gem5] tile cycles: %s", table)
     return n_tiles
 
 

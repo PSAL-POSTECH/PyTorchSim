@@ -84,15 +84,27 @@ def _runtime_arg_layout(meta):
     return len(tensors), len(scalars)
 
 
+#: triton-shared appends pidX, pidY, pidZ in that order, whatever the tiling is.
+_PID_SLOT = {"x": 0, "y": 1, "z": 2}
+
+
 def work_item_for(meta):
-    """The WorkItem describing this kernel's program-id args and grid extents."""
+    """The WorkItem describing this kernel's program-id args and grid extents.
+
+    `grid_of` orders axes OUTERMOST first (z, y, x -- x is Inductor's contiguous
+    one), while the program-id arguments are always laid out x, y, z. The two
+    are zipped downstream, so the argument list is built per axis rather than as
+    a range.
+    """
     from PyTorchSimFrontend.mlir.passes.lower_to_emitc import WorkItem
     from . import kernel_spec
 
     n_tensor, n_scalar = _runtime_arg_layout(meta)
-    pid_x = n_tensor + n_scalar + 3          # after gridX, gridY, gridZ
+    pid_base = n_tensor + n_scalar + 3       # after gridX, gridY, gridZ
+    axes = kernel_spec.parallel_axes(meta["numels"])
     grid = list(kernel_spec.grid_of(meta))
-    return WorkItem(parallel_args=list(range(pid_x, pid_x + len(grid))), grid=grid)
+    return WorkItem(parallel_args=[pid_base + _PID_SLOT[p] for p in axes],
+                    grid=grid)
 
 
 def emit_trace(workdir, meta):

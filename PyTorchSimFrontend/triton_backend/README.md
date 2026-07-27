@@ -38,9 +38,9 @@ torch.compile
         │  01-ttir → 02-ttshared → 03-adapted → 04-custom → 05-*.elf
         ▼
     TritonNPULauncher.__call__                   codecache.py
-        ├ timing      04-custom.mlir → trace.so + trace_cycles.tsv → TOGSim
-        │              cycles measured by gem5 on a one-tile binary
-        └ functional  ← NOT WIRED YET
+        ├ functional  tensors → runtime/*.raw → Spike → tensors   functional.py
+        └ timing      04-custom.mlir → trace.so + trace_cycles.tsv → TOGSim
+                       cycles measured by gem5 on a one-tile binary
 ```
 
 The timing half reuses PyTorchSim's trace pipeline unchanged. The one structural
@@ -73,14 +73,23 @@ Artifacts land in one directory per source hash under the dump path
   (gap 2)
 - the tile's compute cost is a real measurement: gem5 samples **19 cycles** for
   the vector-add tile, via `timing.measure_tile_cycles`
-- values are NOT produced: the functional launch is still open (gap 1)
+- **values are correct**: the launch writes the caller's tensors from Spike and
+  `torch.allclose` holds over all 1024 elements, for the fused
+  `(x + y) * 2 - x` kernel too
+
+## Shape specialisation
+
+The functional binary is compiled for ONE shape: the spec bakes the grid, the
+scalar values and the memref extents in. A dynamic-shape graph reuses that ELF,
+so `functional.ShapeMismatch` rejects the launch instead of running against the
+wrong bounds. The timing path has no such limit -- it takes the grid at run time
+-- so `pytorchsim_functional_mode: False` studies cycles across shapes.
 
 ## Gap list, in order
 
-1. **Launch (functional).** Marshal the caller's tensors into
-   `runtime/*.raw`, run Spike on the ELF, read outputs back. tnpu's stage 6 does
-   this for its own kernels but generates inputs from the spec; here the tensors
-   come from the caller.
+1. **Shape-specialised functional launch.** Recompile per launch shape, or teach
+   the tnpu wrapper to take the grid and the extents as arguments the way the
+   trace producer already does.
 2. **Double buffering.** tnpu emits synchronous DMA (`is_async=false`, no
    `togsim.wait`), so load → compute → store serialize inside every work-item and
    TOGSim has no overlap to model. This is the main remaining gap between the two

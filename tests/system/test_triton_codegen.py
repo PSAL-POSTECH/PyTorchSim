@@ -145,10 +145,15 @@ def main():
               "above and README.md's gap list.")
         return 1
 
-    # Values are NOT checked: the launch simulates the kernel but does not
-    # marshal tensors through Spike, so `got` is undefined. What is asserted is
-    # that the timing path ran end to end -- the two artifacts TOGSim consumes.
-    del got
+    ok = torch.allclose(got.cpu(), expected, rtol=1e-4, atol=1e-4)
+    if not ok:
+        bad = (~torch.isclose(got.cpu(), expected, rtol=1e-4, atol=1e-4))
+        print(f"VALUES WRONG: {int(bad.sum())}/{expected.numel()} elements")
+        print(f"  got      {got.cpu()[:4].tolist()}")
+        print(f"  expected {expected[:4].tolist()}")
+        return 1
+    print(f"values ok ({expected.numel()} elements through Spike)")
+
     import glob
 
     from PyTorchSimFrontend.triton_backend import timing
@@ -165,8 +170,6 @@ def main():
             return 1
         print(f"  {name:18s} {os.path.getsize(path)} bytes")
     print(f"\ntiming path OK ({workdir})")
-    print(f"values NOT verified -- torch would give {expected[:3].tolist()}...; "
-          f"the functional launch is not wired (triton_backend/README.md)")
     return 0
 
 

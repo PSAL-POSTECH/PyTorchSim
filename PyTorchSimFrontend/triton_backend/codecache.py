@@ -18,7 +18,7 @@ from filelock import FileLock
 from torch._inductor.codecache import get_hash
 
 from PyTorchSimFrontend import extension_config
-from . import kernel_spec, timing, tnpu_bridge
+from . import functional, kernel_spec, timing, tnpu_bridge
 
 logger = extension_config.setup_logger()
 
@@ -43,19 +43,23 @@ class TritonNPULauncher:
         self.elf = os.path.join(workdir, f"05-{kernel_name}.elf")
 
     def __call__(self, *args):
-        """One launch of the whole grid: simulate, return TOGSim's result.
+        """One launch of the whole grid: run it on Spike, then time it.
 
-        Does NOT write the caller's output tensors -- the functional launch is
-        not wired (README). Logged, so an undefined value cannot pass for a
-        computed one.
+        Spike runs first so the caller's output tensors hold real values even if
+        TOGSim fails -- the two halves are independent.
         """
+        if extension_config.pytorchsim_functional_mode:
+            written = functional.run(self.workdir, self.meta, args)
+            logger.info("[Spike] %s wrote %s", self.kernel_name, written)
+        else:
+            logger.warning(
+                "[Spike] %s: functional mode is off, so the output tensors keep "
+                "whatever they held", self.kernel_name)
+
         if not os.path.isfile(os.path.join(self.workdir, timing.TRACE_SO)):
             timing.emit_trace(self.workdir, self.meta)
         result = timing.run_togsim(self.workdir, meta=self.meta, args=args)
         logger.info("[TOGSim] %s simulated -> %s", self.kernel_name, result)
-        logger.warning(
-            "[Spike] %s: output tensors are NOT written; the functional launch "
-            "(tensors -> Spike -> tensors) is not wired yet", self.kernel_name)
         return result
 
 

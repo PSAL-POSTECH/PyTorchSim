@@ -8,16 +8,9 @@ name: Triton codegen route (triton-npu)
 # is ~1.8 GiB that no other job needs, so it neither gates PRs nor slows them
 # down. Promote the jobs into pytorchsim_test.yml once the route runs end to end.
 #
-# PREREQUISITES, both one-time and both outside this repo:
-#   1. secrets.TNPU_TOKEN -- a PAT that can read PSAL-POSTECH/triton-npu. That
-#      repo is private, and the default Actions token is scoped to this
-#      repository only, so it cannot clone it or read its releases.
-#   2. A release tagged `toolchain-llvm23` on PSAL-POSTECH/triton-npu carrying
-#      llvm23-install.tar.gz, spike-install.tar.gz and triton-runtime.tar.gz.
-#      As of writing that repo has no releases; the assets exist only on the
-#      upstream fork it was forked from.
-# Both are checked by the preflight job below, which reports which one is missing
-# instead of failing deep inside a docker build.
+# Needs secrets.TNPU_TOKEN: a PAT that can read PSAL-POSTECH/triton-npu and its
+# toolchain-llvm23 release. The repo is private and the default Actions token is
+# scoped to this repository. preflight checks it before the docker build.
 
 on:
   pull_request:

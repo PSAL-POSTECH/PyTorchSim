@@ -123,18 +123,9 @@ one of those moves, and its tag also carries the base pin it was built on.
 `mlir-route-regression` is there because this layer adds a *second* LLVM and a
 *second* triton to the image; it checks the production path did not notice.
 
-**Two prerequisites, both outside this repo.** `preflight` fails with which one is
-missing rather than letting a docker build die deep:
-
-1. `secrets.TNPU_TOKEN` — a PAT that can read `PSAL-POSTECH/triton-npu`. That repo
-   is private, and the default Actions token is scoped to this repository, so it
-   can neither clone it nor read its releases. (The existing gem5 / riscv-llvm /
-   spike pins need no secret because those repos are public.)
-2. A release tagged `toolchain-llvm23` on `PSAL-POSTECH/triton-npu` carrying
-   `llvm23-install.tar.gz`, `spike-install.tar.gz`, `triton-runtime.tar.gz`.
-   **That repo currently has no releases** — the assets exist only on the fork it
-   came from, so they have to be mirrored across (or the repo made public and the
-   manifest pointed at whichever holds them).
+**Needs `secrets.TNPU_TOKEN`** — a PAT that can read `PSAL-POSTECH/triton-npu`
+and its `toolchain-llvm23` release. That repo is private and the default Actions
+token is scoped to this repository. `preflight` checks it before the build.
 
 `Dockerfile.tnpu` clones the harness and runs its own `setup/restore.sh
 --prebuilt`; the pins all live in that repo's `setup/versions.env`. `ref` in the

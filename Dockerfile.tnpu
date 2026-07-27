@@ -1,102 +1,37 @@
 # syntax=docker/dockerfile:1.4
 #
-# The triton-npu (tnpu) toolchain layer, on top of torchsim_base.
+# triton-npu toolchain layer, for the Triton codegen route only.
+# Separate from torchsim_base because it is ~1.8 GiB no other job needs.
+# The app image for this route is ./Dockerfile with BASE_IMAGE pointed here.
 #
-# Only the Triton codegen route needs this, and it is ~1.8 GiB compressed (LLVM 23
-# alone unpacks to ~4.3 GiB), so it is a SEPARATE image rather than part of
-# torchsim_base -- every other CI job would otherwise pay for it. The app image for
-# the Triton route is then the ordinary ./Dockerfile with BASE_IMAGE pointed here.
-#
-# Everything below mirrors triton-npu/setup/restore.sh --prebuilt. It is not simply
-# invoked because that script has two problems in this context, both flagged where
-# they are worked around: it clones a triton_shared fork that no longer exists, and
-# the release tarballs omit the triton backend links the editable install needs.
-#
-# PSAL-POSTECH/triton-npu is private, so the clone and the asset downloads both need
-# a token. It is passed as a BuildKit secret, never a build-arg: build-args are
-# recorded in the image history.
+# The repo is private, so the clone and the release downloads both need a token.
+# It is a BuildKit secret, not a build-arg: build-args land in the image history.
 
 ARG BASE_IMAGE=ghcr.io/psal-postech/torchsim_base:latest
 FROM ${BASE_IMAGE}
 
-ARG TNPU_LLVM23_ASSET_ID
-ARG TNPU_SPIKE_ASSET_ID
-ARG TNPU_RUNTIME_ASSET_ID
 ARG TNPU_REPO=PSAL-POSTECH/triton-npu
 ARG TNPU_REF=main
-ARG TRITON_REPO=triton-lang/triton
-ARG TRITON_COMMIT=df38505e451a1541555379bcf378be9e8c00545c
 
 WORKDIR /workspace
 
-# 1. The harness itself. Kept OUT of $TORCHSIM_DIR: ./Dockerfile copies the
-#    PyTorchSim checkout over that path afterwards, and a nested clone there would
-#    be shadowed or clobbered. extension_config reads TNPU_DIR, set below.
+# Not under $TORCHSIM_DIR: ./Dockerfile copies the PyTorchSim checkout over that
+# path afterwards. extension_config reads TNPU_DIR, set below.
 RUN --mount=type=secret,id=tnpu_token \
     TOKEN="$(cat /run/secrets/tnpu_token)" && \
-    git clone --depth 1 --branch "${TNPU_REF}" \
-      "https://x-access-token:${TOKEN}@github.com/${TNPU_REPO}.git" /workspace/triton-npu && \
-    git -C /workspace/triton-npu rev-parse HEAD > /workspace/triton-npu/.checkout-sha
+    git clone "https://x-access-token:${TOKEN}@github.com/${TNPU_REPO}.git" \
+      /workspace/triton-npu && \
+    git -C /workspace/triton-npu checkout -q "${TNPU_REF}" && \
+    git -C /workspace/triton-npu remote set-url origin \
+      "https://github.com/${TNPU_REPO}.git"
 
-# 2. The triton sources the prebuilt runtime was built against. The editable
-#    install in that tarball points back into this tree, so the checkout has to
-#    exist at exactly this revision -- and it is a main-branch commit, not the
-#    v3.6.0 tag: llvm-hash.txt moved from LLVM 22 to 23 after the tag, and the
-#    whole point of the pin is that both sides of the IR seam are LLVM 23.
-RUN git clone --filter=blob:none --no-checkout \
-      "https://github.com/${TRITON_REPO}.git" /workspace/hexagon-mlir/triton && \
-    git -C /workspace/hexagon-mlir/triton fetch --depth 1 origin "${TRITON_COMMIT}" && \
-    git -C /workspace/hexagon-mlir/triton checkout -q FETCH_HEAD && \
-    for p in nvvm_reduction_kind_compatibility libdevice_sigmoid; do \
-      git -C /workspace/hexagon-mlir/triton apply \
-        "/workspace/triton-npu/setup/patches/triton/$p.patch"; \
-    done
-# nvvm_reduction_kind_compatibility is REQUIRED, not cosmetic: the NVVM
-# ReductionKind API moved in this LLVM and triton does not compile without it.
-
-# 3. The prebuilt toolchain: LLVM 23 install, the CONFIG_DESC-capable spike, and
-#    the triton runtime (the mlir-env venv + triton-shared-opt + the built .so
-#    files). Each unpacks rooted at /workspace. A private repo's assets are only
-#    reachable through the API asset id with an octet-stream Accept header -- the
-#    /releases/download/ URL 404s even with a token.
+# restore.sh owns every pin (setup/versions.env) and unpacks LLVM 23, spike and
+# the triton runtime into /workspace.
 RUN --mount=type=secret,id=tnpu_token \
-    TOKEN="$(cat /run/secrets/tnpu_token)" && \
-    for spec in "${TNPU_LLVM23_ASSET_ID}" "${TNPU_SPIKE_ASSET_ID}" "${TNPU_RUNTIME_ASSET_ID}"; do \
-      curl -fL --retry 3 \
-        -H "Authorization: Bearer ${TOKEN}" \
-        -H "Accept: application/octet-stream" \
-        "https://api.github.com/repos/${TNPU_REPO}/releases/assets/${spec}" \
-      | tar -xz -C /workspace ; \
-    done
+    GITHUB_TOKEN="$(cat /run/secrets/tnpu_token)" \
+      /workspace/triton-npu/setup/restore.sh --prebuilt
 
-# 4. Re-create the triton backend links. `setup/package.sh` collects the triton
-#    tree with `find python -name '*.so'`, which misses
-#    python/triton/backends/{amd,nvidia,triton_shared} -- those are not source
-#    files but symlinks the build creates (setup.py:add_link_to_backends), so they
-#    are in neither the tarball nor git. Without them `import triton` dies in
-#    entry-point discovery with "No module named 'triton.backends.amd'".
-#    triton_shared is reconstructed from upstream microsoft/triton-shared: the fork
-#    the manifest used to name is gone, and tnpu never calls this backend -- it only
-#    has to import so discovery succeeds.
-RUN T=/workspace/hexagon-mlir/triton && \
-    for b in amd nvidia; do \
-      ln -sfnT "$T/third_party/$b/backend" "$T/python/triton/backends/$b" && \
-      if [ -d "$T/third_party/$b/language" ]; then \
-        for x in "$T/third_party/$b/language"/*; do \
-          ln -sfnT "$x" "$T/python/triton/language/extra/$(basename "$x")" ; \
-        done ; \
-      fi ; \
-    done && \
-    mkdir -p /workspace/hexagon-mlir/triton_shared/backend && \
-    for f in compiler.py driver.py name.conf; do \
-      curl -fsSL "https://raw.githubusercontent.com/microsoft/triton-shared/main/backend/$f" \
-        -o "/workspace/hexagon-mlir/triton_shared/backend/$f" ; \
-    done && \
-    ln -sfnT /workspace/hexagon-mlir/triton_shared/backend "$T/python/triton/backends/triton_shared"
-
-# tnpu's own defaults already point at these paths (tnpu/config.py); TNPU_DIR is
-# the one thing PyTorchSim needs told, since the checkout is not under TORCHSIM_DIR.
 ENV TNPU_DIR=/workspace/triton-npu
 
-# Fail the build rather than the first CI job if the toolchain is not usable.
+# Fail the build, not the first CI job.
 RUN python3 /workspace/triton-npu/run.py doctor

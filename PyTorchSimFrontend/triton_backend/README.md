@@ -136,11 +136,6 @@ missing rather than letting a docker build die deep:
    came from, so they have to be mirrored across (or the repo made public and the
    manifest pointed at whichever holds them).
 
-`Dockerfile.tnpu` mirrors `triton-npu/setup/restore.sh --prebuilt` rather than
-calling it, because that script has two problems here, both worked around in place
-with comments: it clones a `triton_shared` fork that no longer exists, and
-`setup/package.sh` collects the triton tree with `find python -name '*.so'`, which
-misses `python/triton/backends/{amd,nvidia,triton_shared}` — those are symlinks the
-build creates, so they are in neither the tarball nor git, and without them
-`import triton` dies in entry-point discovery. Both are worth fixing upstream.
-
+`Dockerfile.tnpu` clones the harness and runs its own `setup/restore.sh
+--prebuilt`; the pins all live in that repo's `setup/versions.env`. `ref` in the
+manifest is a commit, so an upstream change there moves this image's tag too.

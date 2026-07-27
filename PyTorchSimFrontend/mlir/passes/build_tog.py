@@ -568,7 +568,13 @@ class TogBuilder:
                 loop_index_list.append(("c" + str(c), c))
 
     # ---- main recursion ----
-    def print_operation(self, op, node):
+    def visit_operation(self, op, node):
+        """Walk `op` and attach the nodes it produces under `node`.
+
+        Builds the graph; it does not print. (The C++ pass this is ported from
+        does both in one method, `printOperation` -- here `bfs`/`display` own
+        the printing.)
+        """
         name = _op_name(op)
         if name in SKIP_OPS:
             return
@@ -605,7 +611,7 @@ class TogBuilder:
                 for region in oper.regions:
                     for block in region.blocks:
                         for inner in block.operations:
-                            self.print_operation(inner, loop_node)
+                            self.visit_operation(inner, loop_node)
                 return
 
         if name == "togsim.transfer":
@@ -1087,7 +1093,7 @@ def _build(module, builder):
             continue
         root = TOGNode("root")
         builder._reset_matmul_fsm()
-        builder.print_operation(op, root)
+        builder.visit_operation(op, root)
         root.bfs(out)
     return "".join(out)
 

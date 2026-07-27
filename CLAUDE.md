@@ -137,7 +137,7 @@ Conan deps for TOGSim: `boost/1.79.0`, `robin-hood-hashing/3.11.5`, `spdlog/1.11
 
 ## Gotchas / things I've already learned
 
-- The repo expects `python` to be a Python 3.10+ binary with `torch==2.8.0`. The frontend extends the PyTorch 2 Inductor stack — pin to this version.
+- The repo expects `python` to be a Python 3.10+ binary with `torch==2.10.0` (torchvision `0.25.0`, triton `3.6.0`). The frontend extends the PyTorch 2 Inductor stack — pin to this version. 2.10 specifically: it is the first release whose Inductor targets triton 3.6, the version triton-npu is built against. The pins live in `Dockerfile.base`, and editing that file changes the base-image tag automatically (the tag is `thirdparty-<sha256 of thirdparty/github-releases.json + Dockerfile.base>`, see `scripts/ci/thirdparty_base_pin.sh`).
 - The default Gem5 path is hard-coded to `/workspace/gem5/build/RISCV/gem5.opt`. Override with `GEM5_PATH` if you build elsewhere.
 - `_C.cpython-311-*.so` and `torch_openreg/lib/` are build artifacts — already in `.gitignore`, don't commit.
 - TOGSim creates a per-PID FIFO under `/tmp/togsim_fifo_<pid>` for command/event comm; if a previous run crashed and left stale FIFOs, they get cleaned up on the next start, but watch for orphaned processes if you Ctrl-C mid-run.

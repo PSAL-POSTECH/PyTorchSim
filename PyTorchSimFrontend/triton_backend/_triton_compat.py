@@ -1,24 +1,24 @@
-"""Make torch 2.8's Inductor codegen work against tnpu's triton 3.6, CPU-only.
+"""Let Inductor's Triton codegen run on a machine with no GPU.
 
-TWO SKEWS, BOTH STRUCTURAL
---------------------------
-1. VERSION. Inductor in torch 2.8 targets the triton ~3.3 API. tnpu pins triton
-   3.6 and that pin is not negotiable: 3.6 is what pins LLVM 23, and both sides
-   of the textual IR seam must be the same LLVM (triton-npu/setup/versions.env).
-   So the frontend has to bend, not the backend.
+ONE SKEW LEFT, AND IT IS NOT A VERSION SKEW
+-------------------------------------------
+`triton_hash_with_backend()` asks the triton runtime driver for the *current
+target*, which on a box with no GPU raises "0 active drivers". We never launch
+through triton's runtime -- triton-npu compiles the kernel ahead of time to a
+RISC-V ELF -- so the value is only a cache-key ingredient, and a deterministic
+string does the job.
 
-2. NO GPU. `triton_hash_with_backend()` asks the triton runtime driver for the
-   *current target*, which on a machine with no GPU has nothing to answer with.
-   We never launch through triton's runtime -- the kernel is compiled ahead of
-   time to a RISC-V ELF -- so the value is only a cache-key ingredient.
+WHAT USED TO BE HERE, AND WHY IT IS GONE
+----------------------------------------
+On torch 2.8 there was a second, larger skew: Inductor targeted the triton ~3.3
+API while triton-npu pins 3.6 (3.6 is what pins LLVM 23, and both sides of
+triton-npu's textual IR seam must be the same LLVM), so `triton_key` had to be
+injected back into `triton.compiler.compiler`.
 
-Both are handled by replacing `torch.utils._triton.triton_hash_with_backend`
-with a deterministic string. It is a monkeypatch, and it is the cheap half of a
-real choice: the alternative is installing a torch-2.8-compatible triton (3.3.x)
-in the driver interpreter purely for codegen, keeping 3.6 in the tnpu venv for
-stage 1. That works because the two interpreters exchange only SOURCE TEXT and
-never share objects -- but it means two tritons to keep straight, so it is worth
-doing only if the API drift turns out to be wider than this one symbol.
+torch 2.10 pins triton 3.6.0 itself and reaches that symbol through its own
+compat layer (`torch._inductor.runtime.triton_compat`), so on 2.10 the versions
+simply agree and the injection is a no-op. It is kept, guarded, so the module
+still works if someone runs an older torch -- `_torch_handles_triton()` decides.
 """
 
 import functools
@@ -87,13 +87,23 @@ def _stable_backend_hash():
     return hashlib.sha256(key.encode("utf-8")).hexdigest().upper()
 
 
-def _needs_hash_patch():
-    """True when triton_hash_with_backend cannot work here."""
+def _torch_handles_triton():
+    """True when this torch already knows how to reach triton's key itself.
+
+    torch 2.10 routes it through torch._inductor.runtime.triton_compat, which
+    understands triton 3.6. Older torch imports `triton_key` straight out of
+    triton.compiler.compiler, where 3.6 no longer defines it.
+    """
+    try:
+        from torch._inductor.runtime.triton_compat import triton_key  # noqa: F401
+        return True
+    except Exception:  # noqa: BLE001
+        pass
     try:
         mod = importlib.import_module("triton.compiler.compiler")
     except Exception:  # noqa: BLE001
-        return True
-    return not hasattr(mod, "triton_key")
+        return False
+    return hasattr(mod, "triton_key")
 
 
 def install():
@@ -109,16 +119,17 @@ def install():
     if _installed:
         return notes
 
-    if _needs_hash_patch():
-        # `triton_key` is imported from triton.compiler.compiler by SEVERAL torch
-        # call sites (codecache.CacheBase.get_system, _triton.triton_hash_with_
-        # backend, ...), each with its own local import. Supplying the symbol on
-        # the triton side satisfies all of them at once instead of chasing every
-        # call site; it is a cache-key ingredient, so any stable string will do.
+    if not _torch_handles_triton():
+        # Pre-2.10 torch: `triton_key` is imported from triton.compiler.compiler
+        # by SEVERAL call sites (codecache.CacheBase.get_system,
+        # _triton.triton_hash_with_backend, ...), each with its own local import.
+        # Supplying the symbol on the triton side satisfies all of them at once
+        # instead of chasing every call site; it is a cache-key ingredient, so
+        # any stable string will do. On torch 2.10 this branch does not run.
         mod = importlib.import_module("triton.compiler.compiler")
         mod.triton_key = _stable_backend_hash
         notes.append("injected triton.compiler.compiler.triton_key "
-                     "(removed in triton 3.6; torch 2.8 still imports it)")
+                     "(this torch predates the triton 3.6 compat layer)")
 
     # Separately: triton_hash_with_backend also asks the triton runtime driver
     # for the current target, which needs a GPU. We compile ahead of time to a

@@ -30,7 +30,7 @@ still owes; see README.md for the gap list. Expect failures, not results.
 from . import _triton_compat
 
 # Before anything imports Inductor's Triton codegen: it needs `triton` in THIS
-# interpreter, and torch 2.8 expects a triton API older than the 3.6 tnpu pins.
+# interpreter, and on a GPU-less box its backend hash cannot be computed.
 _triton_compat.install()
 
 from .scheduling import TritonNPUScheduling  # noqa: E402,F401

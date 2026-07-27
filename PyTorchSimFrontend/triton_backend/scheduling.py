@@ -35,7 +35,11 @@ class TritonNPUKernel(TritonKernel):
     cannot be written into a tnpu KernelSpec.
     """
 
-    def call_kernel(self, name: str, node=None):
+    # **kwargs, not a fixed signature: Inductor keeps adding parameters here
+    # (2.10 added `deallocate_ws`). None of them apply to this route -- there is
+    # no triton launcher and no workspace to release -- so they are accepted and
+    # ignored rather than pinning us to one torch release.
+    def call_kernel(self, name: str, node=None, **kwargs):
         wrapper = V.graph.wrapper_code
         _, call_args, _, arg_types = self.args.python_argdefs()
         self.add_numel_to_call_args(name, call_args, arg_types)

@@ -94,11 +94,11 @@ one interpreter silently merge. The seam between them is a file, and that is
 measured to work: LLVM 23 prints IR that LLVM 20's bindings parse without
 complaint. (`tnpu_bridge`)
 
-**torch 2.8's Inductor is shimmed onto triton 3.6.** Inductor targets the
-triton ~3.3 API; tnpu pins 3.6 because 3.6 pins LLVM 23, and both sides of the
-IR seam must be the same LLVM. So the frontend bends: `triton_key` is injected
-back into `triton.compiler.compiler`, and `triton_hash_with_backend` is
-short-circuited because it asks a GPU driver for the current target and there is
-no GPU. The alternative — a second, torch-compatible triton in the driver
-interpreter purely for codegen — stays open if the API drift widens beyond this
-one symbol. (`_triton_compat`)
+**The torch pin is what makes triton 3.6 work.** triton-npu pins triton 3.6
+because 3.6 pins LLVM 23, and both sides of its textual IR seam must be the same
+LLVM. torch 2.10 is the first release whose Inductor targets 3.6, so the two
+simply agree -- on 2.8 the frontend had to be shimmed onto a triton it did not
+expect. What remains in `_triton_compat` is not a version shim: on a box with no
+GPU, `triton_hash_with_backend()` raises "0 active drivers" because it asks the
+triton runtime for the current target. We never launch through that runtime, so
+the value is short-circuited to a deterministic cache key.

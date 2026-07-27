@@ -1,0 +1,22 @@
+{
+  "description": "Pins for the triton-npu (tnpu) toolchain layer, used only by the Triton codegen route. Kept SEPARATE from github-releases.json on purpose: that file plus Dockerfile.base is hashed into the torchsim_base tag, so putting these here means the main base image is not rebuilt when the tnpu pins move, and the ~1.8 GiB toolchain is not forced onto every CI job. CI builds ghcr.io/.../torchsim_tnpu_base:tnpu-<12 hex> when missing (pin = sha256 of this file plus Dockerfile.tnpu). The repository is PRIVATE and its release assets are not readable by the default Actions token, so the workflow needs a PAT in secrets.TNPU_TOKEN with read access to it.",
+  "triton_npu": {
+    "repository": "PSAL-POSTECH/triton-npu",
+    "ref": "main",
+    "release_tag": "toolchain-llvm23",
+    "assets": [
+      "llvm23-install.tar.gz",
+      "spike-install.tar.gz",
+      "triton-runtime.tar.gz"
+    ]
+  },
+  "triton": {
+    "description": "The triton checkout the prebuilt runtime was built against. Its editable install points back into this tree, so the sources must be present at exactly this revision for `import triton` to work in the tnpu venv. Mirrors triton-npu/setup/versions.env (TRITON_SHA); a main-branch commit, NOT the v3.6.0 tag, because llvm-hash.txt moved from LLVM 22 to 23 after the tag.",
+    "repository": "triton-lang/triton",
+    "commit": "df38505e451a1541555379bcf378be9e8c00545c",
+    "patches": [
+      "setup/patches/triton/nvvm_reduction_kind_compatibility.patch",
+      "setup/patches/triton/libdevice_sigmoid.patch"
+    ]
+  }
+}

@@ -1,0 +1,234 @@
+name: Triton codegen route (triton-npu)
+
+# Exercises the Triton codegen route: Inductor's own Triton backend produces the
+# kernel and triton-npu lowers it to a RISC-V ELF.
+# (PyTorchSimFrontend/triton_backend/README.md)
+#
+# Separate from the main CI on purpose. The route is WIP, and its toolchain layer
+# is ~1.8 GiB that no other job needs, so it neither gates PRs nor slows them
+# down. Promote the jobs into pytorchsim_test.yml once the route runs end to end.
+#
+# PREREQUISITES, both one-time and both outside this repo:
+#   1. secrets.TNPU_TOKEN -- a PAT that can read PSAL-POSTECH/triton-npu. That
+#      repo is private, and the default Actions token is scoped to this
+#      repository only, so it cannot clone it or read its releases.
+#   2. A release tagged `toolchain-llvm23` on PSAL-POSTECH/triton-npu carrying
+#      llvm23-install.tar.gz, spike-install.tar.gz and triton-runtime.tar.gz.
+#      As of writing that repo has no releases; the assets exist only on the
+#      upstream fork it was forked from.
+# Both are checked by the preflight job below, which reports which one is missing
+# instead of failing deep inside a docker build.
+
+on:
+  pull_request:
+    branches: [ "master", "develop" ]
+    paths:
+      - 'PyTorchSimFrontend/triton_backend/**'
+      - 'thirdparty/triton-npu.json'
+      - 'Dockerfile.tnpu'
+      - 'scripts/ci/tnpu_*.sh'
+      - '.github/workflows/triton_npu.yml'
+  workflow_dispatch:
+
+env:
+  BASE_IMAGE_REPO: ghcr.io/psal-postech/torchsim_base
+  TNPU_IMAGE_REPO: ghcr.io/psal-postech/torchsim_tnpu_base
+  APP_IMAGE_REPO: ghcr.io/psal-postech/torchsim_tnpu
+  SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  preflight:
+    name: Check tnpu access
+    runs-on: ubuntu-latest
+    outputs:
+      ready: ${{ steps.check.outputs.ready }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          persist-credentials: false
+
+      - name: Token and release present
+        id: check
+        env:
+          TNPU_TOKEN: ${{ secrets.TNPU_TOKEN }}
+        run: |
+          if [ -z "${TNPU_TOKEN}" ]; then
+            echo "::error::secrets.TNPU_TOKEN is not set. PSAL-POSTECH/triton-npu is private and the default Actions token cannot read it."
+            echo "ready=false" >> "$GITHUB_OUTPUT"; exit 1
+          fi
+          REPO=$(jq -r '.triton_npu.repository' thirdparty/triton-npu.json)
+          TAG=$(jq -r '.triton_npu.release_tag' thirdparty/triton-npu.json)
+          if ! curl -fsS -H "Authorization: Bearer ${TNPU_TOKEN}" \
+               "https://api.github.com/repos/${REPO}" -o /dev/null; then
+            echo "::error::TNPU_TOKEN cannot read ${REPO}."
+            echo "ready=false" >> "$GITHUB_OUTPUT"; exit 1
+          fi
+          if ! curl -fsS -H "Authorization: Bearer ${TNPU_TOKEN}" \
+               "https://api.github.com/repos/${REPO}/releases/tags/${TAG}" -o /dev/null; then
+            echo "::error::${REPO} has no release tagged '${TAG}'. Mirror the toolchain assets there (see thirdparty/triton-npu.json)."
+            echo "ready=false" >> "$GITHUB_OUTPUT"; exit 1
+          fi
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+
+  ensure-tnpu-base:
+    name: Build tnpu toolchain image
+    needs: preflight
+    runs-on: ubuntu-latest
+    outputs:
+      tnpu_image: ${{ steps.pin.outputs.tnpu_image }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          submodules: recursive
+          persist-credentials: false
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pins
+        id: pin
+        run: |
+          BASE_PIN="$(bash scripts/ci/thirdparty_base_pin.sh)"
+          TNPU_PIN="$(bash scripts/ci/tnpu_base_pin.sh)"
+          echo "BASE_IMAGE=${BASE_IMAGE_REPO}:thirdparty-${BASE_PIN}" >> "$GITHUB_ENV"
+          # The tnpu layer sits on a specific base, so its tag carries both pins.
+          echo "TNPU_IMAGE=${TNPU_IMAGE_REPO}:tnpu-${TNPU_PIN}-base-${BASE_PIN}" >> "$GITHUB_ENV"
+          echo "tnpu_image=${TNPU_IMAGE_REPO}:tnpu-${TNPU_PIN}-base-${BASE_PIN}" >> "$GITHUB_OUTPUT"
+
+      - name: Check tnpu image exists
+        id: exists
+        run: |
+          if docker manifest inspect "${TNPU_IMAGE}" > /dev/null 2>&1; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Resolve tnpu release asset IDs
+        if: steps.exists.outputs.ok != 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.TNPU_TOKEN }}
+        run: bash scripts/ci/tnpu_asset_env.sh >> "$GITHUB_ENV"
+
+      - name: Build and push tnpu toolchain image
+        if: steps.exists.outputs.ok != 'true'
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: ./Dockerfile.tnpu
+          push: true
+          build-args: |
+            BASE_IMAGE=${{ env.BASE_IMAGE }}
+            TNPU_LLVM23_ASSET_ID=${{ env.TNPU_LLVM23_ASSET_ID }}
+            TNPU_SPIKE_ASSET_ID=${{ env.TNPU_SPIKE_ASSET_ID }}
+            TNPU_RUNTIME_ASSET_ID=${{ env.TNPU_RUNTIME_ASSET_ID }}
+          secrets: |
+            tnpu_token=${{ secrets.TNPU_TOKEN }}
+          tags: ${{ env.TNPU_IMAGE }}
+
+  build-app:
+    name: Build app image on tnpu base
+    needs: ensure-tnpu-base
+    runs-on: ubuntu-latest
+    outputs:
+      app_image: ${{ steps.name.outputs.app_image }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          submodules: recursive
+          persist-credentials: false
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image name
+        id: name
+        run: echo "app_image=${APP_IMAGE_REPO}:${SOURCE_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          build-args: |
+            BASE_IMAGE=${{ needs.ensure-tnpu-base.outputs.tnpu_image }}
+          tags: ${{ steps.name.outputs.app_image }}
+
+  tnpu-baselines:
+    name: triton-npu baselines
+    needs: build-app
+    runs-on: ubuntu-latest
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The harness's own kernels, end to end through Spike. This is the gate on
+      # the toolchain itself: if these regress, nothing downstream is meaningful.
+      # gemm/bmm need TNPU_VCIX_MATMUL=1 to reach the systolic array.
+      - name: doctor + add / mul / relu / gemm / bmm
+        run: |
+          docker run --rm -e TNPU_VCIX_MATMUL=1 \
+            ${{ needs.build-app.outputs.app_image }} bash -lc '
+              cd /workspace/triton-npu &&
+              python3 run.py doctor &&
+              for k in add mul relu gemm bmm; do
+                echo "=== $k ===" && python3 run.py kernels/$k.py || exit 1
+              done'
+
+  triton-route:
+    name: Inductor Triton route
+    needs: build-app
+    runs-on: ubuntu-latest
+    # WIP: the launch is deliberately unimplemented, so this reports how far the
+    # route gets rather than gating. Drop this once the launch lands.
+    continue-on-error: true
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: test_triton_codegen.py
+        run: |
+          docker run --rm -e TORCHSIM_TRITON_CODEGEN=1 \
+            ${{ needs.build-app.outputs.app_image }} \
+            python3 PyTorchSim/tests/system/test_triton_codegen.py
+
+  mlir-route-regression:
+    name: MLIR route still passes
+    needs: build-app
+    runs-on: ubuntu-latest
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The tnpu layer adds a second LLVM and a second triton to the image. This
+      # is the check that it did not disturb the production path.
+      - name: test_add.py
+        run: |
+          docker run --rm \
+            ${{ needs.build-app.outputs.app_image }} \
+            python3 PyTorchSim/tests/ops/elementwise/test_add.py

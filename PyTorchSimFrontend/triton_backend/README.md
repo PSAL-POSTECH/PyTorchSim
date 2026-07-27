@@ -102,3 +102,45 @@ expect. What remains in `_triton_compat` is not a version shim: on a box with no
 GPU, `triton_hash_with_backend()` raises "0 active drivers" because it asks the
 triton runtime for the current target. We never launch through that runtime, so
 the value is short-circuited to a deterministic cache key.
+
+## CI
+
+`.github/workflows/triton_npu.yml`, separate from the main CI: this route is WIP,
+and its toolchain layer is ~1.8 GiB that no other job needs.
+
+```
+preflight              TNPU_TOKEN set? repo readable? release present?
+ensure-tnpu-base       torchsim_base + tnpu toolchain -> torchsim_tnpu_base:<pins>
+build-app              ./Dockerfile on that base
+tnpu-baselines         run.py doctor + add/mul/relu/gemm/bmm through Spike   (gates)
+triton-route           tests/system/test_triton_codegen.py    (reports, does not gate)
+mlir-route-regression  tests/ops/elementwise/test_add.py      (gates)
+```
+
+The toolchain image is pinned the same way `torchsim_base` is — the tag carries
+`sha256(thirdparty/triton-npu.json + Dockerfile.tnpu)`, so it is rebuilt only when
+one of those moves, and its tag also carries the base pin it was built on.
+`mlir-route-regression` is there because this layer adds a *second* LLVM and a
+*second* triton to the image; it checks the production path did not notice.
+
+**Two prerequisites, both outside this repo.** `preflight` fails with which one is
+missing rather than letting a docker build die deep:
+
+1. `secrets.TNPU_TOKEN` — a PAT that can read `PSAL-POSTECH/triton-npu`. That repo
+   is private, and the default Actions token is scoped to this repository, so it
+   can neither clone it nor read its releases. (The existing gem5 / riscv-llvm /
+   spike pins need no secret because those repos are public.)
+2. A release tagged `toolchain-llvm23` on `PSAL-POSTECH/triton-npu` carrying
+   `llvm23-install.tar.gz`, `spike-install.tar.gz`, `triton-runtime.tar.gz`.
+   **That repo currently has no releases** — the assets exist only on the fork it
+   came from, so they have to be mirrored across (or the repo made public and the
+   manifest pointed at whichever holds them).
+
+`Dockerfile.tnpu` mirrors `triton-npu/setup/restore.sh --prebuilt` rather than
+calling it, because that script has two problems here, both worked around in place
+with comments: it clones a `triton_shared` fork that no longer exists, and
+`setup/package.sh` collects the triton tree with `find python -name '*.so'`, which
+misses `python/triton/backends/{amd,nvidia,triton_shared}` — those are symlinks the
+build creates, so they are in neither the tarball nor git, and without them
+`import triton` dies in entry-point discovery. Both are worth fixing upstream.
+

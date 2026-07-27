@@ -18,7 +18,7 @@ from filelock import FileLock
 from torch._inductor.codecache import get_hash
 
 from PyTorchSimFrontend import extension_config
-from . import kernel_spec, tnpu_bridge
+from . import kernel_spec, timing, tnpu_bridge
 
 logger = extension_config.setup_logger()
 
@@ -43,17 +43,20 @@ class TritonNPULauncher:
         self.elf = os.path.join(workdir, f"05-{kernel_name}.elf")
 
     def __call__(self, *args):
-        raise NotImplementedError(
-            f"{self.kernel_name}: compiled to {self.elf}, but the launch is not "
-            f"wired yet. Two pieces are missing and both are tracked in "
-            f"triton_backend/README.md:\n"
-            f"  1. functional -- marshal the caller's tensors into "
-            f"{self.workdir}/runtime/*.raw, run Spike on the ELF, read the "
-            f"outputs back into the caller's tensors;\n"
-            f"  2. timing -- emit trace.so + trace_cycles.tsv from the tnpu IR "
-            f"and hand them to TOGSim (needs the build_tog adapters).\n"
-            f"Compilation itself succeeded, so the codegen half of this route "
-            f"is exercised by getting this far.")
+        """One launch of the whole grid: simulate, return TOGSim's result.
+
+        Does NOT write the caller's output tensors -- the functional launch is
+        not wired (README). Logged, so an undefined value cannot pass for a
+        computed one.
+        """
+        if not os.path.isfile(os.path.join(self.workdir, timing.TRACE_SO)):
+            timing.emit_trace(self.workdir, self.meta)
+        result = timing.run_togsim(self.workdir)
+        logger.info("[TOGSim] %s simulated -> %s", self.kernel_name, result)
+        logger.warning(
+            "[Spike] %s: output tensors are NOT written; the functional launch "
+            "(tensors -> Spike -> tensors) is not wired yet", self.kernel_name)
+        return result
 
 
 def triton_npu_compile(src_code, meta, kernel_name):
@@ -75,6 +78,7 @@ def triton_npu_compile(src_code, meta, kernel_name):
                                         tnpu_bridge.tnpu_dir())
             with open(os.path.join(write_path, "kernel.py"), "w") as f:
                 f.write(src_code)      # the unmodified Inductor source, for diffing
+            timing.store_meta(write_path, meta)   # lets the timing step run standalone
             tnpu_bridge.run_pipeline(spec_path, write_path, to_stage="binary")
         logger.info("[triton-npu] %s -> %s", kernel_name, write_path)
         return TritonNPULauncher(kernel_name, write_path, meta)

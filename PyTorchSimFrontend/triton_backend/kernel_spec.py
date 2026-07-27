@@ -218,8 +218,12 @@ def strip_for_tnpu(src):
     return prefix + body
 
 
-def _grid(meta):
-    """Sequential launch grid, from the numels and the pinned block sizes."""
+def grid_of(meta):
+    """Launch grid, from the numels and the pinned block sizes.
+
+    Also read by the timing path, which needs the same extents to enumerate the
+    work-items -- so it lives here rather than being recomputed per consumer.
+    """
     x = meta["numels"].get("xnumel")
     xblock = (meta.get("fixed_config") or {}).get("XBLOCK")
     if x is None or not xblock:
@@ -330,7 +334,7 @@ def write_spec_file(src_code, meta, path, tnpu_dir):
         constexprs=constexprs,
         args_body=args_body,
         make_inputs_body=make_inputs_body,
-        grid=_grid(meta),
+        grid=grid_of(meta),
     )
     with open(path, "w") as f:
         f.write(text)

@@ -136,21 +136,50 @@ def collect_meta(kernel, kernel_name):
     }
 
 
+#: Parallel iteration prefixes, OUTERMOST first. Inductor's `x` is the
+#: contiguous axis, so it is innermost; `r*` prefixes are reductions, looped
+#: inside the kernel rather than spread over the grid (prefix_is_reduction).
+_PARALLEL_PREFIXES = ("z", "y", "x")
+
+
+def _block_name(prefix):
+    return f"{prefix.upper()}BLOCK"
+
+
+def parallel_axes(numels):
+    """Grid axes this kernel uses, outermost first."""
+    return [p for p in _PARALLEL_PREFIXES if f"{p}numel" in numels]
+
+
 def fixed_config_for(kernel):
     """Block sizes pinned at codegen time.
 
     tnpu compiles ONE binary per kernel and the C wrapper walks the grid as a
-    sequential loop, so there is no autotuner to choose XBLOCK later and no
-    runtime `grid=` callable. Fixing it here is what makes the launch shape
+    sequential loop, so there is no autotuner to choose the blocks later and no
+    runtime `grid=` callable. Fixing them here is what makes the launch shape
     static.
 
-    The lane count is the natural default: `bank_vectorize` distributes tile
-    dim 0 across the lanes, and a block equal to the lane count gives a per-lane
-    depth of 1 -- the case every tnpu baseline runs today.
+    Tile dim 0 is the one `bank_vectorize` spreads over the lanes, so the
+    OUTERMOST axis gets the lane count -- a per-lane depth of 1, the shape every
+    tnpu baseline runs. The remaining axes get 1, which leaves the tile exactly
+    that verified shape and lets the grid cover the rest. It is conservative
+    rather than fast; choosing real tile sizes is the block-size policy gap in
+    README, not something to guess at here.
     """
     from PyTorchSimFrontend import extension_config
     lanes = int(extension_config.vpu_num_lanes)
-    cfg = {"XBLOCK": lanes}
+
+    axes = parallel_axes(getattr(kernel, "numels", None) or {})
+    cfg = {_block_name(p): (lanes if i == 0 else 1) for i, p in enumerate(axes)}
+    if len(axes) > 1:
+        # Loud, because the shape is correct but pathological: an inner block of
+        # 1 makes every work-item move a strided column. Fine for getting a
+        # multi-axis kernel through the route, misleading to benchmark.
+        extension_config.setup_logger().warning(
+            "[triton-npu] %s tiles over %s; inner blocks pinned to 1, which is "
+            "correct but not a tiling worth measuring",
+            getattr(kernel, "kernel_name", "kernel"), axes)
+    cfg.setdefault("XBLOCK", lanes)         # a kernel with no tiling info still has x
     if getattr(kernel, "inside_reduction", False):
         # A reduction block is NOT free to be the lane count: the reduced axis
         # has to stay inside a lane (see triton-npu kernels/reduce.py). Left
@@ -219,20 +248,29 @@ def strip_for_tnpu(src):
 
 
 def grid_of(meta):
-    """Launch grid, from the numels and the pinned block sizes.
+    """Launch grid, from the numels and the pinned block sizes, outermost first.
 
     Also read by the timing path, which needs the same extents to enumerate the
     work-items -- so it lives here rather than being recomputed per consumer.
     """
-    x = meta["numels"].get("xnumel")
-    xblock = (meta.get("fixed_config") or {}).get("XBLOCK")
-    if x is None or not xblock:
+    numels = meta["numels"]
+    cfg = meta.get("fixed_config") or {}
+    axes = parallel_axes(numels)
+    if not axes:
         raise SpecIncomplete(
-            f"cannot compute the grid for {meta['kernel_name']}: "
-            f"xnumel={x!r}, XBLOCK={xblock!r}. Inductor defers the grid to "
-            f"triton_heuristics at runtime; this route needs it statically "
-            f"(see fixed_config_for).")
-    return (int(math.ceil(x / xblock)),)
+            f"{meta['kernel_name']} has no parallel iteration axis to grid over")
+
+    grid = []
+    for prefix in axes:
+        n, block = numels.get(f"{prefix}numel"), cfg.get(_block_name(prefix))
+        if n is None or not block:
+            raise SpecIncomplete(
+                f"cannot compute the grid for {meta['kernel_name']} axis "
+                f"'{prefix}': {prefix}numel={n!r}, {_block_name(prefix)}={block!r}. "
+                f"Inductor defers the grid to triton_heuristics at runtime; this "
+                f"route needs it statically (see fixed_config_for).")
+        grid.append(int(math.ceil(n / block)))
+    return tuple(grid)
 
 
 SPEC_TEMPLATE = '''\

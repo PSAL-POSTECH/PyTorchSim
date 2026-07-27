@@ -51,7 +51,7 @@ class TritonNPULauncher:
         """
         if not os.path.isfile(os.path.join(self.workdir, timing.TRACE_SO)):
             timing.emit_trace(self.workdir, self.meta)
-        result = timing.run_togsim(self.workdir)
+        result = timing.run_togsim(self.workdir, meta=self.meta, args=args)
         logger.info("[TOGSim] %s simulated -> %s", self.kernel_name, result)
         logger.warning(
             "[Spike] %s: output tensors are NOT written; the functional launch "

@@ -151,6 +151,13 @@ class WorkItem:
     `parallel_args` are the argument positions holding the program ids
     (triton-shared appends gridX,Y,Z / pidX,Y,Z after the user scalars); `grid`
     their extents. Both outermost-first.
+
+    An extent may be None, meaning "read it from shape_args at run time". Only
+    the NUMBER of axes has to be known when the kernel is compiled -- how many
+    loops to nest and how many iv[] slots to fill; the trip counts are just
+    values, and the producer ABI already takes them
+    (togsim_kernel(ctx, shape_args, n)). That is what lets one compiled trace
+    serve every shape.
     """
 
     def __init__(self, parallel_args, grid):
@@ -159,7 +166,12 @@ class WorkItem:
                 f"parallel_args {parallel_args} and grid {grid} must have the "
                 f"same length -- one program-id argument per grid axis")
         self.parallel_args = list(parallel_args)
-        self.grid = [int(g) for g in grid]
+        self.grid = [None if g is None else int(g) for g in grid]
+
+    @property
+    def dynamic_axes(self):
+        """Indices into `grid` whose extent arrives at run time."""
+        return [i for i, g in enumerate(self.grid) if g is None]
 
 
 def _materialize_grid_loop(kernel, work_item, ctx):
@@ -196,7 +208,10 @@ def _materialize_grid_loop(kernel, work_item, ctx):
     with ir.InsertionPoint(terminator), loc:
         c0 = arith.ConstantOp(idxty, ir.IntegerAttr.get(idxty, 0)).result
         c1 = arith.ConstantOp(idxty, ir.IntegerAttr.get(idxty, 1)).result
-        ubs = [arith.ConstantOp(idxty, ir.IntegerAttr.get(idxty, e)).result
+        # A runtime extent still needs SOMETHING here: shape_args does not exist
+        # until _rewrite_signature adds it. The placeholder is replaced by
+        # _bind_runtime_bounds once it does.
+        ubs = [arith.ConstantOp(idxty, ir.IntegerAttr.get(idxty, e or 1)).result
                for e in work_item.grid]
 
     loops, inner = [], None
@@ -232,6 +247,35 @@ def _materialize_grid_loop(kernel, work_item, ctx):
 
     for pid, new in zip(pid_args, casts):
         _replace_all_uses(pid, new)
+
+    return [(loops[i], ubs[i]) for i in work_item.dynamic_axes]
+
+
+def _bind_runtime_bounds(pending, shape_arg, ctx):
+    """Point each runtime loop bound at `shape_args[k]`.
+
+    Runs AFTER _rewrite_signature, which is what creates the shape_args
+    argument. The loops stay in the entry function (the outliner moves only
+    their bodies), so the read is in scope where the bound is used.
+    """
+    if not pending:
+        return
+    from mlir.dialects import arith
+
+    i64 = ir.IntegerType.get_signless(64)
+    idxty = ir.IndexType.get()
+    loc = ir.Location.unknown(ctx)
+    for k, (loop, placeholder) in enumerate(pending):
+        with ir.InsertionPoint(placeholder.owner), loc:
+            kc = ir.Operation.create(
+                "emitc.constant", results=[i64],
+                attributes={"value": ir.IntegerAttr.get(i64, k)}).results[0]
+            elem = ir.Operation.create(
+                "emitc.subscript", results=[i64],
+                operands=[shape_arg, kc]).results[0]
+            bound = arith.IndexCastOp(idxty, elem).result
+        _replace_all_uses(placeholder, bound)
+        placeholder.owner.erase()
 
 
 def _replace_all_uses(old, new):
@@ -630,9 +674,11 @@ def lower_to_emitc(skeleton_module, work_item=None):
         raise ValueError("no kernel function found in skeleton module")
 
     _strip_aux(skeleton_module, keep=kernel)
+    pending = []
     if work_item is not None:
-        _materialize_grid_loop(kernel, work_item, ctx)
+        pending = _materialize_grid_loop(kernel, work_item, ctx)
     ctx_val = _rewrite_signature(kernel, ctx)
+    _bind_runtime_bounds(pending, kernel.regions[0].blocks[0].arguments[1], ctx)
     _rewrite_togsim_ops(ctx, kernel, ctx_val)         # togsim.* -> emitc.call_opaque
     _outline_work_item(ctx, kernel, ctx_val)          # work-item body -> togsim_kernel_tile + dispatch
 

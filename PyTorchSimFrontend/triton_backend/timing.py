@@ -18,6 +18,7 @@ logger = extension_config.setup_logger()
 #: Name TOGSim derives from the kernel directory (Simulator/simulator.py).
 TRACE_SO = "trace.so"
 CYCLE_TSV = "trace_cycles.tsv"
+SHAPE_TXT = "trace_shape.txt"
 META_JSON = "meta.json"
 
 #: Used only when gem5 sampling fails. Deliberately not a plausible-looking
@@ -102,9 +103,46 @@ def work_item_for(meta):
     n_tensor, n_scalar = _runtime_arg_layout(meta)
     pid_base = n_tensor + n_scalar + 3       # after gridX, gridY, gridZ
     axes = kernel_spec.parallel_axes(meta["numels"])
-    grid = list(kernel_spec.grid_of(meta))
+    # Extents are left to run time: only the axis COUNT has to be compiled in,
+    # and the launch knows the real numels. One trace then serves every shape.
     return WorkItem(parallel_args=[pid_base + _PID_SLOT[p] for p in axes],
-                    grid=grid)
+                    grid=[None] * len(axes))
+
+
+def write_shape(workdir, meta, args=()):
+    """Write the grid extents the trace producer reads as shape_args.
+
+    `args` is the launch's positional arguments; Inductor appends the numels
+    after the tensors, so the trailing values are them, in `meta["numels"]`
+    order. Falls back to the compile-time hint when they are absent.
+    """
+    from . import kernel_spec
+
+    numels = dict(meta["numels"])
+    # Only the PARALLEL numels ride along on the call -- a reduction axis is
+    # looped inside the kernel, so it is not passed and must not consume one of
+    # the trailing values. They arrive in kernel order, which is the dict's.
+    passed = [k for k in numels if not k.startswith("r")]
+    trailing = [a for a in args if isinstance(a, int) and not isinstance(a, bool)]
+    if passed and len(trailing) >= len(passed):
+        for key, val in zip(passed, trailing[-len(passed):]):
+            numels[key] = val
+
+    axes = kernel_spec.parallel_axes(numels)
+
+    cfg = meta.get("fixed_config") or {}
+    grid = []
+    for p in axes:
+        n, block = numels.get(f"{p}numel"), cfg.get(f"{p.upper()}BLOCK")
+        if n is None or not block:
+            raise ValueError(f"no extent for grid axis '{p}': {n!r} / {block!r}")
+        grid.append(-(-int(n) // int(block)))     # ceil-div
+
+    path = os.path.join(workdir, SHAPE_TXT)
+    with open(path, "w") as f:
+        f.write("\n".join(str(g) for g in grid) + "\n")
+    logger.info("[TOGSim] grid %s -> %s", grid, SHAPE_TXT)
+    return grid
 
 
 def emit_trace(workdir, meta):
@@ -161,13 +199,19 @@ def emit_trace(workdir, meta):
     return n_tiles
 
 
-def run_togsim(workdir, attribute_path=None, timeout_sec=None):
-    """Simulate the emitted trace. Returns TOGSimulator's parsed result dict."""
+def run_togsim(workdir, meta=None, args=(), attribute_path=None, timeout_sec=None):
+    """Simulate the emitted trace. Returns TOGSimulator's parsed result dict.
+
+    `meta`/`args` supply the grid: the trace producer takes its loop bounds from
+    shape_args, so they are written out per launch rather than compiled in.
+    """
     from Simulator.simulator import TOGSimulator
 
     so = os.path.join(workdir, TRACE_SO)
     if not os.path.isfile(so):
         raise FileNotFoundError(f"{so} not found -- call emit_trace first")
+    if meta is not None:
+        write_shape(workdir, meta, args)
 
     # A handle only: TOGSim derives trace.so / trace_cycles.tsv from its
     # DIRECTORY, and reads the file itself only on the STONNE path.

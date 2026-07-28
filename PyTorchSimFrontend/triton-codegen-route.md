@@ -143,7 +143,38 @@ Triton      커널 = 타일 하나.         grid 는 커널 밖, launch 가 쥐�
 - `togsim_kernel_tile(ctx, iv, n)` — work-item 하나
 - `togsim_kernel(ctx, shape_args, n)` — 병렬 영역의 열거
 
-Triton 커널 본문은 전자에 대응하므로 **후자를 합성해서 씌우면** 계약을 그대로 만족합니다. 그 합성이 `lower_to_emitc.WorkItem` + `_materialize_grid_loop`입니다.
+Triton 커널 본문은 전자에 대응하므로 **후자를 합성해서 씌우면** 계약을 그대로 만족합니다.
+
+### grid 를 outer loop 으로 되세우기
+
+Triton 쪽에서 grid 는 커널이 아니라 **KernelSpec 에 붙어 있습니다.** `kernel_spec.grid_of(meta)` 가 Inductor 의 numel 과 고정한 블록 크기로부터 축별 ceil-div 를 계산해 `grid=(8,)` 같은 값을 spec 에 적고, 커널 본문은 그 중 자기 몫이 몇 번째인지를 `pidX/Y/Z` 인자로 받을 뿐입니다.
+
+기존 PyTorchSim 은 정반대를 기대합니다. `build_tog` 는 **역할 속성이 붙은 최상위 루프**를 TOG 의 루트로 잡습니다:
+
+```python
+_LOOP_ROLE_ATTRS = ("outer_loop", "accumulation_loop", "inner_loop")
+roots = [op for op in block.operations
+         if op.operation.name == "affine.for" and _has_loop_role(op)]
+```
+
+즉 work-item 을 **루프에서 읽어냅니다.** 그런데 Triton 커널에는 그 루프가 없습니다 — grid 로 흩어져 있으니까요. 루프가 없으면 루트도 없고, TOG 가 비게 됩니다.
+
+그래서 spec 의 grid 를 다시 루프로 세웁니다. `_materialize_grid_loop` 이 하는 일입니다:
+
+```
+들어올 때   func @k(..., %pidX: i32, ...)          <- 타일 하나. 루프 없음
+              body(%pidX)
+
+나갈 때     scf.for %p = 0 to G {                  {outer_loop = true}
+              body(<%pidX 를 index_cast %p 로 치환>)
+            }
+```
+
+`WorkItem(parallel_args, grid)` 이 **어느 인자가 program id 인지**와 **축이 몇 개인지**를 들고 있습니다. 패스는 축마다 루프를 하나씩 중첩하고, 본문을 그 안으로 옮기고, pid 인자의 모든 사용처를 루프 유도변수로 바꿉니다. 마지막에 `outer_loop` 속성을 답니다 — **`build_tog` 가 찾는 바로 그 표식**이고, 이게 붙어야 합성한 루프가 TOG 의 루트가 됩니다.
+
+(축별 범위는 `WorkItem` 이 들고 있을 수도, 런타임으로 미룰 수도 있습니다. timing 경로는 후자를 씁니다 — 바로 아래.)
+
+결과적으로 Triton 이 grid 로 표현한 것과 PyTorchSim 이 outer loop 로 표현한 것이 같은 것을 가리키게 되고, 그 뒤 파이프라인(`build_skeleton` → `trace.so` → TOGSim)은 MLIR 경로와 한 글자도 다르지 않게 흘러갑니다.
 
 ### 동적 shape이 여기서 나옵니다
 

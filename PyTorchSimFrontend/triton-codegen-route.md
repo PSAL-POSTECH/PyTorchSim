@@ -1,6 +1,8 @@
 # Inductor Triton 코드젠 경로를 PyTorchSim에 연결
 
-`torch.compile`이 `npu:0`에서 PyTorchSim의 자체 MLIR 코드젠 대신 **Inductor의 Triton 백엔드**를 쓰고, **triton-npu(tnpu)**가 이를 RISC-V로 낮추는 두 번째 코드젠 경로.
+`torch.compile`이 `npu:0`에서 PyTorchSim의 자체 MLIR 코드젠 대신 **Inductor의 Triton 백엔드**를 쓰고, **PyTorchSim lowering pass**(담당 이정민)가 이를 RISC-V로 낮추는 두 번째 코드젠 경로.
+
+**이 문서가 보고하는 것은 그 lowering pass 를 기존 PyTorchSim 스택에 이식·연결한 작업입니다.** lowering pass 자체는 범위 밖입니다 — 아래 "작업 경계" 참고.
 
 **functional과 timing 양쪽이 연결되어 있고, 동적 shape도 처리됩니다.**
 
@@ -14,6 +16,19 @@
 | 동적 shape | 트레이스 하나가 모든 shape을 섬김 — n=1024 → grid 8, n=4096 → grid 32, 재컴파일 없음 |
 | 변경량 | PyTorchSim 18 commits / 23 files / +2209−39, tnpu 3 commits / +177−4 |
 | CI | 전 잡 green (툴체인 빌드 + 값 검증 + 기존 경로 회귀 확인) |
+
+### 작업 경계
+
+이 경로는 두 부분으로 나뉘고, **이 문서가 보고하는 작업은 아래쪽입니다.**
+
+| 부분 | 하는 일 | 소관 |
+|---|---|---|
+| **PyTorchSim lowering pass** | Triton IR → linalg/memref → tts 레벨 백엔드 패스 → vcix/gemmini → RISC-V ELF | **이정민** — 이 문서의 범위 밖 |
+| **기존 PyTorchSim으로의 이식** | 위 lowering pass 를 기존 시뮬레이션 스택에 얹는 일: Inductor Triton 코드젠 가로채기, KernelSpec 생성, grid 합성, 트레이스/사이클 산출, functional launch, TOGSim 연결 | 이 문서의 작업 |
+
+즉 lowering pass 자체는 만들지 않았습니다. **이미 있는 lowering pass 를 PyTorchSim이 쓸 수 있는 형태로 이식하고, 기존 TOGSim/gem5/Spike 스택에 물린 것**이 여기서 한 일입니다. 그 과정에서 lowering pass 쪽에 필요해진 최소한의 훅 3개(`tnpu.cycle`, `dram_arg`, `tnpu.spike`)는 별도 PR로 올렸고, 8절에 있습니다.
+
+문서에서 **PyTorchSim lowering pass**는 이 lowering 계층 전체를 가리킵니다. 코드는 `triton-npu` 저장소에 있고, 파일 경로·모듈 이름·CI 잡 이름 등 **실제 식별자는 `tnpu`를 그대로** 씁니다(`tnpu/passes/`, `tnpu.spike`, `Build tnpu toolchain image` 등) — 문서를 따라 실제 코드를 찾아갈 수 있어야 하기 때문입니다.
 
 ---
 
@@ -30,7 +45,9 @@ torch.compile
        │    - 인자 역할(in/out/inout) · dtype · numel
        │    - grid, 사용자 스칼라 값
        ▼
-    tnpu 파이프라인   (별도 인터프리터, subprocess)        tnpu_bridge.py
+    PyTorchSim lowering pass  (별도 인터프리터, subprocess)  tnpu_bridge.py
+       │   ┌─ 담당 이정민 / 이 문서의 범위 밖.
+       │   └─ 여기서 한 일은 이 단계를 "호출하고 결과를 스택에 물린" 부분.
        │  1 ttir      triton 커널 → Triton IR
        │  2 ttshared  → linalg / memref / scf.for   (triton-shared)
        │  3 adapt     tts 레벨 백엔드 6개 패스        (tnpu/passes/)
@@ -48,7 +65,7 @@ torch.compile
                                               → TOGSim
 ```
 
-**LLVM 이음매.** tnpu는 stock LLVM 23을, PyTorchSim은 PSAL LLVM 20을 씁니다. `mlir`이 namespace 패키지라 한 인터프리터에 공존할 수 없어, 두 쪽은 **텍스트 MLIR을 주고받는 subprocess**로 갈라져 있습니다.
+**LLVM 이음매.** lowering pass 는 stock LLVM 23 을, PyTorchSim은 PSAL LLVM 20을 씁니다. `mlir`이 namespace 패키지라 한 인터프리터에 공존할 수 없어, 두 쪽은 **텍스트 MLIR을 주고받는 subprocess**로 갈라져 있습니다.
 
 ---
 
@@ -68,8 +85,11 @@ torch.compile
    (gemm, conv, sdpa, sort,             (op별 템플릿 없음)
     cat, maxpool, bmm …)
               │                               │
-   PyTorchSim mlir/ 패스               tnpu 패스 (subprocess)
-   PSAL LLVM 20                        stock LLVM 23
+   PyTorchSim mlir/ 패스               PyTorchSim lowering pass
+   PSAL LLVM 20                        (subprocess, stock LLVM 23)
+                                        담당 이정민 — 범위 밖
+                                        여기서 한 일은 이 블록을
+                                        아래 합류점까지 잇는 배선
               │                               │
               └───────────────┬───────────────┘
                               │
@@ -88,7 +108,7 @@ torch.compile
 | 커널을 만드는 주체 | PyTorchSim의 op별 MLIR 템플릿 | Inductor의 Triton 코드젠 |
 | **커널 하나의 의미** | **루프 네스트 전체** | **타일 하나** |
 | grid | 루프 네스트에서 읽어냄 | 커널 밖에 있음 → `WorkItem`이 합성 |
-| lowering | `PyTorchSimFrontend/mlir/` (in-process) | tnpu (subprocess, LLVM 23) |
+| lowering | `PyTorchSimFrontend/mlir/` (in-process) | PyTorchSim lowering pass — 담당 이정민 (subprocess, LLVM 23) |
 | 융합 | 템플릿과 `codegen_compiler_optimization` | Inductor가 이미 한 것을 물려받음 |
 | op 커버리지 | gemm, conv×4, sdpa, sort, cat, maxpool, bmm | elementwise + 그 융합 |
 | functional | `FunctionalSimulator.run_spike` | tnpu stage 6 (`tnpu.spike`) |
@@ -154,7 +174,7 @@ Triton 커널 본문은 전자에 대응하므로, **후자를 합성해서 씌�
 | TOGSim 총계 | 650 | DRAM 트래픽 8192 B = 8 work-item × 2 load × 512 B, 정확히 일치 |
 | 기존 MLIR 경로 (동일 연산) | 251 | 같은 자릿수 |
 
-650 대 251은 모델 오류가 아닙니다. **tnpu가 동기 DMA만 내보내기 때문**입니다 — 생성된 IR에 `togsim.transfer` 3개, `togsim.wait` **0개**. work-item 안에서 load → compute → store가 직렬화되어 TOGSim이 겹칠 것이 없습니다. 기존 경로는 `togsim.wait` → `togsim.memory_barrier` 태그 슬롯 기계를 갖추고 있습니다.
+650 대 251은 모델 오류가 아닙니다. **lowering pass 가 동기 DMA 만 내보내기 때문**입니다 — 생성된 IR에 `togsim.transfer` 3개, `togsim.wait` **0개**. work-item 안에서 load → compute → store가 직렬화되어 TOGSim이 겹칠 것이 없습니다. 기존 경로는 `togsim.wait` → `togsim.memory_barrier` 태그 슬롯 기계를 갖추고 있습니다.
 
 ---
 
@@ -173,7 +193,7 @@ wrapper  k(1,&d_in_ptr0, 1,&d_in_ptr1, 1,&d_out_ptr0, 8, 1, 1, pid_x, pid_y, pid
                                                              xnumel 누락
 ```
 
-triton-shared는 사용자 스칼라를 자기 grid/pid 인자 **앞에** 둡니다. tnpu wrapper는 이를 `spec.extra["scalar_args"]`에서 읽는데, PyTorchSim이 생성하는 spec에는 `extra`가 아예 없었습니다. 인자가 한 칸씩 밀려 `pidX`가 `pid_y`(grid 루프가 절대 바꾸지 않는 값)를 받았고, program 0이 8번 돈 셈이 됐습니다.
+triton-shared는 사용자 스칼라를 자기 grid/pid 인자 **앞에** 둡니다. lowering pass 의 wrapper 는 이를 `spec.extra["scalar_args"]`에서 읽는데, PyTorchSim이 생성하는 spec에는 `extra`가 아예 없었습니다. 인자가 한 칸씩 밀려 `pidX`가 `pid_y`(grid 루프가 절대 바꾸지 않는 값)를 받았고, program 0이 8번 돈 셈이 됐습니다.
 
 **틀린 값이 쓰레기가 아니라 0으로 나온 점**이 고약합니다. 쓰레기값이면 즉시 눈에 띄지만 0은 그럴듯해 보입니다. timing 경로는 인자 위치를 lowered MLIR 시그니처에서 직접 읽어 애초에 정확했고, 그래서 functional을 붙이기 전까지 드러나지 않았습니다.
 
@@ -181,7 +201,7 @@ triton-shared는 사용자 스칼라를 자기 grid/pid 인자 **앞에** 둡니
 
 ## 6. 일반성을 위해 되돌린 설계 둘
 
-**DMA가 어느 인자에 속하는지 — 추론에서 선언으로.** 처음에는 TOG 빌더가 memref view 연산을 거꾸로 걸어 올라가 인자 인덱스를 추론했습니다. 아는 view 연산에 대해서만 맞는 방식이라, 생산자(tnpu)가 `dram_arg`를 직접 적어 내려보내도록 바꾸고 추론 코드를 삭제했습니다.
+**DMA가 어느 인자에 속하는지 — 추론에서 선언으로.** 처음에는 TOG 빌더가 memref view 연산을 거꾸로 걸어 올라가 인자 인덱스를 추론했습니다. 아는 view 연산에 대해서만 맞는 방식이라, 생산자(lowering pass)가 `dram_arg`를 직접 적어 내려보내도록 바꾸고 추론 코드를 삭제했습니다.
 
 **grid — 컴파일 타임 상수에서 런타임 인자로.** 위 3절.
 
@@ -195,12 +215,12 @@ triton-shared는 사용자 스칼라를 자기 grid/pid 인자 **앞에** 둡니
 | 동적 shape (timing) | 동작 | 트레이스 하나가 모든 shape |
 | 다차원 grid | 동작 | 테스트가 IR과 dispatch 양쪽 검증 |
 | 동적 shape (functional) | 제약 | 바이너리가 shape 특수화 → `ShapeMismatch`로 거부 |
-| double buffering | 미착수 | tnpu가 동기 DMA만 발행. 251 vs 650의 주원인 |
-| matmul timing | 미착수 | `build_tog`는 `vcix.iv` 이름으로 compute 노드를 찾는데 tnpu는 `llvm.riscv.sf.vc.*` 인트린식을 냄 |
+| double buffering | 미착수 | lowering pass 가 동기 DMA 만 발행. 251 vs 650의 주원인 |
+| matmul timing | 미착수 | `build_tog`는 `vcix.iv` 이름으로 compute 노드를 찾는데 lowering pass 는 `llvm.riscv.sf.vc.*` 인트린식을 냄 |
 | `triton_helpers` | 차단 | 모듈이 torch 안에 있고 tnpu venv에는 없음 |
-| reduction | 차단 | tnpu 자체 문제 — 아래 |
+| reduction | 차단 | lowering pass 쪽 문제 — 아래 |
 
-**동적 shape의 한 가지 단서.** timing은 완전히 동작합니다. functional 바이너리는 tnpu가 grid·스칼라 값·memref extent를 전부 구워 넣어 shape 특수화되어 있어서, shape이 다른 launch를 `ShapeMismatch`로 **거부합니다** — 틀린 경계로 실행하는 대신. 사이클만 볼 때는 `pytorchsim_functional_mode: False`로 모든 shape을 돌릴 수 있습니다.
+**동적 shape의 한 가지 단서.** timing은 완전히 동작합니다. functional 바이너리는 lowering pass 가 grid·스칼라 값·memref extent 를 전부 구워 넣어 shape 특수화되어 있어서, shape이 다른 launch를 `ShapeMismatch`로 **거부합니다** — 틀린 경계로 실행하는 대신. 사이클만 볼 때는 `pytorchsim_functional_mode: False`로 모든 shape을 돌릴 수 있습니다.
 
 **reduction이 막힌 지점.** `tt.reduce(axis=1)`이 triton-shared를 지나면 `linalg.transpose permutation=[1,0]` + `linalg.reduce dimensions=[0]`가 됩니다. transpose는 `transpose-reduce-to-rank0` 여부와 무관하게 삽입됩니다(rank 2에서 동일함을 측정). stage 3의 다섯 패스는 통과하고 `bank_vectorize`가 거부합니다 — 스크래치패드가 **레인 뱅킹**되어 있어 축소되는 축이 레인 안에 머물러야 하는데, identity-elementwise가 아니고 스칼라 폴백은 뱅킹된 스크래치패드를 읽게 되기 때문입니다.
 
@@ -210,10 +230,18 @@ triton-shared는 사용자 스칼라를 자기 grid/pid 인자 **앞에** 둡니
 
 ## 8. PR과 검증
 
-| PR | 범위 | 상태 |
-|---|---|---|
-| [PyTorchSim #305](https://github.com/PSAL-POSTECH/PyTorchSim/pull/305) | 18 commits · 23 files · +2209/−39 | draft, mergeable, CI green |
-| [triton-npu #1](https://github.com/PSAL-POSTECH/triton-npu/pull/1) | 3 commits · 5 files · +177/−4 | open |
+| PR | 내용 | 범위 | 상태 |
+|---|---|---|---|
+| [PyTorchSim #305](https://github.com/PSAL-POSTECH/PyTorchSim/pull/305) | 이식·연결 작업 본체 | 18 commits · 23 files · +2209/−39 | draft, mergeable, CI green |
+| [triton-npu #1](https://github.com/PSAL-POSTECH/triton-npu/pull/1) | 이식에 필요해진 훅 3개 | 3 commits · 5 files · +177/−4 | open |
+
+triton-npu #1 은 lowering pass 를 고치는 PR이 아니라, **PyTorchSim이 그것을 호출하려면 있어야 했던 진입점**을 여는 PR입니다. 패스 로직 자체는 건드리지 않았습니다.
+
+| 훅 | 왜 필요했나 |
+|---|---|
+| `tnpu.cycle` | 타일 하나만 gem5로 돌려 cycle을 재려면, DMA를 지운 1-program 바이너리가 필요 |
+| `dram_arg` | TOG 빌더가 DMA의 DRAM 쪽이 어느 커널 인자인지 알아야 함 (추론 대신 생산자가 선언) |
+| `tnpu.spike` | stage 6이 자체 생성 입력 대신 **호출자의 텐서**로 돌 수 있어야 함 |
 
 CI(`.github/workflows/triton_npu.yml`)는 툴체인 레이어가 ~1.8 GiB라 본 CI와 분리:
 
@@ -232,10 +260,10 @@ triton-npu baselines          success   <- doctor + add/mul/relu/gemm/bmm
 
 ## 9. 다음 우선순위
 
-1. **double buffering** — tnpu가 비동기 DMA + `togsim.wait`를 내도록. 두 경로의 사이클 격차를 실제로 좁히는 유일한 항목이고, 기존 경로에 이미 있는 기계를 tnpu 쪽에 만드는 일입니다.
-2. **shape 특수화 해소** — launch shape마다 재컴파일하거나, tnpu wrapper도 트레이스 생산자처럼 grid와 extent를 인자로 받게. 후자가 근본적.
+1. **double buffering** — lowering pass 가 비동기 DMA + `togsim.wait` 를 내도록. 두 경로의 사이클 격차를 실제로 좁히는 유일한 항목이고, 기존 경로에 이미 있는 기계를 lowering pass 쪽에 만드는 일입니다.
+2. **shape 특수화 해소** — launch shape마다 재컴파일하거나, lowering pass 의 wrapper 도 트레이스 생산자처럼 grid와 extent를 인자로 받게. 후자가 근본적.
 3. **matmul timing** — `build_tog`가 vcix 인트린식을 인식하도록. systolic array 경로가 열립니다.
-4. **reduction 레인 경로** — tnpu의 `bank_vectorize`에 reduction 추가, transpose를 `vlane_split_axis`로 흡수. 가장 큰 작업.
+4. **reduction 레인 경로** — lowering pass 의 `bank_vectorize` 에 reduction 추가, transpose를 `vlane_split_axis`로 흡수. 가장 큰 작업.
 
 ---
 

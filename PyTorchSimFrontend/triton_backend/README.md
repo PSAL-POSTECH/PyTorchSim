@@ -1,9 +1,13 @@
 # Triton codegen route (WIP)
 
 Replaces the hand-written MLIR emission in `PyTorchSimFrontend/mlir/` with
-**Inductor's own Triton codegen**, lowered to this NPU by the **triton-npu**
-(`tnpu`) pass pipeline. Opt-in and off by default; the MLIR route is untouched
-and stays the production path.
+**Inductor's own Triton codegen**, lowered to this NPU by the **PyTorchSim
+lowering pass** (owned by 이정민; the code lives in the `triton-npu` repo, so
+paths and module names read `tnpu`). Opt-in and off by default; the MLIR route
+is untouched and stays the production path.
+
+The modules here are the PORT: they drive that lowering pass and wire its output
+into the existing TOGSim / gem5 / Spike stack. The pass itself is not ours.
 
 ```bash
 TORCHSIM_TRITON_CODEGEN=1 python tests/system/test_triton_codegen.py

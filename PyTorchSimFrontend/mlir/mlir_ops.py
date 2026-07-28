@@ -455,7 +455,74 @@ class ExtensionOverrides(common.OpOverrides):
 
     @staticmethod
     def lgamma(operand, *args, **kwargs):
-        raise NotImplementedError
+        """
+            There is no MLIR operation for lgamma, so it is composed from the
+            Lanczos approximation (g=5, 6 terms; Numerical Recipes `gammln`):
+
+                ln|G(x)| = -tmp + ln(sqrt(2*pi) * ser / x)
+                tmp      = (x + 5.5) - (x + 0.5) * ln(x + 5.5)
+                ser      = c0 + sum_k cof[k] / (x + k)
+            
+            which holds for x > 0. Inputs below 0.5 go through the reflection
+            formula
+                
+                ln|G(x)| = ln(pi) - ln|sin(pi*x)| - ln|G(1-x)|
+            
+            so the input is folded to 1-x up front and the series is evaluated
+            once instead of twice.
+
+            g=5/N=6 is used rather than the more common g=7/N=9: at f32 the
+            larger g=7 coefficients (max intermediate term ~1353 vs ~51) lose
+            more to cancellation, so the extra double-precision accuracy does
+            not carry over. It also uses two fewer coefficient divisions. 
+        """
+        tile_size, dtype = V.kernel.var_info[operand]
+
+        # Check scalar
+        if tile_size == 1:
+            vec = ops.broadcast(operand, 4)
+            val = ops.lgamma(vec)
+            res = ops.extractelement(val, 0)
+            return res, V.kernel.var_info[res]
+        
+        # Float-only instruction: promote non-float inputs (e.g. integers) to f32
+        # to run it. Native float widths (f16/f64) are left untouched. 
+        if not dtype.startswith("f"):
+            operand = ops.to_dtype(operand, "f32")
+            dtype = "f32"
+
+        half = ops.constant(0.5, dtype)
+        one = ops.constant(1.0, dtype)
+
+        # Fold x < 0.5 into 1-x so the series only ever sees x >= 0.5.
+        is_reflect = ops.lt(operand, half)
+        xr = ops.where(is_reflect, ops.sub(one, operand), operand)
+
+        # tmp = (xr + 5.5) - (xr + 0.5) * ln(xr + 5.5)
+        t = ops.add(xr, ops.constant(5.5, dtype))
+        tmp = ops.sub(t, ops.mul(ops.add(xr, half), ops.log(t)))
+
+        # ser = c0 + sum_k cof[k-1] / (xr + k)
+        cof = [76.18009172947146, -86.50532032941677, 24.01409824083091,
+               -1.231739572450155, 0.1208650973866179e-2, -0.5395239384953e-5]
+        ser = ops.constant(1.000000000190015, dtype)
+        for k, c in enumerate(cof, start=1):
+            denom = ops.add(xr, ops.constant(float(k), dtype))
+            ser = ops.add(ser, ops.truediv(ops.constant(c, dtype), denom))
+
+        # lgamma(xr) = -tmp + ln(sqrt(2*pi) * ser / xr)
+        sqrt_2pi = ops.constant(math.sqrt(2.0 * math.pi), dtype)
+        lg = ops.add(ops.neg(tmp),
+                     ops.log(ops.truediv(ops.mul(sqrt_2pi, ser), xr)))
+        
+        # Reflection term. Note this uses the original operand, not xr.
+        sin_pix = ops.sin(ops.mul(ops.constant(math.pi, dtype), operand))
+        refl = ops.sub(ops.constant(math.log(math.pi), dtype),
+                       ops.log(ops.abs(sin_pix)))
+        refl = ops.sub(refl, lg)
+
+        res = ops.where(is_reflect, refl, lg)
+        return res, V.kernel.var_info[res]
 
     @staticmethod
     def erf(operand, *args, **kwargs):

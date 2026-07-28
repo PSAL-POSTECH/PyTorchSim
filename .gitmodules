@@ -1,0 +1,15 @@
+[submodule "TOGSim/extern/onnx"]
+	path = TOGSim/extern/onnx
+	url = https://github.com/onnx/onnx.git
+[submodule "TOGSim/extern/protobuf"]
+	path = TOGSim/extern/protobuf
+	url = https://github.com/protocolbuffers/protobuf.git
+[submodule "TOGSim/extern/booksim"]
+	path = TOGSim/extern/booksim
+	url = https://github.com/PSAL-POSTECH/booksim.git
+[submodule "TOGSim/extern/ramulator2"]
+	path = TOGSim/extern/ramulator2
+	url = https://github.com/PSAL-POSTECH/ramulator2
+[submodule "TOGSim/extern/stonneCore"]
+	path = TOGSim/extern/stonneCore
+	url = https://github.com/PSAL-POSTECH/stonne_core.git

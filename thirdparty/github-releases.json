@@ -1,0 +1,19 @@
+{
+  "description": "GitHub release pins for CI (docker base image). pytorch_image is the ARG PYTORCH_IMAGE (FROM base) for Dockerfile.base; PyTorchSim is CPU-only (the npu PrivateUse1 backend simulates CUDA on the CPU), so the CPU PyTorch wheels are installed on top of a plain ubuntu base. Use release_tag \"latest\" or an exact release tag for GitHub deps. asset_name must match the release attachment filename. CI builds ghcr.io/.../torchsim_base:thirdparty-<12 hex> when missing (pin = sha256 of this file plus Dockerfile.base) and updates :latest on that push.",
+  "pytorch_image": "ubuntu:22.04",
+  "gem5": {
+    "repository": "PSAL-POSTECH/gem5",
+    "release_tag": "v1.0.2",
+    "asset_name": "gem5-release.tar.gz"
+  },
+  "llvm_project": {
+    "repository": "PSAL-POSTECH/llvm-project",
+    "release_tag": "v1.0.10",
+    "asset_name": "riscv-llvm-release.tar.gz"
+  },
+  "spike": {
+    "repository": "PSAL-POSTECH/riscv-isa-sim",
+    "release_tag": "v1.0.6",
+    "asset_name": "spike-release.tar.gz"
+  }
+}

@@ -1,0 +1,110 @@
+# Copyright (c) 2020 The Regents of the University of California
+# All Rights Reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are
+# met: redistributions of source code must retain the above copyright
+# notice, this list of conditions and the following disclaimer;
+# redistributions in binary form must reproduce the above copyright
+# notice, this list of conditions and the following disclaimer in the
+# documentation and/or other materials provided with the distribution;
+# neither the name of the copyright holders nor the names of its
+# contributors may be used to endorse or promote products derived from
+# this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+# "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+# LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+# A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+# OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+# SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+# LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+# DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+# THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+# Base image: CI passes build-arg from ``thirdparty/github-releases.json`` (``pytorch_image``).
+# Default matches that manifest for local ``docker build``.
+ARG PYTORCH_IMAGE=pytorch/pytorch:2.8.0-cuda12.6-cudnn9-devel
+FROM ${PYTORCH_IMAGE}
+
+# CI passes ``github.sha``; local builds can use a branch (default) or a tag/SHA.
+ARG PYTORCHSIM_GIT_REF=ispass2026
+
+ENV DEBIAN_FRONTEND=noninteractive
+WORKDIR /workspace
+
+# Build deps (Gem5 / LLVM / TorchSim); keep layer lean where possible.
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
+    build-essential git m4 scons zlib1g zlib1g-dev \
+    libprotobuf-dev protobuf-compiler libprotoc-dev libgoogle-perftools-dev \
+    python3-dev python-is-python3 doxygen libboost-all-dev \
+    libhdf5-serial-dev python3-pydot libpng-dev libelf-dev pkg-config \
+    python3-venv black libssl-dev libasan5 libubsan1 \
+    wget ca-certificates device-tree-compiler ninja-build \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir mypy pre-commit jupyter pydot tabulate \
+    jupyterlab_execute_time onnx matplotlib conan==1.56.0
+
+ENV PATH=$PATH:/root/.local/bin
+ENV LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/opt/conda/lib:/usr/local/nvidia/lib:/usr/local/nvidia/lib64:$LD_LIBRARY_PATH
+
+# Gem5 (TorchSim branch before build)
+RUN git clone https://github.com/PSAL-POSTECH/gem5.git --branch tutorial \
+    && cd gem5 \
+    && scons build/RISCV/gem5.opt -j"$(nproc)"
+RUN cd gem5 && git checkout ispass2026
+ENV GEM5_PATH=/workspace/gem5/build/RISCV/gem5.opt
+
+# LLVM MLIR (RISC-V)
+RUN git clone https://github.com/PSAL-POSTECH/llvm-project.git --branch ispass2026 --depth 1 \
+    && cd llvm-project && mkdir build && cd build \
+    && cmake -G Ninja \
+        -DLLVM_ENABLE_PROJECTS=mlir \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/riscv-llvm \
+        -DLLVM_TARGETS_TO_BUILD=RISCV \
+        ../llvm \
+    && cmake --build . -j"$(nproc)" \
+    && cmake --install .
+ENV TORCHSIM_LLVM_PATH=/riscv-llvm/bin
+ENV TORCHSIM_DIR=/workspace/PyTorchSim
+
+# RISC-V GNU toolchains (glibc + bare-metal), Ubuntu release bundles
+RUN wget -q https://github.com/riscv-collab/riscv-gnu-toolchain/releases/download/2023.12.14/riscv64-glibc-ubuntu-22.04-llvm-nightly-2023.12.14-nightly.tar.gz \
+    && wget -q https://github.com/riscv-collab/riscv-gnu-toolchain/releases/download/2023.12.14/riscv64-elf-ubuntu-20.04-llvm-nightly-2023.12.14-nightly.tar.gz \
+    && tar -xzf riscv64-glibc-ubuntu-22.04-llvm-nightly-2023.12.14-nightly.tar.gz \
+    && tar -xzf riscv64-elf-ubuntu-20.04-llvm-nightly-2023.12.14-nightly.tar.gz \
+    && rm -f *.tar.gz
+
+ENV RISCV=/workspace/riscv
+ENV PATH=$RISCV/bin:$PATH
+
+# Spike
+RUN git clone https://github.com/PSAL-POSTECH/riscv-isa-sim.git --branch ispass2026 \
+    && cd riscv-isa-sim && mkdir build && cd build \
+    && ../configure --prefix="$RISCV" && make -j"$(nproc)" && make install
+
+# Proxy kernel
+RUN git clone https://github.com/riscv-software-src/riscv-pk.git \
+    && cd riscv-pk && git checkout 4f3debe4d04f56d31089c1c716a27e2d5245e9a1 \
+    && mkdir build && cd build \
+    && ../configure --prefix="$RISCV" --host=riscv64-unknown-elf \
+    && make -j"$(nproc)" && make install
+
+# PyTorchSim + TOGSim (CI checks out the triggering commit; use PYTORCHSIM_GIT_REF for local builds)
+ENV CMAKE_POLICY_VERSION_MINIMUM=3.5
+RUN git clone https://github.com/PSAL-POSTECH/PyTorchSim.git \
+    && cd PyTorchSim \
+    && git checkout "${PYTORCHSIM_GIT_REF}" \
+    && git submodule update --recursive --init \
+    && cd TOGSim \
+    && mkdir -p build && cd build \
+    && conan install .. --build=missing \
+    && cmake -G Ninja .. \
+    && cmake --build . -j"$(nproc)"
+
+RUN cd PyTorchSim/PyTorchSimDevice && python3 -m pip install --no-build-isolation -e .
+RUN pip install --no-cache-dir jupyterhub jupyterlab

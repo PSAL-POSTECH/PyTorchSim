@@ -1,0 +1,45 @@
+{
+  "frontend": {
+    "impl": "External",
+    "clock_ratio": 1
+  },
+  "memory_system": {
+    "impl": "GenericDRAM",
+    "clock_ratio": 1,
+    "channel_mapper": {
+      "impl": "PassThroughChannelMapper"
+    },
+    "controllers": [{
+      "impl": "GenericDDR",
+      "wr_low_watermark": 0.2,
+      "wr_high_watermark": 0.8,
+      "read_buffer_size": 32,
+      "write_buffer_size": 32,
+      "priority_buffer_size": 1568,
+      "scheduler": {
+        "impl": "FRFCFS"
+      },
+      "refresh_manager": {
+        "impl": "AllBank",
+        "scope": "Channel"
+      },
+      "row_policy": {
+        "impl": "Open"
+      },
+      "addr_mapper": {
+        "impl": "RoBaRaCoCh"
+      },
+      "dram": {
+        "impl": "DDR4",
+        "org": {
+          "dq": 8,
+          "count": [1, 1, 4, 4, 65536, 1024]
+        },
+        "timing": [3200, 4, 22, 22, 22, 52, 74, 24, 12, 16, 4, 8, 4, 8, 4, 12, 34, 576, 12480, 2, 625],
+        "channel_width": 64,
+        "read_latency": 26,
+        "timing_constraints": [[0, [3, 5], [3, 5], 4], [0, [4, 6], [4, 6], 4], [1, [3, 5], [3, 5], 4], [1, [4, 6], [4, 6], 4], [1, [3, 5], [4, 6], 12], [1, [4, 6], [3, 5], 24], [1, [3, 5], [3, 4, 5, 6], 6, 1, true], [1, [4, 6], [3, 5], 0, 1, true], [1, [3], [2], 12], [1, [4], [2], 44], [1, [0], [0], 4], [1, [0], [0], 34, 4], [1, [0], [2], 52], [1, [2], [0], 22], [1, [0], [7], 74], [1, [1, 2], [7], 22], [1, [5], [7], 34], [1, [6], [7], 66], [1, [7], [0, 2], 576], [2, [3, 5], [3, 5], 8], [2, [4, 6], [4, 6], 8], [2, [4, 6], [3, 5], 32], [2, [0], [0], 8], [3, [0], [0], 74], [3, [0], [3, 4, 5, 6], 22], [3, [0], [1], 52], [3, [1], [0], 22], [3, [3], [1], 12], [3, [4], [1], 44], [3, [5], [0], 34], [3, [6], [0], 66]]
+      }
+    }]
+  }
+}

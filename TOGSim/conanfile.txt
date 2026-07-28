@@ -1,0 +1,7 @@
+[requires]
+boost/1.79.0
+robin-hood-hashing/3.11.5
+spdlog/1.11.0
+yaml-cpp/0.8.0
+[generators]
+cmake

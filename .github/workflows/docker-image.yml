@@ -1,0 +1,161 @@
+name: Docker image CI
+
+on:
+  pull_request:
+    branches: [ "master", "develop" ]
+  workflow_dispatch:
+
+env:
+  BASE_IMAGE_REPO: ghcr.io/psal-postech/torchsim_base
+  # PR: head commit; otherwise workflow_dispatch uses the branch SHA
+  SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  ensure-base:
+    runs-on: ubuntu-latest
+    outputs:
+      base_image: ${{ steps.pin.outputs.base_image }}
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: PyTorch base image from manifest
+        run: |
+          PYTORCH_IMAGE=$(python3 -c "import json; from pathlib import Path; v=json.loads(Path('thirdparty/github-releases.json').read_text()).get('pytorch_image'); print(v or '')")
+          if [ -z "$PYTORCH_IMAGE" ]; then echo "thirdparty/github-releases.json: pytorch_image is required" >&2; exit 1; fi
+          echo "PYTORCH_IMAGE=$PYTORCH_IMAGE" >> "$GITHUB_ENV"
+
+      - name: Thirdparty pin
+        id: pin
+        run: |
+          PIN="$(bash scripts/ci/thirdparty_base_pin.sh)"
+          echo "pin=${PIN}" >> "$GITHUB_OUTPUT"
+          echo "base_image=${BASE_IMAGE_REPO}:thirdparty-${PIN}" >> "$GITHUB_OUTPUT"
+          echo "BASE_IMAGE=${BASE_IMAGE_REPO}:thirdparty-${PIN}" >> "$GITHUB_ENV"
+
+      - name: Check base image exists
+        id: exists
+        run: |
+          if docker manifest inspect "${BASE_IMAGE}" > /dev/null 2>&1; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Resolve GitHub release asset IDs
+        if: steps.exists.outputs.ok != 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/ci/thirdparty_github_asset_env.sh >> "$GITHUB_ENV"
+
+      - name: Build and push base image (missing pin)
+        if: steps.exists.outputs.ok != 'true'
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: ./Dockerfile.base
+          push: true
+          build-args: |
+            PYTORCH_IMAGE=${{ env.PYTORCH_IMAGE }}
+            GEM5_ASSET_ID=${{ env.GEM5_ASSET_ID }}
+            LLVM_ASSET_ID=${{ env.LLVM_ASSET_ID }}
+            SPIKE_ASSET_ID=${{ env.SPIKE_ASSET_ID }}
+          tags: ${{ env.BASE_IMAGE }}
+
+  build-and-test:
+    needs: ensure-base
+    # App image build runs on a GitHub-hosted runner: the CPU-only image is small
+    # and ensure-base already builds the heavier base image on ubuntu-latest.
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          no-cache: true
+          build-args: |
+            BASE_IMAGE=${{ needs.ensure-base.outputs.base_image }}
+          tags: ghcr.io/psal-postech/torchsim-test:${{ env.SOURCE_SHA }}
+
+      # Do not use GITHUB_SHA here: on pull_request it is the merge commit, while the image tag uses SOURCE_SHA (PR head).
+      - name: Wait for GHCR propagation
+        env:
+          IMAGE_SHA: ${{ env.SOURCE_SHA }}
+        run: |
+          IMG="ghcr.io/psal-postech/torchsim-test:${IMAGE_SHA}"
+          echo "Verifying tag matches push: ${IMAGE_SHA}"
+          for i in $(seq 1 30); do
+            echo "Checking if image exists in GHCR (attempt $i)..."
+            if docker buildx imagetools inspect "$IMG" > /dev/null 2>&1; then
+              echo "Image is now available in GHCR."
+              exit 0
+            fi
+            if [ "$i" -eq 1 ]; then
+              echo "buildx imagetools inspect failed; stderr (first attempt):"
+              docker buildx imagetools inspect "$IMG" 2>&1 || true
+            fi
+            echo "Image not yet available, retrying in 20 seconds..."
+            sleep 20
+          done
+          echo "Image did not become available in GHCR within expected time."
+          exit 1
+
+  test-pytorchsim-wrapper1:
+    needs: build-and-test
+    uses: ./.github/workflows/pytorchsim_test.yml
+    with:
+      image_name: ghcr.io/psal-postech/torchsim-test:${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+      togsim_config: /workspace/PyTorchSim/configs/systolic_ws_128x128_c1_simple_noc_tpuv3.yml
+      run_accuracy: true
+
+  test-pytorchsim-wrapper2:
+    needs: build-and-test
+    uses: ./.github/workflows/pytorchsim_test.yml
+    with:
+      image_name: ghcr.io/psal-postech/torchsim-test:${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+      togsim_config: /workspace/PyTorchSim/configs/systolic_ws_32x32_c1_simple_noc_tpuv3.yml
+      run_accuracy: false
+
+  test-pytorchsim-wrapper3:
+    needs: build-and-test
+    uses: ./.github/workflows/pytorchsim_test.yml
+    with:
+      image_name: ghcr.io/psal-postech/torchsim-test:${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+      togsim_config: /workspace/PyTorchSim/configs/systolic_ws_8x8_c1_simple_noc_tpuv3.yml
+      run_accuracy: false

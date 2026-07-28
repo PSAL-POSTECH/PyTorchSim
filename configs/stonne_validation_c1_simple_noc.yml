@@ -1,0 +1,22 @@
+core_type:
+- stonne
+stonne_config_path: /workspace/PyTorchSim/TOGSim/extern/stonneCore/tests/sparseflex_op_128mses_128_bw.cfg
+num_cores: 1
+core_freq_mhz: 1000
+core_stats_print_period_cycles: 10000
+num_stonne_per_core: 1
+num_stonne_port: 32
+
+dram_type: simple
+dram_freq_mhz: 1000
+dram_channels: 1
+dram_req_size_byte: 32
+dram_latency: 100
+dram_stats_print_period_cycles: 10000
+l2d_type: datacache
+l2d_config: S:128:128:64,32,L:T:m:W:L,A:192:4,32:0,32
+
+icnt_type: simple
+icnt_latency_cycles: 10
+icnt_freq_mhz: 1000
+icnt_injection_ports_per_core: 8

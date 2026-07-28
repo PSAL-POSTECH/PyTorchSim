@@ -1,0 +1,45 @@
+name: Docker image for tutorial
+
+on:
+  push:
+    branches: [ "ispass2026" ]
+
+jobs:
+  build:
+    runs-on: self-hosted
+    
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      # Step 1: Checkout the repository
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # Step 2: Log in to GitHub Container Registry
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: PyTorch base image from manifest
+        run: |
+          PYTORCH_IMAGE=$(python3 -c "import json; from pathlib import Path; v=json.loads(Path('thirdparty/github-releases.json').read_text()).get('pytorch_image'); print(v or '')")
+          if [ -z "$PYTORCH_IMAGE" ]; then echo "thirdparty/github-releases.json: pytorch_image is required" >&2; exit 1; fi
+          echo "PYTORCH_IMAGE=$PYTORCH_IMAGE" >> "$GITHUB_ENV"
+
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./tutorial/jupyterhub/Dockerfile.tutorial
+          push: true
+          build-args: |
+            PYTORCH_IMAGE=${{ env.PYTORCH_IMAGE }}
+            PYTORCHSIM_GIT_REF=${{ github.sha }}
+          tags: ghcr.io/psal-postech/torchsim-tutorial:ispass2026

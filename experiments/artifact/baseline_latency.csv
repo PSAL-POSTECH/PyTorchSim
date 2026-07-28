@@ -1,0 +1,11 @@
+Workload,Accel-Sim,mNPUSim,PyTorchSim-SN,PyTorchSim-CA,PyTorchSim-ILS
+conv_1x56x56x64x64x3x1x1,38.86346,3.915,,,
+conv_1x28x28x128x128x3x1x1,44.58898,2.588,,,
+conv_1x14x14x256x256x3x1x1,70.53904,3.162,,,
+conv_1x7x7x512x512x3x1x1,78.92694,1.527,,,
+gemm_512x512x512,53.5097,5.767,,,
+gemm_1024x1024x1024,150.8592,40.946,,,
+gemm_2048x2048x2048,951.4306,5157.396,,,
+resnet50,1222.504,294.242,,,
+bert_large,1436.558,350.84,,,
+

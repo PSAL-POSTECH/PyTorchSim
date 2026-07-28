@@ -1,0 +1,25 @@
+version: '3'
+
+services:
+  jupyterhub:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: jupyterhub
+    image: my-jupyterhub-image
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./jupyterhub_config.py:/srv/jupyterhub/jupyterhub_config.py
+    environment:
+      # DockerSpawner가 사용할 네트워크 이름
+      DOCKER_NETWORK_NAME: jupyterhub-network
+      # Hub가 내부적으로 사용할 IP
+      HUB_IP: jupyterhub
+    ports:
+      - "8888:8000"
+    networks:
+      - jupyterhub-network
+
+networks:
+  jupyterhub-network:
+    external: true

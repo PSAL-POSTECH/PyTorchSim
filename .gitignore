@@ -1,0 +1,12 @@
+__pycache__/
+TOGSim/build/
+.vscode
+*.ipynb_checkpoints
+output
+togsim_results/*
+outputs/*
+experiments/artifact/logs/*# tutorial generated artifacts
+tutorial/session1/fused/
+tutorial/session1/togsim_results/
+tutorial/session2/togsim_results/
+tutorial/session2/fx_graph.svg

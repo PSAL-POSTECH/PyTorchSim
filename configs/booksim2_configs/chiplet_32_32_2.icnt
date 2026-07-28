@@ -1,0 +1,17 @@
+[config]
+use_map = 0
+flit_size = 32
+topology = anynet
+network_file = /workspace/PyTorchSim/configs/booksim2_configs/chiplet_32_32_2.net
+routing_function = min
+subnets = 1
+routing_delay = 4
+vc_buf_size = 512
+input_buffer_size = 512
+ejection_buffer_size = 512
+boundary_buffer_size = 512
+wait_for_tail_credit = 0
+vc_allocator = islip
+sw_allocator = islip
+alloc_iters = 1
+deadlock_warn_timeout = 10000

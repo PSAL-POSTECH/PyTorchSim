@@ -1,0 +1,37 @@
+# syntax=docker/dockerfile:1.4
+#
+# triton-npu toolchain layer, for the Triton codegen route only.
+# Separate from torchsim_base because it is ~1.8 GiB no other job needs.
+# The app image for this route is ./Dockerfile with BASE_IMAGE pointed here.
+#
+# The repo is private, so the clone and the release downloads both need a token.
+# It is a BuildKit secret, not a build-arg: build-args land in the image history.
+
+ARG BASE_IMAGE=ghcr.io/psal-postech/torchsim_base:latest
+FROM ${BASE_IMAGE}
+
+ARG TNPU_REPO=PSAL-POSTECH/triton-npu
+ARG TNPU_REF=main
+
+WORKDIR /workspace
+
+# Not under $TORCHSIM_DIR: ./Dockerfile copies the PyTorchSim checkout over that
+# path afterwards. extension_config reads TNPU_DIR, set below.
+RUN --mount=type=secret,id=tnpu_token \
+    TOKEN="$(cat /run/secrets/tnpu_token)" && \
+    git clone "https://x-access-token:${TOKEN}@github.com/${TNPU_REPO}.git" \
+      /workspace/triton-npu && \
+    git -C /workspace/triton-npu checkout -q "${TNPU_REF}" && \
+    git -C /workspace/triton-npu remote set-url origin \
+      "https://github.com/${TNPU_REPO}.git"
+
+# restore.sh owns every pin (setup/versions.env) and unpacks LLVM 23, spike and
+# the triton runtime into /workspace.
+RUN --mount=type=secret,id=tnpu_token \
+    GITHUB_TOKEN="$(cat /run/secrets/tnpu_token)" \
+      /workspace/triton-npu/setup/restore.sh --prebuilt
+
+ENV TNPU_DIR=/workspace/triton-npu
+
+# Fail the build, not the first CI job.
+RUN python3 /workspace/triton-npu/run.py doctor

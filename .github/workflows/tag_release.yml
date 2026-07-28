@@ -1,0 +1,121 @@
+name: Build & Push Docker Image on Tag
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  BASE_IMAGE_REPO: ghcr.io/psal-postech/torchsim_base
+
+jobs:
+  ensure-base:
+    runs-on: ubuntu-latest
+    outputs:
+      base_image: ${{ steps.pin.outputs.base_image }}
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          repository: PSAL-POSTECH/PyTorchSim
+          ref: ${{ github.sha }}
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: PyTorch base image from manifest
+        run: |
+          PYTORCH_IMAGE=$(python3 -c "import json; from pathlib import Path; v=json.loads(Path('thirdparty/github-releases.json').read_text()).get('pytorch_image'); print(v or '')")
+          if [ -z "$PYTORCH_IMAGE" ]; then echo "thirdparty/github-releases.json: pytorch_image is required" >&2; exit 1; fi
+          echo "PYTORCH_IMAGE=$PYTORCH_IMAGE" >> "$GITHUB_ENV"
+
+      - name: Thirdparty pin
+        id: pin
+        run: |
+          PIN="$(bash scripts/ci/thirdparty_base_pin.sh)"
+          echo "pin=${PIN}" >> "$GITHUB_OUTPUT"
+          echo "base_image=${BASE_IMAGE_REPO}:thirdparty-${PIN}" >> "$GITHUB_OUTPUT"
+          echo "BASE_IMAGE=${BASE_IMAGE_REPO}:thirdparty-${PIN}" >> "$GITHUB_ENV"
+
+      - name: Check base image exists
+        id: exists
+        run: |
+          if docker manifest inspect "${BASE_IMAGE}" > /dev/null 2>&1; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Resolve GitHub release asset IDs
+        if: steps.exists.outputs.ok != 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/ci/thirdparty_github_asset_env.sh >> "$GITHUB_ENV"
+
+      - name: Build and push base image (missing pin)
+        if: steps.exists.outputs.ok != 'true'
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: ./Dockerfile.base
+          push: true
+          build-args: |
+            PYTORCH_IMAGE=${{ env.PYTORCH_IMAGE }}
+            GEM5_ASSET_ID=${{ env.GEM5_ASSET_ID }}
+            LLVM_ASSET_ID=${{ env.LLVM_ASSET_ID }}
+            SPIKE_ASSET_ID=${{ env.SPIKE_ASSET_ID }}
+          tags: |
+            ${{ env.BASE_IMAGE }}
+            ${{ env.BASE_IMAGE_REPO }}:latest
+
+  build:
+    needs: ensure-base
+    runs-on: self-hosted
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          repository: PSAL-POSTECH/PyTorchSim
+          ref: ${{ github.ref_name }}
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set Tag Environment
+        run: |
+          echo "IMAGE_TAG=torchsim-ci:${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+          echo "GITHUB_SHA=$GITHUB_SHA" >> $GITHUB_ENV
+          echo "GITHUB_SHA=$GITHUB_SHA"
+
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          secrets: |
+            GIT_ACCESS_TOKEN=${{ secrets.GIT_ACCESS_TOKEN }}
+          build-args: |
+            BASE_IMAGE=${{ needs.ensure-base.outputs.base_image }}
+          tags: ghcr.io/psal-postech/${{ env.IMAGE_TAG }}

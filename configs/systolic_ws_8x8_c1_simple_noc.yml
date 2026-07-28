@@ -1,0 +1,29 @@
+num_cores: 1
+core_freq_mhz: 800
+core_stats_print_period_cycles: 100000
+
+vpu_num_lanes: 8
+vpu_spad_size_kb_per_lane: 32
+vpu_vector_length_bits: 256
+
+dram_type: ramulator2
+dram_freq_mhz: 800
+dram_channels: 1
+dram_stats_print_period_cycles: 100000
+ramulator_config_path: ../configs/ramulator2_configs/DDR4.yaml
+
+icnt_type: simple
+icnt_latency_cycles: 10
+icnt_freq_mhz: 800
+
+pytorchsim_functional_mode: 1
+pytorchsim_timing_mode: 1
+
+codegen_mapping_strategy: autotune
+codegen_external_mapping_file: ''
+codegen_autotune_max_retry: 10
+codegen_autotune_template_topk: 4
+codegen_compiler_optimization: all
+
+# Per-core spad: 8x8 array, 128 KB x 8 = 1 MB.
+core_spad_size_kb: 1024

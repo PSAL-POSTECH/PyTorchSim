@@ -1,6 +1,6 @@
 # Triton 코드젠 경로를 PyTorchSim에 이식
 
-`torch.compile`이 `npu:0`에서 PyTorchSim의 자체 MLIR 코드젠 대신 **Inductor의 Triton 백엔드**를 쓰고, **PyTorchSim lowering pass**가 이를 RISC-V로 낮추는 두 번째 코드젠 경로.
+`torch.compile`이 `npu:0`에서 PyTorchSim의 자체 MLIR 코드젠 대신 **Inductor의 Triton 백엔드**를 쓰고, **NPU lowering pass**가 이를 RISC-V로 낮추는 두 번째 코드젠 경로.
 
 ## 작업 경계
 
@@ -8,12 +8,12 @@
 
 | 부분 | 하는 일 | 소관 |
 |---|---|---|
-| **PyTorchSim lowering pass** | Triton IR → linalg/memref → tts 레벨 백엔드 패스 → vcix/gemmini → RISC-V ELF | **이정민** — 범위 밖 |
+| **NPU lowering pass** | Triton IR → linalg/memref → tts 레벨 백엔드 패스 → vcix/gemmini → RISC-V ELF | **이정민** — 범위 밖 |
 | **기존 PyTorchSim으로의 이식** | 그 lowering pass를 기존 시뮬레이션 스택에 얹는 일 | 이 문서 |
 
 lowering pass 자체는 만들지 않았습니다. **이미 있는 것을 PyTorchSim이 쓸 수 있는 형태로 이식하고, 기존 TOGSim / gem5 / Spike 스택에 물린 것**이 여기서 한 일입니다.
 
-용어: 이 lowering 계층을 문서 전체에서 **PyTorchSim lowering pass**로 부릅니다. 다만 코드가 `triton-npu` 저장소에 있어서 **실제 식별자는 `tnpu`로 남아 있고**(`tnpu_bridge.py`, `tnpu/passes/`, `tnpu.spike`, `strip_for_tnpu`), 문서에서 코드를 찾아갈 수 있도록 그 이름들은 그대로 인용합니다.
+용어: 이 lowering 계층을 문서 전체에서 **NPU lowering pass**로 부릅니다. 다만 코드가 `triton-npu` 저장소에 있어서 **실제 식별자는 `tnpu`로 남아 있고**(`tnpu_bridge.py`, `tnpu/passes/`, `tnpu.spike`, `strip_for_tnpu`), 문서에서 코드를 찾아갈 수 있도록 그 이름들은 그대로 인용합니다.
 
 ## 현재 도달점
 
@@ -43,7 +43,7 @@ lowering pass 자체는 만들지 않았습니다. **이미 있는 것을 PyTorc
    (gemm, conv, sdpa, sort,             (op별 템플릿 없음)
     cat, maxpool, bmm …)
               │                               │
-   PyTorchSim mlir/ 패스               PyTorchSim lowering pass
+   PyTorchSim mlir/ 패스               NPU lowering pass
    PSAL LLVM 20  (in-process)          stock LLVM 23  (subprocess)
                                        └ 담당 이정민 — 범위 밖.
                                          여기서 한 일은 이 블록을
@@ -66,7 +66,7 @@ lowering pass 자체는 만들지 않았습니다. **이미 있는 것을 PyTorc
 | 커널을 만드는 주체 | op별 MLIR 템플릿 (직접 작성) | Inductor의 Triton 코드젠 |
 | **커널 하나의 의미** | **루프 네스트 전체** | **타일 하나** |
 | grid | 루프 네스트에서 읽어냄 | 커널 밖에 있음 → `WorkItem`이 합성 |
-| lowering | `PyTorchSimFrontend/mlir/` | PyTorchSim lowering pass (subprocess) |
+| lowering | `PyTorchSimFrontend/mlir/` | NPU lowering pass (subprocess) |
 | 융합 | 템플릿 + `codegen_compiler_optimization` | Inductor가 이미 한 것을 물려받음 |
 | op 커버리지 | gemm, conv×4, sdpa, sort, cat, maxpool, bmm | elementwise + 그 융합 |
 | functional | `FunctionalSimulator.run_spike` | lowering pass 의 stage 6 (`tnpu.spike`) |
@@ -98,7 +98,7 @@ torch.compile
        │    - 인자 역할(in/out/inout) · dtype · numel
        │    - grid, 사용자 스칼라 값
        ▼
-    PyTorchSim lowering pass   (subprocess)               tnpu_bridge.py
+    NPU lowering pass   (subprocess)                      tnpu_bridge.py
        │   담당 이정민 — 범위 밖. 여기서 한 일은 이 단계를
        │   호출하고 그 결과를 아래 스택에 물린 부분.
        │

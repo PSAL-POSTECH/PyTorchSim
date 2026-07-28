@@ -13,7 +13,7 @@
 
 lowering pass 자체는 만들지 않았습니다. **이미 있는 것을 PyTorchSim이 쓸 수 있는 형태로 이식하고, 기존 TOGSim / gem5 / Spike 스택에 물린 것**이 여기서 한 일입니다.
 
-용어: 산문에서 **PyTorchSim lowering pass**는 이 lowering 계층 전체를 가리킵니다. 코드는 `triton-npu` 저장소에 있어서 파일 경로·모듈 이름·CI 잡 이름 등 **실제 식별자는 `tnpu`를 그대로** 씁니다(`tnpu/passes/`, `tnpu.spike`, `Build tnpu toolchain image`). 문서를 따라 코드를 찾아갈 수 있어야 하기 때문입니다.
+용어: 이 lowering 계층을 문서 전체에서 **PyTorchSim lowering pass**로 부릅니다. 다만 코드가 `triton-npu` 저장소에 있어서 **실제 식별자는 `tnpu`로 남아 있고**(`tnpu_bridge.py`, `tnpu/passes/`, `tnpu.spike`, `strip_for_tnpu`), 문서에서 코드를 찾아갈 수 있도록 그 이름들은 그대로 인용합니다.
 
 ## 현재 도달점
 
@@ -69,7 +69,7 @@ lowering pass 자체는 만들지 않았습니다. **이미 있는 것을 PyTorc
 | lowering | `PyTorchSimFrontend/mlir/` | PyTorchSim lowering pass (subprocess) |
 | 융합 | 템플릿 + `codegen_compiler_optimization` | Inductor가 이미 한 것을 물려받음 |
 | op 커버리지 | gemm, conv×4, sdpa, sort, cat, maxpool, bmm | elementwise + 그 융합 |
-| functional | `FunctionalSimulator.run_spike` | tnpu stage 6 (`tnpu.spike`) |
+| functional | `FunctionalSimulator.run_spike` | lowering pass 의 stage 6 (`tnpu.spike`) |
 | timing | `trace.so` + `trace_cycles.tsv` → TOGSim | **동일** |
 | 타일 cycle 실측 | gem5 | **동일** (`build_tog` sample 모드 공유) |
 | DMA | 비동기 + `togsim.wait` 배리어 | **동기만** |
@@ -111,7 +111,7 @@ torch.compile
     TritonNPULauncher.__call__                            codecache.py
        │
        ├ functional   텐서 → runtime/*.raw → Spike → 텐서  functional.py
-       │                tnpu stage 6 (tnpu.spike) 재사용
+       │                lowering pass 의 stage 6 (tnpu.spike) 재사용
        │
        └ timing       04-custom.mlir                       timing.py
                         ├ build_tog sample → gem5 → 타일 cycle 실측

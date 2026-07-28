@@ -232,85 +232,55 @@ triton-shared는 사용자 스칼라를 자기 grid/pid 인자 **앞에** 둡니
 
 ---
 
-## 5. 다음 작업 — 모델 커버리지까지 고도화
+## 5. 남은 일 — 모델 커버리지까지
 
-확인된 것은 elementwise와 그 융합뿐입니다. **최종 목표는 기존 MLIR 경로가 돌리는 모델들을 Triton 경로로도 돌리는 것**이고, 새 기능을 얹기보다 이미 있는 테스트를 그대로 돌려 어디서 멈추는지 고쳐 나가는 일입니다.
+지금 통과하는 것은 elementwise와 그 융합입니다. **목표는 기존 MLIR 경로가 돌리는 모델들을 Triton 경로로도 돌리는 것**이고, 새 기능을 얹기보다 이미 있는 테스트를 그대로 돌려 막히는 곳을 고쳐 나가는 일입니다.
 
-목표선은 저장소에 이미 있습니다:
+목표선은 저장소에 이미 있습니다.
 
-```
-tests/ops/     elementwise · reduce · gemm · conv · attention
-               view · sort · fusion · misc                       <- 1단계
+| 단계 | 대상 | 지금 |
+|---|---|---|
+| 1. op | `tests/ops/` — elementwise, reduce, gemm, conv, attention, view, sort, fusion, misc | elementwise만 |
+| 2. 모델 | `tests/models/` — MLP, MobileNet, ResNet, ViT, Transformer, Llama, Mixtral, DeepSeek, MoE, Diffusion, Yolov5 | 미착수 |
 
-tests/models/  MLP · MobileNet · Llama · Mixtral8x7B · DeepSeek
-               MoE · Diffusion · Yolov5
-               test_resnet · test_vit · test_transformer
-               test_clip · test_convnextv2 · test_swinv2         <- 2단계
-```
+모델은 op의 조합이라 op 하나가 막히면 모델은 첫 커널에서 멈춥니다. 그래서 op 먼저이고, 모델은 난이도 순으로 MLP → MobileNet/ResNet → ViT/Transformer → Llama가 무난합니다. 판정 기준은 두 단계가 같습니다 — **값이 torch와 일치하고, 사이클이 나오고, 경로에 실제로 진입할 것.**
 
-**1단계 (op).** 모델은 op 의 조합이라 op 이 막히면 모델은 첫 커널에서 멈춥니다. 그래서 op 스위트를 먼저 통과시켜야 하고, 아래 실측이 그 출발점입니다.
+### 1단계에서 막히는 지점
 
-**2단계 (모델).** op 이 뚫리면 모델 단위로 올라갑니다. 여기서는 op 단위에서 드러나지 않는 것들이 나옵니다 — 커널 수십~수백 개가 이어질 때의 컴파일 시간과 캐시 거동, 커널 사이 버퍼 재사용, 실제 shape 조합(op 테스트는 대개 잘 나뉘는 크기를 씁니다), 그리고 training 경로의 backward 커널. 난이도 순으로 MLP → MobileNet/ResNet → ViT/Transformer → Llama 순이 무난합니다.
-
-각 단계의 판정 기준은 같습니다 — **값이 torch와 일치하고, 사이클이 나오고, 경로에 실제로 진입할 것.**
-
-### 1단계 1차 실측
-
-대표 케이스를 `TORCHSIM_TRITON_CODEGEN=1`로 돌린 결과입니다. **경로 진입** 열은 Triton 경로를 실제로 탔는지(작업 디렉터리 생성 여부)를 뜻합니다 — 이걸 보지 않으면 Inductor가 extern으로 뺀 것을 통과로 착각합니다.
+대표 op를 돌려 확인한 것입니다. **경로 진입** 열이 필요한 이유는, Inductor가 일부 연산을 자체 커널 대신 외부 구현으로 빼기 때문입니다 — 그 경우 값은 맞지만 시뮬레이터를 거치지 않습니다.
 
 | 케이스 | 경로 진입 | 결과 |
 |---|---|---|
-| `x + y` | 예 | 값 일치 |
-| `(x+y)*2 - x` (융합) | 예 | 값 일치 |
-| `x.t() + 1` | 예 | **값 틀림 — 4030/4096** |
-| `relu` | 예 | 중단: `SpecIncomplete: triton_helpers.maximum` |
-| `softmax` | 예 | 중단: `SpecIncomplete: triton_helpers.max2` |
-| `exp` | 예 | 중단: lowering pass 실패 |
-| `sum(dim=1)` | 예 | 중단: lowering pass 실패 (`bank_vectorize`) |
-| `cat` | 예 | 중단: lowering pass 실패 |
-| `a @ b` | **아니오** | Inductor가 `aten.mm` extern으로 처리 — 경로에 도달하지 않음 |
+| `x + y`, `(x+y)*2 - x` | 예 | 값 일치 |
+| `x.t() + 1` | 예 | **값 틀림** |
+| `relu`, `softmax` | 예 | 중단 — 헬퍼 모듈 부재 |
+| `exp`, `cat`, `sum(dim=1)` | 예 | 중단 — NPU lowering pass |
+| `a @ b` | **아니오** | 외부 구현으로 처리됨 |
 
-### 우선순위
+### 할 일
 
-**1. non-contiguous 텐서.** 값이 조용히 틀리는 유일한 항목이라 최우선입니다. `x.t() + 1`의 출력이 정확히 `x + 1`이고 — transpose가 통째로 무시되고 — 아무 예외도 나지 않습니다. 원인은 lowering pass가 아니라 **이식 쪽**입니다:
+1. **비연속 텐서 처리.** `x.t() + 1`이 조용히 틀린 값을 냅니다. 값이 틀리면서 아무 신호도 없는 유일한 항목이라 최우선입니다. 원인은 파악됐고 이식 쪽입니다.
+2. **헬퍼 모듈 벤더링.** `relu`, `softmax`, `clamp`, `max`, `min` 등이 torch 안의 헬퍼를 참조하는데 lowering pass 쪽 환경에는 없습니다. 필요한 것만 옮기면 커버리지가 한 번에 크게 늘어납니다.
+3. **NPU lowering pass 쪽 실패** (`exp`, `cat`, reduction). 담당(이정민)과 나눌 부분입니다.
+4. **matmul을 경로 안으로.** 지금은 외부 구현으로 빠져 시뮬레이터를 거치지 않습니다. 이게 뚫려야 systolic array 경로를 볼 수 있습니다.
+5. **DMA 겹침.** 값이 아니라 사이클 정확도 항목입니다(4절의 251 대 650). 기존 경로에 이미 있는 기계를 옮기는 일이라 모델 단계와 병행 가능합니다.
 
-```
-Inductor 가 낸 커널   tmp0 = tl.load(in_ptr0 + x0)     <- 인덱스가 항등.
-                     transpose 를 인덱스 식이 아니라
-                     출력 버퍼의 stride (1,64) 로 접었음
-
-functional.py        write_inputs  t.contiguous()...tofile()  <- 저장 순서를 재배열
-                     read_outputs  t.copy_(flat.view_as(t))   <- 논리 순서로 되씀
-```
-
-둘 다 **논리 순서와 저장 순서가 같다**고 가정합니다. contiguous 텐서에서만 참이고, 지금까지 통과한 것이 정확히 그 집합입니다. 저장 순서 기준으로 읽고 쓰도록 고치고 비-contiguous 케이스를 테스트에 넣어야 합니다.
-
-**2. `triton_helpers` 벤더링.** `relu`, `softmax`, `clamp`, `max`, `min` 등 상당수가 여기서 막힙니다. 모듈이 torch 안에 있고 lowering pass 쪽 venv에는 없습니다. `strip_for_tnpu`가 어떤 헬퍼인지 이름을 대고 멈추므로, 필요한 것만 최소로 벤더링하면 커버리지가 한 번에 크게 늘어납니다.
-
-**3. lowering pass 쪽 실패 (`exp`, `cat`, reduction).** 담당(이정민)과 나눌 부분입니다. reduction만 원인이 파악돼 있습니다 — `tt.reduce(axis=1)`이 `linalg.transpose` + `linalg.reduce`가 되고, 스크래치패드가 레인 뱅킹되어 축소 축이 레인 안에 머물러야 하는데 그렇지 못해 `bank_vectorize`가 거부합니다. `exp`와 `cat`은 미확인.
-
-**4. matmul 경로 진입.** 지금은 Inductor가 `aten.mm` extern으로 빼서 Triton 경로를 타지 않습니다. 값은 맞게 나오지만 시뮬레이터를 거치지 않은 값입니다. Triton 템플릿을 쓰게 하려면 `max_autotune` 계열 설정이 필요하고, 그래야 systolic array 경로를 볼 수 있습니다.
-
-**5. double buffering.** 커버리지가 아니라 정확도 항목 — 4절의 251 대 650 격차. lowering pass가 비동기 DMA와 `togsim.wait`를 내야 하고, 기존 경로에 이미 있는 기계를 옮기는 일입니다.
-
-1~4가 풀리면 op 스위트가 대체로 통과할 것으로 보입니다. 5는 값이 아니라 사이클의 정확도라 모델 단계와 병행해도 됩니다.
+1~4가 풀리면 op 스위트는 대체로 통과할 것으로 봅니다.
 
 ### 2단계에서 새로 볼 것
 
-op 단위에서는 드러나지 않다가 모델에서 처음 나오는 항목들입니다. 지금은 예상이고, 실제로 돌려봐야 확정됩니다.
+op 단위에서는 드러나지 않다가 모델에서 처음 나오는 것들입니다. **아직 돌려보지 않았으므로 측정이 아니라 예상입니다.**
 
-| 항목 | 왜 모델에서만 나오나 |
-|---|---|
-| 컴파일 시간 | 커널 하나당 lowering pass subprocess 가 한 번 뜹니다. 커널이 수백 개면 이게 지배적이 되고, 캐시(`outputs/triton_<hash>/`)가 실제로 먹는지 확인해야 합니다 |
-| 커널 간 버퍼 | op 테스트는 커널 하나로 끝나서 중간 버퍼 재사용이 없습니다 |
-| 실제 shape | op 테스트는 대개 잘 나뉘는 크기를 씁니다. 모델은 나눠떨어지지 않는 shape 과 마스킹을 만듭니다 |
-| dtype | f16/bf16 혼합. 지금 확인된 것은 f32 뿐입니다 |
-| backward | training 경로의 커널은 forward 와 형태가 다릅니다 (`tests/models/MLP` 가 forward + backward 를 함께 돌립니다) |
-| 메모리 | 모델 규모에서 스크래치패드와 DRAM 사용량이 설정값을 넘는지 |
+- **컴파일 시간** — 커널이 수백 개가 될 때 캐시가 실제로 먹는지
+- **커널 사이 버퍼 재사용** — op 테스트는 커널 하나로 끝나 드러나지 않음
+- **실제 shape** — op 테스트는 대개 잘 나뉘는 크기를 씀
+- **f16 / bf16** — 지금 확인된 것은 f32뿐
+- **backward 커널** — training 경로는 forward와 형태가 다름
+- **메모리 사용량** — 모델 규모에서 설정값을 넘는지
 
 ### 회귀 방지
 
-`tests/system/test_triton_codegen.py`가 현재 경계를 못박고 있습니다. reduction은 **거부되는 동안 통과**하도록 되어 있어서 컴파일에 성공하면 테스트가 실패합니다 — 레인 경로가 생겼거나(그럼 체크를 지우면 됨), 하드웨어가 하지 않을 연산을 시뮬레이션하고 있다는 뜻이기 때문입니다. 위 항목이 하나씩 풀릴 때마다 이 방식으로 경계를 옮겨 적으면 됩니다.
+`tests/system/test_triton_codegen.py`가 현재 경계를 못박고 있습니다. reduction은 **거부되는 동안 통과**하도록 되어 있어서, 컴파일에 성공하면 테스트가 실패합니다 — 지원이 생겼거나(그럼 체크를 지우면 됨), 하드웨어가 하지 않을 연산을 시뮬레이션하고 있다는 뜻이기 때문입니다. 위 항목이 하나씩 풀릴 때마다 이 방식으로 경계를 옮겨 적으면 됩니다.
 
 ---
 

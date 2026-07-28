@@ -22,7 +22,7 @@ lowering pass 자체는 만들지 않았습니다. **이미 있는 것을 PyTorc
 | functional | 연결됨. `x + y`, `(x+y)*2 - x` **max abs error 0.0** (1024 elements, Spike) |
 | timing | 연결됨. TOGSim **650 cycles**, 타일 compute는 gem5 **19 cycles 실측** |
 | 동적 shape | 처리됨. 트레이스 하나가 모든 shape을 섬김 — n=1024 → grid 8, n=4096 → grid 32 |
-| **커버리지** | **elementwise와 그 융합까지.** 그 밖은 5절 실측 참고 |
+| **커버리지** | **elementwise와 그 융합까지.** 남은 일은 op 스위트 → 모델까지 넓히는 것 — 5절 |
 | CI | 전 잡 green |
 
 ---
@@ -232,11 +232,29 @@ triton-shared는 사용자 스칼라를 자기 grid/pid 인자 **앞에** 둡니
 
 ---
 
-## 5. 다음 작업 — 기존 경로 커버리지까지 검증
+## 5. 다음 작업 — 모델 커버리지까지 고도화
 
-확인된 것은 elementwise와 그 융합뿐입니다. 다음 작업은 기능을 더 얹는 것이 아니라, **기존 MLIR 경로를 지탱하는 op 테스트 스위트를 Triton 경로로 그대로 돌려 어디까지 가는지 확인하는 것**입니다. 대상은 `tests/ops/` 아래 이미 있는 것들이고(`elementwise`, `reduce`, `gemm`, `conv`, `attention`, `view`, `sort`, `fusion`, `misc`), MLIR 경로가 통과하는 범위가 목표선입니다.
+확인된 것은 elementwise와 그 융합뿐입니다. **최종 목표는 기존 MLIR 경로가 돌리는 모델들을 Triton 경로로도 돌리는 것**이고, 새 기능을 얹기보다 이미 있는 테스트를 그대로 돌려 어디서 멈추는지 고쳐 나가는 일입니다.
 
-### 1차 실측
+목표선은 저장소에 이미 있습니다:
+
+```
+tests/ops/     elementwise · reduce · gemm · conv · attention
+               view · sort · fusion · misc                       <- 1단계
+
+tests/models/  MLP · MobileNet · Llama · Mixtral8x7B · DeepSeek
+               MoE · Diffusion · Yolov5
+               test_resnet · test_vit · test_transformer
+               test_clip · test_convnextv2 · test_swinv2         <- 2단계
+```
+
+**1단계 (op).** 모델은 op 의 조합이라 op 이 막히면 모델은 첫 커널에서 멈춥니다. 그래서 op 스위트를 먼저 통과시켜야 하고, 아래 실측이 그 출발점입니다.
+
+**2단계 (모델).** op 이 뚫리면 모델 단위로 올라갑니다. 여기서는 op 단위에서 드러나지 않는 것들이 나옵니다 — 커널 수십~수백 개가 이어질 때의 컴파일 시간과 캐시 거동, 커널 사이 버퍼 재사용, 실제 shape 조합(op 테스트는 대개 잘 나뉘는 크기를 씁니다), 그리고 training 경로의 backward 커널. 난이도 순으로 MLP → MobileNet/ResNet → ViT/Transformer → Llama 순이 무난합니다.
+
+각 단계의 판정 기준은 같습니다 — **값이 torch와 일치하고, 사이클이 나오고, 경로에 실제로 진입할 것.**
+
+### 1단계 1차 실측
 
 대표 케이스를 `TORCHSIM_TRITON_CODEGEN=1`로 돌린 결과입니다. **경로 진입** 열은 Triton 경로를 실제로 탔는지(작업 디렉터리 생성 여부)를 뜻합니다 — 이걸 보지 않으면 Inductor가 extern으로 뺀 것을 통과로 착각합니다.
 
@@ -274,6 +292,21 @@ functional.py        write_inputs  t.contiguous()...tofile()  <- 저장 순서�
 **4. matmul 경로 진입.** 지금은 Inductor가 `aten.mm` extern으로 빼서 Triton 경로를 타지 않습니다. 값은 맞게 나오지만 시뮬레이터를 거치지 않은 값입니다. Triton 템플릿을 쓰게 하려면 `max_autotune` 계열 설정이 필요하고, 그래야 systolic array 경로를 볼 수 있습니다.
 
 **5. double buffering.** 커버리지가 아니라 정확도 항목 — 4절의 251 대 650 격차. lowering pass가 비동기 DMA와 `togsim.wait`를 내야 하고, 기존 경로에 이미 있는 기계를 옮기는 일입니다.
+
+1~4가 풀리면 op 스위트가 대체로 통과할 것으로 보입니다. 5는 값이 아니라 사이클의 정확도라 모델 단계와 병행해도 됩니다.
+
+### 2단계에서 새로 볼 것
+
+op 단위에서는 드러나지 않다가 모델에서 처음 나오는 항목들입니다. 지금은 예상이고, 실제로 돌려봐야 확정됩니다.
+
+| 항목 | 왜 모델에서만 나오나 |
+|---|---|
+| 컴파일 시간 | 커널 하나당 lowering pass subprocess 가 한 번 뜹니다. 커널이 수백 개면 이게 지배적이 되고, 캐시(`outputs/triton_<hash>/`)가 실제로 먹는지 확인해야 합니다 |
+| 커널 간 버퍼 | op 테스트는 커널 하나로 끝나서 중간 버퍼 재사용이 없습니다 |
+| 실제 shape | op 테스트는 대개 잘 나뉘는 크기를 씁니다. 모델은 나눠떨어지지 않는 shape 과 마스킹을 만듭니다 |
+| dtype | f16/bf16 혼합. 지금 확인된 것은 f32 뿐입니다 |
+| backward | training 경로의 커널은 forward 와 형태가 다릅니다 (`tests/models/MLP` 가 forward + backward 를 함께 돌립니다) |
+| 메모리 | 모델 규모에서 스크래치패드와 DRAM 사용량이 설정값을 넘는지 |
 
 ### 회귀 방지
 

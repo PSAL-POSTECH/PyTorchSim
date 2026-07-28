@@ -9,6 +9,10 @@ and stays the production path.
 TORCHSIM_TRITON_CODEGEN=1 python tests/system/test_triton_codegen.py
 ```
 
+This file is the working reference for the modules here. For how the route
+compares with the MLIR one and what the numbers are, see
+[`../triton-codegen-route.md`](../triton-codegen-route.md).
+
 ## Why
 
 The MLIR route does not just emit loops — it hand-implements the whole hardware

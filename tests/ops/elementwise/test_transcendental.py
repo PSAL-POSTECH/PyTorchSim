@@ -73,6 +73,27 @@ def test_lgamma(device, size=(128, 128)):
     out = lgamma(x.cpu())
     test_result("Lgamma", res, out)
 
+def test_erfinv(device, size=(128, 128)):
+    def erfinv(a):
+        return torch.erfinv(a)
+    
+    # erfinv splits at |x| = 0.996625 (w = 5); a plain uniform(-0.99, 0.99)
+    # never reaches the tail branch yet still passes. Cover both explicitly:
+    #   rows     0:32 -> tail branch, positive
+    #   rows    32:64 -> tail branch, negative
+    #   rows    64:96 -> near zero, checks p* x -> 0
+    #   rows    96:   -> central branch
+    x = torch.empty(size).uniform_(-0.9, 0.9)
+    x[0:32].uniform_(0.997, 0.99999)
+    x[32:64].uniform_(-0.99999, -0.997)
+    x[64:96].uniform_(-0.01, 0.01)
+
+    x = x.to(device=device)
+    opt_fn = torch.compile(dynamic=False)(erfinv)
+    res = opt_fn(x)
+    out = erfinv(x.cpu())
+    test_result("Erfinv", res, out)
+
 if __name__ == "__main__":
     import argparse
 
@@ -88,3 +109,4 @@ if __name__ == "__main__":
     test_sin(device)
     test_cos(device)
     test_lgamma(device)
+    test_erfinv(device)

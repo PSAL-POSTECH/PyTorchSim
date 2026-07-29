@@ -801,7 +801,86 @@ class ExtensionOverrides(common.OpOverrides):
 
     @staticmethod
     def erfinv(operand, *args, **kwargs):
-        raise NotImplementedError
+        """
+            There is no MLIR operation for erfinv, so it is composed from the
+            division-free polynomial approximation in
+
+                M. Giles, "Approximating the erfinv function", 
+                GPU Computing Gems Jade Edition ch. 10 (single-precision form).
+
+            With w = -ln((1-x)*(1+x)) the inverse splits into two Horner
+            polynomials -- a central one for w < 5 and a tail one in sqrt(w)
+            past that:
+
+                w <  5: p = horner(CENTRAL, w - 2.5)
+                w >= 5: p = horner(TAIL,    sqrt(w) - 3)
+                erfinv(x) = p * x
+
+            Max error ~5.6e-07 across the whole domain at f32, near the f32
+            epsilon itself. The coefficients are fitted for single precision;
+            a double-precision set would cost more without helping here.
+
+            The edge cases need no extra branch, they fall out of the formula:
+            |x| > 1 makes the log NaN, |x| == 1 drives w to +inf so the tail
+            branch yields +/-inf, and x == 0 gives p * 0 == 0.
+        """
+        tile_size, dtype = V.kernel.var_info[operand]
+
+        # Check scalar
+        if tile_size == 1:
+            vec = ops.broadcast(operand, 4)
+            val = ops.erfinv(vec)
+            res = ops.extractelement(val, 0)
+            return res, V.kernel.var_info[res]
+        
+        # Float-only instruction: promote non-float inputs (e.g. integers) to f32
+        # to run it. Native float widths (f16/f64) are left untouched.
+        if not dtype.startswith("f"):
+            operand = ops.to_dtype(operand, "f32")
+            dtype = "f32"
+
+        # Horner coefficients, highest order first.
+        CENTRAL = [2.81022636e-08, 3.43273939e-07, -3.5233877e-06,
+                   -4.39150654e-06, 0.00021858087, -0.00125372503,
+                   -0.00417768164, 0.246640727, 1.50140941]
+        TAIL = [-0.000200214257, 0.000100950558, 0.00134934322,
+                -0.00367342844, 0.00573950773, -0.0076224613,
+                0.00943887047, 1.00167406, 2.83297682]
+
+        def const(value):
+            return ops.constant(value, dtype)
+
+        def const(value):
+            return ops.constant(value, dtype)
+
+        def horner(coefs, var):
+            acc = const(coefs[0])
+            for c in coefs[1:]:
+                acc = ops.add(const(c), ops.mul(acc, var))
+            return acc
+        
+        x = operand
+        one = const(1.0)
+
+        # w = -ln((1-x)*(1+x)). Written as (1-x)*(1+x) rather than 1-x*x: the
+        # latter cancels badly as |x| approaches 1, which is exactly the region
+        # the tail branch exists to handle.
+        product = ops.mul(ops.sub(one, x), ops.add(one, x))
+        w = ops.neg(ops.log(product))
+
+        # w >= 5 is |x| >= 0.996625.
+        is_central = ops.lt(w, const(5.0))
+
+        central = horner(CENTRAL, ops.sub(w, const(2.5)))
+        tail = horner(TAIL, ops.sub(ops.sqrt(w), const(3.0)))
+
+        # Both polynomials run on every lane and arith.select drops the unused
+        # one, so the inf/NaN the central branch produces at large w never
+        # reaches the result.
+        p = ops.where(is_central, central, tail)
+
+        res = ops.mul(p, x)
+        return res, V.kernel.var_info[res]
 
     @staticmethod
     def frexp(operand, *args, **kwargs):

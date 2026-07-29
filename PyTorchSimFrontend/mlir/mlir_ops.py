@@ -884,6 +884,7 @@ class ExtensionOverrides(common.OpOverrides):
 
     @staticmethod
     def frexp(operand, *args, **kwargs):
+        """Implemented in mlir_decomposition.py."""
         raise NotImplementedError
 
     @staticmethod
@@ -953,7 +954,65 @@ class ExtensionOverrides(common.OpOverrides):
 
     @staticmethod
     def nextafter(operand1, operand2, *args, **kwargs):
-        raise NotImplementedError
+        """Step ``operand1`` one representable value toward ``operand2``.
+        
+        IEEE 754 sign-magnitude patterns increase monotonically as the value
+        moves away from zero, so one ulp is a single integer step on the
+        bitcast: +1 away from zero, -1 toward it. ``(y > x) == (x > 0)`` picks
+        the direction and holds for both signs of x.
+
+        Leaving +/-0 the neighbor is the smallest subnormal carrying y's sign.
+        It is assembled from bits rather than written as a literal: a subnormal
+        constant does not survive materialisation on this target.
+
+        NaN propagates through ``x + y``, which is NaN exactly when either
+        operand is, so no NaN literal is needed either.
+
+        Verified bit-exact against ``torch.nextafter`` on the npu backend over
+        random pairs, +/-0, +/-FLT_MAX. +/-inf, the smallest subnormals, equal
+        inputs and NaN.
+        """
+        tile_size, ret_type, x, y = ExtensionOverrides.binary_elementwise_common(
+            operand1, operand2
+        )
+        if not ret_type.startswith("f"):
+            raise ValueError("nextafter is only supported for floats")
+        
+        width = mlir_common.MLIR_TO_BIT[ret_type]
+        itype = f"i{width}"
+        abs_mask = (1 << (width - 1)) - 1   # everything but the sign bit
+        sign_mask = -(1 << (width - 1))     # the sign bit, as a signed int
+
+        # ops.to_dtype_bitcast follows the Inductor protocol: (x, dtype, src_dtype),
+        # both torch dtypes.
+        float_dt = mlir_common.MLIR_TO_DTYPE[ret_type]
+        int_dt = mlir_common.MLIR_TO_DTYPE[itype]
+
+        bx = ops.to_dtype_bitcast(x, int_dt, float_dt)
+        by = ops.to_dtype_bitcast(y, int_dt, float_dt)
+
+        is_zero = ops.eq(
+            ops.bitwise_and(bx, ops.constant(abs_mask, itype)),
+            ops.constant(0, itype),
+        )
+        is_eq = ops.eq(x, y)
+        is_nan = ops.logical_or(ops.isnan(x), ops.isnan(y))
+
+        away = ops.logical_not(
+            ops.logical_xor(ops.gt(y, x), ops.gt(x, ops.constant(0.0, ret_type)))
+        )
+        step = ops.where(away, ops.constant(1, itype), ops.constant(-1, itype))
+        walked = ops.add(bx, step)
+
+        from_zero = ops.bitwise_or(
+            ops.bitwise_and(by, ops.constant(sign_mask, itype)),
+            ops.constant(1, itype),
+        )
+
+        res = ops.to_dtype_bitcast(ops.where(is_zero, from_zero, walked), float_dt, int_dt)
+        res = ops.where(is_eq, y, res)
+        res = ops.where(is_nan, ops.add(x, y), res)
+        return res, V.kernel.var_info[res]
 
     @staticmethod
     def logical_and(operand1, operand2, *args, **kwargs):

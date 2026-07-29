@@ -208,6 +208,26 @@ def test_frexp(device, size=(128, 128)):
     rm, re = frexp(x.cpu())
     test_result("Frexp mantissa", m, rm, equal_nan=True)
     test_result("Frexp exponent", e.float(), re.float())
+
+_NA_X = torch.tensor([[0.0, -0.0, 0.0, -0.0, 1.0, -1.0, 2.0,
+                       3.4028235e38, -3.4028235e38, float("inf"), float("-inf"),
+                       1.4013e-45, -1.4013e-45, 1.1754944e-38]])
+_NA_Y = torch.tensor([[1.0, 1.0, -1.0, -1.0, 2.0, -2.0, 2.0,
+                       float("inf"), float("-inf"), 1.0, 1.0,
+                       0.0, 0.0, 0.0]])
+
+def test_nextafter(device):
+    # One ulp apart, so the default 1e-4 tolerance would pass even if the op
+    # returned x unchanged. Compare exactly instead.
+    run_op("Nextafter", device, torch.nextafter, 
+           lambda r, c: (torch.randn(r, c), torch.randn(r, c)),
+           cases=[
+               ("toward_pinf", (torch.randn(64, 64), torch.full((64, 64), float("inf")))),
+               ("toward_ninf", (torch.randn(64, 64), torch.full((64, 64), float("-inf")))),
+               ("equal", (torch.randn(64, 64),) * 2),
+               ("special", (_NA_X, _NA_Y)),
+           ],
+           rtol=0.0, atol=0.0)
  
 if __name__ == "__main__":
     device = torch.device("npu:0")
@@ -233,5 +253,6 @@ if __name__ == "__main__":
     test_acos(device)
     test_atan2(device)
     test_frexp(device)
+    test_nextafter(device)
 
 

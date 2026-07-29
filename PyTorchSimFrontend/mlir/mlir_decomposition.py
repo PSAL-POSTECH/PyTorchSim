@@ -373,6 +373,64 @@ def decompose_native_multi_head_attention(
     else:
         return (output, None)
 
+@register_decomposition(aten.frexp.Tensor)
+def decompose_frexp(x: torch.Tensor):
+    """Split ``x``into a mantissa in [0.5, 1) and an integer exponent. 
+    
+    ``ops.frexp`` cannot be implemented in ``mlir_ops.py``: the CSE proxy in
+    ``mlir_common.py`` unpacks exactly ``(code, ret_info)`` from every op and
+    hands back a single CSE variable, while Inductor's ``register_frexp``
+    subscripts the result as ``ops.frexp(x)[0]`` / ``[1]``. Multi-output ops are
+    handled a level up instead -- ``aten.sort`` does the same thing via a custom
+    lowering. frexp needs no template, so a decomposition into ops that already
+    exist is enough.
+
+    The obvious ``floor(log2|x|) + 1`` formulation is *not* usable here. The
+    simulated ``log2``is not exact on powers of two (measured: 16 of 164
+    mismatches over 2^-20..2^20, up to 9.5e-07), so ``floor`` slips by one and
+    the mantissa lands just under 1.0 instead of at 0.5. Comparing against
+    ``finfo.tiny`` is broken too -- subnormal operands compare as if flushed, so
+    a float-side subnormal test never fires.
+
+    Bit surgery avoids both problems and is exact. For a normal float32
+    ``x = (-1)^s * 1.mant * 2^(expf - 127)``, so forcing the biased exponent to
+    126 yields ``m = (-1)^s * 0.1mant``in [0.5, 1) and leaves ``e = expf - 126``.
+    Subnormals are first scaled into the normal ranges by 2**24 and the 24 is
+    taken back off the exponent. Zero, the infinities and NaN pass through with
+    an exponent of 0, matching ``torch.frexp``.
+
+    Verified against ``torch.frexp`` on the npu backend across normals, powers
+    of two, +/-0, subnormals down to 1.4e-45, +/-inf and NaN: mantissa and
+    exponent both match exactly.
+    """
+    # The masks below are float32 layouts; let Inductor handle anything else.
+    if x.dtype != torch.float32:
+        return NotImplemented
+    
+    bits = x.view(torch.int32)
+    abs_bits = bits & 0x7FFFFFFF
+    exp_field = (bits >> 23) & 0xFF
+
+    is_zero = abs_bits == 0
+    is_inf_nan = exp_field == 255
+    # Subnormals must be detected on the integer side: the float comparison
+    # against finfo.tiny reports false for every subnormal on this target.
+    is_subnormal = (exp_field == 0) & (abs_bits != 0)
+
+    scaled = torch.where(is_subnormal, x * 16777216.0, x)   # 2**24
+    scaled_bits = scaled.view(torch.int32)
+
+    # Keep sign + mantissa, overwrite the exponent with 126 (i.e. 2**-1).
+    mantissa = ((scaled_bits & 0x807FFFFF) | 0x3F000000).view(torch.float32)
+    exponent = ((scaled_bits >> 23) & 0xFF) - 126
+    exponent = exponent - torch.where(
+        is_subnormal, torch.full_like(exponent, 24), torch.zeros_like(exponent)
+    )
+
+    passthrough = is_zero | is_inf_nan
+    mantissa = torch.where(passthrough, x, mantissa)
+    exponent = torch.where(passthrough, torch.zeros_like(exponent), exponent)
+    return mantissa, exponent
 
 # Lower roll as narrow + cat, then REALIZE: torch's decomposition is a modular gather the
 # affine-only DMA cannot express, and even narrow+cat fuses into a modular reshape.

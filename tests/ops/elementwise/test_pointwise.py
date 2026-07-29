@@ -9,8 +9,8 @@ def clear_caches():
     os.environ["TORCHINDUCTOR_CACHE"] = "0"
     FxGraphCache.clear()
     
-def test_result(name, out, cpu_out, rtol=1e-4, atol=1e-4):
-    if torch.allclose(out.cpu(), cpu_out, rtol=rtol, atol=atol):
+def test_result(name, out, cpu_out, rtol=1e-4, atol=1e-4, equal_nan=False):
+    if torch.allclose(out.cpu(), cpu_out, rtol=rtol, atol=atol, equal_nan=equal_nan):
         message = f"|{name} Test Passed|"
         print("-" * len(message))
         print(message)
@@ -188,6 +188,26 @@ def test_atan2(device):
     x = torch.tensor([[0.0, 1.0, 0.0, -1.0, 1.0, -1.0, -1.0, 1.0]])
     run_op("Atan2", device, torch.atan2, lambda r, c: (torch.randn(r, c), torch.randn(r, c)),
            cases=[("boundary", (y, x))])
+    
+def test_frexp(device, size=(128, 128)):
+    def frexp(a):
+        return torch.frexp(a)
+    
+    # Cover every branch of the decomposition: normals, powers of two (where a 
+    # log2-based version slips), zero, subnormals (integer-side detection) and
+    # the inf/NaN passthrough.
+    special = torch.tensor([0.0, -0.0, 1.0, 4.0, 0.5, -2.0 ** 20,
+                            1.1754944e-38, 1e-40, 5e-44, 1.4e-45,
+                            3.4028235e38, float("inf"), float("-inf"), float("nan")])
+    x = torch.randn(size)
+    x.view(-1)[:special.numel()] = special
+    
+    x = x.to(device=device)
+    opt_fn = torch.compile(dynamic=False)(frexp)
+    m, e = opt_fn(x)
+    rm, re = frexp(x.cpu())
+    test_result("Frexp mantissa", m, rm, equal_nan=True)
+    test_result("Frexp exponent", e.float(), re.float())
  
 if __name__ == "__main__":
     device = torch.device("npu:0")
@@ -212,3 +232,6 @@ if __name__ == "__main__":
     test_asin(device)
     test_acos(device)
     test_atan2(device)
+    test_frexp(device)
+
+

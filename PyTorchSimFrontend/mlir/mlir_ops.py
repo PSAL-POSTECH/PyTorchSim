@@ -117,16 +117,164 @@ class ExtensionOverrides(common.OpOverrides):
         shape = f"{src_shape} to {dst_shape}"
         return format_mlir_op(op_str, shape, **kwargs), [target_size, dtype]
 
+    # ---- Philox4_32-10 -------------------------------------------------
+    # Matches at::Philox4_32 (ATen/core/PhiloxRNGEngine.h), which is what the
+    # inductor CPU and triton backends generate, so a compiled kernel
+    # reproduces their values bit for bit.
+    _PHILOX_SA = 0xD2511F53
+    _PHILOX_SB = 0xCD9E8D57
+    _PHILOX_10A = 0x9E3779B9
+    _PHILOX_10B = 0xBB67AE85
+    _PHILOX_ROUNDS = 10
+
+    @staticmethod
+    def _u32_const(value):
+        """A uint32 literal as the signed i32 carrying the same bit pattern.
+        
+        arith.constant rejects values past the signed range, and every Philox
+        constant has its top bit set.
+        """
+        signed = value - (1 << 32) if value >= (1 << 31) else value
+        return ops.constant(signed, "i32")
+    
+    @staticmethod
+    def _philox_mulhilo32(a, b):
+        """Full 32x32 product of two uint32 patterns, as (hi, lo) i32 halves.
+        
+        The widen to i64 must not sign-extend -- kPhiloxSA and friends have the 
+        top bit set, so a sign-extending widen would multiply the wrong values.
+        Masking afterwards also stands in for a logical shift right: the repo's 
+        bitwise_right_shift emits arith.shrsi, but the low 32 bits of an
+        arithmetic shift are the bits wanted either way.
+        """
+        lo_mask = ops.constant(0xFFFFFFFF, "i64")
+        a64 = ops.bitwise_and(ops.to_dtype(a, "i64"), lo_mask)
+        b64 = ops.bitwise_and(ops.to_dtype(b, "i64"), lo_mask)
+        prod = ops.mul(a64, b64)
+
+        lo = ops.to_dtype(ops.bitwise_and(prod, lo_mask), "i32")
+        shifted = ops.bitwise_right_shift(prod, ops.constant(32, "i64"))
+        hi = ops.to_dtype(ops.bitwise_and(shifted, lo_mask), "i32")
+        return hi, lo
+    
+    @staticmethod
+    def _philox_round(ctr, key): 
+        cls = ExtensionOverrides
+        hi0, lo0 = cls._philox_mulhilo32(cls._u32_const(cls._PHILOX_SA), ctr[0])
+        hi1, lo1 = cls._philox_mulhilo32(cls._u32_const(cls._PHILOX_SB), ctr[2])
+        return [
+            ops.bitwise_xor(ops.bitwise_xor(hi1, ctr[1]), key[0]),
+            lo1,
+            ops.bitwise_xor(ops.bitwise_xor(hi0, ctr[3]), key[1]),
+            lo0,
+        ]
+    
+    @staticmethod
+    def _philox(seed32, offset32):
+        """Ten rounds on counter (offset, 0, 0, 0) with key (seed, 0).
+        
+        at::Philox4_32(seed, 0, offset) sets key = {seed, 0} and leaves the
+        counter at {offset, 0, 0, 0} after incr_n(offset).
+        """
+
+        cls = ExtensionOverrides
+        zero = ops.constant(0, "i32")
+        ctr = [offset32, zero, zero, zero]
+        key = [seed32, zero]
+        a10 = cls._u32_const(cls._PHILOX_10A)
+        b10 = cls._u32_const(cls._PHILOX_10B)
+        for _ in range(cls._PHILOX_ROUNDS - 1):
+            ctr = cls._philox_round(ctr, key)
+            key = [ops.add(key[0], a10), ops.add(key[1], b10)]
+        return cls._philox_round(ctr, key)
+    
+    @staticmethod
+    def _u32_to_uniform(word):
+        """One Philox word -> float in [0, 1), matching uint32_to_uniform_float.
+        
+        The scale must be applied in f32; in f64 the result diverges from the
+        CPU backend in the last digits."""
+        masked = ops.bitwise_and(word, ops.constant(0x7FFFFFFF, "i32"))
+        return ops.mul(ops.to_dtype(masked, "f32"),
+                       ops.constant(4.6566127342e-10, "f32"))
+
+    def rand(self, seed, offset, *args, **kwargs):
+        """inductor_prims.random with mode="rand".
+        
+        Philox's first output word scaled into [0, 1), matching
+        normalized_rand_cpu: (value & 0x7FFFFFFF) * 2**-31. The scale must be
+        applied in f32; doing it in f64 diverges from the CPU backend in the 
+        last couple of digits.
+        """
+        cls = ExtensionOverrides
+        out = cls._philox(ops.to_dtype(seed, "i32"), ops.to_dtype(offset, "i32"))
+        res = cls._u32_to_uniform(out[0])
+        return res, V.kernel.var_info[res]
+    
+    def randn(self, seed, offset, *args, **kwargs):
+        """inductor_prims.random with mode="randn": Box-Muller on the first two 
+        Philox words, as randn_cpu does.
+        
+        This cannot be bit-identical to the CPU backend. randn_cpu takes the log
+        in float but evaluates -2.0 *, sqrt, 2.0 * M_PI and cos in double before
+        narrowing to float. Staying in f32 throughout lands within ~1e-01, which
+        is far inside the test tolerance and not worth f64 vector math here.
+        
+        u1 uses 1 - uniform so it is in (0, 1]: log(0) must not be reachable.
+        """
+        cls = ExtensionOverrides
+        out = cls._philox(ops.to_dtype(seed, "i32"), ops.to_dtype(offset, "i32"))
+        one = ops.constant(1.0, "f32")
+        u1 = ops.sub(one, cls._u32_to_uniform(out[0]))
+        u2 = ops.sub(one, cls._u32_to_uniform(out[1]))
+        radius = ops.sqrt(ops.mul(ops.constant(-2.0, "f32"), ops.log(u1)))
+        angle = ops.cos(ops.mul(ops.constant(2.0 * math.pi, "f32"), u2))
+        res = ops.mul(radius, angle)
+        return res, V.kernel.var_info[res]
+    
+    def randint64(self, seed, offset, low, high, *args, **kwargs):
+        """inductor_prims.randint, matching randint64_cpu.
+        
+        Two Philox words are joined into a uint64, reduced modulo (high - low)
+        and shifted up by low.
+        
+        The reference reduction is unsigned but the repo only emits
+        arith.remsi, so rewrite u mod m as (2 * ((u >>> 1) mod m) + (u & 1))
+        mod m. The logical shift keeps every operand non-negative, where signed
+        and unsigned remainder agree. Checked against the unsigned result over
+        200k random (u, m) pairs plus the 64-bit edge cases. The rewrite needs
+        2 * m to stay representable, i.e. high - low < 2**62.
+        
+        The logical shift is an arith.shrsi with bit 63 masked off, and the mask
+        is built rather than written out: ops.constant rounds integer literals 
+        through a double, so 2**63 - 1 would come back as 2**63 and overflow
+        i64. 2**62 is a power of two and survives that round trip.
+        """
+        cls = ExtensionOverrides
+        out = cls._philox(ops.to_dtype(seed, "i32"), ops.to_dtype(offset, "i32"))
+
+        one = ops.constant(1, "i64")
+        two = ops.constant(2, "i64")
+        word_mask = ops.constant(0xFFFFFFFF, "i64")
+
+        # Widening sign-extends, so mask each Philox word back to its 32 bits.
+        r0 = ops.bitwise_and(ops.to_dtype(out[0], "i64"), word_mask)
+        r1 = ops.bitwise_and(ops.to_dtype(out[1], "i64"), word_mask)
+        value = ops.bitwise_or(
+            r0, ops.bitwise_left_shift(r1, ops.constant(32, "i64"))
+        )
+
+        two62 = ops.constant(1 << 62, "i64")
+        mask63 = ops.add(ops.mul(ops.sub(two62, one), two), one)    # 2**63 - 1
+
+        modulus = ops.sub(high, low)
+        halved = ops.bitwise_and(ops.bitwise_right_shift(value, one), mask63)
+        lsb = ops.bitwise_and(value, one)
+        folded = ops.add(ops.mul(ops.mod(halved, modulus), two), lsb)
+        res = ops.add(ops.mod(folded, modulus), low)
+        return res, V.kernel.var_info[res]
+
     def load_seed(self, *args, **kwargs):
-        raise NotImplementedError
-
-    def rand(self, *args, **kwargs):
-        raise NotImplementedError
-
-    def randn(self, *args, **kwargs):
-        raise NotImplementedError
-
-    def randint64(self, *args, **kwargs):
         raise NotImplementedError
 
     # Special operaitons

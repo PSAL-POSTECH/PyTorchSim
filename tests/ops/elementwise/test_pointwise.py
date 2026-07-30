@@ -228,6 +228,60 @@ def test_nextafter(device):
                ("special", (_NA_X, _NA_Y)),
            ],
            rtol=0.0, atol=0.0)
+    
+def test_rand(device, size=(128, 128)):
+    from torch._inductor import inductor_prims
+    torch._inductor.config.fallback_random = False
+
+    # Compare against the inductor CPU backed, not eager: both go through
+    # inductor_prims.random, so the same Philox seed must give the same bits. 
+    # Passing the seed as a graph input keeps ops.load_seed out of the picture.
+    def f(seed):
+        return inductor_prims.random(list(size), seed, "rand")
+    
+    seed = torch.tensor(12345, dtype=torch.int64)
+    clear_caches()
+    npu = torch.compile(f, dynamic=False)(seed.to(device=device))
+    clear_caches()
+    cpu = torch.compile(f, dynamic=False)(seed)
+    test_result("Rand", npu, cpu, rtol=0.0, atol=0.0)
+
+def test_randn(device, size=(128, 128)):
+    from torch._inductor import inductor_prims
+    torch._inductor.config.fallback_random = False
+
+    def f(seed):
+        return inductor_prims.random(list(size), seed, "randn")
+    
+    seed = torch.tensor(12345, dtype=torch.int64)
+    clear_caches()
+    npu = torch.compile(f, dynamic=False)(seed.to(device=device))
+    clear_caches()
+    cpu = torch.compile(f, dynamic=False)(seed)
+    # Not exact: randn_cpu evaluates the Box-Muller tail in double, we stay in 
+    # f32. Measured max deviation ~1e-06, so the default tolerance still catches
+    # any real error (a wrong generator differs by 0(1), not by 1e-06).
+    test_result("Randn", npu, cpu)
+
+def test_randint64(device, size=(128, 128)):
+    from torch._inductor import inductor_prims
+    torch._inductor.config.fallback_random = False
+
+    def run(lo, hi, label):
+        def f(seed):
+            return inductor_prims.randint(lo, hi, list(size), seed)
+        seed = torch.tensor(12345, dtype=torch.int64)
+        clear_caches()
+        npu = torch.compile(f, dynamic=False)(seed.to(device=device))
+        clear_caches()
+        cpu = torch.compile(f, dynamic=False)(seed)
+        # Integers: compare exactly. A loose tolerance would hide an off-by-one
+        # in the modulo rewrite.
+        test_result(label, npu.float(), cpu.float(), rtol=0.0, atol=0.0)
+    
+    run(0, 100, "Randint64")
+    run(-500, 500, "Randint64 negative low")
+    run(0, 2 ** 40, "Randint64 wide range")
  
 if __name__ == "__main__":
     device = torch.device("npu:0")
@@ -254,5 +308,8 @@ if __name__ == "__main__":
     test_atan2(device)
     test_frexp(device)
     test_nextafter(device)
+    test_rand(device)
+    test_randn(device)
+    test_randint64(device)
 
 

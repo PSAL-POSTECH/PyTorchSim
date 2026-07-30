@@ -275,6 +275,8 @@ class ExtensionOverrides(common.OpOverrides):
         return res, V.kernel.var_info[res]
 
     def load_seed(self, *args, **kwargs):
+        # Handled in mlir_common.CSEProxy: lookup_seed is a buffer read, and the
+        # op path here can only return (code, ret_info), not a CSE variable.
         raise NotImplementedError
 
     # Special operaitons

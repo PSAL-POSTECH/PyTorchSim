@@ -851,6 +851,16 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
                     result = self.load(name, index)
                     self.cse._cache[key] = result
                 return self.cse._cache[key]
+            
+            @staticmethod
+            def load_seed(name: str, offset: int):
+                """inductor_prims.lookup_seed: a plain read from the seeds buffer.
+                
+                Routed through the normal load path, as the CPU backend does,
+                rather than through __getattr__: that expects an op to hand back
+                (code, ret_info), while a load produces a CSE variable directly.
+                """
+                return CSEProxy.load(name, sympy.Integer(offset))
 
             @staticmethod
             def store(name, index, value, mode=None):

@@ -282,6 +282,23 @@ def test_randint64(device, size=(128, 128)):
     run(0, 100, "Randint64")
     run(-500, 500, "Randint64 negative low")
     run(0, 2 ** 40, "Randint64 wide range")
+
+def test_rand_e2e(device, size=(128, 128)):
+    torch._inductor.config.fallback_random = False
+    
+    # Goes through ops.load_seed, unlike the inductor_prims test which pass a 
+    # seed in directly. Values cannot be compared agaist eager, which uses a 
+    # different generator, so check the shape, range and that the stream is not
+    # constant.
+    def f():
+        return torch.rand(size, device=device)
+    
+    clear_caches()
+    out = torch.compile(f, dynamic=False)().cpu()
+    assert out.shape == torch.Size(size)
+    assert (out >= 0).all() and (out < 1).all()
+    assert out.std() > 0.1
+    print("Rand end-to-end OK")
  
 if __name__ == "__main__":
     device = torch.device("npu:0")
@@ -311,5 +328,6 @@ if __name__ == "__main__":
     test_rand(device)
     test_randn(device)
     test_randint64(device)
+    test_rand_e2e(device)
 
 

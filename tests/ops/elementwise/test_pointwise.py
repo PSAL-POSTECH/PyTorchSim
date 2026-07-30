@@ -209,6 +209,14 @@ def test_frexp(device, size=(128, 128)):
     test_result("Frexp mantissa", m, rm, equal_nan=True)
     test_result("Frexp exponent", e.float(), re.float())
 
+    # float16 goes through the f32 path; mantissa bits survive the round trip
+    # so the result must be exact, not just close.
+    xh = torch.tensor([[1.5, 3.25, -2.5, 0.0, 0.5, -1.0]], dtype=torch.float16)
+    mh, eh = torch.compile(dynamic=False)(frexp)(xh.to(device=device))
+    rmh, reh = frexp(xh.cpu())
+    test_result("Frexp f16 mantissa", mh.float(), rmh.float(), rtol=0.0, atol=0.0)
+    test_result("Frexp f16 exponent", eh.float(), reh.float(), rtol=0.0, atol=0.0)
+
 _NA_X = torch.tensor([[0.0, -0.0, 0.0, -0.0, 1.0, -1.0, 2.0,
                        3.4028235e38, -3.4028235e38, float("inf"), float("-inf"),
                        1.4013e-45, -1.4013e-45, 1.1754944e-38]])

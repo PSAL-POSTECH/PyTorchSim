@@ -403,9 +403,20 @@ def decompose_frexp(x: torch.Tensor):
     of two, +/-0, subnormals down to 1.4e-45, +/-inf and NaN: mantissa and
     exponent both match exactly.
     """
-    # The masks below are float32 layouts; let Inductor handle anything else.
+    # float16 converts to float32 exactly and its mantissa bits survive the
+    # round trip, so route it through the f32 path instead of duplicating the
+    # masks for a 5-bit exponent field.
+    if x.dtype == torch.float16:
+        mantissa, exponent = decompose_frexp(x.float())
+        return mantissa.half(), exponent
+
+    # The masks below are float32 layouts. Returning NotImplemented would send
+    # Inductor to its default lowering, which calls ops.frexp and dies on the
+    # stub with a bare NotImplementedError; fail with something readable.
     if x.dtype != torch.float32:
-        return NotImplemented
+        raise NotImplementedError(
+            f"PyTorchSim frexp supports float32 and float16, got {x.dtype}"
+        )
     
     bits = x.view(torch.int32)
     abs_bits = bits & 0x7FFFFFFF

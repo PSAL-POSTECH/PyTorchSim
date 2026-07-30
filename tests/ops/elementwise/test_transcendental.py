@@ -57,21 +57,42 @@ def test_lgamma(device, size=(128, 128)):
     
     # lgamma has poles at x = 0, -1, -2, ...; randn would land near them and
     # blow up the comparison. Build one tensor that covers every code path
-    # instead (on compile, one simulation run):
+    # instead (one compile, one simulation run):
     #   rows    0:32 -> reflection branch, small positive x (x < 0.5)
     #   rows   32:64 -> reflection branch, negative x, away from the poles
-    #   rows   64:96 -> large x, exercises th tmp/log cancellation
-    #   rows   96:   -> the plain Lanczos path
+    #   rows   64:96 -> large x, exercises the tmp/log cancellation
+    #   rows  96:112 -> reflection at large |x|, where folding pi*x matters
+    #   rows   112:  -> the plain Lanczos path
     x = torch.empty(size).uniform_(0.5, 4.5)
     x[0:32].uniform_(0.1, 0.49)
     x[32:64].uniform_(-2.9, -2.1)
     x[64:96].uniform_(10.0, 100.0)
+    x[96:112].uniform_(-50.9, -50.1)   # 반사 경로, 큰 |x|
 
     x = x.to(device=device)
     opt_fn = torch.compile(dynamic=False)(lgamma)
     res = opt_fn(x)
     out = lgamma(x.cpu())
     test_result("Lgamma", res, out)
+
+    xh = torch.empty(size).uniform_(0.5, 4.5).half()
+    test_result("Lgamma f16", 
+                torch.compile(dynamic=False)(lgamma)(xh.to(device)).float(),
+                lgamma(xh.float()), rtol=1e-2, atol=1e-2)
+
+    # Poles: torch gives inf at 0, -1, -2, ... f32 cannot hit an exact zero of
+    # sin(pi*x), so this needs an explicit branch and no random band would ever
+    # catch a regression here.
+    poles = torch.tensor([0.0, -1.0, -2.0, -5.0, -20.0, -100.0])
+    pole_out = torch.compile(dynamic=False)(lgamma)(poles.to(device=device))
+    test_result("Lgamma poles", pole_out, lgamma(poles))
+
+    # Scalar path (tile_size == 1) takes a separate branch in the op and no
+    # (128, 128) tensor ever reaches it.
+    scalar = torch.tensor(2.5)
+    test_result("Lgamma scalar",
+                torch.compile(dynamic=False)(lgamma)(scalar.to(device=device)),
+                lgamma(scalar))
 
 def test_erfinv(device, size=(128, 128)):
     def erfinv(a):
@@ -81,7 +102,7 @@ def test_erfinv(device, size=(128, 128)):
     # never reaches the tail branch yet still passes. Cover both explicitly:
     #   rows     0:32 -> tail branch, positive
     #   rows    32:64 -> tail branch, negative
-    #   rows    64:96 -> near zero, checks p* x -> 0
+    #   rows    64:96 -> near zero, checks p * x -> 0
     #   rows    96:   -> central branch
     x = torch.empty(size).uniform_(-0.9, 0.9)
     x[0:32].uniform_(0.997, 0.99999)
@@ -93,6 +114,17 @@ def test_erfinv(device, size=(128, 128)):
     res = opt_fn(x)
     out = erfinv(x.cpu())
     test_result("Erfinv", res, out)
+
+    # |x| == 1 and |x| > 1: the polynomial branch cannot produce these on its 
+    # own, and a band stopping at 0.99999 never reaches them.
+    edge = torch.tensor([1.0, -1.0, 1.5, -1.5])
+    edge_out = torch.compile(dynamic=False)(erfinv)(edge.to(device=device))
+    test_result("Erfinv edges", edge_out, erfinv(edge), equal_nan=True)
+
+    scalar = torch.tensor(0.5)
+    test_result("Erfinv scalar",
+                torch.compile(dynamic=False)(erfinv)(scalar.to(device=device)),
+                erfinv(scalar))
 
 if __name__ == "__main__":
     import argparse

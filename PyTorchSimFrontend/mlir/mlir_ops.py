@@ -118,9 +118,11 @@ class ExtensionOverrides(common.OpOverrides):
         return format_mlir_op(op_str, shape, **kwargs), [target_size, dtype]
 
     # ---- Philox4_32-10 -------------------------------------------------
-    # Matches at::Philox4_32 (ATen/core/PhiloxRNGEngine.h), which is what the
-    # inductor CPU and triton backends generate, so a compiled kernel
-    # reproduces their values bit for bit.
+    # Matches at::Philox4_32 (ATen/core/PhiloxRNGEngine.h), the generator behind
+    # normalized_rand_cpu and friends, so a compiled kernel reproduces the
+    # inductor CPU backend bit for bit. Not triton: tl.rand shares the Philox
+    # core but converts the word with where(x < 0, -x - 1, x) instead of
+    # masking, which differs whenever the top bit is set.
     _PHILOX_SA = 0xD2511F53
     _PHILOX_SB = 0xCD9E8D57
     _PHILOX_10A = 0x9E3779B9
@@ -270,8 +272,13 @@ class ExtensionOverrides(common.OpOverrides):
         modulus = ops.sub(high, low)
         halved = ops.bitwise_and(ops.bitwise_right_shift(value, one), mask63)
         lsb = ops.bitwise_and(value, one)
+        # folded is at most 2 * (m - 1) + 1, so it is already below 2m and a
+        # conditional subtract finishes the reduction. That drops one 64-bit
+        # division, which is the expensive part of this op.
         folded = ops.add(ops.mul(ops.mod(halved, modulus), two), lsb)
-        res = ops.add(ops.mod(folded, modulus), low)
+        reduced = ops.sub(folded, ops.where(ops.ge(folded, modulus),
+                                            modulus, ops.constant(0, "i64")))
+        res = ops.add(reduced, low)
         return res, V.kernel.var_info[res]
 
     def load_seed(self, *args, **kwargs):
@@ -635,9 +642,12 @@ class ExtensionOverrides(common.OpOverrides):
             res = ops.extractelement(val, 0)
             return res, V.kernel.var_info[res]
         
-        # Float-only instruction: promote non-float inputs (e.g. integers) to f32
-        # to run it. Native float widths (f16/f64) are left untouched. 
-        if not dtype.startswith("f"):
+        # Promote to f32 unless already f32 or f64. Integers cannot run the
+        # float math at all, and f16 is not accurate enough: the Lanczos
+        # coefficients are fitted for single precision, and ops.log still emits
+        # f16 math on an f16 operand, which together put the f16 error at 2.3.
+        # f64 is left alone -- it costs nothing and loses nothing.
+        if dtype not in ("f32", "f64"):
             operand = ops.to_dtype(operand, "f32")
             dtype = "f32"
 
@@ -666,12 +676,26 @@ class ExtensionOverrides(common.OpOverrides):
                      ops.log(ops.truediv(ops.mul(sqrt_2pi, ser), xr)))
         
         # Reflection term. Note this uses the original operand, not xr.
-        sin_pix = ops.sin(ops.mul(ops.constant(math.pi, dtype), operand))
+        # sin(pi*x) has period 2, so fold the argument into [-1, 1] first: pi*x
+        # loses precision as |x| grows, and the reflection branch is exactly
+        # where large |x| ends up. Measured on the npu backend, folding cuts the
+        # relative error of sin(pi*x) by 16x over -8..0.4, 125x over -200..-100
+        # and 1459x over -1000..-900.
+        xf = ops.sub(operand,
+                     ops.mul(ops.constant(2.0, dtype), ops.round(ops.mul(operand, half))))
+        sin_pix = ops.sin(ops.mul(ops.constant(math.pi, dtype), xf))
         refl = ops.sub(ops.constant(math.log(math.pi), dtype),
                        ops.log(ops.abs(sin_pix)))
         refl = ops.sub(refl, lg)
 
-        res = ops.where(is_reflect, refl, lg)
+        # Poles at x = 0, -1, -2, ...: pi*x never lands exactly on a multiple of
+        # pi in f32, so sin(pi*x) comes out around 1e-07 rather than zero and
+        # log|sin| stays finite. Without this the reflection returns a
+        # plausible-looking number -- lgamma(-2) came out as 16.01 -- where
+        # torch returns inf.
+        is_pole = ops.logical_and(is_reflect, ops.eq(operand, ops.floor(operand)))
+        res = ops.where(is_pole, ops.constant(float("inf"), dtype),
+                        ops.where(is_reflect, refl, lg))
         return res, V.kernel.var_info[res]
 
     @staticmethod
@@ -983,9 +1007,10 @@ class ExtensionOverrides(common.OpOverrides):
             res = ops.extractelement(val, 0)
             return res, V.kernel.var_info[res]
         
-        # Float-only instruction: promote non-float inputs (e.g. integers) to f32
-        # to run it. Native float widths (f16/f64) are left untouched.
-        if not dtype.startswith("f"):
+        # Promote to f32 unless already f32 or f64. The Giles coefficients are
+        # fitted for single precision, so an f16 operand materialises them at
+        # f16 and the error reaches 0.17.
+        if dtype not in ("f32", "f64"):
             operand = ops.to_dtype(operand, "f32")
             dtype = "f32"
 
@@ -996,9 +1021,6 @@ class ExtensionOverrides(common.OpOverrides):
         TAIL = [-0.000200214257, 0.000100950558, 0.00134934322,
                 -0.00367342844, 0.00573950773, -0.0076224613,
                 0.00943887047, 1.00167406, 2.83297682]
-
-        def const(value):
-            return ops.constant(value, dtype)
 
         def const(value):
             return ops.constant(value, dtype)
@@ -1028,8 +1050,13 @@ class ExtensionOverrides(common.OpOverrides):
         # one, so the inf/NaN the central branch produces at large w never
         # reaches the result.
         p = ops.where(is_central, central, tail)
-
         res = ops.mul(p, x)
+
+        # At |x| == 1 the log drives w to +inf, and the tail polynomial's
+        # leading coefficient is negative, so p diverges to -inf and p * x lands
+        # with the sign inverted: erfinv(1) came out as -inf instead of +inf.
+        res = ops.where(ops.eq(ops.abs(x), one),
+                        ops.mul(ops.constant(float("inf"), dtype), x), res)
         return res, V.kernel.var_info[res]
 
     @staticmethod

@@ -373,6 +373,48 @@ def decompose_native_multi_head_attention(
     else:
         return (output, None)
 
+@register_decomposition(aten.frexp.Tensor)
+def decompose_frexp(x: torch.Tensor):
+    """Decompose ``torch.frexp`` for float16 and float32.
+
+    Float32 values are split by editing their IEEE-754 fields. Subnormals are
+    normalized by multiplying by 2**24 before extracting the exponent.
+    Float16 is routed through float32 because the conversion is exact.
+    """
+    if x.dtype == torch.float16:
+        mantissa, exponent = decompose_frexp(x.float())
+        return mantissa.half(), exponent
+
+    if x.dtype != torch.float32:
+        raise NotImplementedError(
+            f"PyTorchSim frexp supports float32 and float16, got {x.dtype}"
+        )
+    
+    bits = x.view(torch.int32)
+    abs_bits = bits & 0x7FFFFFFF
+    exp_field = (bits >> 23) & 0xFF
+
+    is_zero = abs_bits == 0
+    is_inf_nan = exp_field == 255
+    # Detect subnormals from the exponent bits because float comparisons may
+    # flush them to zero on the target.
+    is_subnormal = (exp_field == 0) & (abs_bits != 0)
+
+    scaled = torch.where(is_subnormal, x * 16777216.0, x)   # 2**24
+    scaled_bits = scaled.view(torch.int32)
+
+    # Preserve sign and fraction, and set the biased exponent to 126 so that
+    # the mantissa lies in [-1, -0.5] U [0.5, 1). the exponent with 126 (i.e. 2**-1).
+    mantissa = ((scaled_bits & 0x807FFFFF) | 0x3F000000).view(torch.float32)
+    exponent = ((scaled_bits >> 23) & 0xFF) - 126
+    exponent = exponent - torch.where(
+        is_subnormal, torch.full_like(exponent, 24), torch.zeros_like(exponent)
+    )
+
+    passthrough = is_zero | is_inf_nan
+    mantissa = torch.where(passthrough, x, mantissa)
+    exponent = torch.where(passthrough, torch.zeros_like(exponent), exponent)
+    return mantissa, exponent
 
 # Lower roll as narrow + cat, then REALIZE: torch's decomposition is a modular gather the
 # affine-only DMA cannot express, and even narrow+cat fuses into a modular reshape.

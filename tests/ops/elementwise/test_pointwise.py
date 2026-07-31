@@ -9,8 +9,8 @@ def clear_caches():
     os.environ["TORCHINDUCTOR_CACHE"] = "0"
     FxGraphCache.clear()
     
-def test_result(name, out, cpu_out, rtol=1e-4, atol=1e-4):
-    if torch.allclose(out.cpu(), cpu_out, rtol=rtol, atol=atol):
+def test_result(name, out, cpu_out, rtol=1e-4, atol=1e-4, equal_nan=False):
+    if torch.allclose(out.cpu(), cpu_out, rtol=rtol, atol=atol, equal_nan=equal_nan):
         message = f"|{name} Test Passed|"
         print("-" * len(message))
         print(message)
@@ -188,6 +188,186 @@ def test_atan2(device):
     x = torch.tensor([[0.0, 1.0, 0.0, -1.0, 1.0, -1.0, -1.0, 1.0]])
     run_op("Atan2", device, torch.atan2, lambda r, c: (torch.randn(r, c), torch.randn(r, c)),
            cases=[("boundary", (y, x))])
+    
+def test_frexp(device, size=(128, 128)):
+    def frexp(a):
+        return torch.frexp(a)
+    
+    special = torch.tensor([0.0, -0.0, 1.0, 4.0, 0.5, -2.0 ** 20,
+                            1.1754944e-38, 1e-40, 5e-44, 1.4e-45,
+                            3.4028235e38, float("inf"), float("-inf"), float("nan")])
+    x = torch.randn(size)
+    x.view(-1)[:special.numel()] = special
+    
+    x = x.to(device=device)
+    opt_fn = torch.compile(dynamic=False)(frexp)
+    m, e = opt_fn(x)
+    rm, re = frexp(x.cpu())
+
+    test_result("Frexp mantissa", m, rm, rtol=0.0, atol=0.0, equal_nan=True)
+    test_result("Frexp exponent", e.float(), re.float(), rtol=0.0, atol=0.0)
+
+    finfo16 = torch.finfo(torch.float16)
+    xh = torch.tensor([[
+        1.5, 3.25, -2.5, 0.0, -0.0, 0.5, -1.0,
+        finfo16.smallest_normal,
+        finfo16.smallest_normal / 2,
+        2.0 ** -24, 
+        float("inf"), float("-inf"), float("nan"),
+    ]], dtype=torch.float16)
+    mh, eh = torch.compile(dynamic=False)(frexp)(xh.to(device=device))
+    rmh, reh = frexp(xh.cpu())
+    test_result(
+        "Frexp f16 mantissa",
+        mh.float(),
+        rmh.float(),
+        rtol=0.0,
+        atol=0.0,
+        equal_nan=True,
+    )
+    test_result("Frexp f16 exponent", eh.float(), reh.float(), rtol=0.0, atol=0.0)
+
+_NA_X = torch.tensor([[0.0, -0.0, 0.0, -0.0, 1.0, -1.0, 2.0,
+                       3.4028235e38, -3.4028235e38, float("inf"), float("-inf"),
+                       1.4013e-45, -1.4013e-45, 1.1754944e-38]])
+_NA_Y = torch.tensor([[1.0, 1.0, -1.0, -1.0, 2.0, -2.0, 2.0,
+                       float("inf"), float("-inf"), 1.0, 1.0,
+                       0.0, 0.0, 0.0]])
+
+def test_nextafter(device):
+    run_op("Nextafter", device, torch.nextafter, 
+           lambda r, c: (torch.randn(r, c), torch.randn(r, c)),
+           cases=[
+               ("toward_pinf", (torch.randn(64, 64), torch.full((64, 64), float("inf")))),
+               ("toward_ninf", (torch.randn(64, 64), torch.full((64, 64), float("-inf")))),
+               ("equal", (torch.randn(64, 64),) * 2),
+               ("special", (_NA_X, _NA_Y)),
+           ],
+           rtol=0.0, atol=0.0)
+    
+    def check_dtype(label, x, y):
+        def nextafter(a, b):
+            return torch.nextafter(a, b)
+
+        clear_caches()
+        npu = torch.compile(dynamic=False)(nextafter)(
+            x.to(device=device), y.to(device=device)
+        )
+        cpu = nextafter(x, y)
+        test_result(
+            label, npu, cpu, rtol=0.0, atol=0.0, equal_nan=True
+        )
+
+    f16_x = torch.tensor(
+        [[0.0, -0.0, 1.0, -1.0, torch.finfo(torch.float16).max,
+          float("inf"), float("-inf"), float("nan")]],
+        dtype=torch.float16,
+    )
+    f16_y = torch.tensor(
+        [[1.0, -1.0, 2.0, -2.0, float("inf"),
+          0.0, 0.0, 1.0]],
+        dtype=torch.float16,
+    )
+    check_dtype("Nextafter f16", f16_x, f16_y)
+
+    f64_x = torch.tensor(
+        [[0.0, -0.0, 1.0, -1.0, torch.finfo(torch.float64).max,
+          float("inf"), float("-inf"), float("nan")]],
+        dtype=torch.float64,
+    )
+    f64_y = torch.tensor(
+        [[1.0, -1.0, 2.0, -2.0, float("inf"),
+          0.0, 0.0, 1.0]],
+        dtype=torch.float64,
+    )
+    check_dtype("Nextafter f64", f64_x, f64_y)
+
+def test_load_seed(device):
+    from torch._inductor import inductor_prims
+
+    indices = (3, 0, 4, 1)
+
+    def f(seeds):
+        return torch.stack(tuple(
+            inductor_prims.lookup_seed(seeds, index) for index in indices
+        ))
+
+    seeds = torch.tensor(
+        [12345, -7, 987654321, 2 ** 40, -(2 ** 40)],
+        dtype=torch.int64,
+    )
+
+    clear_caches()
+    npu = torch.compile(f, dynamic=False)(seeds.to(device=device))
+    expected = seeds[list(indices)]
+    test_result(
+        "LoadSeed offsets",
+        npu,
+        expected,
+        rtol=0.0,
+        atol=0.0,
+    )
+    
+def test_rand(device, size=(128, 128)):
+    from torch._inductor import inductor_prims
+    torch._inductor.config.fallback_random = False
+
+    def f(seed):
+        return inductor_prims.random(list(size), seed, "rand")
+    
+    seed = torch.tensor(12345, dtype=torch.int64)
+    clear_caches()
+    npu = torch.compile(f, dynamic=False)(seed.to(device=device))
+    clear_caches()
+    cpu = torch.compile(f, dynamic=False)(seed)
+    test_result("Rand", npu, cpu, rtol=0.0, atol=0.0)
+
+def test_randn(device, size=(128, 128)):
+    from torch._inductor import inductor_prims
+    torch._inductor.config.fallback_random = False
+
+    def f(seed):
+        return inductor_prims.random(list(size), seed, "randn")
+    
+    seed = torch.tensor(12345, dtype=torch.int64)
+    clear_caches()
+    npu = torch.compile(f, dynamic=False)(seed.to(device=device))
+    clear_caches()
+    cpu = torch.compile(f, dynamic=False)(seed)
+    test_result("Randn", npu, cpu)
+
+def test_randint64(device, size=(128, 128)):
+    from torch._inductor import inductor_prims
+    torch._inductor.config.fallback_random = False
+
+    def run(lo, hi, label):
+        def f(seed):
+            return inductor_prims.randint(lo, hi, list(size), seed)
+        seed = torch.tensor(12345, dtype=torch.int64)
+        clear_caches()
+        npu = torch.compile(f, dynamic=False)(seed.to(device=device))
+        clear_caches()
+        cpu = torch.compile(f, dynamic=False)(seed)
+        test_result(label, npu, cpu, rtol=0.0, atol=0.0)
+    
+    run(0, 100, "Randint64")
+    run(-500, 500, "Randint64 negative low")
+    run(0, 2 ** 40, "Randint64 wide range")
+    run(0, 3 * (2 ** 61), "Randint64 >2^62 range")
+    run(-(2 ** 63), (2 ** 63) - 1, "Randint64 near full i64 range")
+
+def test_rand_e2e(device, size=(128, 128)):
+    torch._inductor.config.fallback_random = False
+    
+    def f():
+        return torch.rand(size, device=device)
+    
+    clear_caches()
+    out = torch.compile(f, dynamic=False)().cpu()
+    assert out.shape == torch.Size(size)
+    assert (out >= 0).all() and (out < 1).all()
+    assert out.std() > 0.1
+    print("Rand end-to-end OK")
  
 if __name__ == "__main__":
     device = torch.device("npu:0")
@@ -212,3 +392,12 @@ if __name__ == "__main__":
     test_asin(device)
     test_acos(device)
     test_atan2(device)
+    test_frexp(device)
+    test_nextafter(device)
+    test_load_seed(device)
+    test_rand(device)
+    test_randn(device)
+    test_randint64(device)
+    test_rand_e2e(device)
+
+

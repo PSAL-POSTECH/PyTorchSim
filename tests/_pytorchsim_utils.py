@@ -16,12 +16,12 @@ import sys
 import torch
 
 
-def test_result(name, out, expected, rtol=1e-4, atol=1e-4):
+def test_result(name, out, expected, rtol=1e-4, atol=1e-4, equal_nan=False):
     """Compare ``out`` to ``expected``; exit 1 on mismatch."""
     out_cpu = out.cpu() if hasattr(out, "cpu") else out
     expected_cpu = expected.cpu() if hasattr(expected, "cpu") else expected
 
-    if torch.allclose(out_cpu, expected_cpu, rtol=rtol, atol=atol):
+    if torch.allclose(out_cpu, expected_cpu, rtol=rtol, atol=atol, equal_nan=equal_nan):
         msg = f"|{name} Test Passed|"
         bar = "-" * len(msg)
         print(bar)

@@ -851,6 +851,11 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
                     result = self.load(name, index)
                     self.cse._cache[key] = result
                 return self.cse._cache[key]
+            
+            @staticmethod
+            def load_seed(name: str, offset: int):
+                """Load one int64 seed from Inductor's seed buffer."""
+                return CSEProxy.load(name, sympy.Integer(offset))
 
             @staticmethod
             def store(name, index, value, mode=None):

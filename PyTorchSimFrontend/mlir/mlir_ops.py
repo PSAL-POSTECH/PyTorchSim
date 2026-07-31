@@ -74,7 +74,7 @@ class ExtensionOverrides(common.OpOverrides):
         elif src_type[0] == "f":
             value = format(float(value), ".20f")
         elif src_type[0] == "i":
-            value = int(float(value))
+            value = int(value)
         return format_mlir_op(f'arith.constant {value}', src_type, **kwargs), [1, src_type]
 
     @staticmethod
@@ -117,19 +117,154 @@ class ExtensionOverrides(common.OpOverrides):
         shape = f"{src_shape} to {dst_shape}"
         return format_mlir_op(op_str, shape, **kwargs), [target_size, dtype]
 
+    # ---- Philox4_32-10 -------------------------------------------------
+    # Matches at::Philox4_32 (ATen/core/PhiloxRNGEngine.h), the generator behind
+    # normalized_rand_cpu and friends, so a compiled kernel reproduces the
+    # inductor CPU backend bit for bit. Not triton: tl.rand shares the Philox
+    # core but converts the word with where(x < 0, -x - 1, x) instead of
+    # masking, which differs whenever the top bit is set.
+    _PHILOX_SA = 0xD2511F53
+    _PHILOX_SB = 0xCD9E8D57
+    _PHILOX_10A = 0x9E3779B9
+    _PHILOX_10B = 0xBB67AE85
+    _PHILOX_ROUNDS = 10
+
+    @staticmethod
+    def _u32_const(value):
+        """Materialize a uint32 bit pattern in a signed i32 container."""
+        signed = value - (1 << 32) if value >= (1 << 31) else value
+        return ops.constant(signed, "i32")
+    
+    @staticmethod
+    def _philox_mulhilo32(a, b):
+        """Return the high and low halves of an unsigned 32x32 product."""
+        lo_mask = ops.constant(0xFFFFFFFF, "i64")
+        a64 = ops.bitwise_and(ops.to_dtype(a, "i64"), lo_mask)
+        b64 = ops.bitwise_and(ops.to_dtype(b, "i64"), lo_mask)
+        prod = ops.mul(a64, b64)
+
+        lo = ops.to_dtype(ops.bitwise_and(prod, lo_mask), "i32")
+        shifted = ops.bitwise_right_shift(prod, ops.constant(32, "i64"))
+        hi = ops.to_dtype(ops.bitwise_and(shifted, lo_mask), "i32")
+        return hi, lo
+    
+    @staticmethod
+    def _philox_round(ctr, key): 
+        cls = ExtensionOverrides
+        hi0, lo0 = cls._philox_mulhilo32(cls._u32_const(cls._PHILOX_SA), ctr[0])
+        hi1, lo1 = cls._philox_mulhilo32(cls._u32_const(cls._PHILOX_SB), ctr[2])
+        return [
+            ops.bitwise_xor(ops.bitwise_xor(hi1, ctr[1]), key[0]),
+            lo1,
+            ops.bitwise_xor(ops.bitwise_xor(hi0, ctr[3]), key[1]),
+            lo0,
+        ]
+    
+    @staticmethod
+    def _philox(seed32, offset32):
+        """Run Philox4_32-10 for ``(seed, offset)``."""
+        cls = ExtensionOverrides
+        zero = ops.constant(0, "i32")
+        ctr = [offset32, zero, zero, zero]
+        key = [seed32, zero]
+        a10 = cls._u32_const(cls._PHILOX_10A)
+        b10 = cls._u32_const(cls._PHILOX_10B)
+        for _ in range(cls._PHILOX_ROUNDS - 1):
+            ctr = cls._philox_round(ctr, key)
+            key = [ops.add(key[0], a10), ops.add(key[1], b10)]
+        return cls._philox_round(ctr, key)
+    
+    @staticmethod
+    def _u32_to_uniform(word):
+        """Convert one Philox word to CPU-Inductor's float32 uniform format."""
+        masked = ops.bitwise_and(word, ops.constant(0x7FFFFFFF, "i32"))
+        return ops.mul(ops.to_dtype(masked, "f32"),
+                       ops.constant(4.6566127342e-10, "f32"))
+
+    def rand(self, seed, offset, *args, **kwargs):
+        """Lower ``inductor_prims.random(..., mode="rand")``."""
+        cls = ExtensionOverrides
+        out = cls._philox(ops.to_dtype(seed, "i32"), ops.to_dtype(offset, "i32"))
+        res = cls._u32_to_uniform(out[0])
+        return res, V.kernel.var_info[res]
+    
+    def randn(self, seed, offset, *args, **kwargs):
+        """Lower ``randn`` with Box-Muller on the first two Philox words.
+
+        The transform stays in float32, so it is numerically close to the CPU
+        backend but is not expected to be bit-identical.
+        """
+        cls = ExtensionOverrides
+        out = cls._philox(ops.to_dtype(seed, "i32"), ops.to_dtype(offset, "i32"))
+        one = ops.constant(1.0, "f32")
+        u1 = ops.sub(one, cls._u32_to_uniform(out[0]))
+        u2 = ops.sub(one, cls._u32_to_uniform(out[1]))
+        radius = ops.sqrt(ops.mul(ops.constant(-2.0, "f32"), ops.log(u1)))
+        angle = ops.cos(ops.mul(ops.constant(2.0 * math.pi, "f32"), u2))
+        res = ops.mul(radius, angle)
+        return res, V.kernel.var_info[res]
+    
+    def randint64(self, seed, offset, low, high, *args, **kwargs):
+        """Lower ``inductor_prims.randint`` over any valid int64 interval.
+
+        Two Philox words form a uint64 value. Because the backend only provides
+        signed i64 remainder, reduction uses separate paths for moduli below and
+        above 2**63.
+        """
+        cls = ExtensionOverrides
+        out = cls._philox(ops.to_dtype(seed, "i32"), ops.to_dtype(offset, "i32"))
+
+        zero = ops.constant(0, "i64")
+        one = ops.constant(1, "i64")
+        two = ops.constant(2, "i64")
+        word_mask = ops.constant(0xFFFFFFFF, "i64")
+
+        # Widening sign-extends, so mask each Philox word back to 32 bits.
+        r0 = ops.bitwise_and(ops.to_dtype(out[0], "i64"), word_mask)
+        r1 = ops.bitwise_and(ops.to_dtype(out[1], "i64"), word_mask)
+        value = ops.bitwise_or(
+            r0, ops.bitwise_left_shift(r1, ops.constant(32, "i64"))
+        )
+
+        # The unsigned range width is stored as an i64 bit pattern.
+        modulus = ops.sub(high, low)
+
+        two62 = ops.constant(1 << 62, "i64")
+        mask63 = ops.add(ops.mul(ops.sub(two62, one), two), one)
+        low63 = ops.bitwise_and(value, mask63)
+
+        def add_mod_nonnegative(a, b, m):
+            """Compute (a + b) % modulus without signed overflow.."""
+            m_minus_b = ops.sub(m, b)
+            wrapped = ops.sub(a, m_minus_b)
+            plain = ops.add(a, b)
+            return ops.where(ops.ge(a, m_minus_b), wrapped, plain)
+
+        # For modulus < 2**63, split off the uint64 sign bit.
+        low63_mod = ops.mod(low63, modulus)
+        two62_mod = ops.mod(two62, modulus)
+        two63_mod = add_mod_nonnegative(two62_mod, two62_mod, modulus)
+        with_top_bit = add_mod_nonnegative(two63_mod, low63_mod, modulus)
+        reduced_small = ops.where(ops.lt(value, zero), with_top_bit, low63_mod)
+
+        # For modulus >= 2**63, random_u64 is below 2 * modulus, so one unsigned
+        # comparison and at most one subtraction are sufficient. 
+        sign_bit = ops.constant(-(1 << 63), "i64")
+        value_key = ops.bitwise_xor(value, sign_bit)
+        modulus_key = ops.bitwise_xor(modulus, sign_bit)
+        unsigned_ge = ops.ge(value_key, modulus_key)
+        reduced_large = ops.where(unsigned_ge, ops.sub(value, modulus), value)
+
+        reduced = ops.where(
+            ops.lt(modulus, zero), reduced_large, reduced_small
+        )
+        res = ops.add(reduced, low)
+        return res, V.kernel.var_info[res]
+
     def load_seed(self, *args, **kwargs):
+        """Lowered by ``CSEProxy.load_seed`` in ``mlir_common.py``"""
         raise NotImplementedError
 
-    def rand(self, *args, **kwargs):
-        raise NotImplementedError
-
-    def randn(self, *args, **kwargs):
-        raise NotImplementedError
-
-    def randint64(self, *args, **kwargs):
-        raise NotImplementedError
-
-    # Special operaitons
     @staticmethod
     def masked(mask, body, other, *args, tile_size=16, dtype="f32", ninf_declared=False, **kwargs):
         result = body()
@@ -455,7 +590,66 @@ class ExtensionOverrides(common.OpOverrides):
 
     @staticmethod
     def lgamma(operand, *args, **kwargs):
-        raise NotImplementedError
+        """Approximate ``log(abs(gamma(x)))`` with Lanczos and reflection.
+
+        Float16 inputs are evaluated in float32. Float64 is rejected because helper
+        operations in this backend do not preserve double precision consistently.
+        """
+        tile_size, dtype = V.kernel.var_info[operand]
+
+        if dtype == "f64":
+            raise NotImplementedError(
+                "PyTorchSim lgamma supports float32 and float16 only"
+            )
+
+        if tile_size == 1:
+            vec = ops.broadcast(operand, 4)
+            val = ops.lgamma(vec)
+            res = ops.extractelement(val, 0)
+            return res, V.kernel.var_info[res]
+
+        if dtype not in ("f16", "f32", "f64"):
+            operand = ExtensionOverrides._signed_int_to_f32(operand, dtype)
+            dtype = "f32"
+        elif dtype != "f32":
+            operand = ops.to_dtype(operand, "f32")
+            dtype = "f32"
+
+        half = ops.constant(0.5, dtype)
+        one = ops.constant(1.0, dtype)
+
+        is_reflect = ops.lt(operand, half)
+        xr = ops.where(is_reflect, ops.sub(one, operand), operand)
+
+        t = ops.add(xr, ops.constant(5.5, dtype))
+        tmp = ops.sub(t, ops.mul(ops.add(xr, half), ops.log(t)))
+
+        cof = [76.18009172947146, -86.50532032941677, 24.01409824083091,
+               -1.231739572450155, 0.1208650973866179e-2, -0.5395239384953e-5]
+        ser = ops.constant(1.000000000190015, dtype)
+        for k, c in enumerate(cof, start=1):
+            denom = ops.add(xr, ops.constant(float(k), dtype))
+            ser = ops.add(ser, ops.truediv(ops.constant(c, dtype), denom))
+
+        sqrt_2pi = ops.constant(math.sqrt(2.0 * math.pi), dtype)
+        lg = ops.add(ops.neg(tmp),
+                     ops.log(ops.truediv(ops.mul(sqrt_2pi, ser), xr)))
+        
+        # |sin(pi*x)| has period 1. Reducing x to [-0.5, 0.5] improves accuracu
+        # near negative integer poles and for large negative inputs.
+        xf = ops.sub(operand, ops.round(operand))
+        sin_pix = ops.sin(ops.mul(ops.constant(math.pi, dtype), xf))
+        refl = ops.sub(ops.constant(math.log(math.pi), dtype),
+                       ops.log(ops.abs(sin_pix)))
+        refl = ops.sub(refl, lg)
+
+        inf = ops.constant(float("inf"), dtype)
+        is_inf = ops.eq(ops.abs(operand), inf)
+        is_pole = ops.logical_and(is_reflect, ops.eq(operand, ops.floor(operand)))
+        res = ops.where(is_inf, inf, 
+                        ops.where(is_pole, inf, 
+                                  ops.where(is_reflect, refl, lg)))
+        return res, V.kernel.var_info[res]
 
     @staticmethod
     def erf(operand, *args, **kwargs):
@@ -734,10 +928,62 @@ class ExtensionOverrides(common.OpOverrides):
 
     @staticmethod
     def erfinv(operand, *args, **kwargs):
-        raise NotImplementedError
+        """Approximate ``erfinv`` with the single-precision Giles polynomials."""
+        tile_size, dtype = V.kernel.var_info[operand]
+
+        if dtype == "f64":
+            raise NotImplementedError(
+                "PyTorchSim erfinv supports float32 and float16 only"
+            )
+
+        if tile_size == 1:
+            vec = ops.broadcast(operand, 4)
+            val = ops.erfinv(vec)
+            res = ops.extractelement(val, 0)
+            return res, V.kernel.var_info[res]
+        
+        if dtype != "f32":
+            operand = ops.to_dtype(operand, "f32")
+            dtype = "f32"
+
+        # Horner coefficients
+        CENTRAL = [2.81022636e-08, 3.43273939e-07, -3.5233877e-06,
+                   -4.39150654e-06, 0.00021858087, -0.00125372503,
+                   -0.00417768164, 0.246640727, 1.50140941]
+        TAIL = [-0.000200214257, 0.000100950558, 0.00134934322,
+                -0.00367342844, 0.00573950773, -0.0076224613,
+                0.00943887047, 1.00167406, 2.83297682]
+
+        def const(value):
+            return ops.constant(value, dtype)
+
+        def horner(coefs, var):
+            acc = const(coefs[0])
+            for c in coefs[1:]:
+                acc = ops.add(const(c), ops.mul(acc, var))
+            return acc
+        
+        x = operand
+        one = const(1.0)
+
+        product = ops.mul(ops.sub(one, x), ops.add(one, x))
+        w = ops.neg(ops.log(product))
+
+        is_central = ops.lt(w, const(5.0))
+
+        central = horner(CENTRAL, ops.sub(w, const(2.5)))
+        tail = horner(TAIL, ops.sub(ops.sqrt(w), const(3.0)))
+
+        p = ops.where(is_central, central, tail)
+        res = ops.mul(p, x)
+
+        res = ops.where(ops.eq(ops.abs(x), one),
+                        ops.mul(ops.constant(float("inf"), dtype), x), res)
+        return res, V.kernel.var_info[res]
 
     @staticmethod
     def frexp(operand, *args, **kwargs):
+        """Implemented in mlir_decomposition.py."""
         raise NotImplementedError
 
     @staticmethod
@@ -807,7 +1053,42 @@ class ExtensionOverrides(common.OpOverrides):
 
     @staticmethod
     def nextafter(operand1, operand2, *args, **kwargs):
-        raise NotImplementedError
+        """Step ``operand1`` one representable value toward ``operand2``"""
+        tile_size, ret_type, x, y = ExtensionOverrides.binary_elementwise_common(
+            operand1, operand2
+        )
+        if not ret_type.startswith("f"):
+            raise ValueError("nextafter is only supported for floats")
+        
+        width = mlir_common.MLIR_TO_BIT[ret_type]
+        itype = f"i{width}"
+        sign_mask = -(1 << (width - 1))     # the sign bit, as a signed int
+
+        float_dt = mlir_common.MLIR_TO_DTYPE[ret_type]
+        int_dt = mlir_common.MLIR_TO_DTYPE[itype]
+
+        bx = ops.to_dtype_bitcast(x, int_dt, float_dt)
+        by = ops.to_dtype_bitcast(y, int_dt, float_dt)
+
+        is_zero = ops.eq(x, ops.constant(0.0, ret_type))
+        is_eq = ops.eq(x, y)
+        is_nan = ops.logical_or(ops.isnan(x), ops.isnan(y))
+
+        away = ops.logical_not(
+            ops.logical_xor(ops.gt(y, x), ops.gt(x, ops.constant(0.0, ret_type)))
+        )
+        step = ops.where(away, ops.constant(1, itype), ops.constant(-1, itype))
+        walked = ops.add(bx, step)
+
+        from_zero = ops.bitwise_or(
+            ops.bitwise_and(by, ops.constant(sign_mask, itype)),
+            ops.constant(1, itype),
+        )
+
+        res = ops.to_dtype_bitcast(ops.where(is_zero, from_zero, walked), float_dt, int_dt)
+        res = ops.where(is_eq, y, res)
+        res = ops.where(is_nan, ops.add(x, y), res)
+        return res, V.kernel.var_info[res]
 
     @staticmethod
     def logical_and(operand1, operand2, *args, **kwargs):

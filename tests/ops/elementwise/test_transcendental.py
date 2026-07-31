@@ -87,6 +87,25 @@ def test_lgamma(device, size=(128, 128)):
     pole_out = torch.compile(dynamic=False)(lgamma)(poles.to(device=device))
     test_result("Lgamma poles", pole_out, lgamma(poles))
 
+    # +/-inf must return +inf; NaN must propagate.
+    nonfinite = torch.tensor([float("inf"), float("-inf"), float("nan")])
+    nonfinite_out = torch.compile(dynamic=False)(lgamma)(nonfinite.to(device=device))
+    test_result("Lgamma nonfinite", nonfinite_out, lgamma(nonfinite), equal_nan=True)
+
+    # Values one f32 ULP away from negative integer poles exercise the
+    # reflection argument reduction. Returning a plausible but inaccurate
+    # finite value here is easy when sin(pi*x) is evaluated near +/-pi.
+    neg_one = torch.tensor(-1.0, dtype=torch.float32)
+    neg_two = torch.tensor(-2.0, dtype=torch.float32)
+    near_poles = torch.stack([
+        torch.nextafter(neg_one, torch.tensor(float("-inf"))),
+        torch.nextafter(neg_one, torch.tensor(float("inf"))),
+        torch.nextafter(neg_two, torch.tensor(float("-inf"))),
+        torch.nextafter(neg_two, torch.tensor(float("inf"))),
+    ])
+    near_pole_out = torch.compile(dynamic=False)(lgamma)(near_poles.to(device=device))
+    test_result("Lgamma near poles", near_pole_out, lgamma(near_poles))
+
     # Scalar path (tile_size == 1) takes a separate branch in the op and no
     # (128, 128) tensor ever reaches it.
     scalar = torch.tensor(2.5)
@@ -125,6 +144,23 @@ def test_erfinv(device, size=(128, 128)):
     test_result("Erfinv scalar",
                 torch.compile(dynamic=False)(erfinv)(scalar.to(device=device)),
                 erfinv(scalar))
+    
+    # The implementation uses the single-precision Giles coefficients. f64 must
+    # fail explicitly instead of returning a badly inaccurate value near |x|=1.
+    x64 = torch.nextafter(
+        torch.tensor([1.0], dtype=torch.float64),
+        torch.tensor([0.0], dtype=torch.float64),
+    )
+    try:
+        torch.compile(dynamic=False)(erfinv)(x64.to(device=device))
+    except Exception as exc:
+        if "PyTorchSim erfinv supports float32 and float16 only" not in str(exc):
+            raise
+        print("--------------------------")
+        print("|Erfinv f64 reject Test Passed|")
+        print("--------------------------")
+    else:
+        raise AssertionError("Erfinv f64 input must be rejected")
 
 if __name__ == "__main__":
     import argparse

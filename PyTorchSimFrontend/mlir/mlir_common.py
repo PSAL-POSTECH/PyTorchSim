@@ -854,12 +854,7 @@ class BaseMLIRKernel(common.Kernel, BaseMLIRHardwareInfo):
             
             @staticmethod
             def load_seed(name: str, offset: int):
-                """inductor_prims.lookup_seed: a plain read from the seeds buffer.
-                
-                Routed through the normal load path, as the CPU backend does,
-                rather than through __getattr__: that expects an op to hand back
-                (code, ret_info), while a load produces a CSE variable directly.
-                """
+                """Load one int64 seed from Inductor's seed buffer."""
                 return CSEProxy.load(name, sympy.Integer(offset))
 
             @staticmethod

@@ -193,9 +193,6 @@ def test_frexp(device, size=(128, 128)):
     def frexp(a):
         return torch.frexp(a)
     
-    # Cover every branch of the decomposition: normals, powers of two (where a 
-    # log2-based version slips), zero, subnormals (integer-side detection) and
-    # the inf/NaN passthrough.
     special = torch.tensor([0.0, -0.0, 1.0, 4.0, 0.5, -2.0 ** 20,
                             1.1754944e-38, 1e-40, 5e-44, 1.4e-45,
                             3.4028235e38, float("inf"), float("-inf"), float("nan")])
@@ -206,15 +203,28 @@ def test_frexp(device, size=(128, 128)):
     opt_fn = torch.compile(dynamic=False)(frexp)
     m, e = opt_fn(x)
     rm, re = frexp(x.cpu())
-    test_result("Frexp mantissa", m, rm, equal_nan=True)
-    test_result("Frexp exponent", e.float(), re.float())
 
-    # float16 goes through the f32 path; mantissa bits survive the round trip
-    # so the result must be exact, not just close.
-    xh = torch.tensor([[1.5, 3.25, -2.5, 0.0, 0.5, -1.0]], dtype=torch.float16)
+    test_result("Frexp mantissa", m, rm, rtol=0.0, atol=0.0, equal_nan=True)
+    test_result("Frexp exponent", e.float(), re.float(), rtol=0.0, atol=0.0)
+
+    finfo16 = torch.finfo(torch.float16)
+    xh = torch.tensor([[
+        1.5, 3.25, -2.5, 0.0, -0.0, 0.5, -1.0,
+        finfo16.smallest_normal,
+        finfo16.smallest_normal / 2,
+        2.0 ** -24, 
+        float("inf"), float("-inf"), float("nan"),
+    ]], dtype=torch.float16)
     mh, eh = torch.compile(dynamic=False)(frexp)(xh.to(device=device))
     rmh, reh = frexp(xh.cpu())
-    test_result("Frexp f16 mantissa", mh.float(), rmh.float(), rtol=0.0, atol=0.0)
+    test_result(
+        "Frexp f16 mantissa",
+        mh.float(),
+        rmh.float(),
+        rtol=0.0,
+        atol=0.0,
+        equal_nan=True,
+    )
     test_result("Frexp f16 exponent", eh.float(), reh.float(), rtol=0.0, atol=0.0)
 
 _NA_X = torch.tensor([[0.0, -0.0, 0.0, -0.0, 1.0, -1.0, 2.0,
@@ -225,8 +235,6 @@ _NA_Y = torch.tensor([[1.0, 1.0, -1.0, -1.0, 2.0, -2.0, 2.0,
                        0.0, 0.0, 0.0]])
 
 def test_nextafter(device):
-    # One ulp apart, so the default 1e-4 tolerance would pass even if the op
-    # returned x unchanged. Compare exactly instead.
     run_op("Nextafter", device, torch.nextafter, 
            lambda r, c: (torch.randn(r, c), torch.randn(r, c)),
            cases=[
@@ -237,13 +245,73 @@ def test_nextafter(device):
            ],
            rtol=0.0, atol=0.0)
     
+    def check_dtype(label, x, y):
+        def nextafter(a, b):
+            return torch.nextafter(a, b)
+
+        clear_caches()
+        npu = torch.compile(dynamic=False)(nextafter)(
+            x.to(device=device), y.to(device=device)
+        )
+        cpu = nextafter(x, y)
+        test_result(
+            label, npu, cpu, rtol=0.0, atol=0.0, equal_nan=True
+        )
+
+    f16_x = torch.tensor(
+        [[0.0, -0.0, 1.0, -1.0, torch.finfo(torch.float16).max,
+          float("inf"), float("-inf"), float("nan")]],
+        dtype=torch.float16,
+    )
+    f16_y = torch.tensor(
+        [[1.0, -1.0, 2.0, -2.0, float("inf"),
+          0.0, 0.0, 1.0]],
+        dtype=torch.float16,
+    )
+    check_dtype("Nextafter f16", f16_x, f16_y)
+
+    f64_x = torch.tensor(
+        [[0.0, -0.0, 1.0, -1.0, torch.finfo(torch.float64).max,
+          float("inf"), float("-inf"), float("nan")]],
+        dtype=torch.float64,
+    )
+    f64_y = torch.tensor(
+        [[1.0, -1.0, 2.0, -2.0, float("inf"),
+          0.0, 0.0, 1.0]],
+        dtype=torch.float64,
+    )
+    check_dtype("Nextafter f64", f64_x, f64_y)
+
+def test_load_seed(device):
+    from torch._inductor import inductor_prims
+
+    indices = (3, 0, 4, 1)
+
+    def f(seeds):
+        return torch.stack(tuple(
+            inductor_prims.lookup_seed(seeds, index) for index in indices
+        ))
+
+    seeds = torch.tensor(
+        [12345, -7, 987654321, 2 ** 40, -(2 ** 40)],
+        dtype=torch.int64,
+    )
+
+    clear_caches()
+    npu = torch.compile(f, dynamic=False)(seeds.to(device=device))
+    expected = seeds[list(indices)]
+    test_result(
+        "LoadSeed offsets",
+        npu,
+        expected,
+        rtol=0.0,
+        atol=0.0,
+    )
+    
 def test_rand(device, size=(128, 128)):
     from torch._inductor import inductor_prims
     torch._inductor.config.fallback_random = False
 
-    # Compare against the inductor CPU backed, not eager: both go through
-    # inductor_prims.random, so the same Philox seed must give the same bits. 
-    # Passing the seed as a graph input keeps ops.load_seed out of the picture.
     def f(seed):
         return inductor_prims.random(list(size), seed, "rand")
     
@@ -266,9 +334,6 @@ def test_randn(device, size=(128, 128)):
     npu = torch.compile(f, dynamic=False)(seed.to(device=device))
     clear_caches()
     cpu = torch.compile(f, dynamic=False)(seed)
-    # Not exact: randn_cpu evaluates the Box-Muller tail in double, we stay in 
-    # f32. Measured max deviation ~1e-06, so the default tolerance still catches
-    # any real error (a wrong generator differs by 0(1), not by 1e-06).
     test_result("Randn", npu, cpu)
 
 def test_randint64(device, size=(128, 128)):
@@ -283,21 +348,17 @@ def test_randint64(device, size=(128, 128)):
         npu = torch.compile(f, dynamic=False)(seed.to(device=device))
         clear_caches()
         cpu = torch.compile(f, dynamic=False)(seed)
-        # Integers: compare exactly. A loose tolerance would hide an off-by-one
-        # in the modulo rewrite.
-        test_result(label, npu.float(), cpu.float(), rtol=0.0, atol=0.0)
+        test_result(label, npu, cpu, rtol=0.0, atol=0.0)
     
     run(0, 100, "Randint64")
     run(-500, 500, "Randint64 negative low")
     run(0, 2 ** 40, "Randint64 wide range")
+    run(0, 3 * (2 ** 61), "Randint64 >2^62 range")
+    run(-(2 ** 63), (2 ** 63) - 1, "Randint64 near full i64 range")
 
 def test_rand_e2e(device, size=(128, 128)):
     torch._inductor.config.fallback_random = False
     
-    # Goes through ops.load_seed, unlike the inductor_prims test which pass a 
-    # seed in directly. Values cannot be compared agaist eager, which uses a 
-    # different generator, so check the shape, range and that the stream is not
-    # constant.
     def f():
         return torch.rand(size, device=device)
     
@@ -333,6 +394,7 @@ if __name__ == "__main__":
     test_atan2(device)
     test_frexp(device)
     test_nextafter(device)
+    test_load_seed(device)
     test_rand(device)
     test_randn(device)
     test_randint64(device)

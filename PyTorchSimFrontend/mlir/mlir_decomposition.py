@@ -375,44 +375,16 @@ def decompose_native_multi_head_attention(
 
 @register_decomposition(aten.frexp.Tensor)
 def decompose_frexp(x: torch.Tensor):
-    """Split ``x``into a mantissa in [0.5, 1) and an integer exponent. 
-    
-    ``ops.frexp`` cannot be implemented in ``mlir_ops.py``: the CSE proxy in
-    ``mlir_common.py`` unpacks exactly ``(code, ret_info)`` from every op and
-    hands back a single CSE variable, while Inductor's ``register_frexp``
-    subscripts the result as ``ops.frexp(x)[0]`` / ``[1]``. Multi-output ops are
-    handled a level up instead -- ``aten.sort`` does the same thing via a custom
-    lowering. frexp needs no template, so a decomposition into ops that already
-    exist is enough.
+    """Decompose ``torch.frexp`` for float16 and float32.
 
-    The obvious ``floor(log2|x|) + 1`` formulation is *not* usable here. The
-    simulated ``log2``is not exact on powers of two (measured: 16 of 164
-    mismatches over 2^-20..2^20, up to 9.5e-07), so ``floor`` slips by one and
-    the mantissa lands just under 1.0 instead of at 0.5. Comparing against
-    ``finfo.tiny`` is broken too -- subnormal operands compare as if flushed, so
-    a float-side subnormal test never fires.
-
-    Bit surgery avoids both problems and is exact. For a normal float32
-    ``x = (-1)^s * 1.mant * 2^(expf - 127)``, so forcing the biased exponent to
-    126 yields ``m = (-1)^s * 0.1mant``in [0.5, 1) and leaves ``e = expf - 126``.
-    Subnormals are first scaled into the normal ranges by 2**24 and the 24 is
-    taken back off the exponent. Zero, the infinities and NaN pass through with
-    an exponent of 0, matching ``torch.frexp``.
-
-    Verified against ``torch.frexp`` on the npu backend across normals, powers
-    of two, +/-0, subnormals down to 1.4e-45, +/-inf and NaN: mantissa and
-    exponent both match exactly.
+    Float32 values are split by editing their IEEE-754 fields. Subnormals are
+    normalized by multiplying by 2**24 before extracting the exponent.
+    Float16 is routed through float32 because the conversion is exact.
     """
-    # float16 converts to float32 exactly and its mantissa bits survive the
-    # round trip, so route it through the f32 path instead of duplicating the
-    # masks for a 5-bit exponent field.
     if x.dtype == torch.float16:
         mantissa, exponent = decompose_frexp(x.float())
         return mantissa.half(), exponent
 
-    # The masks below are float32 layouts. Returning NotImplemented would send
-    # Inductor to its default lowering, which calls ops.frexp and dies on the
-    # stub with a bare NotImplementedError; fail with something readable.
     if x.dtype != torch.float32:
         raise NotImplementedError(
             f"PyTorchSim frexp supports float32 and float16, got {x.dtype}"
@@ -424,14 +396,15 @@ def decompose_frexp(x: torch.Tensor):
 
     is_zero = abs_bits == 0
     is_inf_nan = exp_field == 255
-    # Subnormals must be detected on the integer side: the float comparison
-    # against finfo.tiny reports false for every subnormal on this target.
+    # Detect subnormals from the exponent bits because float comparisons may
+    # flush them to zero on the target.
     is_subnormal = (exp_field == 0) & (abs_bits != 0)
 
     scaled = torch.where(is_subnormal, x * 16777216.0, x)   # 2**24
     scaled_bits = scaled.view(torch.int32)
 
-    # Keep sign + mantissa, overwrite the exponent with 126 (i.e. 2**-1).
+    # Preserve sign and fraction, and set the biased exponent to 126 so that
+    # the mantissa lies in [-1, -0.5] U [0.5, 1). the exponent with 126 (i.e. 2**-1).
     mantissa = ((scaled_bits & 0x807FFFFF) | 0x3F000000).view(torch.float32)
     exponent = ((scaled_bits >> 23) & 0xFF) - 126
     exponent = exponent - torch.where(

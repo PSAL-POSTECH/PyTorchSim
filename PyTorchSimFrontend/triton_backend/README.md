@@ -178,3 +178,8 @@ token is scoped to this repository. `preflight` checks it before the build.
 `Dockerfile.tnpu` clones the harness and runs its own `setup/restore.sh
 --prebuilt`; the pins all live in that repo's `setup/versions.env`. `ref` in the
 manifest is a commit, so an upstream change there moves this image's tag too.
+
+The jobs set `TNPU_SPIKE` and `TNPU_SPIKE_ISA=rv64gcv_zfh`: tnpu asks for
+`zvfp8`, which the released spike lacks, and an unknown extension stops spike at
+startup. Costs only `ops_fp8_roundtrip.py`, which CI does not run. Drop once
+`PSAL-POSTECH/riscv-isa-sim#7` is in the release.

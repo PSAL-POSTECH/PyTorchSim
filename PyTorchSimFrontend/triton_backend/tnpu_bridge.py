@@ -16,6 +16,7 @@ viable rather than merely necessary.
 """
 
 import os
+import re
 import subprocess
 
 from PyTorchSimFrontend import extension_config
@@ -24,10 +25,28 @@ logger = extension_config.setup_logger()
 
 
 class TnpuError(RuntimeError):
+    """A tnpu stage failed. Inductor reports only str(exc), so the stage's own
+    diagnostic has to travel in the message."""
+
+    #: How a failing stage names itself: MLIR diagnostics and exception lines.
+    _SIGNAL = re.compile(
+        r"^(?!\s|Traceback|During handling|The above)"
+        r"(.*\berror:\s.*|.*failed to legalize.*|"
+        r"[\w.]*(?:Error|Exception)\b.*|.*Assertion.*)$", re.M)
+    #: Frames and carets: context, not the diagnostic.
+    _FRAME = re.compile(r'^\s|^\s*File "|^\s*\^')
+
     def __init__(self, message, cmd=None, output=None):
-        super().__init__(message)
         self.cmd = cmd
         self.output = output
+        if output:
+            hits = [h.strip() for h in self._SIGNAL.findall(output)
+                    if not self._FRAME.match(h)]
+            if not hits:
+                hits = [l for l in output.strip().splitlines()
+                        if l.strip() and not self._FRAME.match(l)]
+            message = message + "\n  " + "\n  ".join(l[:300] for l in hits[-3:])
+        super().__init__(message)
 
 
 def tnpu_dir():
@@ -76,6 +95,12 @@ def run_pipeline(spec_path, workdir, to_stage="binary", from_stage="ttir",
                           cwd=tnpu_dir(), env=env, timeout=timeout)
     output = proc.stdout + proc.stderr
     if proc.returncode != 0:
+        # run.py prints a stage table; the diagnostic itself only reaches
+        # stage.log.
+        log = os.path.join(workdir, "stage.log")
+        if os.path.isfile(log):
+            with open(log, errors="replace") as fh:
+                output += "\n" + fh.read()
         raise TnpuError(f"tnpu pipeline failed (exit {proc.returncode})",
                         cmd=" ".join(cmd), output=output)
     logger.debug("[triton-npu] %s", output)

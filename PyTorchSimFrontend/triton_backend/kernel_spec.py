@@ -248,6 +248,20 @@ def strip_for_tnpu(src):
     prefix = ""
     if "import triton.language as tl" not in body:
         prefix = "import triton\nimport triton.language as tl\n\n"
+    # tl_math is triton's own, re-exported through triton_helpers; the dropped
+    # torch import took it with it.
+    if re.search(r"\btl_math\.", body):
+        prefix += "from triton.language import math as tl_math\n"
+
+    # libdevice members are @core.extern: no triton_shared implementation, so a
+    # call returns None and fails obscurely in stage 1. Name it here instead.
+    ext = sorted(set(re.findall(r"\blibdevice\.(\w+)", body)))
+    if ext:
+        raise SpecIncomplete(
+            f"kernel calls libdevice.{{{','.join(ext)}}}: those are extern math "
+            f"intrinsics with no implementation on the triton_shared backend. "
+            f"They need lowering to a VPU op (or a scalar fallback) before this "
+            f"kernel can compile.")
     return prefix + body
 
 

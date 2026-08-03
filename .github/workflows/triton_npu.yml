@@ -211,19 +211,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Gates on scripts/ci/triton_route_passing.txt: the tests that pass on this
-      # route today. Coverage grows by regenerating that file, so it cannot
-      # silently shrink.
+      # Gates on the tests that pass today; coverage cannot silently shrink.
       - name: Allowlisted tests
         run: |
           docker run --rm \
             ${{ needs.build-app.outputs.app_image }} \
             python3 PyTorchSim/scripts/ci/triton_route_sweep.py
 
-      # Everything else, for the count and the bucket breakdown. Reports only:
-      # most of the suite is blocked on the gaps in triton_backend/README.md.
-      # Each failure leaves its Inductor kernel and last stage IR in the
-      # artifact, so a report needs no rerun.
+      # Reports the rest. Each failure leaves its kernel and stage IR behind.
       - name: Full sweep (report)
         continue-on-error: true
         run: |

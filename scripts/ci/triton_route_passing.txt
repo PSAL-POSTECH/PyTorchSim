@@ -1,8 +1,7 @@
 # Tests that pass THROUGH the Triton codegen route.
 # Gated by scripts/ci/triton_route_sweep.py; regenerate with
 #   python scripts/ci/triton_route_sweep.py --all --update-allowlist
-# A test that passes without emitting a kernel (CPU-only, eager
-# fallback) is deliberately absent -- it would not gate anything.
+# A test that passes without emitting a kernel is deliberately absent.
 tests/ops/elementwise/test_add.py
 tests/ops/fusion/test_addmm_residual.py
 tests/ops/fusion/test_matmul_scalar.py

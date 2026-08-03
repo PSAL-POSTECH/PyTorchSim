@@ -1,21 +1,9 @@
 #!/usr/bin/env python3
 """Run the existing test suite through the Triton codegen route.
 
-The route is selected at device-registration time by TORCHSIM_TRITON_CODEGEN
-(PyTorchSimDevice/torch_openreg/__init__.py), so the tests themselves need no
-change -- the same file is the MLIR route's test with the variable unset and the
-Triton route's with it set.
-
-Three things come out of a run:
-
-  * a GATE. `triton_route_passing.txt` lists the tests that pass today. Any of
-    them failing is a regression and exits non-zero. That is what makes coverage
-    grow monotonically instead of drifting.
-  * a REPORT bucketed by how far each failure got, so the gap list in
-    triton_backend/README.md is a measurement rather than a guess.
-  * ARTIFACTS per failure, under --artifacts: the Inductor Triton kernel that
-    did not survive, the last tnpu stage IR it produced, and the error. That is
-    what makes a failure reportable to whoever owns the pass, without a rerun.
+TORCHSIM_TRITON_CODEGEN is read at device registration, so no test needs to know
+which route it is on. Produces a gate (triton_route_passing.txt), a report
+bucketed by cause and stage, and per-failure artifacts for reporting upstream.
 
   python scripts/ci/triton_route_sweep.py                  # the allowlist, gating
   python scripts/ci/triton_route_sweep.py --all            # every test, reports
@@ -23,6 +11,7 @@ Three things come out of a run:
 """
 
 import argparse
+import concurrent.futures as cf
 import glob
 import json
 import os
@@ -36,8 +25,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 HERE = os.path.dirname(os.path.abspath(__file__))
 PASSING = os.path.join(HERE, "triton_route_passing.txt")
 
-#: How far the kernel got, outermost first. The stage a failure did NOT reach is
-#: the one that owns it, so this doubles as the routing table for a bug report.
+#: How far the kernel got. The stage a failure did not reach owns it.
 STAGES = [
     ("01-ttir.mlir",     "1 triton -> ttir"),
     ("02-ttshared.mlir", "2 ttir -> tts/linalg (triton-shared)"),
@@ -46,8 +34,7 @@ STAGES = [
     ("trace.so",         "5 trace producer"),
 ]
 
-#: Failure buckets, first match wins. Each names the layer that owns the fix,
-#: so the counts say which gap to close next rather than just how many failed.
+#: First match wins. Each bucket names the layer that owns the fix.
 BUCKETS = [
     ("missing_dep",    r"ModuleNotFoundError|No module named"),
     ("device_op",      r"\w+_overrideable not implemented|not implemented\. .*privateuse"),
@@ -114,8 +101,7 @@ def first_error(output):
 def reached_stage(dump_dir):
     """(label, workdir) of the furthest tnpu stage any kernel produced.
 
-    A workdir with only kernel.py is still the one to collect: the route got as
-    far as generating a Triton kernel and rejected it before stage 1.
+    kernel.py alone still counts: a kernel was generated and rejected pre-stage-1.
     """
     best, best_dir, fallback = None, None, None
     for wd in glob.glob(os.path.join(dump_dir, "triton_*")):
@@ -139,8 +125,7 @@ def collect(test, dump_dir, out_root, output, bucket, stage, workdir):
         f.write(f"test:   {test}\nbucket: {bucket}\nstage:  {stage}\n\n")
         f.write("\n".join(output.strip().splitlines()[-60:]))
     if workdir:
-        # The Inductor kernel is the thing to hand to whoever owns the pass;
-        # the stage IRs say where it stopped being representable.
+        # The kernel to hand over, and the IR saying where it stopped.
         for name in ("kernel.py", "stage.log", *(s[0] for s in STAGES[:-1])):
             src = os.path.join(workdir, name)
             if os.path.isfile(src):
@@ -149,8 +134,8 @@ def collect(test, dump_dir, out_root, output, bucket, stage, workdir):
 
 
 def run_one(test, timeout, artifacts, scratch):
-    # A private dump dir per test: artifacts must be attributable, and a shared
-    # one lets a cached kernel from an earlier test answer for this one.
+    # Private per test: a shared dump lets one test's cached kernel answer for
+    # another's.
     dump = os.path.join(scratch, test.replace("/", "_").removesuffix(".py"))
     shutil.rmtree(dump, ignore_errors=True)
     os.makedirs(dump, exist_ok=True)
@@ -171,9 +156,8 @@ def run_one(test, timeout, artifacts, scratch):
          "seconds": round(time.time() - t0, 1),
          "bucket": None if ok else classify(out, timed_out),
          "stage": stage,
-         # A pass that emitted no kernel never used the route: a CPU-only test,
-         # an eager fallback, or a path that bypasses Inductor. Counting those as
-         # coverage would overstate it.
+         # No kernel emitted = the route was never used (CPU-only, eager
+         # fallback, extern call), so it is not coverage.
          "exercised": workdir is not None,
          "error": "" if ok else first_error(out)}
     if not ok and artifacts:
@@ -242,6 +226,11 @@ def main():
     ap.add_argument("--all", action="store_true",
                     help="run every test, not just the passing allowlist")
     ap.add_argument("--timeout", type=int, default=1800)
+    ap.add_argument("-j", "--jobs", type=int,
+                    default=max(1, min(8, (os.cpu_count() or 2) // 2)),
+                    help="tests in flight at once; each may itself use several "
+                         "cores (gem5, TOGSim), so this is half the box by "
+                         "default")
     ap.add_argument("--json", help="write the full result list here")
     ap.add_argument("--artifacts", metavar="DIR",
                     help="per-failure kernel + stage IR + error, for reporting")
@@ -263,17 +252,35 @@ def main():
         shutil.rmtree(args.artifacts, ignore_errors=True)
         os.makedirs(args.artifacts, exist_ok=True)
 
-    print(f"Triton route sweep: {len(tests)} tests"
+    print(f"Triton route sweep: {len(tests)} tests, {args.jobs} at a time"
           f"{'' if args.all else ' (allowlist)'}\n")
-    results = []
-    for i, t in enumerate(tests, 1):
-        r = run_one(t, args.timeout, args.artifacts, scratch)
-        results.append(r)
+    results, done = [], 0
+
+    def report(r):
+        nonlocal done
+        done += 1
         mark = ("ok  " if r["exercised"] else "ok- ") if r["ok"] else "FAIL"
         extra = ("" if r["exercised"] else "  (route not exercised)") if r["ok"] \
             else f"  [{r['bucket']}] @{r['stage']}  {r['error'][:70]}"
-        print(f"  {i:3d}/{len(tests)}  {mark} {r['seconds']:7.1f}s  "
+        print(f"  {done:3d}/{len(tests)}  {mark} {r['seconds']:7.1f}s  "
               f"{r['test']}{extra}", flush=True)
+
+    if args.jobs == 1:
+        for t in tests:
+            r = run_one(t, args.timeout, args.artifacts, scratch)
+            results.append(r)
+            report(r)
+    else:
+        # Threads: run_one only waits on a subprocess, and dump dir, Inductor
+        # cache and TOGSim FIFO are all already per-test.
+        with cf.ThreadPoolExecutor(max_workers=args.jobs) as pool:
+            futs = {pool.submit(run_one, t, args.timeout, args.artifacts,
+                                scratch): t for t in tests}
+            for fut in cf.as_completed(futs):
+                r = fut.result()
+                results.append(r)
+                report(r)
+        results.sort(key=lambda r: r["test"])
     shutil.rmtree(scratch, ignore_errors=True)
 
     passed = [r for r in results if r["ok"]]

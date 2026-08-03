@@ -78,9 +78,8 @@ def triton_npu_compile(src_code, meta, kernel_name):
         spec_path = os.path.join(write_path, f"{kernel_name}_spec.py")
         elf = os.path.join(write_path, f"05-{kernel_name}.elf")
         if not os.path.isfile(elf):
-            # Before anything that can raise: a kernel this route cannot compile
-            # is the one whose source is worth having, and write_spec_file
-            # rejects several (triton_helpers, SpecIncomplete).
+            # Before write_spec_file, which rejects exactly the kernels whose
+            # source is worth keeping.
             with open(os.path.join(write_path, "kernel.py"), "w") as f:
                 f.write(src_code)      # the unmodified Inductor source
             kernel_spec.write_spec_file(src_code, meta, spec_path,

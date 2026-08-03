@@ -225,7 +225,8 @@ class ExtensionWrapperCodegen(wrapper.PythonWrapperCodegen):
         self._fverify_seen = set()
         with contextlib.ExitStack() as stack:
             stack.enter_context(self.wrapper_call.indent())
-            self.memory_plan_reuse()
+            # Upstream entry point: picks the planner and sets the state it needs.
+            self.run_wrapper_ir_passes(is_inference)
             with self.set_writeline(self.wrapper_call.writeline):
                 for line in self.lines:
                     # Add buffer plan hook for dealloc

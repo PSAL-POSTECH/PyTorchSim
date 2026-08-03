@@ -32,7 +32,7 @@ env:
 jobs:
   preflight:
     name: Check tnpu access
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, slurm, x86_64]
     outputs:
       ready: ${{ steps.check.outputs.ready }}
     steps:
@@ -67,7 +67,7 @@ jobs:
   ensure-tnpu-base:
     name: Build tnpu toolchain image
     needs: preflight
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, slurm, big, x86_64]
     outputs:
       tnpu_image: ${{ steps.pin.outputs.tnpu_image }}
     permissions:
@@ -123,7 +123,7 @@ jobs:
   build-app:
     name: Build app image on tnpu base
     needs: ensure-tnpu-base
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, slurm, big, x86_64]
     outputs:
       app_image: ${{ steps.name.outputs.app_image }}
     permissions:
@@ -159,7 +159,7 @@ jobs:
   tnpu-baselines:
     name: triton-npu baselines
     needs: build-app
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, slurm, x86_64]
     steps:
       - uses: docker/login-action@v3
         with:
@@ -183,7 +183,7 @@ jobs:
   triton-route:
     name: Inductor Triton route
     needs: build-app
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, slurm, x86_64]
     # WIP: the launch is deliberately unimplemented, so this reports how far the
     # route gets rather than gating. Drop this once the launch lands.
     continue-on-error: true
@@ -200,10 +200,52 @@ jobs:
             ${{ needs.build-app.outputs.app_image }} \
             python3 PyTorchSim/tests/system/test_triton_codegen.py
 
+  triton-route-suite:
+    name: Test suite on the Triton route
+    needs: build-app
+    runs-on: [self-hosted, slurm, big, x86_64]
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Gates on scripts/ci/triton_route_passing.txt: the tests that pass on this
+      # route today. Coverage grows by regenerating that file, so it cannot
+      # silently shrink.
+      - name: Allowlisted tests
+        run: |
+          docker run --rm \
+            ${{ needs.build-app.outputs.app_image }} \
+            python3 PyTorchSim/scripts/ci/triton_route_sweep.py
+
+      # Everything else, for the count and the bucket breakdown. Reports only:
+      # most of the suite is blocked on the gaps in triton_backend/README.md.
+      # Each failure leaves its Inductor kernel and last stage IR in the
+      # artifact, so a report needs no rerun.
+      - name: Full sweep (report)
+        continue-on-error: true
+        run: |
+          mkdir -p sweep && chmod 777 sweep
+          docker run --rm -v "$PWD/sweep:/sweep" \
+            ${{ needs.build-app.outputs.app_image }} \
+            python3 PyTorchSim/scripts/ci/triton_route_sweep.py --all \
+              --timeout 900 --json /sweep/results.json \
+              --markdown /sweep/coverage.md --artifacts /sweep/failures
+          cat sweep/coverage.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: triton-route-coverage
+          path: sweep/
+          if-no-files-found: warn
+
   mlir-route-regression:
     name: MLIR route still passes
     needs: build-app
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, slurm, x86_64]
     steps:
       - uses: docker/login-action@v3
         with:

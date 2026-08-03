@@ -32,6 +32,11 @@ RUN --mount=type=secret,id=tnpu_token \
       /workspace/triton-npu/setup/restore.sh --prebuilt
 
 ENV TNPU_DIR=/workspace/triton-npu
+# tnpu defaults to a separate fp8 spike and asks for zvfp8; the released spike
+# has neither, and an unknown extension stops spike at startup. Drop once
+# PSAL-POSTECH/riscv-isa-sim#7 is in the release.
+ENV TNPU_SPIKE=/workspace/riscv-isa-sim/install/bin/spike
+ENV TNPU_SPIKE_ISA=rv64gcv_zfh
 
 # Fail the build, not the first CI job.
 RUN python3 /workspace/triton-npu/run.py doctor

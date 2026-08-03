@@ -2,7 +2,8 @@
 
 First measurement of PyTorchSim's existing test suite running through the Triton
 codegen route (Inductor's Triton backend + the triton-npu lowering passes)
-instead of the MLIR route.
+instead of the MLIR route. Korean version:
+[`triton-route-coverage.ko.md`](triton-route-coverage.ko.md).
 
 | | |
 |---|---|

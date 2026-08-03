@@ -66,19 +66,27 @@ class SpecIncomplete(RuntimeError):
 # ---------------------------------------------------------------------------
 # 1. codegen-time metadata capture
 # ---------------------------------------------------------------------------
-def _buffer_numel(name):
-    """Element count of an Inductor buffer, or None if it cannot be resolved."""
+def _buffer_layout(name):
+    """(numel, size, stride) of an Inductor buffer; Nones if unresolvable.
+
+    The stride is load-bearing: Inductor allocates outputs `empty_strided` and
+    indexes them by it, so a launch that assumes contiguous writes the elements
+    to the wrong places.
+    """
     try:
         buf = V.graph.get_buffer(name)
         if buf is None:
-            return None
-        size = buf.get_layout().size
+            return None, None, None
+        layout = buf.get_layout()
+        hint = V.graph.sizevars.size_hint
+        size = [int(hint(s)) for s in layout.size]
+        stride = [int(hint(s)) for s in layout.stride]
         n = 1
         for s in size:
-            n *= int(V.graph.sizevars.size_hint(s))
-        return n
+            n *= s
+        return n, size, stride
     except Exception:  # noqa: BLE001 - best effort; caller reports it as missing
-        return None
+        return None, None, None
 
 
 def _roles(kernel):
@@ -112,12 +120,15 @@ def collect_meta(kernel, kernel_name):
         role, buf = roles.get(name, (None, None))
         if role is None:
             continue                      # a numel / constexpr, not a tensor
+        numel, size, stride = _buffer_layout(buf) if buf else (None, None, None)
         args.append({
             "name": name,
             "role": role,
             "buffer": buf,
             "dtype": _DTYPE.get(signature.get(name, ""), None),
-            "numel": _buffer_numel(buf) if buf else None,
+            "numel": numel,
+            "size": size,
+            "stride": stride,
         })
 
     # The numels Inductor appends to the call. They live in `kernel.numels`,

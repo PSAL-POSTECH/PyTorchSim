@@ -145,7 +145,11 @@ def run_one(test, timeout, artifacts, scratch):
     dump = os.path.join(scratch, test.replace("/", "_").removesuffix(".py"))
     shutil.rmtree(dump, ignore_errors=True)
     os.makedirs(dump, exist_ok=True)
-    env = dict(os.environ, TORCHSIM_TRITON_CODEGEN="1", TORCHSIM_DUMP_PATH=dump)
+    # TORCHINDUCTOR_CACHE_DIR too: extension_config only re-points it at
+    # codegen time, by which point Inductor has already put the first graph
+    # in the shared /tmp cache -- concurrent tests then collide there.
+    env = dict(os.environ, TORCHSIM_TRITON_CODEGEN="1", TORCHSIM_DUMP_PATH=dump,
+               TORCHINDUCTOR_CACHE_DIR=os.path.join(dump, ".torchinductor"))
 
     t0, timed_out = time.time(), False
     try:

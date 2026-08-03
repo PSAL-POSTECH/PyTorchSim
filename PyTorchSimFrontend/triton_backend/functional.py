@@ -65,6 +65,24 @@ def _check(meta, pairs):
                 f"binary was compiled for {m['dtype']}")
 
 
+def _storage_view(t, m):
+    """`t`'s values laid out the way the kernel indexes them, as a flat tensor.
+
+    Inductor allocates with empty_strided and indexes by that stride, so the
+    element the kernel calls `k` lives at storage position `k` -- which is not
+    logical order unless the layout is contiguous.
+    """
+    import torch
+
+    size, stride = m.get("size"), m.get("stride")
+    flat = torch.empty(m["numel"], dtype=t.dtype)
+    if size and stride:
+        flat.as_strided(size, stride).copy_(t)
+    else:
+        flat.copy_(t.reshape(-1))
+    return flat
+
+
 def write_inputs(workdir, meta, args):
     """Write every arg as runtime/<name>.raw. Returns the runtime directory.
 
@@ -81,7 +99,7 @@ def write_inputs(workdir, meta, args):
     for m, t in pairs:
         path = os.path.join(runtime, f"{m['name']}.raw")
         if m["role"] in ("in", "inout"):
-            t.detach().to("cpu").contiguous().numpy().tofile(path)
+            _storage_view(t.detach().to("cpu"), m).numpy().tofile(path)
         else:
             np.zeros(m["numel"], dtype=_np_dtype(m["dtype"])).tofile(path)
     return runtime
@@ -103,7 +121,10 @@ def read_outputs(workdir, meta, args):
             raise RuntimeError(
                 f"{path} holds {flat.size} element(s), expected {m['numel']} "
                 f"-- Spike did not write the whole tensor")
-        t.copy_(torch.from_numpy(flat).view_as(t).to(t.dtype))
+        buf = torch.from_numpy(flat).to(t.dtype)
+        size, stride = m.get("size"), m.get("stride")
+        t.copy_(buf.as_strided(size, stride) if size and stride
+                else buf.view_as(t))
         written.append(m["name"])
     return written
 

@@ -92,17 +92,15 @@ _PID_SLOT = {"x": 0, "y": 1, "z": 2}
 def work_item_for(meta):
     """The WorkItem describing this kernel's program-id args and grid extents.
 
-    `grid_of` orders axes OUTERMOST first (z, y, x -- x is Inductor's contiguous
-    one), while the program-id arguments are always laid out x, y, z. The two
-    are zipped downstream, so the argument list is built per axis rather than as
-    a range.
+    Axes are in pid order, the same as every grid tuple, so extent i and
+    parallel_args[i] describe the same axis.
     """
     from PyTorchSimFrontend.mlir.passes.lower_to_emitc import WorkItem
     from . import kernel_spec
 
     n_tensor, n_scalar = _runtime_arg_layout(meta)
     pid_base = n_tensor + n_scalar + 3       # after gridX, gridY, gridZ
-    axes = kernel_spec.parallel_axes(meta["numels"])
+    axes = kernel_spec.pid_axes(meta["numels"])
     # Extents are left to run time: only the axis COUNT has to be compiled in,
     # and the launch knows the real numels. One trace then serves every shape.
     return WorkItem(parallel_args=[pid_base + _PID_SLOT[p] for p in axes],
@@ -128,7 +126,7 @@ def write_shape(workdir, meta, args=()):
         for key, val in zip(passed, trailing[-len(passed):]):
             numels[key] = val
 
-    axes = kernel_spec.parallel_axes(numels)
+    axes = kernel_spec.pid_axes(numels)
 
     cfg = meta.get("fixed_config") or {}
     grid = []

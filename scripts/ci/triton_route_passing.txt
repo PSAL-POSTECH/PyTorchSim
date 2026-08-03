@@ -1,0 +1,16 @@
+# Tests that pass THROUGH the Triton codegen route.
+# Gated by scripts/ci/triton_route_sweep.py; regenerate with
+#   python scripts/ci/triton_route_sweep.py --all --update-allowlist
+# A test that passes without emitting a kernel (CPU-only, eager
+# fallback) is deliberately absent -- it would not gate anything.
+tests/ops/elementwise/test_add.py
+tests/ops/fusion/test_addmm_residual.py
+tests/ops/fusion/test_matmul_scalar.py
+tests/ops/fusion/test_matmul_vector.py
+tests/ops/fusion/test_prologue_fusion.py
+tests/ops/misc/test_expert_mask.py
+tests/ops/reduce/test_batchnorm.py
+tests/ops/view/test_view3D_2D.py
+tests/system/test_eager.py
+tests/system/test_stonne.py
+tests/system/test_triton_codegen.py

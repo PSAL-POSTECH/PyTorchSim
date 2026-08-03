@@ -151,6 +151,30 @@ induction variable, and everything downstream is unchanged. It runs before
 `_rewrite_signature`, which erases the kernel arguments and first asserts none
 are still used -- that ordering is what decides where this can live.
 
+## Running the whole suite on this route
+
+`TORCHSIM_TRITON_CODEGEN` is read once, at device registration, so every test
+under `tests/` is already a test of this route — no test file knows which one it
+is on. `scripts/ci/triton_route_sweep.py` runs them that way:
+
+```bash
+python scripts/ci/triton_route_sweep.py                     # allowlist, gating
+python scripts/ci/triton_route_sweep.py --all \
+    --markdown coverage.md --artifacts failures             # measure + report
+```
+
+`scripts/ci/triton_route_passing.txt` is the gate: the tests that pass today.
+Coverage grows by regenerating it (`--update-allowlist`), so it cannot silently
+shrink. A test that passes **without emitting a kernel** — CPU-only, eager
+fallback, or an op Inductor sends to an extern call — is deliberately kept out
+of it, since it would gate nothing.
+
+Each failure leaves a directory under `--artifacts`: the Inductor Triton kernel
+that was rejected, whatever stage IR it reached (`01-ttir` … `04-custom`),
+`stage.log`, and the error. That is the whole bug report for whoever owns the
+pass, without a rerun. The bucket names the owning layer, and the stage says how
+far it got, so the two together route it.
+
 ## CI
 
 `.github/workflows/triton_npu.yml`, separate from the main CI: this route is WIP,
@@ -162,8 +186,18 @@ ensure-tnpu-base       torchsim_base + tnpu toolchain -> torchsim_tnpu_base:<pin
 build-app              ./Dockerfile on that base
 tnpu-baselines         run.py doctor + add/mul/relu/gemm/bmm through Spike   (gates)
 triton-route           tests/system/test_triton_codegen.py    (reports, does not gate)
+triton-route-suite     the allowlist (gates) + the full sweep (reports)
 mlir-route-regression  tests/ops/elementwise/test_add.py      (gates)
 ```
+
+The sweep uploads `triton-route-coverage`: `coverage.md`, `results.json`, and a
+`failures/` directory per failing test.
+
+Jobs run on the PSAL Slurm runner farm (`PSAL-POSTECH/slurm-ghr`), so
+`runs-on:` must carry the `slurm` label or the job never gets a runner. Image
+builds and the sweep take `big` (16c/64G/2h); the rest take the small bucket.
+Do not add `docker/setup-buildx-action` — the runner registers its own builder
+and that action's driver cannot start under its podman.
 
 The toolchain image is pinned the same way `torchsim_base` is — the tag carries
 `sha256(thirdparty/triton-npu.json + Dockerfile.tnpu)`, so it is rebuilt only when

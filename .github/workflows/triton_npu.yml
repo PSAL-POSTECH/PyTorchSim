@@ -170,9 +170,13 @@ jobs:
       # The harness's own kernels, end to end through Spike. This is the gate on
       # the toolchain itself: if these regress, nothing downstream is meaningful.
       # gemm/bmm need TNPU_VCIX_MATMUL=1 to reach the systolic array.
+      # TNPU_SPIKE/ISA: the released spike has no zvfp8, and an unknown extension
+      # stops spike at startup. Drop once riscv-isa-sim#7 is in the release.
       - name: doctor + add / mul / relu / gemm / bmm
         run: |
           docker run --rm -e TNPU_VCIX_MATMUL=1 \
+            -e TNPU_SPIKE=/workspace/riscv-isa-sim/install/bin/spike \
+            -e TNPU_SPIKE_ISA=rv64gcv_zfh \
             ${{ needs.build-app.outputs.app_image }} bash -lc '
               cd /workspace/triton-npu &&
               python3 run.py doctor &&
@@ -197,6 +201,8 @@ jobs:
       - name: test_triton_codegen.py
         run: |
           docker run --rm -e TORCHSIM_TRITON_CODEGEN=1 \
+            -e TNPU_SPIKE=/workspace/riscv-isa-sim/install/bin/spike \
+            -e TNPU_SPIKE_ISA=rv64gcv_zfh \
             ${{ needs.build-app.outputs.app_image }} \
             python3 PyTorchSim/tests/system/test_triton_codegen.py
 

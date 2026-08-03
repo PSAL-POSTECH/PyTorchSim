@@ -43,11 +43,17 @@ BUCKETS = [
     ("spec_incomplete", r"SpecIncomplete"),
     ("tnpu_stage",     r"TnpuError|tnpu pipeline failed|triton-shared-opt|"
                        r"\[stage\d\]|failed to legalize"),
-    ("reduction",      r"lane-aware|linalg\.reduce|no reduction path"),
+    ("reduction",      r"lane-aware|no reduction path"),
     ("dynamic_shape",  r"ShapeMismatch|dynamic shape|size_hint returned None"),
     ("matmul_timing",  r"vcix\.iv|sf\.vc\.|no compute node"),
-    ("togsim",         r"TOGSim|trace\.so|SIGSEGV|Signals\.SIG|'vpu_num_lanes'"),
-    ("wrong_values",   r"VALUES WRONG|allclose|Test Failed"),
+    # Before togsim: a kernel that simulated fine and then compared wrong is a
+    # numerics failure, and the log is full of TOGSim lines by then either way.
+    ("wrong_values",   r"VALUES WRONG|Max abs diff|Test Failed|allclose"),
+    ("missing_artifact", r"FileNotFoundError"),
+    # Only a TOGSim *failure*. Matching the name alone caught every INFO line it
+    # writes, so anything that got as far as simulating landed here.
+    ("togsim",         r"TOGSim subprocess|SIGSEGV|Signals\.SIG|'vpu_num_lanes'|"
+                       r"trace\.so not found|\[TOGSim\].*(?:failed|Error)"),
     ("timeout",        r"^__timeout__$"),
 ]
 
@@ -192,6 +198,7 @@ def write_markdown(results, path):
             "dynamic_shape": "triton_backend -- shape-specialised launch",
             "matmul_timing": "build_tog -- compute node lookup",
             "togsim": "TOGSim / trace producer",
+            "missing_artifact": "an expected artifact was not written",
             "wrong_values": "numerics -- investigate",
             "missing_dep": "test environment (present in the CI image)",
             "timeout": "too slow, or hung",

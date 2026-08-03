@@ -366,6 +366,8 @@ def _collect_dma_nodes(builder):
 
     for ln in builder.loop_nodes:
         visit(ln)
+    for dn in getattr(builder, "dma_nodes", ()):   # DMAs outside any tile loop
+        visit(dn)
     return by_op
 
 

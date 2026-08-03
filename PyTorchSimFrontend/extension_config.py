@@ -11,6 +11,21 @@ CONFIG_TORCHSIM_LLVM_PATH = os.environ.get('TORCHSIM_LLVM_PATH', default="/usr/b
 CONFIG_TORCHSIM_DUMP_MLIR_IR = int(os.environ.get("TORCHSIM_DUMP_MLIR_IR", default=False))
 CONFIG_TORCHSIM_DUMP_LLVM_IR = int(os.environ.get("TORCHSIM_DUMP_LLVM_IR", default=False))
 
+# --- Triton codegen route (WIP, opt-in) --------------------------------------
+# Replaces the hand-written MLIR emission in PyTorchSimFrontend/mlir with
+# Inductor's own Triton codegen, lowered to the NPU by the triton-npu (tnpu)
+# pass pipeline. OFF by default: the MLIR route stays the production path until
+# this one is complete. See PyTorchSimFrontend/triton_backend/README.md.
+CONFIG_TRITON_CODEGEN = bool(int(os.environ.get("TORCHSIM_TRITON_CODEGEN", default=0)))
+# The triton-npu checkout that owns stages 1-5 (ttir -> ttshared -> tnpu passes
+# -> RISC-V ELF). It is a SEPARATE repository, deliberately not vendored.
+CONFIG_TNPU_DIR = os.environ.get(
+    "TNPU_DIR", default=os.path.join(CONFIG_TORCHSIM_DIR, "triton-npu"))
+# tnpu runs in its own process: its passes need LLVM 23's MLIR bindings while
+# this process holds LLVM 20's, and `mlir` is a namespace package, so the two
+# cannot coexist in one interpreter (tnpu/config.py:activate_bindings).
+CONFIG_TNPU_PYTHON = os.environ.get("TNPU_PYTHON", default=sys.executable)
+
 
 def get_dump_path():
     """Resolve TORCHSIM_DUMP_PATH and re-point Inductor's cache dir at it.

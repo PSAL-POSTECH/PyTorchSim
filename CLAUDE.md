@@ -47,6 +47,8 @@ Run a model from `tests/models/Llama/`, `tests/models/DeepSeek/`, etc. similarly
 
 **CI coverage:** the GitHub Actions workflow `.github/workflows/pytorchsim_test.yml` runs an **explicit allowlist** of `tests/*.py` files (~40 jobs, one Docker container per test). Adding a new file under `tests/` does *not* automatically gate PRs — register it in `pytorchsim_test.yml` if you want CI to exercise it. Conversely, files like `tests/ops/attention/test_gqa.py`, `tests/ops/attention/test_gqa_decode.py`, and `tests/system/test_eager.py` exist in the repo but are *not* in CI, so local validation is the only safety net for them.
 
+The Triton codegen route has its own workflow, `.github/workflows/triton_npu.yml`, kept separate because its toolchain layer is ~1.8 GiB that no other job needs. It builds `torchsim_tnpu_base` (pinned by `thirdparty/triton-npu.json` + `Dockerfile.tnpu`) and needs `secrets.TNPU_TOKEN` plus a toolchain release on the private `PSAL-POSTECH/triton-npu`; see `PyTorchSimFrontend/triton_backend/README.md`.
+
 **For fast iteration** (skip functional check):
 ```bash
 export pytorchsim_functional_mode=False   # skips Spike
@@ -137,7 +139,7 @@ Conan deps for TOGSim: `boost/1.79.0`, `robin-hood-hashing/3.11.5`, `spdlog/1.11
 
 ## Gotchas / things I've already learned
 
-- The repo expects `python` to be a Python 3.10+ binary with `torch==2.8.0`. The frontend extends the PyTorch 2 Inductor stack — pin to this version.
+- The repo expects `python` to be a Python 3.10+ binary with `torch==2.10.0` (torchvision `0.25.0`, triton `3.6.0`). The frontend extends the PyTorch 2 Inductor stack — pin to this version. 2.10 specifically: it is the first release whose Inductor targets triton 3.6, the version triton-npu is built against. The pins live in `Dockerfile.base`, and editing that file changes the base-image tag automatically (the tag is `thirdparty-<sha256 of thirdparty/github-releases.json + Dockerfile.base>`, see `scripts/ci/thirdparty_base_pin.sh`).
 - The default Gem5 path is hard-coded to `/workspace/gem5/build/RISCV/gem5.opt`. Override with `GEM5_PATH` if you build elsewhere.
 - `_C.cpython-311-*.so` and `torch_openreg/lib/` are build artifacts — already in `.gitignore`, don't commit.
 - TOGSim creates a per-PID FIFO under `/tmp/togsim_fifo_<pid>` for command/event comm; if a previous run crashed and left stale FIFOs, they get cleaned up on the next start, but watch for orphaned processes if you Ctrl-C mid-run.

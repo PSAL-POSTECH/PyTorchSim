@@ -40,7 +40,18 @@ std::unique_ptr<TileGraph> build_trace_tilegraph(Simulator* simulator,
     while (ct >> c >> o) { cyc.push_back(c); ovl.push_back(o); }
   }
   if (cyc.empty()) { cyc.assign(256, 128); ovl.assign(256, 0); }
-  return trace_to_tilegraph(trace_so_path.c_str(), nullptr, 0,
+  // Shape args: the producer's grid bounds, one per axis, when the trace was
+  // compiled without them baked in. Same sidecar convention as the cycle table
+  // -- absent means the producer carries its own constants.
+  std::vector<int64_t> shape;
+  {
+    std::ifstream sh(fs::path(trace_so_path).parent_path() / "trace_shape.txt");
+    int64_t v;
+    while (sh >> v) shape.push_back(v);
+  }
+  return trace_to_tilegraph(trace_so_path.c_str(),
+                            shape.empty() ? nullptr : shape.data(),
+                            (int32_t)shape.size(),
                             bases.data(), (int)bases.size(),
                             cyc.data(), ovl.data(), (int)cyc.size(),
                             partition_cores.data(), (int32_t)partition_cores.size(),

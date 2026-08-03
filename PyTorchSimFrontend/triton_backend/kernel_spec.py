@@ -153,8 +153,17 @@ def _block_name(prefix):
 
 
 def parallel_axes(numels):
-    """Grid axes this kernel uses, outermost first."""
+    """Grid axes this kernel uses, outermost first. For tile-shape decisions."""
     return [p for p in _PARALLEL_PREFIXES if f"{p}numel" in numels]
+
+
+def pid_axes(numels):
+    """The same axes in program-id order: pid 0 is x, whatever the tiling.
+
+    Every grid TUPLE is in this order -- triton-shared lays the pid arguments
+    out x, y, z and tnpu's wrapper reads spec.grid positionally as gridX/Y/Z.
+    """
+    return list(reversed(parallel_axes(numels)))
 
 
 def fixed_config_for(kernel):
@@ -175,7 +184,10 @@ def fixed_config_for(kernel):
     from PyTorchSimFrontend import extension_config
     lanes = int(extension_config.vpu_num_lanes)
 
-    axes = parallel_axes(getattr(kernel, "numels", None) or {})
+    # kernel.numels is keyed by prefix; parallel_axes wants collect_meta's
+    # "<prefix>numel" keys, and passing the raw dict silently matched nothing.
+    axes = parallel_axes([f"{p}numel"
+                          for p in (getattr(kernel, "numels", None) or {})])
     cfg = {_block_name(p): (lanes if i == 0 else 1) for i, p in enumerate(axes)}
     if len(axes) > 1:
         # Loud, because the shape is correct but pathological: an inner block of
@@ -270,14 +282,14 @@ def scalar_args(meta):
 
 
 def grid_of(meta):
-    """Launch grid, from the numels and the pinned block sizes, outermost first.
+    """Launch grid, from the numels and the pinned block sizes, in pid order.
 
     Also read by the timing path, which needs the same extents to enumerate the
     work-items -- so it lives here rather than being recomputed per consumer.
     """
     numels = meta["numels"]
     cfg = meta.get("fixed_config") or {}
-    axes = parallel_axes(numels)
+    axes = pid_axes(numels)
     if not axes:
         raise SpecIncomplete(
             f"{meta['kernel_name']} has no parallel iteration axis to grid over")

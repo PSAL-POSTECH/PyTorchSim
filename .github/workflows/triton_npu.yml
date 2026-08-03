@@ -8,9 +8,10 @@ name: Triton codegen route (triton-npu)
 # is ~1.8 GiB that no other job needs, so it neither gates PRs nor slows them
 # down. Promote the jobs into pytorchsim_test.yml once the route runs end to end.
 #
-# Needs secrets.TNPU_TOKEN: a PAT that can read PSAL-POSTECH/triton-npu and its
-# toolchain-llvm23 release. The repo is private and the default Actions token is
-# scoped to this repository. preflight checks it before the docker build.
+# Needs secrets.TNPU_TOKEN: a PAT that can read PSAL-POSTECH/triton-npu (and its
+# toolchain-llvm23 release) plus every repo in the manifest's `also_reads`. They
+# are private and the default Actions token is scoped to this repository;
+# preflight checks each before the docker build.
 
 on:
   pull_request:
@@ -62,6 +63,15 @@ jobs:
             echo "::error::${REPO} has no release tagged '${TAG}'. Mirror the toolchain assets there (see thirdparty/triton-npu.json)."
             echo "ready=false" >> "$GITHUB_OUTPUT"; exit 1
           fi
+          # restore.sh clones these too; without them the failure is deep in the
+          # image build instead of here.
+          for R in $(jq -r '.triton_npu.also_reads[]?' thirdparty/triton-npu.json); do
+            if ! curl -fsS -H "Authorization: Bearer ${TNPU_TOKEN}" \
+                 "https://api.github.com/repos/${R}" -o /dev/null; then
+              echo "::error::TNPU_TOKEN cannot read ${R}, which restore.sh clones."
+              echo "ready=false" >> "$GITHUB_OUTPUT"; exit 1
+            fi
+          done
           echo "ready=true" >> "$GITHUB_OUTPUT"
 
   ensure-tnpu-base:

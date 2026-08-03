@@ -205,9 +205,6 @@ _DROP_IMPORT_RE = re.compile(
 #: kernel is compiled ahead of time to a RISC-V ELF) and its import is dropped
 #: above, so the call would be a NameError.
 _DROP_CALL_RE = re.compile(r"^\s*triton_helpers\.set_driver_to_gpu\(\)")
-#: Anything else from triton_helpers is a real dependency -- maximum/minimum/
-#: promote_to_tensor and friends, which reductions and clamps use constantly.
-_HELPER_USE_RE = re.compile(r"\btriton_helpers\.(\w+)")
 
 
 def strip_for_tnpu(src):
@@ -237,29 +234,13 @@ def strip_for_tnpu(src):
         i += 1
     body = "\n".join(out)
 
-    # The generated source already imports triton itself; only add what a
-    # stripped module might be missing.
-    prefix = ""
-    if "import triton.language as tl" not in body:
-        prefix = "import triton\nimport triton.language as tl\n\n"
-
-    # torch's own triton_helpers, copied next to the kernel by write_spec_file.
-    if _HELPER_USE_RE.search(body):
-        prefix += f"from {helpers_shim.PACKAGE} import triton_helpers\n"
-    # tl_math is triton's own, re-exported through triton_helpers; the dropped
-    # torch import took it with it.
-    if re.search(r"\btl_math\.", body):
-        prefix += "from triton.language import math as tl_math\n"
-
-    # libdevice members are @core.extern: no triton_shared implementation, so a
-    # call returns None and fails obscurely in stage 1. Name it here instead.
-    ext = sorted(set(re.findall(r"\blibdevice\.(\w+)", body)))
-    if ext:
-        raise SpecIncomplete(
-            f"kernel calls libdevice.{{{','.join(ext)}}}: those are extern math "
-            f"intrinsics with no implementation on the triton_shared backend. "
-            f"They need lowering to a VPU op (or a scalar fallback) before this "
-            f"kernel can compile.")
+    prefix = (
+        "import triton\n"
+        "import triton.language as tl\n"
+        "from triton.language import math as tl_math\n"
+        "from triton.language.extra import libdevice\n"
+        f"from {helpers_shim.PACKAGE} import triton_helpers\n\n"
+    )
     return prefix + body
 
 

@@ -213,10 +213,13 @@ def fixed_config_for(kernel):
 _HEURISTIC_RE = re.compile(r"^@triton_heuristics\.")
 _DROP_IMPORT_RE = re.compile(
     r"^\s*(import torch|from torch\b|from __future__|import __main__)")
-#: GPU-only runtime setup Inductor emits at module scope. Meaningless here (the
-#: kernel is compiled ahead of time to a RISC-V ELF) and its import is dropped
-#: above, so the call would be a NameError.
-_DROP_CALL_RE = re.compile(r"^\s*triton_helpers\.set_driver_to_gpu\(\)")
+#: Calls that only mean something on a GPU. set_driver_to_gpu picks a runtime we
+#: never launch through; debug_barrier works around a triton warp-scheduling bug
+#: (triton-lang/triton#1615) and tnpu replays one work-item at a time, so there
+#: are no warps to order. It also reaches ttir as ttg.barrier, a GPU-dialect op
+#: triton-shared-opt cannot parse.
+_DROP_CALL_RE = re.compile(
+    r"^\s*(triton_helpers\.set_driver_to_gpu|tl\.debug_barrier)\(\)")
 
 
 def strip_for_tnpu(src):

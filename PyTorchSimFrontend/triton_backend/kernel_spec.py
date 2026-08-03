@@ -40,6 +40,8 @@ import re
 
 from torch._inductor.virtualized import V
 
+from . import helpers_shim
+
 #: Triton signature token -> (torch dtype name, bytes). Only the dtypes
 #: tnpu/wrapper.py can round-trip through .raw files.
 _DTYPE = {
@@ -235,19 +237,15 @@ def strip_for_tnpu(src):
         i += 1
     body = "\n".join(out)
 
-    used = sorted(set(_HELPER_USE_RE.findall(body)))
-    if used:
-        raise SpecIncomplete(
-            f"kernel uses triton_helpers.{{{','.join(used)}}}, which lives in "
-            f"torch and the tnpu venv has no torch. Vendor a minimal "
-            f"triton_helpers into the tnpu venv (or into TRITON_SRC) before this "
-            f"kernel can compile.")
-
     # The generated source already imports triton itself; only add what a
     # stripped module might be missing.
     prefix = ""
     if "import triton.language as tl" not in body:
         prefix = "import triton\nimport triton.language as tl\n\n"
+
+    # torch's own triton_helpers, copied next to the kernel by write_spec_file.
+    if _HELPER_USE_RE.search(body):
+        prefix += f"from {helpers_shim.PACKAGE} import triton_helpers\n"
     # tl_math is triton's own, re-exported through triton_helpers; the dropped
     # torch import took it with it.
     if re.search(r"\btl_math\.", body):
@@ -328,6 +326,9 @@ import os
 import sys
 
 sys.path.insert(0, {tnpu_dir!r})
+# This directory too: the kernel is loaded by path, so a sibling package
+# (tnpu_helpers) would not otherwise be importable from it.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tnpu.spec import KernelSpec, Arg  # noqa: E402
 
 #: The rewritten Triton source, beside this file. It must be a REAL file on
@@ -412,8 +413,11 @@ def write_spec_file(src_code, meta, path, tnpu_dir):
         for a in meta["args"] if a["role"] in ("in", "inout")) or "    pass"
 
     triton_module = f"{meta['kernel_name']}_triton.py"
+    stripped = strip_for_tnpu(src_code)
+    if helpers_shim.PACKAGE in stripped:
+        helpers_shim.write_package(os.path.dirname(path))
     with open(os.path.join(os.path.dirname(path), triton_module), "w") as f:
-        f.write(strip_for_tnpu(src_code))
+        f.write(stripped)
 
     scalars = scalar_args(meta)
     text = SPEC_TEMPLATE.format(

@@ -32,7 +32,8 @@ class TnpuError(RuntimeError):
     _SIGNAL = re.compile(
         r"^(?!\s|Traceback|During handling|The above)"
         r"(.*\berror:\s.*|.*failed to legalize.*|"
-        r"[\w.]*(?:Error|Exception)\b.*|.*Assertion.*)$", re.M)
+        r"[\w.]*(?:Error|Exception)\b.*|.*Assertion.*|"
+        r".*(?:segfault|Illegal instruction|trap_|bad --isa).*)$", re.M)
     #: Frames and carets: context, not the diagnostic.
     _FRAME = re.compile(r'^\s|^\s*File "|^\s*\^')
 

@@ -129,6 +129,15 @@ def read_outputs(workdir, meta, args):
     return written
 
 
+def _stage_log(workdir):
+    """tnpu's per-stage log, where every subprocess it runs leaves its output."""
+    path = os.path.join(workdir, "stage.log")
+    if not os.path.isfile(path):
+        return ""
+    with open(path, errors="replace") as f:
+        return f.read()
+
+
 def run(workdir, meta, args, timeout_sec=None):
     """Execute the kernel on the launch's tensors. Returns the names written."""
     from . import tnpu_bridge
@@ -146,8 +155,10 @@ def run(workdir, meta, args, timeout_sec=None):
         capture_output=True, text=True, cwd=tnpu_bridge.tnpu_dir(), env=env,
         timeout=timeout_sec)
     if proc.returncode != 0:
-        raise RuntimeError(
-            f"[Spike] {meta['kernel_name']} failed:\n"
-            + (proc.stdout + proc.stderr)[-2000:])
+        raise tnpu_bridge.TnpuError(
+            f"[Spike] {meta['kernel_name']} failed",
+            cmd=" ".join([extension_config.CONFIG_TNPU_PYTHON, "-m",
+                          "tnpu.spike", spec, workdir]),
+            output=proc.stdout + proc.stderr + "\n" + _stage_log(workdir))
 
     return read_outputs(workdir, meta, args)

@@ -73,14 +73,14 @@ _installed = False
 
 
 def install():
-    """Opt-in via TORCHSIM_TRITON_TEMPLATES=1.
+    """On by default; TORCHSIM_TRITON_TEMPLATES=0 opts out.
 
-    Off by default because it moves mm/addmm off a working path onto one that
-    stops at tl.assume in tnpu (PSAL-POSTECH/triton-npu#2). Turn it on to work
-    on that; turn it into the default once it lands.
+    Sending mm to aten is not a working state -- the op is not simulated at all
+    -- so the templates are the default and the tests that now stop at
+    tl.assume in tnpu (PSAL-POSTECH/triton-npu#2) say so.
     """
     global _installed
-    if _installed or os.environ.get("TORCHSIM_TRITON_TEMPLATES", "0") != "1":
+    if _installed or os.environ.get("TORCHSIM_TRITON_TEMPLATES", "1") == "0":
         return
     from torch._inductor import config
 

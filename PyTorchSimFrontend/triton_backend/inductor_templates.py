@@ -31,19 +31,29 @@ def _claim_triton_present():
 
 
 def _register_template_heuristics():
+    from torch._inductor.kernel.bmm import bmm_template
     from torch._inductor.kernel.mm import mm_template
     from torch._inductor.template_heuristics.registry import (
         register_template_heuristic)
     from torch._inductor.template_heuristics.triton import (
-        BaseConfigHeuristic, MMTemplateConfigMixin)
+        AddMMConfigMixin, BaseConfigHeuristic, MMTemplateConfigMixin)
 
     @register_template_heuristic(mm_template.uid, "npu")
+    @register_template_heuristic(bmm_template.uid, "npu")
     class NPUMMTemplateConfigHeuristic(MMTemplateConfigMixin, BaseConfigHeuristic):
         # TODO: size these from the hardware config (lanes, spad per lane)
         # rather than taking the generic set.
         def __init__(self):
             super().__init__()
             self.exhaustive_configs = self.mm_configs
+
+    # addmm and baddbmm carry a bias as input_nodes[0]; without their own entry
+    # the mm heuristic is used with prefix_args=0 and def_kernel asserts.
+    @register_template_heuristic(mm_template.uid, "npu", op_name="addmm")
+    @register_template_heuristic(bmm_template.uid, "npu", op_name="baddbmm")
+    class NPUAddmmTemplateConfigHeuristic(AddMMConfigMixin,
+                                          NPUMMTemplateConfigHeuristic):
+        pass
 
 
 def pick_config(choices):

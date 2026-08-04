@@ -95,7 +95,10 @@ def _roles(kernel):
     for buf, arg in getattr(kernel.args, "input_buffers", {}).items():
         out[arg] = ("in", buf)
     for buf, arg in getattr(kernel.args, "output_buffers", {}).items():
-        out[arg] = ("out", buf)
+        # A graph input here is mutated, not produced: unwritten elements must
+        # survive, so it has to be seeded.
+        role = "inout" if buf in getattr(V.graph, "graph_inputs", {}) else "out"
+        out[arg] = (role, buf)
     for buf, arg in getattr(kernel.args, "inplace_buffers", {}).items():
         name = getattr(arg, "inner_name", arg)
         out[name] = ("inout", buf)

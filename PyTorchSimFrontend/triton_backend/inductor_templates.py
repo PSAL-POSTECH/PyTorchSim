@@ -7,6 +7,8 @@ nothing. The templates themselves are not GPU-specific -- torch ships one
 gates on `is_gpu`, and GPU_TYPES is a hardcoded list with no registration hook.
 """
 
+import os
+
 import torch
 
 
@@ -71,8 +73,14 @@ _installed = False
 
 
 def install():
+    """Opt-in via TORCHSIM_TRITON_TEMPLATES=1.
+
+    Off by default because it moves mm/addmm off a working path onto one that
+    stops at tl.assume in tnpu (PSAL-POSTECH/triton-npu#2). Turn it on to work
+    on that; turn it into the default once it lands.
+    """
     global _installed
-    if _installed:
+    if _installed or os.environ.get("TORCHSIM_TRITON_TEMPLATES", "0") != "1":
         return
     from torch._inductor import config
 
@@ -81,9 +89,14 @@ def install():
     _register_template_heuristics()
     _install_selection()
 
-    # Templates are only considered under max_autotune; selection is replaced
-    # above, so this costs a rendering rather than a benchmark sweep.
-    config.max_autotune = True
+    # max_autotune_gemm, not max_autotune: the latter also turns on pointwise
+    # autotuning, which appends a benchmark harness to every kernel module and
+    # breaks the ones that were already working.
+    config.max_autotune_gemm = True
     config.max_autotune_gemm_backends = "TRITON"
     config.max_autotune_conv_backends = "TRITON"
+    config.triton.autotune_at_compile_time = False
+    # Epilogue-fusion benchmarking renders a benchmark-flavoured kernel whose
+    # harness imports land indented in the real module.
+    config.benchmark_epilogue_fusion = False
     _installed = True

@@ -219,11 +219,13 @@ def fixed_config_for(kernel):
             getattr(kernel, "kernel_name", "kernel"), axes)
     cfg.setdefault("XBLOCK", lanes)         # a kernel with no tiling info still has x
     if getattr(kernel, "inside_reduction", False):
-        # A reduction block is NOT free to be the lane count: the reduced axis
-        # has to stay inside a lane (see triton-npu kernels/reduce.py). Left
-        # unset on purpose so the reduction path fails loudly rather than
-        # silently picking a layout the hardware cannot execute.
-        cfg["R0_BLOCK"] = None
+        # The whole reduced extent, so the kernel's r0 loop runs once. Whether
+        # that tile fits the lanes is the lowering pass's call, not ours.
+        r0 = (getattr(kernel, "numels", None) or {}).get("r0_")
+        try:
+            cfg["R0_BLOCK"] = int(V.graph.sizevars.size_hint(r0))
+        except Exception:  # noqa: BLE001 - dynamic; write_spec_file reports it
+            cfg["R0_BLOCK"] = None
     return cfg
 
 

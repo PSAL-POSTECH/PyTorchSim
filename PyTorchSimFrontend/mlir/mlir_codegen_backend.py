@@ -215,7 +215,9 @@ class ExtensionWrapperCodegen(wrapper.PythonWrapperCodegen):
         original_fxnode_name=None,
     ):
         device = device or V.graph.get_current_device_or_throw()
-        self.writeline(self.wrap_kernel_call(kernel_name, call_args))
+        # A template kernel passes sympy constants; wrap_kernel_call joins strings.
+        self.writeline(self.wrap_kernel_call(
+            kernel_name, [str(a) for a in call_args]))
         return
 
     def generate(self, is_inference):
@@ -239,7 +241,8 @@ class ExtensionWrapperCodegen(wrapper.PythonWrapperCodegen):
                     if isinstance(line, wrapper.MemoryPlanningLine):
                         line.codegen(self.wrapper_call)
                     elif isinstance(line, wrapper.KernelCallLine):
-                        self.wrapper_call.writeline(self.wrap_kernel_call(line.kernel_name, line.call_args))
+                        self.wrapper_call.writeline(self.wrap_kernel_call(
+                            line.kernel_name, [str(a) for a in line.call_args]))
                         if _func_verify.enabled():
                             self._fverify_emit_checks(line.call_args)
                     else:

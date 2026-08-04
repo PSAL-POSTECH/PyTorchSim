@@ -27,11 +27,12 @@ STATUS: scaffolding. The seams are wired and each stage names precisely what it
 still owes; see README.md for the gap list. Expect failures, not results.
 """
 
-from . import _triton_compat
+from . import _triton_compat, inductor_templates
 
 # Before anything imports Inductor's Triton codegen: it needs `triton` in THIS
 # interpreter, and on a GPU-less box its backend hash cannot be computed.
 _triton_compat.install()
+inductor_templates.install()
 
 from .scheduling import TritonNPUScheduling  # noqa: E402,F401
 from .wrapper_codegen import TritonNPUWrapperCodegen  # noqa: E402,F401

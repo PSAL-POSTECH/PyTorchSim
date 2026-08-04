@@ -13,6 +13,7 @@ tests/ops/fusion/test_matmul_vector.py
 tests/ops/fusion/test_prologue_fusion.py
 tests/ops/misc/test_expert_mask.py
 tests/ops/reduce/test_batchnorm.py
+tests/ops/sparsity/test_sparse_core.py
 tests/ops/sparsity/test_sparsity.py
 tests/ops/view/test_transpose2D.py
 tests/ops/view/test_transpose3D.py

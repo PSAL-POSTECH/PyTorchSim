@@ -57,7 +57,7 @@ class SparseMLP(nn.Module):
 def test_sparse_mlp(device, batch_size=32, input_size=128, hidden_size=128, output_size=128):
     torch.manual_seed(0)
     # mlp = MLP(input_size, hidden_size, output_size)
-    mlp = SparseMLP(input_size, hidden_size, output_size, device)
+    mlp = SparseMLP(input_size, hidden_size, output_size, device=device)
     mlp = mlp.to(device=device)
     input = torch.randn(batch_size, input_size)
     x1 = input.to(device=device)

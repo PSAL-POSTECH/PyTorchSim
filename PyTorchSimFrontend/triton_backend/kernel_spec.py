@@ -196,7 +196,13 @@ def fixed_config_for(kernel):
     README, not something to guess at here.
     """
     from PyTorchSimFrontend import extension_config
-    lanes = int(extension_config.vpu_num_lanes)
+    try:
+        lanes = int(extension_config.vpu_num_lanes)
+    except KeyError:
+        raise SpecIncomplete(
+            f"{extension_config.CONFIG_TOGSIM_CONFIG} has no vpu_num_lanes. "
+            f"This route pins every block size to the lane count, so a config "
+            f"without a VPU cannot describe a launch shape.") from None
 
     # kernel.numels is keyed by prefix; parallel_axes wants collect_meta's
     # "<prefix>numel" keys, and passing the raw dict silently matched nothing.

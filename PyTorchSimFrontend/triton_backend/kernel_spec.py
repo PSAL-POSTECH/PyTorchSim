@@ -42,12 +42,20 @@ from torch._inductor.virtualized import V
 
 from . import helpers_shim
 
-#: Triton signature token -> (torch dtype name, bytes). Only the dtypes
-#: tnpu/wrapper.py can round-trip through .raw files.
+#: Triton signature token -> torch dtype name. The full set Inductor's
+#: `_type_of` can emit (torch/_inductor/codegen/triton_utils.py); a token that
+#: is absent here reads as an unresolvable arg, so partial coverage shows up as
+#: SpecIncomplete on the first kernel that widens past int8.
 _DTYPE = {
-    "*fp32": "float32", "*fp16": "float16", "*bf16": "bfloat16",
-    "*i64": "int64", "*i32": "int32", "*i8": "int8", "*i1": "bool",
-    "fp32": "float32", "i32": "int32", "i64": "int64",
+    "*fp64": "float64", "*fp32": "float32", "*fp16": "float16",
+    "*bf16": "bfloat16",
+    "*i64": "int64", "*i32": "int32", "*i16": "int16", "*i8": "int8",
+    "*i1": "bool",
+    "*u64": "uint64", "*u32": "uint32", "*u16": "uint16", "*u8": "uint8",
+    "fp64": "float64", "fp32": "float32", "fp16": "float16",
+    "bf16": "bfloat16",
+    "i64": "int64", "i32": "int32", "i16": "int16", "i8": "int8", "i1": "bool",
+    "u64": "uint64", "u32": "uint32", "u16": "uint16", "u8": "uint8",
 }
 
 

@@ -1,0 +1,11 @@
+{
+  "description": "Pin for the triton-npu toolchain layer (Triton codegen route only). Kept out of github-releases.json so the main torchsim_base image is not rebuilt when this moves. CI builds ghcr.io/.../torchsim_tnpu_base:tnpu-<12 hex> when missing, pin = sha256 of this file plus Dockerfile.tnpu. `ref` is a commit, not a branch, so any upstream change -- including the toolchain release its setup/versions.env points at -- moves the pin. Both repositories are private: the workflow needs a PAT in secrets.TNPU_TOKEN with read on each, since the default Actions token is scoped to this repository. `also_reads` is what restore.sh clones besides the release, and preflight checks the token against it.",
+  "triton_npu": {
+    "repository": "PSAL-POSTECH/triton-npu",
+    "ref": "8ebe408dbe52b84a825dcc01152d4a70d211e601",
+    "release_tag": "toolchain-llvm23",
+    "also_reads": [
+      "PSAL-POSTECH/triton_shared"
+    ]
+  }
+}

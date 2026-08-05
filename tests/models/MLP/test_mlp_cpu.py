@@ -5,9 +5,6 @@ import time
 import contextlib
 import unittest
 import copy
-import numpy as np
-import matplotlib.pyplot as plt
-from torchsummary import summary
 
 
 import torch
@@ -112,10 +109,11 @@ def train_mlp_mnist(device):
     # save initial model state
     # torch.save(model_device.state_dict(), f"{name}/initial_model.pth")
 
-    # load from path
-    load_path = "./128_784_32_10_cpu/best_model.pth"
-    model_device.load_state_dict(torch.load(load_path))
-    print("model loaded..")
+    # Optional warm start; this run trains and saves its own best_model.pth.
+    load_path = f"{name}/best_model.pth"
+    if os.path.exists(load_path):
+        model_device.load_state_dict(torch.load(load_path))
+        print("model loaded..")
 
     model_device.train()
 

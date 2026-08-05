@@ -414,6 +414,9 @@ class TogBuilder:
         self.loop_var_name = {}  # value-identity-key -> loop name
         self.compute_nodes = []
         self.loop_nodes = []
+        # `_collect_dma_nodes` descends from the loop nodes, so a DMA hanging off
+        # the root (no tile loop in the kernel) would be missed.
+        self.dma_nodes = []
         self._reset_matmul_fsm()
 
     # ---- matmul FSM ----
@@ -568,7 +571,13 @@ class TogBuilder:
                 loop_index_list.append(("c" + str(c), c))
 
     # ---- main recursion ----
-    def print_operation(self, op, node):
+    def visit_operation(self, op, node):
+        """Walk `op` and attach the nodes it produces under `node`.
+
+        Builds the graph; it does not print. (The C++ pass this is ported from
+        does both in one method, `printOperation` -- here `bfs`/`display` own
+        the printing.)
+        """
         name = _op_name(op)
         if name in SKIP_OPS:
             return
@@ -605,7 +614,7 @@ class TogBuilder:
                 for region in oper.regions:
                     for block in region.blocks:
                         for inner in block.operations:
-                            self.print_operation(inner, loop_node)
+                            self.visit_operation(inner, loop_node)
                 return
 
         if name == "togsim.transfer":
@@ -819,9 +828,14 @@ class TogBuilder:
             loop_idx_list.append(key)
             loop_stride_list.append(reordered[key])
 
-        # base address
+        # base address: which tensor this DMA touches. The operand is the block
+        # argument itself in PyTorchSim's codegen; when it is a view of one
+        # instead, only the producer knows which -- so it says so (`dram_arg`)
+        # rather than the consumer guessing its way back through view ops.
         address = "arg"
-        if _is_block_arg(dram_memref):
+        if "dram_arg" in oper.attributes:
+            address += str(ir.IntegerAttr(oper.attributes["dram_arg"]).value)
+        elif _is_block_arg(dram_memref):
             address += str(ir.BlockArgument(dram_memref).arg_number)
 
         # element size
@@ -875,6 +889,7 @@ class TogBuilder:
                               tag_stride_list, loop_idx_list, loop_stride_list,
                               indirect_box[0])
         dma_node.op = op
+        self.dma_nodes.append(dma_node)
         node.add_child(dma_node)
         dma_node.add_parent(node)
 
@@ -918,7 +933,9 @@ class TogBuilder:
                     dram_memref = f["dst"]
                 elif dst_space == 1 and src_space == 0:
                     dram_memref = f["src"]
-                if dram_memref is not None and _is_block_arg(dram_memref):
+                if "dram_arg" in user.attributes:
+                    address += str(ir.IntegerAttr(user.attributes["dram_arg"]).value)
+                elif dram_memref is not None and _is_block_arg(dram_memref):
                     address += str(ir.BlockArgument(dram_memref).arg_number)
 
         if len(tag_stride_list) == 0:
@@ -928,6 +945,7 @@ class TogBuilder:
         wait_node = TOGDMAWaitNode("DMAWaitNode", tag_index_list, tag_stride_list,
                                    tag_divider_list, address)
         wait_node.op = op
+        self.dma_nodes.append(wait_node)
         node.add_child(wait_node)
         wait_node.add_parent(node)
 
@@ -1064,12 +1082,47 @@ def _insert_compute_markers(builder):
 # Driver.
 # ---------------------------------------------------------------------------
 def _find_kernel(module):
-    for op in module.body.operations:
-        if op.operation.name != "func.func":
-            continue
+    """The kernel function: named `kernel` in PyTorchSim's codegen, else the
+    module's only func.func (triton-npu carries the Triton kernel's own name).
+    Declines when there is more than one -- the intent would be a guess."""
+    funcs = [op for op in module.body.operations
+             if op.operation.name == "func.func"]
+    for op in funcs:
         if ir.StringAttr(op.operation.attributes["sym_name"]).value == "kernel":
             return op
-    return None
+    return funcs[0] if len(funcs) == 1 else None
+
+
+#: The loop roles (sec 9.1). Without one, a loop is a micro-loop the compute FSM
+#: folds into a single node, not a tile loop.
+_LOOP_ROLE_ATTRS = ("outer_loop", "accumulation_loop", "inner_loop")
+
+
+def _has_loop_role(op):
+    attrs = op.operation.attributes
+    return any(k in attrs and ir.BoolAttr(attrs[k]).value for k in _LOOP_ROLE_ATTRS)
+
+
+def _is_address_plumbing(op):
+    """Scalar index/integer math (DMA offsets, mask extents) and the terminator.
+
+    Only consulted on the no-top-level-loop path. PyTorchSim's codegen puts this
+    math in `affine.apply`, which SKIP_OPS drops; triton-npu emits an
+    arith/index_cast chain that would otherwise count as vector compute.
+
+    Keyed on result type: tile data here is always vector- or float-typed. A
+    top-level SCALAR arithmetic kernel would be misread, but no path emits one.
+    """
+    name = _op_name(op)
+    if name in ("func.return", "memref.cast"):
+        return True
+    if not name.startswith("arith."):
+        return False
+    results = list(op.operation.results)
+    if not results:
+        return False
+    return all(ir.IndexType.isinstance(r.type) or ir.IntegerType.isinstance(r.type)
+               for r in results)
 
 
 def _build(module, builder):
@@ -1082,13 +1135,29 @@ def _build(module, builder):
 
     block = func_op.regions[0].blocks[0]
     out = []
+    # A root is a top-level TILE loop, identified by its role attribute (sec
+    # 9.1) -- not by being an affine.for: bank_vectorize leaves a bare one for
+    # the tile's vector work, and rooting there orphans every DMA.
+    roots = [op for op in block.operations
+             if op.operation.name == "affine.for" and _has_loop_role(op)]
+    if roots:
+        for op in roots:
+            root = TOGNode("root")
+            builder._reset_matmul_fsm()
+            builder.visit_operation(op, root)
+            root.bfs(out)
+        return "".join(out)
+
+    # No top-level loop: the body is ONE work-item -- the shape a Triton kernel
+    # arrives in, its grid becoming the trace producer's dispatch loop (sec 9.3).
+    # PyTorchSim's codegen keeps the tile loops in the kernel and never lands here.
+    root = TOGNode("root")
+    builder._reset_matmul_fsm()
     for op in block.operations:
-        if op.operation.name != "affine.for":
+        if _is_address_plumbing(op):
             continue
-        root = TOGNode("root")
-        builder._reset_matmul_fsm()
-        builder.print_operation(op, root)
-        root.bfs(out)
+        builder.visit_operation(op, root)
+    root.bfs(out)
     return "".join(out)
 
 

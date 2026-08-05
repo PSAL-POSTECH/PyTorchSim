@@ -119,18 +119,172 @@ def _attr_bool(op, key):
 # ---------------------------------------------------------------------------
 # step 1: rewrite signature + togsim.* ops (the unregistered-op glue)
 # ---------------------------------------------------------------------------
-def _strip_aux(module):
-    """Erase memref.global decls and every func except @kernel (the wrapper)."""
+def _strip_aux(module, keep=None):
+    """Erase memref.global decls and every func except the kernel.
+
+    `keep` is the kernel op: its name is `kernel` only in PyTorchSim's codegen,
+    so the caller passes what `_find_kernel` resolved.
+    """
+    keep_op = keep.operation if keep is not None else None
     victims = []
     for op in module.body.operations:
         name = op.operation.name
         if name == "memref.global":
             victims.append(op)
         elif name == "func.func":
-            if ir.StringAttr(op.operation.attributes["sym_name"]).value != "kernel":
+            if keep_op is not None:
+                if op.operation != keep_op:
+                    victims.append(op)
+            elif ir.StringAttr(op.operation.attributes["sym_name"]).value != "kernel":
                 victims.append(op)
     for op in victims:
         op.operation.erase()
+
+
+class WorkItem:
+    """A kernel whose body is ONE work-item, plus the grid over it.
+
+    A Triton kernel describes a single program instance; the grid lives outside
+    it. The trace producer already splits the same way (design sec 9.3), so only
+    the enumeration is missing.
+
+    `parallel_args` are the argument positions holding the program ids
+    (triton-shared appends gridX,Y,Z / pidX,Y,Z after the user scalars); `grid`
+    their extents. Both outermost-first.
+
+    An extent may be None, meaning "read it from shape_args at run time". Only
+    the NUMBER of axes has to be known when the kernel is compiled -- how many
+    loops to nest and how many iv[] slots to fill; the trip counts are just
+    values, and the producer ABI already takes them
+    (togsim_kernel(ctx, shape_args, n)). That is what lets one compiled trace
+    serve every shape.
+    """
+
+    def __init__(self, parallel_args, grid):
+        if len(parallel_args) != len(grid):
+            raise ValueError(
+                f"parallel_args {parallel_args} and grid {grid} must have the "
+                f"same length -- one program-id argument per grid axis")
+        self.parallel_args = list(parallel_args)
+        self.grid = [None if g is None else int(g) for g in grid]
+
+    @property
+    def dynamic_axes(self):
+        """Indices into `grid` whose extent arrives at run time."""
+        return [i for i, g in enumerate(self.grid) if g is None]
+
+
+def _materialize_grid_loop(kernel, work_item, ctx):
+    """Wrap the body in the grid loop the Triton kernel does not carry:
+
+        func @k(..., %pid: i32) {
+          scf.for %p = 0 to G { <body, %pid -> index_cast %p> } {outer_loop}
+        }
+
+    Downstream is then unchanged: `_parallel_loop_chain` finds the tagged loop,
+    the outliner threads its induction variable through `iv[]`, and the loop left
+    behind becomes the dispatch enumeration. `outer_loop` means "independent
+    work-item" (sec 9.1) -- exactly a Triton program id.
+
+    MUST run before `_rewrite_signature`, which erases the arguments and first
+    asserts none are still used.
+    """
+    from mlir.dialects import arith, scf
+
+    block = kernel.regions[0].blocks[0]
+    idxty = ir.IndexType.get()
+    loc = ir.Location.unknown(ctx)
+
+    pid_args = [block.arguments[i] for i in work_item.parallel_args]
+    body_ops = [o for o in block.operations
+                if o.operation.name not in _LOOP_TERMINATORS]
+    terminator = [o for o in block.operations
+                  if o.operation.name in _LOOP_TERMINATORS][0]
+
+    # Every bound first, and all of them before the first loop: each is created
+    # just before the terminator, so one made after an outer loop would sit
+    # BELOW it in the block while an inner loop uses it -- which does not
+    # dominate, and the verifier rejects it (only reachable at rank >= 2).
+    with ir.InsertionPoint(terminator), loc:
+        c0 = arith.ConstantOp(idxty, ir.IntegerAttr.get(idxty, 0)).result
+        c1 = arith.ConstantOp(idxty, ir.IntegerAttr.get(idxty, 1)).result
+        # A runtime extent still needs SOMETHING here: shape_args does not exist
+        # until _rewrite_signature adds it. The placeholder is replaced by
+        # _bind_runtime_bounds once it does.
+        ubs = [arith.ConstantOp(idxty, ir.IntegerAttr.get(idxty, e or 1)).result
+               for e in work_item.grid]
+
+    loops, inner = [], None
+    for ub in ubs:
+        # Nest inside the previous loop, BEFORE its yield: InsertionPoint on a
+        # block appends, and an scf.for body is already terminated.
+        ip = ir.InsertionPoint(terminator) if inner is None \
+            else ir.InsertionPoint.at_block_terminator(inner.body)
+        with ip, loc:
+            loop = scf.ForOp(c0, ub, c1)
+        # ForOp leaves the body empty here; scf.for needs a terminator, and
+        # _outline_work_item inserts before it.
+        if len(loop.body.operations) == 0:
+            with ir.InsertionPoint(loop.body), loc:
+                scf.YieldOp([])
+        loop.operation.attributes["outer_loop"] = ir.BoolAttr.get(True)
+        loops.append(loop)
+        inner = loop
+
+    # Move the tile body inside the innermost loop, ahead of its yield.
+    inner_block = inner.body
+    inner_term = inner_block.operations[len(inner_block.operations) - 1]
+    for op in body_ops:
+        op.operation.move_before(inner_term)
+
+    # Program ids are i32, induction variables index: cast once, at the top.
+    with ir.InsertionPoint(inner_block.operations[0]), loc:
+        casts = []
+        for loop, pid in zip(loops, pid_args):
+            iv = loop.body.arguments[0]
+            casts.append(arith.IndexCastOp(pid.type, iv).result
+                         if pid.type != idxty else iv)
+
+    for pid, new in zip(pid_args, casts):
+        _replace_all_uses(pid, new)
+
+    return [(loops[i], ubs[i]) for i in work_item.dynamic_axes]
+
+
+def _bind_runtime_bounds(pending, shape_arg, ctx):
+    """Point each runtime loop bound at `shape_args[k]`.
+
+    Runs AFTER _rewrite_signature, which is what creates the shape_args
+    argument. The loops stay in the entry function (the outliner moves only
+    their bodies), so the read is in scope where the bound is used.
+    """
+    if not pending:
+        return
+    from mlir.dialects import arith
+
+    i64 = ir.IntegerType.get_signless(64)
+    idxty = ir.IndexType.get()
+    loc = ir.Location.unknown(ctx)
+    for k, (loop, placeholder) in enumerate(pending):
+        with ir.InsertionPoint(placeholder.owner), loc:
+            kc = ir.Operation.create(
+                "emitc.constant", results=[i64],
+                attributes={"value": ir.IntegerAttr.get(i64, k)}).results[0]
+            elem = ir.Operation.create(
+                "emitc.subscript", results=[i64],
+                operands=[shape_arg, kc]).results[0]
+            bound = arith.IndexCastOp(idxty, elem).result
+        _replace_all_uses(placeholder, bound)
+        placeholder.owner.erase()
+
+
+def _replace_all_uses(old, new):
+    """The bindings expose no replaceAllUsesWith on a Value."""
+    for use in list(old.uses):
+        owner = use.owner
+        for i in range(len(owner.operands)):
+            if owner.operands[i] == old:
+                owner.operands[i] = new
 
 
 def _rewrite_signature(kernel, ctx):
@@ -196,15 +350,22 @@ def _is_outer(forop):
     return "outer_loop" in a and ir.BoolAttr(a["outer_loop"]).value
 
 
+#: The role is carried by the `outer_loop` attribute, not the dialect:
+#: PyTorchSim's codegen emits affine.for, _materialize_grid_loop scf.for. Both
+#: keep the induction variable in block argument 0.
+_LOOP_OPS = ("affine.for", "scf.for")
+_LOOP_TERMINATORS = ("affine.yield", "scf.yield", "func.return")
+
+
 def _parallel_loop_chain(block):
-    """The nested chain of `affine.for {outer_loop}` from `block` inward (one
+    """The nested chain of `{outer_loop}` loops from `block` inward (one
     work-item's parallel indices). Empty if the kernel has no parallel loop."""
     chain = []
     cur = block
     while True:
         nxt = None
         for op in cur.operations:
-            if op.operation.name == "affine.for" and _is_outer(op):
+            if op.operation.name in _LOOP_OPS and _is_outer(op):
                 nxt = op
                 break
         if nxt is None:
@@ -281,7 +442,7 @@ def _outline_work_item(ctx, kernel, ctx_val):
 
     # move the work-item body into the tile fn (terminators stay behind).
     for op in [o for o in Lbody.operations
-               if o.operation.name not in ("affine.yield", "func.return")]:
+               if o.operation.name not in _LOOP_TERMINATORS]:
         op.operation.move_before(tret)
 
     # remap captures (Value `==` is identity): ctx -> ctx2, each parallel IV ->
@@ -337,7 +498,7 @@ def _outline_work_item(ctx, kernel, ctx_val):
 
     # --- the dispatcher: marshal the IVs and hand the tile fn to togsim_dispatch ---
     term = [o for o in Lbody.operations
-            if o.operation.name in ("affine.yield", "func.return")][0]
+            if o.operation.name in _LOOP_TERMINATORS][0]
     fn_ref = _opaque(ctx, ts.TILE_SYMBOL)   # function name -> verbatim pointer in C
     with ir.InsertionPoint(term):
         if ivs:
@@ -499,16 +660,25 @@ def _add_extern_c(module, ctx):
 # ---------------------------------------------------------------------------
 # driver
 # ---------------------------------------------------------------------------
-def lower_to_emitc(skeleton_module):
+def lower_to_emitc(skeleton_module, work_item=None):
     """Lower a skeleton+API module (in place) to an EmitC module with the
-    `togsim_kernel` entry function. Returns the same module."""
+    `togsim_kernel` entry function. Returns the same module.
+
+    `work_item` is for kernels whose body is one work-item with the grid outside
+    (Triton's shape); None keeps PyTorchSim's, where the tile loops are already
+    in the kernel.
+    """
     ctx = skeleton_module.context
     kernel = _find_kernel(skeleton_module)
     if kernel is None:
-        raise ValueError("no @kernel found in skeleton module")
+        raise ValueError("no kernel function found in skeleton module")
 
-    _strip_aux(skeleton_module)
+    _strip_aux(skeleton_module, keep=kernel)
+    pending = []
+    if work_item is not None:
+        pending = _materialize_grid_loop(kernel, work_item, ctx)
     ctx_val = _rewrite_signature(kernel, ctx)
+    _bind_runtime_bounds(pending, kernel.regions[0].blocks[0].arguments[1], ctx)
     _rewrite_togsim_ops(ctx, kernel, ctx_val)         # togsim.* -> emitc.call_opaque
     _outline_work_item(ctx, kernel, ctx_val)          # work-item body -> togsim_kernel_tile + dispatch
 
@@ -563,18 +733,20 @@ def _default_include_dir():
     return os.path.join(root, "TOGSim", "include")
 
 
-def skeleton_to_so(skeleton_module, so_path, include_dir=None):
+def skeleton_to_so(skeleton_module, so_path, include_dir=None, work_item=None):
     """skeleton module -> EmitC -> C++ -> compiled trace `.so`. Returns the
     EmitC module text (for inspection / caching)."""
-    emitc = lower_to_emitc(skeleton_module)
+    emitc = lower_to_emitc(skeleton_module, work_item=work_item)
     inc = include_dir or _default_include_dir()
     cpp = emitc_to_cpp(emitc, include_dir=inc)
     compile_so(cpp, so_path, inc)
     return str(emitc)
 
 
-def build_trace_so(postvcix_path, so_path, include_dir=None):
-    """Full P2 path from a post-vcix kernel .mlir to a trace `.so`."""
+def build_trace_so(postvcix_path, so_path, include_dir=None, work_item=None):
+    """Full P2 path from a post-vcix kernel .mlir to a trace `.so`.
+
+    `work_item` -- see lower_to_emitc."""
     from . import build_skeleton as bs
 
     ctx = ir.Context()
@@ -582,7 +754,7 @@ def build_trace_so(postvcix_path, so_path, include_dir=None):
     with ctx:
         module = ir.Module.parse(open(postvcix_path).read(), ctx)
         bs.build_skeleton(module)
-        return skeleton_to_so(module, so_path, include_dir)
+        return skeleton_to_so(module, so_path, include_dir, work_item=work_item)
 
 
 def main(argv):

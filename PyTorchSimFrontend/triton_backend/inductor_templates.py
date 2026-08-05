@@ -57,14 +57,51 @@ def _register_template_heuristics():
 
 
 def pick_config(choices):
-    """Stand in for benchmarking: there is no device to time on.
+    """Stand in for benchmarking: there is no device to time on, so the offered
+    order wins. Extern ranks last, present only so a device with no registered
+    heuristic (cpu) still has a choice.
 
-    TODO: rank by simulated cycles. `timing.run_togsim` already returns a cycle
-    count per compiled kernel; a real implementation drives each candidate
-    through tnpu and caches the result per (kernel, config). Until then the
-    offered order wins -- deterministic, and not a claim about speed.
+    TODO: rank by simulated cycles; timing.run_togsim already returns one per
+    compiled kernel.
     """
-    return {c: 1.0 + i * 1e-3 for i, c in enumerate(choices)}
+    from torch._inductor.select_algorithm import ExternKernelCaller
+
+    return {c: (1e3 if isinstance(c, ExternKernelCaller) else 1.0) + i * 1e-3
+            for i, c in enumerate(choices)}
+
+
+def _short_circuit_degenerate_gemms():
+    """A zero-length axis has no tile, so the heuristics offer no config and the
+    empty choice list raises. A MoE expert routing no tokens gives [0, K] @ [K, N].
+    """
+    from torch._inductor.kernel.mm_common import mm_args
+    from torch._inductor.lowering import full, lowerings
+    from torch._inductor.virtualized import V
+
+    def wrap(op, bias):
+        def wrapped(*args, _orig=lowerings[op], **kwargs):
+            try:
+                m, n, k, layout = mm_args(*args[bias:bias + 2],
+                                          layout=kwargs.get("layout"))[:4]
+                m, n, k = (int(V.graph.sizevars.size_hint(s)) for s in (m, n, k))
+            except Exception:  # noqa: BLE001 - dynamic shape; leave it to _orig
+                return _orig(*args, **kwargs)
+            # k == 0 sums nothing, so zeros -- except addmm/baddbmm, which are
+            # then beta * bias.
+            if m == 0 or n == 0 or (k == 0 and not bias):
+                return full(layout.size, 0, dtype=layout.dtype,
+                            device=layout.device)
+            return _orig(*args, **kwargs)
+
+        return wrapped
+
+    aten = torch.ops.aten
+    for op, bias in ((aten.mm, 0), (aten.bmm, 0),
+                     (aten.addmm, 1), (aten.baddbmm, 1)):
+        for name in op.overloads():
+            o = getattr(op, name)
+            if o in lowerings:
+                lowerings[o] = wrap(o, bias)
 
 
 def _install_selection():
@@ -73,8 +110,8 @@ def _install_selection():
     def benchmark_choices(cls, choices, autotune_args, is_collective=False):
         return pick_config(choices)
 
-    # Precompiling builds every candidate for the current GPU. We need only the
-    # chosen kernel's source; tnpu compiles it ahead of time.
+    # Precompiling builds every candidate for the current GPU; we need only the
+    # chosen kernel's source.
     AlgorithmSelectorCache.benchmark_choices = classmethod(benchmark_choices)
     AlgorithmSelectorCache.make_precompile_fn = lambda self, *a, **k: (lambda: None)
 
@@ -83,11 +120,9 @@ _installed = False
 
 
 def install():
-    """On by default; TORCHSIM_TRITON_TEMPLATES=0 opts out.
-
-    Sending mm to aten is not a working state -- the op is not simulated at all
-    -- so the templates are the default and the tests that now stop at
-    tl.assume in tnpu (PSAL-POSTECH/triton-npu#2) say so.
+    """On by default; TORCHSIM_TRITON_TEMPLATES=0 opts out. Sending mm to aten
+    simulates nothing, so a test that stops inside tnpu says more than one that
+    passes without running the op.
     """
     global _installed
     if _installed or os.environ.get("TORCHSIM_TRITON_TEMPLATES", "1") == "0":
@@ -97,14 +132,17 @@ def install():
     _register_npu_as_gpu()
     _claim_triton_present()
     _register_template_heuristics()
+    _short_circuit_degenerate_gemms()
     _install_selection()
 
-    # max_autotune_gemm, not max_autotune: the latter also turns on pointwise
-    # autotuning, which appends a benchmark harness to every kernel module and
-    # breaks the ones that were already working.
+    # Not max_autotune: that also turns on pointwise autotuning, which appends
+    # a benchmark harness to every kernel module.
     config.max_autotune_gemm = True
-    config.max_autotune_gemm_backends = "TRITON"
-    config.max_autotune_conv_backends = "TRITON"
+    # These are global but the heuristics are registered for npu only, so ATEN
+    # stays in the list to keep a cpu gemm in the same graph from having no
+    # choice at all. pick_config ranks it last.
+    config.max_autotune_gemm_backends = "ATEN,TRITON"
+    config.max_autotune_conv_backends = "ATEN,TRITON"
     config.triton.autotune_at_compile_time = False
     # Epilogue-fusion benchmarking renders a benchmark-flavoured kernel whose
     # harness imports land indented in the real module.

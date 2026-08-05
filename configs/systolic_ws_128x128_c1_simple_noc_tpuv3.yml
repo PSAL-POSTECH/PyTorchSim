@@ -13,6 +13,8 @@ dram_channels: 16
 dram_stats_print_period_cycles: 10000
 ramulator_config_path: ../configs/ramulator2_configs/HBM2_TPUv3.yaml
 
+energy_cost_table_path: ../configs/energy_tables/hbm2.yml
+
 icnt_type: simple
 icnt_latency_cycles: 10
 icnt_freq_mhz: 940

@@ -420,6 +420,10 @@ ramulator_config_path: ../configs/ramulator2_configs/HBM2_TPUv3.yaml  # resolved
 # Optional: NUMA-style DRAM partitions (channels must divide evenly)
 # dram_num_partitions: 2
 
+# --- Energy model (TOGSim, optional) ---
+energy_cost_table_path: ../configs/energy_tables/hbm2.yml  # resolved relative to this YAML’s directory
+# Omit this key to skip the energy report.
+
 # --- Interconnect (TOGSim) ---
 icnt_type: simple              # simple | booksim2
 icnt_latency_cycles: 10        # used when icnt_type is simple
@@ -460,6 +464,7 @@ One-line meaning for each group (details in the YAML block above).
 - **Core (`num_cores`, `core_freq_mhz`, `core_stats_print_period_cycles`, `num_systolic_array_per_core`, `sa_weight_buffer_depth`, optional `core_type`, STONNE keys)**: how many cores, their clock, stats cadence, systolic count per core, the per-SA resident weight-slot count (must be > 0; bounds preload run-ahead—raise it to loosen the throttle), and optional non-default mesh vs STONNE mix.
 - **VPU (`vpu_*`)**: vector lane count, per-lane scratchpad (KB), and vector register width—**compiler** uses these for tiling/codegen.
 - **DRAM (`dram_type`, `dram_channels`, …)**: `ramulator2` uses `ramulator_config_path`; `simple` uses fixed latency and optional bandwidth caps (`dram_bandwidth_gbps_*`, `dram_freq_mhz` when capped). `dram_num_partitions` splits channels for NUMA-style addressing.
+- **Energy (`energy_cost_table_path`)**: selects a pJ cost table (see `configs/energy_tables/`) and enables an end-of-run `=== Energy statistics ===` section reporting off-chip DRAM energy, summed over all channels. Activation energy needs row state, so it requires `dram_type: ramulator2`. Interval stats are unaffected.
 - **Interconnect (`icnt_*`, `booksim_config_path`)**: `simple` adds fixed hop latency (`icnt_latency_cycles`); `booksim2` points at a BookSim2 topology file.
 - **Codegen (`codegen_*`)**: mapping strategy (heuristic / autotune / external-hybrid), external JSON path, autotune search limits, and fusion/optimization set for the PyTorch compiler path.
 - **L2 (`l2d_type`, `l2d_config`, optional `l2d_hit_latency`)**: optional data cache between cores and DRAM; `l2d_config` uses AccelSim-style cache geometry strings.

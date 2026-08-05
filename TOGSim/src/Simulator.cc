@@ -292,4 +292,44 @@ void Simulator::print_core_stat()
     _cores[core_id]->print_stats();
   }
   spdlog::info("Total execution cycles: {}", _core_cycles);
+  print_energy_stat();
+}
+
+/* Whole-run totals only; the periodic interval logs carry no energy. */
+void Simulator::print_energy_stat() {
+  if (!_config.energy_model_enabled)
+    return;
+
+  const DramEnergyCosts& costs = _config.dram_energy_costs;
+  spdlog::info("=== Energy statistics ===");
+  spdlog::info("[Energy] Energy cost table \"{}\" loaded from \"{}\"", costs.name, costs.path);
+
+  const std::string scope =
+      _config.dram_channels > 0
+          ? fmt::format("OffChip DRAM channels 0..{} combined", _config.dram_channels - 1)
+          : std::string("OffChip DRAM");
+
+  const DramEnergyCounters counters = _dram->get_energy_counters();
+  if (!counters.available) {
+    spdlog::info("[Energy] {} | not modeled, the configured dram_type tracks no row state", scope);
+    return;
+  }
+
+  const DramEnergy energy = compute_dram_energy(costs, counters);
+  const double seconds =
+      (_core_cycles == 0 || _config.core_freq_mhz == 0)
+          ? 0.0
+          : static_cast<double>(_core_cycles) / (static_cast<double>(_config.core_freq_mhz) * 1e6);
+
+  if (seconds > 0.0) {
+    spdlog::info("[Energy] {} | {} avg power, {} over {} | {} activation, {} transfer", scope,
+                 format_power(energy.total_pj * 1e-12 / seconds), format_energy(energy.total_pj),
+                 format_time(seconds), format_energy(energy.activation_pj), format_energy(energy.transfer_pj));
+  } else {
+    spdlog::info("[Energy] {} | {} total | {} activation, {} transfer", scope, format_energy(energy.total_pj),
+                 format_energy(energy.activation_pj), format_energy(energy.transfer_pj));
+  }
+  spdlog::info("[Energy] {} | {} activations x {:.2f} pJ | {} transactions x {} B x {:.2f} pJ/bit ({})", scope,
+               counters.row_activations, costs.row_activation_pj, counters.transactions,
+               counters.bytes_per_transaction, costs.transfer_pj_per_bit_total(), costs.transfer_breakdown());
 }

@@ -51,8 +51,20 @@ RUN apt-get -y update && \
     rm -rf /var/lib/apt/lists/*
 
 # CPU PyTorch (no CUDA wheels). torchvision is required by the vision model tests.
+# torch 2.10 is pinned for the Triton codegen route: it is the first release whose
+# Inductor targets triton 3.6, which is the version triton-npu is built against
+# (triton 3.6 pins LLVM 23, and both sides of triton-npu's textual IR seam must be
+# the same LLVM). On 2.8 the frontend had to be shimmed onto a triton it did not
+# expect; on 2.10 the versions simply agree.
 RUN python3.11 -m pip install --no-cache-dir \
-    torch==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cpu
+    torch==2.10.0 torchvision==0.25.0 --index-url https://download.pytorch.org/whl/cpu
+
+# Triton, for the Inductor Triton codegen route (PyTorchSimFrontend/triton_backend).
+# Inductor imports triton while GENERATING a kernel, so it is needed even though
+# nothing here compiles or launches through triton's own runtime -- triton-npu
+# compiles the kernel ahead of time to a RISC-V ELF using its own triton build.
+# Not a dependency of the CPU torch wheels, hence installed explicitly.
+RUN python3.11 -m pip install --no-cache-dir triton==3.6.0
 
 # TorchSim Python dependencies (numpy pinned <2 for transformers/diffusers compat).
 RUN python3.11 -m pip install --no-cache-dir \

@@ -4,15 +4,10 @@ Inductor's kernels call `triton_helpers.maximum`, `.max2`, `.sort_with_index`
 and friends. The module is inside torch, and tnpu's venv deliberately has none,
 so a kernel that uses one cannot compile there.
 
-It does not have to be rewritten. `triton_helpers.py` imports nothing from
-torch -- only `.triton_compat`, and that module touches torch in three places
-(`torch.version.hip` twice, `torch.autograd.profiler` once), none of which
-`triton_helpers` needs. So the file is copied verbatim next to the kernel and
-paired with the small `triton_compat` below, which resolves the same seven
-symbols straight from triton.
-
-Copying the installed torch's file rather than vendoring a snapshot keeps the
-helpers matched to the torch that generated the kernel.
+`triton_helpers.py` itself imports nothing from torch, only `.triton_compat`,
+so it is copied verbatim next to the kernel and paired with the small
+`triton_compat` below. Copying the installed torch's file rather than a vendored
+snapshot keeps the helpers matched to the torch that generated the kernel.
 """
 
 import os

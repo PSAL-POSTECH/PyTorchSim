@@ -1,17 +1,13 @@
 """Inductor scheduling for the Triton route.
 
-`TritonNPUScheduling` keeps ALL of Inductor's Triton codegen -- fusion, index
-expressions, masking, reductions, the kernel source itself -- and changes only
-what happens to the generated source afterwards. Upstream hands it to
-`async_compile.triton(...)`, which calls `triton.compile` for a GPU; we hand it
-to `triton_npu_compile(...)`, which runs the triton-npu pipeline for this NPU.
+`TritonNPUScheduling` keeps all of Inductor's Triton codegen and changes only
+what happens to the source afterwards: `triton_npu_compile(...)` instead of
+`async_compile.triton(...)`.
 
-Two overrides, and nothing else:
-
-  define_kernel   emit our compile call into the wrapper instead of upstream's.
-  kernel_type     a TritonKernel whose call site is a plain python call, because
-                  the name is bound to our callable rather than to a triton
-                  launcher with a `.run(grid=..., stream=...)` interface.
+  define_kernel   emit our compile call into the wrapper.
+  kernel_type     a TritonKernel whose call site is a plain python call, since
+                  the name binds to our callable, not a `.run(grid=...)`
+                  launcher.
 """
 
 from torch._inductor.codegen.common import IndentedBuffer
@@ -35,18 +31,15 @@ class TritonNPUKernel(TritonKernel):
     cannot be written into a tnpu KernelSpec.
     """
 
-    # **kwargs, not a fixed signature: Inductor keeps adding parameters here
-    # (2.10 added `deallocate_ws`). None of them apply to this route -- there is
-    # no triton launcher and no workspace to release -- so they are accepted and
-    # ignored rather than pinning us to one torch release.
+    # **kwargs: Inductor keeps adding parameters here and none apply to this
+    # route, so they are accepted and ignored rather than pinning a torch
+    # release.
     def call_kernel(self, name: str, node=None, **kwargs):
         wrapper = V.graph.wrapper_code
         _, call_args, _, arg_types = self.args.python_argdefs()
         self.add_numel_to_call_args(name, call_args, arg_types)
-        # add_numel_to_call_args appends the numels as SYMPY values, which the
-        # triton path later renders through pexpr. ExtensionWrapperCodegen joins
-        # call args as plain strings (mlir_codegen_backend.py:241), so render
-        # them here instead of handing it a sympy Integer.
+        # add_numel_to_call_args appends sympy values; ExtensionWrapperCodegen
+        # joins call args as plain strings, so render them here.
         call_args = [a if isinstance(a, str) else str(a) for a in call_args]
         # triton=False -> PythonWrapperCodegen emits `name(args...)`, the same
         # shape the MLIR route uses (mlir_common.py:627).
@@ -70,9 +63,8 @@ class TritonNPUScheduling(TritonScheduling):
         TritonNPUScheduling.count += 1
         wrapper.src_to_kernel[src_code] = kernel_name
 
-        # Upstream substitutes these two placeholders inside define_kernel; the
-        # source still carries them here, and the tnpu side parses the source, so
-        # they have to be resolved before it leaves this function.
+        # Upstream substitutes these inside define_kernel; the tnpu side parses
+        # the source, so they must be resolved before it leaves here.
         src_code = src_code.replace(str(Placeholder.DESCRIPTIVE_NAME), kernel_name)
         src_code = src_code.replace(str(Placeholder.KERNEL_NAME), kernel_name)
 

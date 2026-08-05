@@ -101,8 +101,8 @@ def work_item_for(meta):
     n_tensor, n_scalar = _runtime_arg_layout(meta)
     pid_base = n_tensor + n_scalar + 3       # after gridX, gridY, gridZ
     axes = kernel_spec.pid_axes(meta["numels"])
-    # Extents are left to run time: only the axis COUNT has to be compiled in,
-    # and the launch knows the real numels. One trace then serves every shape.
+    # Only the axis count is compiled in; the launch knows the real numels, so
+    # one trace serves every shape.
     return WorkItem(parallel_args=[pid_base + _PID_SLOT[p] for p in axes],
                     grid=[None] * len(axes))
 
@@ -117,9 +117,8 @@ def write_shape(workdir, meta, args=()):
     from . import kernel_spec
 
     numels = dict(meta["numels"])
-    # Only the PARALLEL numels ride along on the call -- a reduction axis is
-    # looped inside the kernel, so it is not passed and must not consume one of
-    # the trailing values. They arrive in kernel order, which is the dict's.
+    # Only parallel numels ride along: a reduction axis is looped inside the
+    # kernel, so it must not consume one of the trailing values.
     passed = [k for k in numels if not k.startswith("r")]
     trailing = [a for a in args if isinstance(a, int) and not isinstance(a, bool)]
     if passed and len(trailing) >= len(passed):
@@ -212,7 +211,7 @@ def run_togsim(workdir, meta=None, args=(), attribute_path=None, timeout_sec=Non
         write_shape(workdir, meta, args)
 
     # A handle only: TOGSim derives trace.so / trace_cycles.tsv from its
-    # DIRECTORY, and reads the file itself only on the STONNE path.
+    # directory.
     handle = os.path.join(workdir, "tile_graph.onnx")
     result_path = TOGSimulator.run_standalone(
         handle, attribute_path or os.path.join(workdir, "attribute"),

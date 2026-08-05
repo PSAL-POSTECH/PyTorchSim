@@ -1,9 +1,8 @@
 """The functional half of the Triton route: real tensors -> Spike -> real tensors.
 
-The timing half (timing.py) tells you how long the kernel takes; this tells you
-whether it computed the right thing. tnpu's stage 6 already runs the ELF under
-Spike, but on inputs it generates itself. Here the launch's own tensors are
-written as the `.raw` files stage 6 reads, and the outputs are copied back:
+tnpu's stage 6 runs the ELF under Spike on inputs it generates itself; here the
+launch's own tensors are written as the `.raw` files it reads, and the outputs
+copied back:
 
     run(workdir, meta, args)    args -> runtime/*.raw -> spike -> args
 

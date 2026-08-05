@@ -1,18 +1,9 @@
 """Run the triton-npu pipeline, out of process.
 
-WHY A SUBPROCESS
-----------------
-tnpu's passes run on LLVM 23's MLIR python bindings; this process holds LLVM 20's
-(TORCHSIM_LLVM_PATH). `mlir` ships without an `__init__.py`, so it is a NAMESPACE
-package whose `__path__` is the union of every `mlir/` directory on sys.path --
-two LLVMs in one interpreter silently merge and fail later with an AttributeError
-from a generated dialect module (tnpu/config.py:activate_bindings documents the
-exact failure). They cannot share an interpreter, so tnpu gets its own.
-
-The seam between them is a FILE, which is measured to work: LLVM 23 prints the
-IR, and LLVM 20's bindings parse it back without complaint (verified by feeding
-tnpu's 04-custom.mlir to PyTorchSim's build_tog). That is what makes the split
-viable rather than merely necessary.
+tnpu's passes run on LLVM 23's MLIR bindings; this process holds LLVM 20's.
+`mlir` is a namespace package, so two LLVMs on one sys.path merge silently and
+fail later inside a generated dialect module. They get separate interpreters,
+with a printed IR file as the seam.
 """
 
 import os
@@ -86,18 +77,15 @@ def run_pipeline(spec_path, workdir, to_stage="binary", from_stage="ttir",
         cmd.append("-v")
 
     env = dict(os.environ)
-    # tnpu deliberately does not read TORCHSIM_LLVM_PATH (it would drag the
-    # backend back to LLVM 20 and break the textual seam), but a stale
-    # PYTHONPATH pointing at LLVM 20's mlir_core would still be picked up by the
-    # namespace package before tnpu's own activate_bindings() runs.
+    # A PYTHONPATH pointing at LLVM 20's mlir_core would be picked up by the
+    # namespace package before tnpu's activate_bindings() runs.
     env.pop("PYTHONPATH", None)
 
     proc = subprocess.run(cmd, capture_output=True, text=True,
                           cwd=tnpu_dir(), env=env, timeout=timeout)
     output = proc.stdout + proc.stderr
     if proc.returncode != 0:
-        # run.py prints a stage table; the diagnostic itself only reaches
-        # stage.log.
+        # run.py prints a stage table; the diagnostic only reaches stage.log.
         log = os.path.join(workdir, "stage.log")
         if os.path.isfile(log):
             with open(log, errors="replace") as fh:

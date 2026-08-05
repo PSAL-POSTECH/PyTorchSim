@@ -1,37 +1,12 @@
 """Inductor kernel  ->  tnpu KernelSpec.
 
-Two jobs, both of which exist because Inductor's Triton output is written for a
-GPU launcher and tnpu's is written for a static, ahead-of-time pipeline:
+`collect_meta` runs at codegen time, while `V.graph` still exists, and
+`write_spec_file` turns the Triton source plus that metadata into a file
+`tnpu.spec.load_spec` can load.
 
-1. `collect_meta` -- pull everything tnpu needs out of the Inductor kernel while
-   we still have `V.graph`: argument names/roles/dtypes/sizes, the constexprs,
-   and the numels the grid is computed from. This runs at codegen time; by the
-   time the compile callable fires, `V.graph` is gone.
-
-2. `write_spec_file` -- turn the Triton source + that metadata into a kernel file
-   tnpu can load (`tnpu.spec.load_spec`).
-
-WHY THE SOURCE HAS TO BE REWRITTEN
-----------------------------------
-Inductor emits, above the kernel:
-
-    from torch._inductor.runtime import triton_heuristics
-    @triton_heuristics.pointwise(size_hints={'x': 1024}, ..., inductor_meta=...)
-    @triton.jit
-    def triton_npu_0(in_ptr0, out_ptr0, xnumel, XBLOCK : tl.constexpr):
-
-Neither line can survive into tnpu:
-
-  * the tnpu triton venv has NO torch (deliberately -- tnpu/spec.py), so the
-    `torch._inductor.runtime` import fails on sight;
-  * `triton_heuristics.pointwise` is the AUTOTUNER. It picks XBLOCK at runtime
-    and derives `grid = cdiv(xnumel, XBLOCK)` from it. tnpu needs both to be
-    constants: the block size becomes a `tl.constexpr` in the ttir signature and
-    the grid is executed as a sequential loop by the generated C wrapper.
-
-So the decorator is stripped and XBLOCK is pinned as a constexpr instead. That is
-not a workaround -- fixing the config at codegen time is what makes the kernel
-statically describable, which is the whole premise of this route.
+The source is rewritten because Inductor's `@triton_heuristics.pointwise`
+imports torch, which the tnpu venv does not have, and picks the block size at
+runtime, which tnpu needs as a constexpr.
 """
 
 import math
@@ -42,10 +17,8 @@ from torch._inductor.virtualized import V
 
 from . import helpers_shim
 
-#: Triton signature token -> torch dtype name. The full set Inductor's
-#: `_type_of` can emit (torch/_inductor/codegen/triton_utils.py); a token that
-#: is absent here reads as an unresolvable arg, so partial coverage shows up as
-#: SpecIncomplete on the first kernel that widens past int8.
+#: Triton signature token -> torch dtype name; the full set Inductor's
+#: `_type_of` (torch/_inductor/codegen/triton_utils.py) can emit.
 _DTYPE = {
     "*fp64": "float64", "*fp32": "float32", "*fp16": "float16",
     "*bf16": "bfloat16",
@@ -64,10 +37,8 @@ _C_TYPE = {"i32": "int32_t", "i64": "int64_t", "fp32": "float"}
 
 
 class SpecIncomplete(RuntimeError):
-    """Metadata tnpu requires that this kernel did not provide.
-
-    Raised with the missing field named, rather than writing a spec that fails
-    deeper in the pipeline where the cause is unrecoverable.
+    """Metadata tnpu requires that this kernel did not provide, named rather
+    than left to fail deeper in the pipeline.
     """
 
 
@@ -76,10 +47,8 @@ class SpecIncomplete(RuntimeError):
 # ---------------------------------------------------------------------------
 def _buffer_layout(name):
     """(numel, size, stride) of an Inductor buffer; Nones if unresolvable.
-
-    The stride is load-bearing: Inductor allocates outputs `empty_strided` and
-    indexes them by it, so a launch that assumes contiguous writes the elements
-    to the wrong places.
+    Inductor allocates outputs empty_strided and indexes them by stride, so a
+    launch assuming contiguous writes to the wrong places.
     """
     try:
         buf = V.graph.get_buffer(name)
@@ -103,8 +72,7 @@ def _roles(kernel):
     for buf, arg in getattr(kernel.args, "input_buffers", {}).items():
         out[arg] = ("in", buf)
     for buf, arg in getattr(kernel.args, "output_buffers", {}).items():
-        # A graph input here is mutated, not produced: unwritten elements must
-        # survive, so it has to be seeded.
+        # Mutated, not produced: unwritten elements must survive, so seed it.
         role = "inout" if buf in getattr(V.graph, "graph_inputs", {}) else "out"
         out[arg] = (role, buf)
     for buf, arg in getattr(kernel.args, "inplace_buffers", {}).items():
@@ -142,10 +110,8 @@ def collect_meta(kernel, kernel_name):
             "stride": stride,
         })
 
-    # The numels Inductor appends to the call. They live in `kernel.numels`,
-    # keyed by iteration-space PREFIX ('x', 'y', 'r0', ...), not as xnumel/rnumel
-    # attributes (SIMDKernel.__init__ builds them from the tiling). These are
-    # what the grid is computed from.
+    # kernel.numels is keyed by iteration-space prefix ('x', 'y', 'r0'), not by
+    # xnumel/rnumel attributes. The grid is computed from these.
     numels = {}
     for prefix, val in (getattr(kernel, "numels", None) or {}).items():
         try:
@@ -164,9 +130,8 @@ def collect_meta(kernel, kernel_name):
     }
 
 
-#: Parallel iteration prefixes, OUTERMOST first. Inductor's `x` is the
-#: contiguous axis, so it is innermost; `r*` prefixes are reductions, looped
-#: inside the kernel rather than spread over the grid (prefix_is_reduction).
+#: Parallel iteration prefixes, outermost first -- Inductor's `x` is the
+#: contiguous axis. `r*` are reductions, looped inside the kernel.
 _PARALLEL_PREFIXES = ("z", "y", "x")
 
 
@@ -181,27 +146,16 @@ def parallel_axes(numels):
 
 def pid_axes(numels):
     """The same axes in program-id order: pid 0 is x, whatever the tiling.
-
-    Every grid TUPLE is in this order -- triton-shared lays the pid arguments
-    out x, y, z and tnpu's wrapper reads spec.grid positionally as gridX/Y/Z.
+    Every grid tuple is in this order; tnpu reads spec.grid positionally.
     """
     return list(reversed(parallel_axes(numels)))
 
 
 def fixed_config_for(kernel):
-    """Block sizes pinned at codegen time.
-
-    tnpu compiles ONE binary per kernel and the C wrapper walks the grid as a
-    sequential loop, so there is no autotuner to choose the blocks later and no
-    runtime `grid=` callable. Fixing them here is what makes the launch shape
-    static.
-
-    Tile dim 0 is the one `bank_vectorize` spreads over the lanes, so the
-    OUTERMOST axis gets the lane count -- a per-lane depth of 1, the shape every
-    tnpu baseline runs. The remaining axes get 1, which leaves the tile exactly
-    that verified shape and lets the grid cover the rest. It is conservative
-    rather than fast; choosing real tile sizes is the block-size policy gap in
-    README, not something to guess at here.
+    """Block sizes pinned at codegen time; tnpu has no autotuner to pick them
+    later. Tile dim 0 is the one bank_vectorize spreads over the lanes, so the
+    outermost axis gets the lane count and the rest get 1 -- conservative, and
+    the block-size policy gap in README.
     """
     from PyTorchSimFrontend import extension_config
     try:
@@ -212,23 +166,20 @@ def fixed_config_for(kernel):
             f"This route pins every block size to the lane count, so a config "
             f"without a VPU cannot describe a launch shape.") from None
 
-    # kernel.numels is keyed by prefix; parallel_axes wants collect_meta's
-    # "<prefix>numel" keys, and passing the raw dict silently matched nothing.
+    # parallel_axes wants collect_meta's "<prefix>numel" keys, not raw prefixes.
     axes = parallel_axes([f"{p}numel"
                           for p in (getattr(kernel, "numels", None) or {})])
     cfg = {_block_name(p): (lanes if i == 0 else 1) for i, p in enumerate(axes)}
     if len(axes) > 1:
-        # Loud, because the shape is correct but pathological: an inner block of
-        # 1 makes every work-item move a strided column. Fine for getting a
-        # multi-axis kernel through the route, misleading to benchmark.
+        # Correct but pathological: an inner block of 1 moves a strided column
+        # per work-item. Fine for coverage, misleading to benchmark.
         extension_config.setup_logger().warning(
             "[triton-npu] %s tiles over %s; inner blocks pinned to 1, which is "
             "correct but not a tiling worth measuring",
             getattr(kernel, "kernel_name", "kernel"), axes)
     cfg.setdefault("XBLOCK", lanes)         # a kernel with no tiling info still has x
     if getattr(kernel, "inside_reduction", False):
-        # The whole reduced extent, so the kernel's r0 loop runs once. Whether
-        # that tile fits the lanes is the lowering pass's call, not ours.
+        # The whole reduced extent, so the kernel's r0 loop runs once.
         r0 = (getattr(kernel, "numels", None) or {}).get("r0_")
         try:
             cfg["R0_BLOCK"] = int(V.graph.sizevars.size_hint(r0))
@@ -243,25 +194,18 @@ def fixed_config_for(kernel):
 _HEURISTIC_RE = re.compile(r"^@triton_heuristics\.")
 _DROP_IMPORT_RE = re.compile(
     r"^\s*(import torch|from torch\b|from __future__|import __main__)")
-#: Calls that only mean something on a GPU. set_driver_to_gpu picks a runtime we
-#: never launch through; debug_barrier works around a triton warp-scheduling bug
-#: (triton-lang/triton#1615) and tnpu replays one work-item at a time, so there
-#: are no warps to order. It also reaches ttir as ttg.barrier, a GPU-dialect op
-#: triton-shared-opt cannot parse.
+#: GPU-only calls. set_driver_to_gpu picks a runtime we never launch through;
+#: debug_barrier orders warps that do not exist here and reaches ttir as
+#: ttg.barrier, which triton-shared-opt cannot parse.
 _DROP_CALL_RE = re.compile(
     r"^\s*(triton_helpers\.set_driver_to_gpu|tl\.debug_barrier)\(\)")
 
 
 def strip_for_tnpu(src):
-    """Remove everything the torch-free tnpu venv cannot import.
-
-    Drops torch/inductor imports and the `@triton_heuristics.*(...)` decorator
-    (keeping `@triton.jit`), then re-adds the two imports the kernel body needs.
-
-    Raises SpecIncomplete if the kernel still calls into `triton_helpers`: that
-    module lives in torch, so it has to be vendored into the tnpu venv before
-    such a kernel can compile. Failing here names the missing helper; letting it
-    through fails as a bare NameError inside tnpu's stage-1 worker instead.
+    """Remove everything the torch-free tnpu venv cannot import: torch imports
+    and the @triton_heuristics decorator, keeping @triton.jit. Raises
+    SpecIncomplete naming any triton_helpers call not yet vendored, which would
+    otherwise be a bare NameError inside tnpu's stage-1 worker.
     """
     lines = src.splitlines()
     out, i = [], 0
@@ -291,10 +235,8 @@ def strip_for_tnpu(src):
 
 def scalar_args(meta):
     """User scalar parameters, in kernel order, as [(name, c_type, value)].
-
-    triton-shared keeps these in the lowered signature ahead of its own six
-    grid/pid arguments, so the wrapper must pass them or every later argument
-    lands one slot early -- pidX then reads pidY and only program 0 runs.
+    triton-shared keeps these ahead of its own grid/pid arguments, so omitting
+    one shifts every later argument a slot early.
     """
     numels = meta["numels"]
     out = []
@@ -352,15 +294,13 @@ import os
 import sys
 
 sys.path.insert(0, {tnpu_dir!r})
-# This directory too: the kernel is loaded by path, so a sibling package
-# (tnpu_helpers) would not otherwise be importable from it.
+# The kernel is loaded by path, so a sibling package is not otherwise
+# importable from it.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tnpu.spec import KernelSpec, Arg  # noqa: E402
 
-#: The rewritten Triton source, beside this file. It must be a REAL file on
-#: disk, not an exec'd string: triton's @jit reads the function back with
-#: inspect.getsourcefile and rejects anything else ("@jit functions should be
-#: defined in a Python file").
+#: The rewritten Triton source, beside this file. A real file, not an exec'd
+#: string: @jit reads the function back with inspect.getsourcefile.
 TRITON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            {triton_module!r})
 
@@ -381,10 +321,8 @@ def make_inputs(torch, seed=0):
 
 
 def reference(inputs):
-    # The Inductor route has no per-kernel torch reference: correctness is
-    # checked at the graph level by the test that ran torch.compile. tnpu's
-    # stage 7 is therefore not meaningful here and the pipeline is driven to
-    # stage 6 (spike) instead.
+    # No per-kernel torch reference here -- correctness is checked at the graph
+    # level -- so the pipeline stops at stage 6 rather than tnpu's verify.
     return {{}}
 
 
@@ -418,10 +356,8 @@ def write_spec_file(src_code, meta, path, tnpu_dir):
     constexprs = dict(meta["constants"])
     for k, v in (meta.get("fixed_config") or {}).items():
         if k not in signature:
-            # Inductor already fixed this one in the kernel BODY rather than
-            # taking it as a parameter -- a persistent reduction does that with
-            # R0_BLOCK. Passing it would not match the signature, and there is
-            # nothing left for us to choose.
+            # Fixed in the kernel body rather than taken as a parameter (a
+            # persistent reduction does this with R0_BLOCK); nothing to choose.
             continue
         if v is None:
             raise SpecIncomplete(

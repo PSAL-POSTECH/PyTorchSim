@@ -333,6 +333,18 @@ void DramRamulator2::pop(uint32_t cid) {
   m_to_crossbar_queue[cid].pop();
 }
 
+DramEnergyCounters DramRamulator2::get_energy_counters() {
+  DramEnergyCounters counters;
+  counters.available = true;
+  /* _req_size is the model's own get_tx_bytes(), so one served request is exactly one burst. */
+  counters.bytes_per_transaction = _req_size;
+  for (int ch = 0; ch < _n_ch; ch++) {
+    counters.row_activations += _mem[ch]->row_activations();
+    counters.transactions += _mem[ch]->total_reads() + _mem[ch]->total_writes();
+  }
+  return counters;
+}
+
 void DramRamulator2::print_stat() {
   spdlog::info("=== DRAM statistics ===");
   if (_n_ch == 0)

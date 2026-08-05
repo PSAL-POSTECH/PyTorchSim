@@ -1,0 +1,15 @@
+# Off-chip DRAM energy constants. All values in pJ.
+#
+# Swap this file out (via the `energy_cost_table_path` key of the simulation
+# config) to model a different memory technology.
+name: HBM2
+
+offchip_dram:
+  # Energy of one row activation, counted as a PRE+ACT command pair.
+  row_activation_pj: 909.0
+  # Per-bit terms, summed for every bit that crosses the DRAM interface.
+  # Kept separate so the report can show the breakdown.
+  transfer_pj_per_bit:
+    dram: 1.51
+    io: 1.17
+    phy: 0.80

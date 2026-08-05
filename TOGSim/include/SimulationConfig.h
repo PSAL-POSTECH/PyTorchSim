@@ -6,6 +6,8 @@
 #include <string>
 #include <yaml-cpp/yaml.h>
 
+#include "EnergyModel.h"
+
 enum class CoreType { WS_MESH, STONNE };
 
 enum class DramType { SIMPLE, RAMULATOR2 };
@@ -60,6 +62,10 @@ struct SimulationConfig {
   uint32_t icnt_freq_mhz;
   uint32_t icnt_latency;
   uint32_t icnt_stats_print_period_cycles=0;
+
+  /* Energy config. Disabled unless the config sets energy_cost_table_path. */
+  bool energy_model_enabled = false;
+  DramEnergyCosts dram_energy_costs;
 
   /* Sheduler config */
   uint32_t num_partition=1;

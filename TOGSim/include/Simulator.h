@@ -40,6 +40,7 @@ class Simulator {
   int get_partition_id(int core_id) { return _config.partiton_map[core_id]; }
   std::unique_ptr<Scheduler>& get_partition_scheduler(int core_id) { return _partition_scheduler.at(get_partition_id(core_id)); }
   void print_core_stat();
+  void print_energy_stat();
   void cycle();
   const SimulationConfig& get_config() const { return _config; }
   const YAML::Node& get_hardware_config_yaml() const { return _hardware_config_yaml; }

@@ -156,6 +156,14 @@ SimulationConfig initialize_config(const YAML::Node& config,
   if (config["icnt_injection_ports_per_core"])
     parsed_config.icnt_injection_ports_per_core = config["icnt_injection_ports_per_core"].as<uint32_t>();
 
+  /* Energy config */
+  if (config["energy_cost_table_path"]) {
+    const std::string cost_table_rel = config["energy_cost_table_path"].as<std::string>();
+    parsed_config.dram_energy_costs =
+        load_dram_energy_costs(parsed_config.resolve_against_simulation_config(cost_table_rel));
+    parsed_config.energy_model_enabled = true;
+  }
+
   if (config["scheduler"])
     parsed_config.scheduler_type = config["scheduler"].as<std::string>();
   if (config["num_partition"])

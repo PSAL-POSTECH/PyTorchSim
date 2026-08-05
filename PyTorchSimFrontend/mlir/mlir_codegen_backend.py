@@ -215,7 +215,9 @@ class ExtensionWrapperCodegen(wrapper.PythonWrapperCodegen):
         original_fxnode_name=None,
     ):
         device = device or V.graph.get_current_device_or_throw()
-        self.writeline(self.wrap_kernel_call(kernel_name, call_args))
+        # A template kernel passes sympy constants; wrap_kernel_call joins strings.
+        self.writeline(self.wrap_kernel_call(
+            kernel_name, [str(a) for a in call_args]))
         return
 
     def generate(self, is_inference):
@@ -225,7 +227,8 @@ class ExtensionWrapperCodegen(wrapper.PythonWrapperCodegen):
         self._fverify_seen = set()
         with contextlib.ExitStack() as stack:
             stack.enter_context(self.wrapper_call.indent())
-            self.memory_plan_reuse()
+            # Upstream entry point: picks the planner and sets the state it needs.
+            self.run_wrapper_ir_passes(is_inference)
             with self.set_writeline(self.wrapper_call.writeline):
                 for line in self.lines:
                     # Add buffer plan hook for dealloc
@@ -238,7 +241,8 @@ class ExtensionWrapperCodegen(wrapper.PythonWrapperCodegen):
                     if isinstance(line, wrapper.MemoryPlanningLine):
                         line.codegen(self.wrapper_call)
                     elif isinstance(line, wrapper.KernelCallLine):
-                        self.wrapper_call.writeline(self.wrap_kernel_call(line.kernel_name, line.call_args))
+                        self.wrapper_call.writeline(self.wrap_kernel_call(
+                            line.kernel_name, [str(a) for a in line.call_args]))
                         if _func_verify.enabled():
                             self._fverify_emit_checks(line.call_args)
                     else:

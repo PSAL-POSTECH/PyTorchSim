@@ -40,12 +40,22 @@ import re
 
 from torch._inductor.virtualized import V
 
-#: Triton signature token -> (torch dtype name, bytes). Only the dtypes
-#: tnpu/wrapper.py can round-trip through .raw files.
+from . import helpers_shim
+
+#: Triton signature token -> torch dtype name. The full set Inductor's
+#: `_type_of` can emit (torch/_inductor/codegen/triton_utils.py); a token that
+#: is absent here reads as an unresolvable arg, so partial coverage shows up as
+#: SpecIncomplete on the first kernel that widens past int8.
 _DTYPE = {
-    "*fp32": "float32", "*fp16": "float16", "*bf16": "bfloat16",
-    "*i64": "int64", "*i32": "int32", "*i8": "int8", "*i1": "bool",
-    "fp32": "float32", "i32": "int32", "i64": "int64",
+    "*fp64": "float64", "*fp32": "float32", "*fp16": "float16",
+    "*bf16": "bfloat16",
+    "*i64": "int64", "*i32": "int32", "*i16": "int16", "*i8": "int8",
+    "*i1": "bool",
+    "*u64": "uint64", "*u32": "uint32", "*u16": "uint16", "*u8": "uint8",
+    "fp64": "float64", "fp32": "float32", "fp16": "float16",
+    "bf16": "bfloat16",
+    "i64": "int64", "i32": "int32", "i16": "int16", "i8": "int8", "i1": "bool",
+    "u64": "uint64", "u32": "uint32", "u16": "uint16", "u8": "uint8",
 }
 
 
@@ -64,19 +74,27 @@ class SpecIncomplete(RuntimeError):
 # ---------------------------------------------------------------------------
 # 1. codegen-time metadata capture
 # ---------------------------------------------------------------------------
-def _buffer_numel(name):
-    """Element count of an Inductor buffer, or None if it cannot be resolved."""
+def _buffer_layout(name):
+    """(numel, size, stride) of an Inductor buffer; Nones if unresolvable.
+
+    The stride is load-bearing: Inductor allocates outputs `empty_strided` and
+    indexes them by it, so a launch that assumes contiguous writes the elements
+    to the wrong places.
+    """
     try:
         buf = V.graph.get_buffer(name)
         if buf is None:
-            return None
-        size = buf.get_layout().size
+            return None, None, None
+        layout = buf.get_layout()
+        hint = V.graph.sizevars.size_hint
+        size = [int(hint(s)) for s in layout.size]
+        stride = [int(hint(s)) for s in layout.stride]
         n = 1
         for s in size:
-            n *= int(V.graph.sizevars.size_hint(s))
-        return n
+            n *= s
+        return n, size, stride
     except Exception:  # noqa: BLE001 - best effort; caller reports it as missing
-        return None
+        return None, None, None
 
 
 def _roles(kernel):
@@ -85,7 +103,10 @@ def _roles(kernel):
     for buf, arg in getattr(kernel.args, "input_buffers", {}).items():
         out[arg] = ("in", buf)
     for buf, arg in getattr(kernel.args, "output_buffers", {}).items():
-        out[arg] = ("out", buf)
+        # A graph input here is mutated, not produced: unwritten elements must
+        # survive, so it has to be seeded.
+        role = "inout" if buf in getattr(V.graph, "graph_inputs", {}) else "out"
+        out[arg] = (role, buf)
     for buf, arg in getattr(kernel.args, "inplace_buffers", {}).items():
         name = getattr(arg, "inner_name", arg)
         out[name] = ("inout", buf)
@@ -110,12 +131,15 @@ def collect_meta(kernel, kernel_name):
         role, buf = roles.get(name, (None, None))
         if role is None:
             continue                      # a numel / constexpr, not a tensor
+        numel, size, stride = _buffer_layout(buf) if buf else (None, None, None)
         args.append({
             "name": name,
             "role": role,
             "buffer": buf,
             "dtype": _DTYPE.get(signature.get(name, ""), None),
-            "numel": _buffer_numel(buf) if buf else None,
+            "numel": numel,
+            "size": size,
+            "stride": stride,
         })
 
     # The numels Inductor appends to the call. They live in `kernel.numels`,
@@ -151,8 +175,17 @@ def _block_name(prefix):
 
 
 def parallel_axes(numels):
-    """Grid axes this kernel uses, outermost first."""
+    """Grid axes this kernel uses, outermost first. For tile-shape decisions."""
     return [p for p in _PARALLEL_PREFIXES if f"{p}numel" in numels]
+
+
+def pid_axes(numels):
+    """The same axes in program-id order: pid 0 is x, whatever the tiling.
+
+    Every grid TUPLE is in this order -- triton-shared lays the pid arguments
+    out x, y, z and tnpu's wrapper reads spec.grid positionally as gridX/Y/Z.
+    """
+    return list(reversed(parallel_axes(numels)))
 
 
 def fixed_config_for(kernel):
@@ -171,9 +204,18 @@ def fixed_config_for(kernel):
     README, not something to guess at here.
     """
     from PyTorchSimFrontend import extension_config
-    lanes = int(extension_config.vpu_num_lanes)
+    try:
+        lanes = int(extension_config.vpu_num_lanes)
+    except KeyError:
+        raise SpecIncomplete(
+            f"{extension_config.CONFIG_TOGSIM_CONFIG} has no vpu_num_lanes. "
+            f"This route pins every block size to the lane count, so a config "
+            f"without a VPU cannot describe a launch shape.") from None
 
-    axes = parallel_axes(getattr(kernel, "numels", None) or {})
+    # kernel.numels is keyed by prefix; parallel_axes wants collect_meta's
+    # "<prefix>numel" keys, and passing the raw dict silently matched nothing.
+    axes = parallel_axes([f"{p}numel"
+                          for p in (getattr(kernel, "numels", None) or {})])
     cfg = {_block_name(p): (lanes if i == 0 else 1) for i, p in enumerate(axes)}
     if len(axes) > 1:
         # Loud, because the shape is correct but pathological: an inner block of
@@ -185,11 +227,13 @@ def fixed_config_for(kernel):
             getattr(kernel, "kernel_name", "kernel"), axes)
     cfg.setdefault("XBLOCK", lanes)         # a kernel with no tiling info still has x
     if getattr(kernel, "inside_reduction", False):
-        # A reduction block is NOT free to be the lane count: the reduced axis
-        # has to stay inside a lane (see triton-npu kernels/reduce.py). Left
-        # unset on purpose so the reduction path fails loudly rather than
-        # silently picking a layout the hardware cannot execute.
-        cfg["R0_BLOCK"] = None
+        # The whole reduced extent, so the kernel's r0 loop runs once. Whether
+        # that tile fits the lanes is the lowering pass's call, not ours.
+        r0 = (getattr(kernel, "numels", None) or {}).get("r0_")
+        try:
+            cfg["R0_BLOCK"] = int(V.graph.sizevars.size_hint(r0))
+        except Exception:  # noqa: BLE001 - dynamic; write_spec_file reports it
+            cfg["R0_BLOCK"] = None
     return cfg
 
 
@@ -199,13 +243,13 @@ def fixed_config_for(kernel):
 _HEURISTIC_RE = re.compile(r"^@triton_heuristics\.")
 _DROP_IMPORT_RE = re.compile(
     r"^\s*(import torch|from torch\b|from __future__|import __main__)")
-#: GPU-only runtime setup Inductor emits at module scope. Meaningless here (the
-#: kernel is compiled ahead of time to a RISC-V ELF) and its import is dropped
-#: above, so the call would be a NameError.
-_DROP_CALL_RE = re.compile(r"^\s*triton_helpers\.set_driver_to_gpu\(\)")
-#: Anything else from triton_helpers is a real dependency -- maximum/minimum/
-#: promote_to_tensor and friends, which reductions and clamps use constantly.
-_HELPER_USE_RE = re.compile(r"\btriton_helpers\.(\w+)")
+#: Calls that only mean something on a GPU. set_driver_to_gpu picks a runtime we
+#: never launch through; debug_barrier works around a triton warp-scheduling bug
+#: (triton-lang/triton#1615) and tnpu replays one work-item at a time, so there
+#: are no warps to order. It also reaches ttir as ttg.barrier, a GPU-dialect op
+#: triton-shared-opt cannot parse.
+_DROP_CALL_RE = re.compile(
+    r"^\s*(triton_helpers\.set_driver_to_gpu|tl\.debug_barrier)\(\)")
 
 
 def strip_for_tnpu(src):
@@ -235,33 +279,13 @@ def strip_for_tnpu(src):
         i += 1
     body = "\n".join(out)
 
-    used = sorted(set(_HELPER_USE_RE.findall(body)))
-    if used:
-        raise SpecIncomplete(
-            f"kernel uses triton_helpers.{{{','.join(used)}}}, which lives in "
-            f"torch and the tnpu venv has no torch. Vendor a minimal "
-            f"triton_helpers into the tnpu venv (or into TRITON_SRC) before this "
-            f"kernel can compile.")
-
-    # The generated source already imports triton itself; only add what a
-    # stripped module might be missing.
-    prefix = ""
-    if "import triton.language as tl" not in body:
-        prefix = "import triton\nimport triton.language as tl\n\n"
-    # tl_math is triton's own, re-exported through triton_helpers; the dropped
-    # torch import took it with it.
-    if re.search(r"\btl_math\.", body):
-        prefix += "from triton.language import math as tl_math\n"
-
-    # libdevice members are @core.extern: no triton_shared implementation, so a
-    # call returns None and fails obscurely in stage 1. Name it here instead.
-    ext = sorted(set(re.findall(r"\blibdevice\.(\w+)", body)))
-    if ext:
-        raise SpecIncomplete(
-            f"kernel calls libdevice.{{{','.join(ext)}}}: those are extern math "
-            f"intrinsics with no implementation on the triton_shared backend. "
-            f"They need lowering to a VPU op (or a scalar fallback) before this "
-            f"kernel can compile.")
+    prefix = (
+        "import triton\n"
+        "import triton.language as tl\n"
+        "from triton.language import math as tl_math\n"
+        "from triton.language.extra import libdevice\n"
+        f"from {helpers_shim.PACKAGE} import triton_helpers\n\n"
+    )
     return prefix + body
 
 
@@ -291,14 +315,14 @@ def scalar_args(meta):
 
 
 def grid_of(meta):
-    """Launch grid, from the numels and the pinned block sizes, outermost first.
+    """Launch grid, from the numels and the pinned block sizes, in pid order.
 
     Also read by the timing path, which needs the same extents to enumerate the
     work-items -- so it lives here rather than being recomputed per consumer.
     """
     numels = meta["numels"]
     cfg = meta.get("fixed_config") or {}
-    axes = parallel_axes(numels)
+    axes = pid_axes(numels)
     if not axes:
         raise SpecIncomplete(
             f"{meta['kernel_name']} has no parallel iteration axis to grid over")
@@ -328,6 +352,9 @@ import os
 import sys
 
 sys.path.insert(0, {tnpu_dir!r})
+# This directory too: the kernel is loaded by path, so a sibling package
+# (tnpu_helpers) would not otherwise be importable from it.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tnpu.spec import KernelSpec, Arg  # noqa: E402
 
 #: The rewritten Triton source, beside this file. It must be a REAL file on
@@ -412,8 +439,11 @@ def write_spec_file(src_code, meta, path, tnpu_dir):
         for a in meta["args"] if a["role"] in ("in", "inout")) or "    pass"
 
     triton_module = f"{meta['kernel_name']}_triton.py"
+    stripped = strip_for_tnpu(src_code)
+    if helpers_shim.PACKAGE in stripped:
+        helpers_shim.write_package(os.path.dirname(path))
     with open(os.path.join(os.path.dirname(path), triton_module), "w") as f:
-        f.write(strip_for_tnpu(src_code))
+        f.write(stripped)
 
     scalars = scalar_args(meta)
     text = SPEC_TEMPLATE.format(

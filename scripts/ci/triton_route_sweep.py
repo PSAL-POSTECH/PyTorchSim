@@ -104,6 +104,29 @@ def first_error(output):
     return ""
 
 
+#: Inductor's own line naming the wrapper it wrote, and the call that sends an
+#: op to a library instead of a generated kernel.
+_WRAPPER_RE = re.compile(r"Wrapper Codegen Path = (\S+)")
+_EXTERN_RE = re.compile(r"extern_kernels\.(\w+)")
+
+
+def externs(output):
+    """Ops the graph sent to a library rather than through this route.
+
+    A test can emit a Triton kernel for part of its graph and still hand the op
+    it is named for to aten -- test_matmul_scalar generated the mul and called
+    extern_kernels.mm. Counting that as coverage overstates it.
+    """
+    found = set()
+    for path in _WRAPPER_RE.findall(output):
+        try:
+            with open(path, errors="replace") as f:
+                found.update(_EXTERN_RE.findall(f.read()))
+        except OSError:
+            continue
+    return sorted(found)
+
+
 def reached_stage(dump_dir):
     """(label, workdir) of the furthest tnpu stage any kernel produced.
 
@@ -162,13 +185,17 @@ def run_one(test, timeout, artifacts, scratch):
 
     ok = code == 0
     stage, workdir = reached_stage(dump)
+    ext = externs(out)
     r = {"test": test, "ok": ok, "returncode": code,
          "seconds": round(time.time() - t0, 1),
          "bucket": None if ok else classify(out, timed_out),
          "stage": stage,
          # No kernel emitted = the route was never used (CPU-only, eager
          # fallback, extern call), so it is not coverage.
-         "exercised": workdir is not None,
+         # Emitting a kernel is not enough: an extern call means part of the
+         # graph bypassed the route entirely.
+         "exercised": workdir is not None and not ext,
+         "externs": ext,
          "error": "" if ok else first_error(out)}
     if not ok and artifacts:
         r["artifacts"] = os.path.relpath(
@@ -234,6 +261,8 @@ def write_markdown(results, path):
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("tests", nargs="*", metavar="TEST",
+                    help="run these instead of the allowlist")
     ap.add_argument("--all", action="store_true",
                     help="run every test, not just the passing allowlist")
     ap.add_argument("--timeout", type=int, default=1800)
@@ -251,7 +280,7 @@ def main():
     args = ap.parse_args()
 
     allow = load_allowlist()
-    tests = discover() if args.all else allow
+    tests = args.tests or (discover() if args.all else allow)
     if not tests:
         print("no tests selected; the allowlist is empty and --all was not given")
         return 1
@@ -271,7 +300,9 @@ def main():
         nonlocal done
         done += 1
         mark = ("ok  " if r["exercised"] else "ok- ") if r["ok"] else "FAIL"
-        extra = ("" if r["exercised"] else "  (route not exercised)") if r["ok"] \
+        why = ("  (extern: " + ",".join(r["externs"]) + ")") if r.get("externs") \
+            else "  (route not exercised)"
+        extra = ("" if r["exercised"] else why) if r["ok"] \
             else f"  [{r['bucket']}] @{r['stage']}  {r['error'][:70]}"
         print(f"  {done:3d}/{len(tests)}  {mark} {r['seconds']:7.1f}s  "
               f"{r['test']}{extra}", flush=True)

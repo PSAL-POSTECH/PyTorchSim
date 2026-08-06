@@ -43,8 +43,11 @@ from torch._inductor.virtualized import V
 #: Triton signature token -> (torch dtype name, bytes). Only the dtypes
 #: tnpu/wrapper.py can round-trip through .raw files.
 _DTYPE = {
-    "*fp32": "float32", "*fp16": "float16", "*bf16": "bfloat16",
-    "*i64": "int64", "*i32": "int32", "*i8": "int8", "*i1": "bool",
+    "*fp64": "float64", "*fp32": "float32", "*fp16": "float16",
+    "*bf16": "bfloat16",
+    "*i64": "int64", "*i32": "int32", "*i16": "int16", "*i8": "int8",
+    "*u64": "uint64", "*u32": "uint32", "*u16": "uint16", "*u8": "uint8",
+    "*i1": "bool",
     "fp32": "float32", "i32": "int32", "i64": "int64",
 }
 
@@ -155,9 +158,24 @@ def parallel_axes(numels):
     return [p for p in _PARALLEL_PREFIXES if f"{p}numel" in numels]
 
 
+def reduction_axes(numels):
+    """Reduction prefixes, read off the keys rather than assumed.
+
+    THE PREFIX CARRIES A TRAILING UNDERSCORE: Inductor names the parameter
+    `r0_numel` and the block `R0_BLOCK`, so the prefix is "r0_" and not "r0".
+    Looking up "r0numel" silently misses and leaves the block unset, which
+    surfaces much later as "block size R0_BLOCK is unset" on a kernel whose
+    extent was known all along. Derived here so the spelling is read once.
+    """
+    return sorted(k[:-len("numel")] for k in numels
+                  if k.endswith("numel") and k.startswith("r"))
+
+
 #: torch dtype name -> bits. Only the dtypes _DTYPE can name.
-_DTYPE_BITS = {"float32": 32, "float16": 16, "bfloat16": 16,
-               "int64": 64, "int32": 32, "int8": 8, "bool": 8}
+_DTYPE_BITS = {"float64": 64, "float32": 32, "float16": 16, "bfloat16": 16,
+               "int64": 64, "int32": 32, "int16": 16, "int8": 8,
+               "uint64": 64, "uint32": 32, "uint16": 16, "uint8": 8,
+               "bool": 8}
 
 
 def _element_bits(args):
@@ -227,11 +245,27 @@ def fixed_config_for(kernel, numels, args):
             cfg[_block_name(p)] = 1
     cfg.setdefault("XBLOCK", lanes)         # a kernel with no tiling info still has x
     if getattr(kernel, "inside_reduction", False):
-        # A reduction block is NOT free to be the lane count: the reduced axis
-        # has to stay inside a lane (see triton-npu kernels/reduce.py). Left
-        # unset on purpose so the reduction path fails loudly rather than
-        # silently picking a layout the hardware cannot execute.
-        cfg["R0_BLOCK"] = None
+        # A reduction block is NOT free to be the lane count. The scratchpad is
+        # lane-banked and there is no lane-crossing primitive, so the reduced
+        # axis has to live INSIDE one lane (triton-npu kernels/reduce.py) --
+        # spreading it over the lanes is the one layout the hardware cannot
+        # execute. That leaves exactly one choice: cover the whole extent, so
+        # every work-item reduces a complete row and nothing has to be
+        # accumulated across grid steps (each step is independent here -- the
+        # wrapper walks the grid as a plain loop with no carried state).
+        #
+        # Rounded up to a power of two because triton requires it; the tail is
+        # masked. Left unset, as before, when the extent is unknown or will not
+        # fit a lane's scratchpad -- those fail loudly rather than silently
+        # picking a layout that cannot run.
+        lane_bytes = extension_config.CONFIG_SPAD_INFO["spad_size"]
+        elem_bytes = max(1, _element_bits(args) // 8)
+        for p in reduction_axes(numels) or ["r0_"]:
+            n = numels.get(f"{p}numel")
+            block = 1 << (int(n) - 1).bit_length() if n else None
+            if block and block * elem_bytes > lane_bytes:
+                block = None
+            cfg[_block_name(p)] = block
     return cfg
 
 
@@ -259,7 +293,7 @@ _HELPER_USE_RE = re.compile(r"\btriton_helpers\.(\w+)")
 # `mask |= a != a` makes a NaN operand win, which is what torch.maximum promises
 # and what tl.maximum does not do.
 _VENDORED_HELPERS = {"promote_to_tensor", "is_floating",
-                     "minimum", "maximum", "min2", "max2"}
+                     "minimum", "maximum", "min2", "max2", "any"}
 
 _HELPERS_SRC = '''
 # Self-sufficient on purpose: this block is prepended, so it runs BEFORE the
@@ -298,7 +332,16 @@ def _tnpu_min2(a, dim):
 def _tnpu_max2(a, dim):
     return tl.reduce(a, dim, _tnpu_maximum)
 
+@triton.jit
+def _tnpu_any_combine(a, b):
+    return a | b
+
+@triton.jit
+def _tnpu_any(a, dim):
+    return tl.reduce(a, dim, _tnpu_any_combine)
+
 triton_helpers = _types.ModuleType("triton_helpers")
+triton_helpers.any = _tnpu_any
 triton_helpers.promote_to_tensor = _tnpu_promote_to_tensor
 triton_helpers.is_floating = _tnpu_is_floating
 triton_helpers.minimum = _tnpu_minimum

@@ -195,7 +195,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         self.reduction_epilogue_result = {}
         self.reduction_mean = []
         # Dim info
-        self.dim_aliasing = {}
+        self.dim_aliasing = []   # loop names in tile-declared order (see tile_axis.aliasing)
         self.reason = reason
 
     def reset(self, reason):
@@ -588,7 +588,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
                     ).group
                     prologue_tile_desc = kernel.set_tile_size(kernel.prologue_info, prologue=True)
                     kernel.kernel_group.set_tile_info(prologue_tile_desc)
-                    vars, reduction_vars = kernel.set_ranges(group, reduction_group, list(self.dim_aliasing.values()))
+                    vars, reduction_vars = kernel.set_ranges(group, reduction_group, self.dim_aliasing)
                     for node in prologue_nodes:
                         # Reuse created spad
                         read_list = sorted([i.name for i in node.read_writes.reads])
@@ -628,7 +628,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
                     _, (group, reduction_group) = max(
                         epilogue_nodes, key=lambda x: int(x.is_reduction())
                     ).group
-                    vars, reduction_vars = kernel.set_ranges(group, reduction_group, list(self.dim_aliasing.values()))
+                    vars, reduction_vars = kernel.set_ranges(group, reduction_group, self.dim_aliasing)
                     for node in epilogue_nodes:
                         node.codegen((vars, reduction_vars))
 
@@ -1105,7 +1105,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
         # Want to use tile_desc from epilogue_info
         with self.override_buffer_cse(buffer=self.applys, cse=self.apply_cse):
             index_var = self.parse_indices(index)
-        dram_stride = [index.coeff(sympy.Symbol(val)) for val in self.dim_aliasing.values()]
+        dram_stride = [index.coeff(sympy.Symbol(val)) for val in self.dim_aliasing]
         vlane_split_axis = self.kernel_group.tile_desc.vmap.vlane_split_axis
         vlane_stride = self.kernel_group.tile_desc.vmap.vlane_stride
         tile_shape = self.kernel_group.tile_desc.get_mlir_shape(mlir_dtype)
@@ -1158,7 +1158,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
 
         with self.override_buffer_cse(buffer=self.applys, cse=self.apply_cse):
             index_var = self.parse_indices(index)
-        dram_stride = [index.coeff(sympy.Symbol(val)) for val in self.dim_aliasing.values()]
+        dram_stride = [index.coeff(sympy.Symbol(val)) for val in self.dim_aliasing]
         vlane_split_axis = self.kernel_group.tile_desc.vmap.vlane_split_axis
         vlane_stride = self.kernel_group.tile_desc.vmap.vlane_stride
         tile_shape = self.kernel_group.tile_desc.get_mlir_shape(mlir_dtype)
@@ -1198,7 +1198,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
                 pass
         tile_sizes = self.kernel_group.tile_desc.get_tile_size()
         clamp_axes = [(d, iv, 0, iv_extent[iv], int(tile_sizes[d]))
-                      for d, iv in enumerate(self.dim_aliasing.values())
+                      for d, iv in enumerate(self.dim_aliasing)
                       if d < len(tile_sizes) and iv in iv_extent]
         masked_bounds = self._emit_clamp(clamp_axes, self.dma_stores)
         code = self.emit_transfer("MVOUT", vlane_split_axis, vlane_stride, mlir_dtype, dram_var, index_var, sram_var, sram_index_var,
@@ -1276,7 +1276,7 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
 
         with self.override_buffer_cse(buffer=self.reductions_suffix, cse=self.apply_cse):
             index_var = self.parse_indices(index, comments="// Store reduction")
-        dram_stride = [index.coeff(sympy.Symbol(val)) for val in self.dim_aliasing.values()][:-1] # Assume that there is only one reduction axis
+        dram_stride = [index.coeff(sympy.Symbol(val)) for val in self.dim_aliasing][:-1] # Assume that there is only one reduction axis
         vlane_split_axis = self.kernel_group.tile_desc.vmap.vlane_split_axis
         vlane_stride = self.kernel_group.tile_desc.vmap.vlane_stride
 

@@ -225,6 +225,15 @@ class ExtensionWrapperCodegen(wrapper.PythonWrapperCodegen):
         self._fverify_seen = set()
         with contextlib.ExitStack() as stack:
             stack.enter_context(self.wrapper_call.indent())
+            # memory_plan_reuse() reaches self.estimate_peak through
+            # AllocateLine.should_reuse_buffer, and upstream sets it in
+            # run_wrapper_ir_passes -- which this override replaces, so nothing
+            # else will. Missing it is not a planning miss but an AttributeError,
+            # and only on a graph with a reuse candidate far enough back to need
+            # the estimate: ResNet-18 hits it, add does not. Same guard upstream
+            # uses, so buffer reuse off means no estimate to build.
+            if torch._inductor.config.allow_buffer_reuse:
+                self.estimate_peak = wrapper.EfficientPeakEstimate()
             self.memory_plan_reuse()
             with self.set_writeline(self.wrapper_call.writeline):
                 for line in self.lines:

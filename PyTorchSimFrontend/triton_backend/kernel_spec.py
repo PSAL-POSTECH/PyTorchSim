@@ -293,7 +293,8 @@ _HELPER_USE_RE = re.compile(r"\btriton_helpers\.(\w+)")
 # `mask |= a != a` makes a NaN operand win, which is what torch.maximum promises
 # and what tl.maximum does not do.
 _VENDORED_HELPERS = {"promote_to_tensor", "is_floating",
-                     "minimum", "maximum", "min2", "max2", "any"}
+                     "minimum", "maximum", "min2", "max2", "any",
+                     "welford_reduce", "welford_combine", "welford"}
 
 _HELPERS_SRC = '''
 # Self-sufficient on purpose: this block is prepended, so it runs BEFORE the
@@ -340,8 +341,39 @@ def _tnpu_any_combine(a, b):
 def _tnpu_any(a, dim):
     return tl.reduce(a, dim, _tnpu_any_combine)
 
+@triton.jit
+def _tnpu_welford_reduce(value, mean, m2, weight, first_iteration):
+    if first_iteration:
+        new_weight = tl.full(weight.shape, 1, weight.dtype)
+        new_mean = value
+        new_m2 = tl.zeros_like(m2)
+    else:
+        delta = value - mean
+        new_weight = weight + 1
+        new_mean = mean + delta / new_weight
+        new_m2 = m2 + delta * (value - new_mean)
+    return new_mean, new_m2, new_weight
+
+@triton.jit
+def _tnpu_welford_combine(mean_1, m2_1, weight_1, mean_2, m2_2, weight_2):
+    delta = mean_2 - mean_1
+    new_weight = weight_1 + weight_2
+    w2_over_w = tl.where(new_weight == 0.0, 0.0, weight_2 / new_weight)
+    return (
+        mean_1 + delta * w2_over_w,
+        m2_1 + m2_2 + delta * delta * weight_1 * w2_over_w,
+        new_weight,
+    )
+
+@triton.jit
+def _tnpu_welford(mean, m2, weight, dim):
+    return tl.reduce((mean, m2, weight), dim, _tnpu_welford_combine)
+
 triton_helpers = _types.ModuleType("triton_helpers")
 triton_helpers.any = _tnpu_any
+triton_helpers.welford_reduce = _tnpu_welford_reduce
+triton_helpers.welford_combine = _tnpu_welford_combine
+triton_helpers.welford = _tnpu_welford
 triton_helpers.promote_to_tensor = _tnpu_promote_to_tensor
 triton_helpers.is_floating = _tnpu_is_floating
 triton_helpers.minimum = _tnpu_minimum

@@ -35,24 +35,31 @@ def triton_src_dir():
 
     Read out of tnpu's own `setup/versions.env` rather than guessed, so the two
     repos cannot drift: that file is the single place the checkout layout is
-    pinned (HEXAGON_MLIR_ROOT).
+    pinned (TRITON_ROOT).
+
+    TRITON_ROOT IS THE CHECKOUT, not its parent. It replaced HEXAGON_MLIR_ROOT,
+    which named a directory holding triton/ and triton_shared/ side by side, so
+    that one needed a "triton" path segment appended and this one must not. The
+    two are still read here because a tnpu older than that rename has only the
+    old key, and this repo is versioned independently of it.
     """
     from PyTorchSimFrontend import extension_config
     override = os.environ.get("TNPU_TRITON_SRC")
     if override:
         return override
 
-    root = "/workspace/hexagon-mlir"
     versions = os.path.join(extension_config.CONFIG_TNPU_DIR, "setup", "versions.env")
     try:
         with open(versions) as f:
             for line in f:
+                if line.startswith("TRITON_ROOT="):
+                    return os.path.join(line.split("=", 1)[1].strip(), "python")
                 if line.startswith("HEXAGON_MLIR_ROOT="):
-                    root = line.split("=", 1)[1].strip()
-                    break
+                    return os.path.join(
+                        line.split("=", 1)[1].strip(), "triton", "python")
     except OSError:
         pass
-    return os.path.join(root, "triton", "python")
+    return "/workspace/triton-src/python"
 
 
 def ensure_triton_importable():

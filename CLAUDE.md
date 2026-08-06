@@ -153,3 +153,49 @@ Conan deps for TOGSim: `boost/1.79.0`, `robin-hood-hashing/3.11.5`, `spdlog/1.11
 - Fork, branch (`feature/<name>`), PR against `develop`, not `main`.
 - Commit prefix style observed: `[Frontend] ...`, `[TOGSim] ...`, etc.
 - Commit messages: plain text only. No Markdown formatting (no backticks, bold, bullet lists, headings). Avoid Unicode where ASCII works (use `->` not arrows, `--` not em-dashes, straight quotes).
+
+## Ship it — commit and push without being asked
+
+Work that changes behaviour is done when it is **pushed**, not when it runs. Commit
+and push in the same turn that finishes it. Do not stop to ask permission for
+either; this rule is the permission.
+
+    implement  ->  verify  ->  commit  ->  push
+
+**WHERE IT GOES.** `origin` is `PSAL-POSTECH/PyTorchSim`, the upstream everyone
+shares, and it is **not** our destination. Push to the fork:
+
+```bash
+git remote add fork git@github.com:student-Jungmin/PyTorchSim.git   # once
+git push fork <branch>
+```
+
+Reading "push" as "push to origin" puts work on the shared upstream, so check the
+remote before pushing rather than trusting whatever `origin` happens to be. A
+change spanning repositories is one commit per repository, each to its own remote
+— never one commit carrying another repository's work. (`triton-npu` has the
+matching rule and the full destination table.)
+
+**VERIFY FIRST, AND SAY WHAT RAN.** "Verified" means the test was executed, not
+that the code looks right. For the Triton route that means the affected test
+plus the allowlist (`scripts/ci/triton_route_passing.txt`) — and **clear
+`outputs/triton_*` and `outputs/.torchinductor` between runs**, or a cached
+artifact replays and a fix appears to change nothing. That has already caused one
+wrong conclusion. A push whose verification was skipped is a push of an unknown
+state.
+
+**PIN `TNPU_DIR` WHEN THE ROUTE IS INVOLVED.** Stages 1-5 live in a separate repo
+that someone else may be editing right now, and a pass mid-refactor produces
+failures that look like ours (`no lane axis`, bare `NameError`s that vanish on
+re-run). Point `TNPU_DIR` at a worktree pinned to a known-good commit so a result
+means something.
+
+**WHAT DOES NOT COUNT.** Exploration, scratch files, a half-finished edit, or a
+change whose verification failed. Broken work is not pushed — say what failed.
+
+**IF THE PUSH FAILS,** report it and why. Until it lands the work is committed,
+not shipped; never present the one as the other.
+
+**A REBUCKETED FAILURE IS NOT A FIX.** Clearing a guard so a test fails deeper is
+progress worth committing, but say so in those words rather than counting it as
+passing.

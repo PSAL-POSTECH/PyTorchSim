@@ -207,6 +207,64 @@ _DROP_CALL_RE = re.compile(r"^\s*triton_helpers\.set_driver_to_gpu\(\)")
 #: promote_to_tensor and friends, which reductions and clamps use constantly.
 _HELPER_USE_RE = re.compile(r"\btriton_helpers\.(\w+)")
 
+# Vendored verbatim from torch._inductor.runtime.triton_helpers. These are pure
+# triton -- @triton.jit over tl.* and nothing else -- so the torch-free tnpu venv
+# can run them; that is the whole reason a copy is possible at all, and it is
+# also the test for whether a helper belongs here. Anything reaching into torch
+# does not, and stays a SpecIncomplete below.
+#
+# The NaN handling is the point and must not be "simplified" to tl.maximum:
+# `mask |= a != a` makes a NaN operand win, which is what torch.maximum promises
+# and what tl.maximum does not do.
+_VENDORED_HELPERS = {"promote_to_tensor", "is_floating",
+                     "minimum", "maximum", "min2", "max2"}
+
+_HELPERS_SRC = '''
+# Self-sufficient on purpose: this block is prepended, so it runs BEFORE the
+# kernel body's own imports and cannot borrow them. Re-importing is free.
+import types as _types
+import triton
+import triton.language as tl
+
+@triton.jit
+def _tnpu_promote_to_tensor(x):
+    return x + tl.zeros((1,), tl.int1)
+
+@triton.jit
+def _tnpu_is_floating(x):
+    return _tnpu_promote_to_tensor(x).dtype.is_floating()
+
+@triton.jit
+def _tnpu_minimum(a, b):
+    mask = a < b
+    if _tnpu_is_floating(a):
+        mask |= a != a
+    return tl.where(mask, a, b)
+
+@triton.jit
+def _tnpu_maximum(a, b):
+    mask = a > b
+    if _tnpu_is_floating(a):
+        mask |= a != a
+    return tl.where(mask, a, b)
+
+@triton.jit
+def _tnpu_min2(a, dim):
+    return tl.reduce(a, dim, _tnpu_minimum)
+
+@triton.jit
+def _tnpu_max2(a, dim):
+    return tl.reduce(a, dim, _tnpu_maximum)
+
+triton_helpers = _types.ModuleType("triton_helpers")
+triton_helpers.promote_to_tensor = _tnpu_promote_to_tensor
+triton_helpers.is_floating = _tnpu_is_floating
+triton_helpers.minimum = _tnpu_minimum
+triton_helpers.maximum = _tnpu_maximum
+triton_helpers.min2 = _tnpu_min2
+triton_helpers.max2 = _tnpu_max2
+'''
+
 
 def strip_for_tnpu(src):
     """Remove everything the torch-free tnpu venv cannot import.
@@ -236,12 +294,12 @@ def strip_for_tnpu(src):
     body = "\n".join(out)
 
     used = sorted(set(_HELPER_USE_RE.findall(body)))
-    if used:
+    unvendored = [h for h in used if h not in _VENDORED_HELPERS]
+    if unvendored:
         raise SpecIncomplete(
-            f"kernel uses triton_helpers.{{{','.join(used)}}}, which lives in "
-            f"torch and the tnpu venv has no torch. Vendor a minimal "
-            f"triton_helpers into the tnpu venv (or into TRITON_SRC) before this "
-            f"kernel can compile.")
+            f"kernel uses triton_helpers.{{{','.join(unvendored)}}}, which lives "
+            f"in torch and the tnpu venv has no torch. Add it to _HELPERS_SRC if "
+            f"it is pure triton, or lower it another way if it is not.")
 
     # The generated source already imports triton itself; only add what a
     # stripped module might be missing.
@@ -261,6 +319,11 @@ def strip_for_tnpu(src):
     # inside stage 1 without ever naming libdevice.
     if re.search(r"\blibdevice\.", body):
         prefix += "from triton.language.extra.cuda import libdevice\n"
+    # Emitted into the spec rather than imported: the tnpu venv has no torch to
+    # import from, and a module dropped beside the spec would depend on how
+    # tnpu's stage-1 worker happens to set sys.path.
+    if used:
+        prefix += _HELPERS_SRC
     return prefix + body
 
 

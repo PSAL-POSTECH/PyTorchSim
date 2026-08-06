@@ -136,7 +136,7 @@ def collect_meta(kernel, kernel_name):
         "args": args,
         "numels": numels,
         "inside_reduction": bool(getattr(kernel, "inside_reduction", False)),
-        "fixed_config": fixed_config_for(kernel),
+        "fixed_config": fixed_config_for(kernel, numels, args),
     }
 
 
@@ -155,8 +155,34 @@ def parallel_axes(numels):
     return [p for p in _PARALLEL_PREFIXES if f"{p}numel" in numels]
 
 
-def fixed_config_for(kernel):
+#: torch dtype name -> bits. Only the dtypes _DTYPE can name.
+_DTYPE_BITS = {"float32": 32, "float16": 16, "bfloat16": 16,
+               "int64": 64, "int32": 32, "int8": 8, "bool": 8}
+
+
+def _element_bits(args):
+    """Widest tensor element in the kernel, in bits.
+
+    Widest, not narrowest: the block has to be one register's worth for EVERY
+    operand, and sizing off a narrow one would ask the wide one for more lanes
+    than a register holds. A kernel with no typed tensor argument falls back to
+    32, which is what every current baseline is.
+    """
+    bits = [_DTYPE_BITS[a["dtype"]] for a in (args or [])
+            if a.get("dtype") in _DTYPE_BITS]
+    return max(bits) if bits else 32
+
+
+def fixed_config_for(kernel, numels, args):
     """Block sizes pinned at codegen time.
+
+    `numels` is the <prefix>numel-keyed dict collect_meta builds, NOT
+    kernel.numels, which is keyed by bare prefix. Deriving it here a second time
+    is what went wrong before: this passed kernel.numels straight to
+    parallel_axes, which looks for "ynumel" and found "y", so axes came back
+    EMPTY for every kernel. Single-axis ones survived on the XBLOCK setdefault
+    below and multi-axis ones lost YBLOCK entirely, surfacing much later as
+    "YBLOCK=None" out of grid_of. The two must read the same dict.
 
     tnpu compiles ONE binary per kernel and the C wrapper walks the grid as a
     sequential loop, so there is no autotuner to choose the blocks later and no
@@ -172,17 +198,33 @@ def fixed_config_for(kernel):
     """
     from PyTorchSimFrontend import extension_config
     lanes = int(extension_config.vpu_num_lanes)
+    vlen = int(extension_config.vpu_vector_length_bits)
+    per_vector = max(1, vlen // _element_bits(args))
 
-    axes = parallel_axes(getattr(kernel, "numels", None) or {})
-    cfg = {_block_name(p): (lanes if i == 0 else 1) for i, p in enumerate(axes)}
-    if len(axes) > 1:
-        # Loud, because the shape is correct but pathological: an inner block of
-        # 1 makes every work-item move a strided column. Fine for getting a
-        # multi-axis kernel through the route, misleading to benchmark.
-        extension_config.setup_logger().warning(
-            "[triton-npu] %s tiles over %s; inner blocks pinned to 1, which is "
-            "correct but not a tiling worth measuring",
-            getattr(kernel, "kernel_name", "kernel"), axes)
+    axes = parallel_axes(numels)
+    cfg = {}
+    for i, p in enumerate(axes):
+        if i == 0:
+            # Tile dim 0. The MVIN DMA scatters it across the lanes, and it is
+            # also the systolic array's side (tnpu config.py: sa_dim = n_vu), so
+            # the lane count is the one value that satisfies both -- which is
+            # why matmul needs this read from the config rather than assumed.
+            #
+            # WHICH LETTER dim 0 IS DEPENDS ON RANK, so it is indexed rather
+            # than named. Inductor gives the outermost axis the [:, None] slot,
+            # so a 2D kernel puts y there and a 1D one has only x. Confirmed in
+            # 04-custom.mlir: the 2D transpose stages memref<128x8xf32, 1> with
+            # vlane_split_axis = 0 under YBLOCK=128, XBLOCK=8, and 1D add stages
+            # memref<128xf32, 1>, same axis, under XBLOCK=128.
+            cfg[_block_name(p)] = lanes
+        elif i == len(axes) - 1:
+            # Innermost, so contiguous (tile_stride ends in 1): give each lane
+            # one full vector register. 8 fp32 at vlen 256 is exactly that.
+            # Pinned to 1 before, which is why a multi-axis work-item moved a
+            # strided column -- correct but nothing worth measuring.
+            cfg[_block_name(p)] = per_vector
+        else:
+            cfg[_block_name(p)] = 1
     cfg.setdefault("XBLOCK", lanes)         # a kernel with no tiling info still has x
     if getattr(kernel, "inside_reduction", False):
         # A reduction block is NOT free to be the lane count: the reduced axis
@@ -378,6 +420,24 @@ def grid_of(meta):
     return tuple(grid)
 
 
+def grid_xyz(meta):
+    """The same grid in tnpu's order: (gridX, gridY, gridZ).
+
+    tnpu's spec.grid is positional and X-FIRST -- wrapper._grid3 reads
+    `g[0], g[1], g[2]` as gx, gy, gz and emits the loop nest in that order --
+    while grid_of is OUTERMOST-first (z, y, x) to match Inductor's axes. For a
+    1D kernel the two orders are the same tuple, which is why every kernel on
+    this route agreed until a second axis appeared.
+
+    Handed the outermost-first tuple, tnpu reads gridY as gridX: the inner axis
+    then runs for as many steps as the outer one needed, and a transpose comes
+    back with only its first XBLOCK columns written and the rest left at zero.
+    Silently wrong output, not a crash, so it is built here by axis NAME.
+    """
+    extents = dict(zip(parallel_axes(meta["numels"]), grid_of(meta)))
+    return tuple(extents.get(p, 1) for p in ("x", "y", "z"))
+
+
 SPEC_TEMPLATE = '''\
 """Generated by PyTorchSimFrontend/triton_backend/kernel_spec.py -- do not edit.
 
@@ -486,7 +546,7 @@ def write_spec_file(src_code, meta, path, tnpu_dir):
         constexprs=constexprs,
         args_body=args_body,
         make_inputs_body=make_inputs_body,
-        grid=grid_of(meta),
+        grid=grid_xyz(meta),
         scalar_decls=[(n, c) for n, c, _ in scalars],
         scalar_values={n: v for n, _, v in scalars},
     )

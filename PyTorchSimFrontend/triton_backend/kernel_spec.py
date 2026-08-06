@@ -253,15 +253,14 @@ def strip_for_tnpu(src):
     if re.search(r"\btl_math\.", body):
         prefix += "from triton.language import math as tl_math\n"
 
-    # libdevice members are @core.extern: no triton_shared implementation, so a
-    # call returns None and fails obscurely in stage 1. Name it here instead.
-    ext = sorted(set(re.findall(r"\blibdevice\.(\w+)", body)))
-    if ext:
-        raise SpecIncomplete(
-            f"kernel calls libdevice.{{{','.join(ext)}}}: those are extern math "
-            f"intrinsics with no implementation on the triton_shared backend. "
-            f"They need lowering to a VPU op (or a scalar fallback) before this "
-            f"kernel can compile.")
+    # Same story as tl_math: Inductor reaches libdevice through torch, and the
+    # dropped import took it with it. The name has to be bound to triton's OWN
+    # copy -- libdevice members are @core.extern stubs, and a backend binds them
+    # via get_module_map, which triton_shared now does. Leave the name unbound
+    # and a call returns None, failing as "cannot convert None of type NoneType"
+    # inside stage 1 without ever naming libdevice.
+    if re.search(r"\blibdevice\.", body):
+        prefix += "from triton.language.extra.cuda import libdevice\n"
     return prefix + body
 
 

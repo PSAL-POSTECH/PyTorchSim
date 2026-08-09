@@ -21,7 +21,8 @@ class ExtensionDeviceOpOverrides(DeviceOpOverrides):
         return "pass"
 
     def device_guard(self, device_idx: int) -> str:
-        return "pass"
+        # The caller writes `with {this}:`, so "pass" is a SyntaxError.
+        return "torch._ops.contextlib.nullcontext()"
 
 register_device_op_overrides("npu", ExtensionDeviceOpOverrides())
 register_device_op_overrides("cpu", CpuDeviceOpOverrides())

@@ -49,7 +49,18 @@ _LOAD_OPS = {"vector.transfer_read", "affine.vector_load", "vector.load",
              "memref.load", "affine.load"}
 _STORE_OPS = {"vector.transfer_write", "affine.vector_store", "vector.store",
               "memref.store", "affine.store"}
-_IGNORE_OPS = {"memref.dealloc"}   # lifetime, not a data access
+#: Ops that touch a memref without accessing it.
+#:
+#: `memref.dealloc` is lifetime. The rest are TERMINATORS, which forward a value
+#: to their parent and read nothing: a loop that carries a buffer as an iter_arg
+#: ends its body with `scf.yield %buf`, and the buffer is not read there -- it is
+#: read by the loads inside the body, which are classified on their own. The
+#: parent op is already skipped by the `results are memrefs` guard above, so
+#: without these the pair goes unclassified and the analysis refuses a kernel it
+#: understands perfectly well. A reduction whose R0_BLOCK is smaller than the
+#: extent is exactly that shape, so every chunked reduction hits it.
+_IGNORE_OPS = {"memref.dealloc",
+               "scf.yield", "affine.yield", "scf.condition", "func.return"}
 
 
 def _is_memref(v):
@@ -101,6 +112,24 @@ def _rw_buffers_of_compute(cn):
         elif name == "memref.copy":
             rd(mrefs[0])
             wr(mrefs[-1])
+        elif name == "togsim.transfer":
+            # THE DIRECTION IS IN THE ATTRIBUTE, not in the operand order. The
+            # contract is fixed -- operands[0] is the DRAM side and operands[2]
+            # the SRAM side, always, both ways round (see tnpu's
+            # lower_tts_to_transfer docstring, "THE TRANSFER CONTRACT") -- so
+            # reading the position alone would call every DMA a read of DRAM and
+            # a write of SRAM, and MVOUT is exactly the other way.
+            #
+            # Only the SRAM side can be a @global here, so the DRAM side falls
+            # out of _global_of on its own; classifying both keeps this honest
+            # if that ever stops being true.
+            dram, sram = op.operands[0], op.operands[2]
+            if op.attributes["dma_kind"].value == "MVIN":
+                rd(dram)
+                wr(sram)
+            else:                                      # MVOUT
+                rd(sram)
+                wr(dram)
         elif name.startswith("linalg."):               # DPS: ins read, outs read+write
             for v in op.inputs:
                 if _is_memref(v):

@@ -4,7 +4,7 @@ TOGSim simulates from a compiled trace producer (docs/design/togsim_cpp_trace.md
 PyTorchSim's codegen already emits one; this emits the same from a Triton-shaped
 kernel, where the grid must be supplied -- see `lower_to_emitc.WorkItem`.
 
-    emit_trace(workdir, meta)   04-custom.mlir -> trace.so + trace_cycles.tsv
+    emit_trace(workdir, meta)   *-custom.mlir -> trace.so + trace_cycles.tsv
     run_togsim(workdir, ...)    hand them to TOGSim, return its parsed result
 """
 
@@ -45,7 +45,8 @@ def measure_tile_cycles(workdir, meta):
         logger.warning("[Gem5] %s not found; cannot sample cycles", spec)
         return None
 
-    run_tog(os.path.join(workdir, "04-custom.mlir"),
+    from .tnpu_bridge import stage_artifact
+    run_tog(stage_artifact(workdir, "custom.mlir"),
             os.path.join(workdir, "tog_sample.py"),
             os.path.join(workdir, SAMPLE_MLIR), sample_mode=True)
 
@@ -155,11 +156,12 @@ def emit_trace(workdir, meta):
     from PyTorchSimFrontend.mlir.passes import lower_to_emitc as l2e
     from PyTorchSimFrontend.mlir.passes.build_tog import ir
 
-    postvcix = os.path.join(workdir, "04-custom.mlir")
-    if not os.path.isfile(postvcix):
+    from .tnpu_bridge import stage_artifact
+    postvcix = stage_artifact(workdir, "custom.mlir")
+    if postvcix is None:
         raise FileNotFoundError(
-            f"{postvcix} not found -- tnpu must have run at least to stage 4 "
-            f"(the post-vcix IR is what the trace is built from)")
+            f"no *-custom.mlir in {workdir} -- tnpu must run far enough to emit "
+            f"the post-vcix IR, which is what the trace is built from")
 
     # Before build_skeleton: both read the post-vcix IR, which it rewrites in place.
     cycles = measure_tile_cycles(workdir, meta)

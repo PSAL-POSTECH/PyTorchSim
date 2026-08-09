@@ -105,3 +105,19 @@ def run_pipeline(spec_path, workdir, to_stage="binary", from_stage="ttir",
                         cmd=" ".join(cmd), output=output)
     logger.debug("[triton-npu] %s", output)
     return workdir
+
+def stage_artifact(workdir, suffix):
+    """The stage file ending in `suffix`, whatever number tnpu gave it.
+
+    THE NUMBERS ARE NOT AN INTERFACE. tnpu renumbers its stages whenever one is
+    added or split -- the post-vcix IR has been 04-custom.mlir and is now
+    05-custom.mlir -- and every hardcoded number here turns that into a
+    FileNotFoundError raised from the launcher, long after the pipeline
+    succeeded. The suffix is the stable half of the name, so match on it and let
+    the number be tnpu's business.
+
+    Returns None when nothing matches, so callers can say what they wanted.
+    """
+    import glob
+    hits = sorted(glob.glob(os.path.join(workdir, f"*-{suffix}")))
+    return hits[-1] if hits else None

@@ -171,6 +171,21 @@ def reduction_axes(numels):
                   if k.endswith("numel") and k.startswith("r"))
 
 
+#: How many R0_BLOCK-sized buffers a reduction body keeps live at once.
+#:
+#: R0_BLOCK IS PER LANE. The tile is [XBLOCK, R0_BLOCK], XBLOCK is the lane axis,
+#: so every intermediate costs R0_BLOCK elements IN EVERY LANE and the block size
+#: multiplies by however many are live. DeepSeek's RMSNorm lowers to ten spad
+#: globals, eight of them full R0_BLOCK tiles -- and one of those is banked on a
+#: unit axis, which reserves its full size in every lane anyway, so it counts too.
+#:
+#: 12, not 8. Eight was the measured count and it landed 64 bytes over budget,
+#: because the count is a property of the kernel and not a constant. The cost of
+#: guessing high is one more trip round a loop that already exists; the cost of
+#: guessing low is a link-time scratchpad error that never mentions block sizes.
+_REDUCTION_LIVE_TILES = 12
+
+
 #: torch dtype name -> bits. Only the dtypes _DTYPE can name.
 _DTYPE_BITS = {"float64": 64, "float32": 32, "float16": 16, "bfloat16": 16,
                "int64": 64, "int32": 32, "int16": 16, "int8": 8,
@@ -258,13 +273,40 @@ def fixed_config_for(kernel, numels, args):
         # masked. Left unset, as before, when the extent is unknown or will not
         # fit a lane's scratchpad -- those fail loudly rather than silently
         # picking a layout that cannot run.
-        lane_bytes = extension_config.CONFIG_SPAD_INFO["spad_size"]
+        # INDUCTOR ALREADY LOOPS. The generated body is
+        # `for r0_offset in range(0, r0_numel, R0_BLOCK)` with the partial sums
+        # carried in registers, so the block does NOT have to cover the extent --
+        # it only has to be a tile the hardware can hold. Sizing it to the whole
+        # reduction, which an earlier version of this did, makes a 1536-long
+        # reduction ask for 8KB per lane per buffer, and a kernel with five live
+        # buffers then blows the double-buffer budget at link time with an error
+        # that names the scratchpad rather than this decision.
+        #
+        # So take a fixed tile and let the loop do the rest. The reduced axis
+        # still lives INSIDE a lane, which is the constraint that matters
+        # (triton-npu kernels/reduce.py) -- a chunk of it is as in-lane as all
+        # of it. The budget is halved because the target double-buffers, and
+        # divided again by the number of tiles a reduction body keeps live.
+        # NOT extension_config's spad. The YAML says 128 KB per lane and tnpu
+        # enforces 64 KB (tnpu/config.py SPAD_SIZE, and spike is launched with
+        # --scratchpad-size=65536), so sizing against the YAML overshoots by 2x
+        # and the kernel dies at LINK time. tnpu is the one that refuses, so its
+        # number is the one that counts; TNPU_SPAD_SIZE overrides both.
+        lane_bytes = int(os.environ.get("TNPU_SPAD_SIZE", str(64 * 1024)), 0)
         elem_bytes = max(1, _element_bits(args) // 8)
+        budget = lane_bytes // 2 // _REDUCTION_LIVE_TILES
         for p in reduction_axes(numels) or ["r0_"]:
             n = numels.get(f"{p}numel")
-            block = 1 << (int(n) - 1).bit_length() if n else None
-            if block and block * elem_bytes > lane_bytes:
-                block = None
+            if not n:
+                cfg[_block_name(p)] = None
+                continue
+            # Cover the extent and no more, then shrink to the budget. Rounding
+            # 1536 up to 2048 buys nothing -- the tail is all mask -- and costs a
+            # third of the tile, so the loop running twice over 1024 is strictly
+            # better than once over 2048 plus 512 wasted lanes of nothing.
+            block = 1 << (int(n) - 1).bit_length()
+            while block * elem_bytes > budget and block > 1:
+                block //= 2
             cfg[_block_name(p)] = block
     return cfg
 

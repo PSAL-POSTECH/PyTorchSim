@@ -134,6 +134,7 @@ def collect_meta(kernel, kernel_name):
 
     return {
         "kernel_name": kernel_name,
+        "template_grid": _template_grid(kernel),
         "signature": {str(k): str(v) for k, v in signature.items()},
         "constants": {str(k): v for k, v in constants.items()},
         "args": args,
@@ -537,6 +538,35 @@ def grid_of(meta):
     return tuple(grid)
 
 
+def _template_grid(kernel):
+    """A template kernel's grid, from the template rather than from the numels.
+
+    mm and conv do not come from Inductor's pointwise codegen: their source is a
+    jinja template with its own BLOCK_M/N/K baked in as literals, and their grid
+    is over OUTPUT TILES -- select_algorithm.TritonTemplateKernel.call_kernel
+    emits `*grid_fn(*call_sizes, meta)`. Nothing about that is derivable from
+    xnumel and XBLOCK.
+
+    Deriving it that way anyway is what a pointwise formula does to an mm: an
+    18432-element output at XBLOCK 128 becomes grid 144, when the template wants
+    cdiv(M, 32) * cdiv(N, 32). The kernel then runs the wrong number of programs
+    over tiles it never asked for, and nothing about the shapes disagrees loudly
+    enough to notice.
+
+    Returns None for an ordinary kernel, which is every kernel that HAS numels.
+    """
+    grid_fn = getattr(kernel, "grid_fn", None)
+    sizes = getattr(kernel, "call_sizes", None)
+    if grid_fn is None or sizes is None:
+        return None
+    try:
+        vals = [int(V.graph.sizevars.size_hint(s)) for s in sizes]
+        g = grid_fn(*vals, dict(getattr(kernel, "meta", None) or {}))
+    except Exception as e:  # noqa: BLE001 - reported by grid_xyz, with the cause
+        return {"error": f"{type(e).__name__}: {e}"}
+    return [int(x) for x in g]
+
+
 def grid_xyz(meta):
     """The same grid in tnpu's order: (gridX, gridY, gridZ).
 
@@ -551,6 +581,16 @@ def grid_xyz(meta):
     back with only its first XBLOCK columns written and the rest left at zero.
     Silently wrong output, not a crash, so it is built here by axis NAME.
     """
+
+    tg = meta.get("template_grid")
+    if tg is not None:
+        if isinstance(tg, dict):
+            raise SpecIncomplete(
+                f"{meta['kernel_name']} is a template kernel and its own grid "
+                f"function could not be evaluated ({tg['error']}); the pointwise "
+                f"formula would silently give the wrong number of programs")
+        return tuple(list(tg)[:3] + [1, 1, 1])[:3]
+
     extents = dict(zip(parallel_axes(meta["numels"]), grid_of(meta)))
     return tuple(extents.get(p, 1) for p in ("x", "y", "z"))
 

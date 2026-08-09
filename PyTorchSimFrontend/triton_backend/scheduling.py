@@ -43,11 +43,10 @@ class TritonNPUKernel(TritonKernel):
         wrapper = V.graph.wrapper_code
         _, call_args, _, arg_types = self.args.python_argdefs()
         self.add_numel_to_call_args(name, call_args, arg_types)
-        # add_numel_to_call_args appends the numels as SYMPY values, which the
-        # triton path later renders through pexpr. ExtensionWrapperCodegen joins
-        # call args as plain strings (mlir_codegen_backend.py:241), so render
-        # them here instead of handing it a sympy Integer.
-        call_args = [a if isinstance(a, str) else str(a) for a in call_args]
+        # The numels arrive here as SYMPY values; they are rendered in
+        # TritonNPUWrapperCodegen.wrap_kernel_call, which is the one place every
+        # kernel call in this route passes through -- a template kernel (mm,
+        # conv) never reaches this method at all.
         # triton=False -> PythonWrapperCodegen emits `name(args...)`, the same
         # shape the MLIR route uses (mlir_common.py:627).
         wrapper.generate_kernel_call(name, call_args, triton=False)

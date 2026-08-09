@@ -56,6 +56,62 @@ def _register_template_heuristics():
         pass
 
 
+def _size_conv_blocks_from_the_machine():
+    """Offer conv tiles this machine has lanes for.
+
+    `get_config_heuristics` has no registry lookup -- it is an if/elif over
+    cuda, xpu, cpu, mtia and then `BaseConfigHeuristic()` -- so npu takes the
+    generic set, whose first entry is ConvConfig(64, 256, 16, 2, 4). With 128
+    lanes that is a [64, 256] tile banked on the N axis, two columns per lane,
+    and bank_vectorize refuses it:
+
+      operand [64, 256] banked on axis 1 with strides [1, 64] is not reached by
+      indexing its own row-major type in the nest [2, 64] this op's maps ask for
+
+    resnet18 reaches it at its eleventh conv, the first whose out_chan is 256 --
+    below that `preprocess_mm_configs` clamps BLOCK_N to the channel count and
+    the tile happens to fit.
+
+    THIS IS THE MAPPING POLICY, NOT A WORKAROUND FOR THAT REFUSAL. A block size
+    is a statement about the machine the kernel runs on, and taking a table
+    written for a GPU is not one -- the heuristic registered below has carried
+    the same TODO since it was written. The refusal is a real defect and stays
+    one: a tile deeper than one element per lane is a shape this backend has to
+    handle, and pinning BLOCK_N to the lane count only stops resnet from being
+    the thing that reports it.
+
+    N IS THE LANE AXIS, so it takes the lane count exactly -- the same choice
+    kernel_spec.fixed_config_for makes for XBLOCK, and for the same reason. M
+    and K are per-lane depth and cost scratchpad rather than lanes, so they are
+    offered small-to-large and the first that the shape does not clamp wins.
+    """
+    from torch._inductor.choices import InductorChoices
+    from torch._inductor.template_heuristics.triton import (
+        BaseConfigHeuristic, ConvConfig)
+
+    from PyTorchSimFrontend import extension_config
+
+    lanes = int(extension_config.vpu_num_lanes)
+
+    class NPUConfigHeuristic(BaseConfigHeuristic):
+        def __init__(self):
+            super().__init__()
+            self.conv_configs = [
+                ConvConfig(64, lanes, 16, 1, 4),
+                ConvConfig(32, lanes, 16, 1, 4),
+                ConvConfig(64, lanes, 32, 1, 4),
+            ]
+
+    original = InductorChoices.get_config_heuristics
+
+    def get_config_heuristics(self, device_type="cuda"):
+        if device_type == "npu":
+            return NPUConfigHeuristic()
+        return original(self, device_type)
+
+    InductorChoices.get_config_heuristics = get_config_heuristics
+
+
 def pick_config(choices):
     """Stand in for benchmarking: there is no device to time on, so the offered
     order wins. Extern ranks last, present only so a device with no registered
@@ -132,6 +188,7 @@ def install():
     _register_npu_as_gpu()
     _claim_triton_present()
     _register_template_heuristics()
+    _size_conv_blocks_from_the_machine()
     _short_circuit_degenerate_gemms()
     _install_selection()
 

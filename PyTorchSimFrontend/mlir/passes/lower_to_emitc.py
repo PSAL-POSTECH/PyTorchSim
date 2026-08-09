@@ -660,6 +660,47 @@ def _add_extern_c(module, ctx):
 # ---------------------------------------------------------------------------
 # driver
 # ---------------------------------------------------------------------------
+#: Integer min/max, and the comparison that says the same thing. EmitC has no
+#: form of its own for these; `arith.cmpi` and `arith.select` it does convert.
+_INT_MINMAX = {"arith.minsi": "slt", "arith.maxsi": "sgt",
+               "arith.minui": "ult", "arith.maxui": "ugt"}
+
+
+def _expand_int_minmax(module):
+    """`min(a, b)` -> `select(a < b, a, b)`, in place. Returns how many.
+
+    WHY IT IS HERE AND NOT IN THE PIPELINE. `convert-arith-to-emitc` marks these
+    four illegal and offers no pattern, and `arith-expand` only covers the ops
+    that need extra arithmetic (ceildiv, floordiv, the float ones) -- an integer
+    min needs none, so nothing upstream lowers it and the pipeline fails to
+    legalize instead. There is no float case here: `arith.minimumf`/`maximumf`
+    do have a conversion.
+
+    WHERE IT COMES FROM. Inductor's mm and conv Triton templates bound the last
+    tile with `min(M - pid * BLOCK_M, BLOCK_M)`. The kernel itself compiles and
+    runs -- tnpu lowers the op fine and Spike writes the right values -- so this
+    is the TIMING path only, which is why it surfaced as a working kernel whose
+    trace producer would not build.
+    """
+    from mlir.dialects import arith
+    # Collected first: walk_ops recurses into an op's regions AFTER yielding it,
+    # so erasing during the walk invalidates the handle it is about to ask.
+    victims = [(op, _INT_MINMAX[op.operation.name]) for op in walk_ops(module.body)
+               if op.operation.name in _INT_MINMAX]
+    done = 0
+    for op, pred in victims:
+        a, b = op.operation.operands
+        with ir.InsertionPoint(op.operation), op.operation.location:
+            # a<b picks a for a MIN and a>b picks a for a MAX, so the true arm
+            # is `a` either way and only the predicate differs.
+            cond = arith.CmpIOp(arith.CmpIPredicate[pred], a, b).result
+            new = arith.SelectOp(cond, a, b).result
+        _replace_all_uses(op.operation.results[0], new)
+        op.operation.erase()
+        done += 1
+    return done
+
+
 def lower_to_emitc(skeleton_module, work_item=None):
     """Lower a skeleton+API module (in place) to an EmitC module with the
     `togsim_kernel` entry function. Returns the same module.
@@ -681,6 +722,7 @@ def lower_to_emitc(skeleton_module, work_item=None):
     _bind_runtime_bounds(pending, kernel.regions[0].blocks[0].arguments[1], ctx)
     _rewrite_togsim_ops(ctx, kernel, ctx_val)         # togsim.* -> emitc.call_opaque
     _outline_work_item(ctx, kernel, ctx_val)          # work-item body -> togsim_kernel_tile + dispatch
+    _expand_int_minmax(skeleton_module)               # what convert-arith-to-emitc will not take
 
     PassManager.parse(_PIPELINE, ctx).run(skeleton_module.operation)
 

@@ -140,7 +140,42 @@ def collect_meta(kernel, kernel_name):
         "numels": numels,
         "inside_reduction": bool(getattr(kernel, "inside_reduction", False)),
         "fixed_config": fixed_config_for(kernel, numels, args),
+        "template_grid": _template_grid(kernel),
     }
+
+
+def _template_grid(kernel):
+    """A TEMPLATE kernel's launch grid as (gridX, gridY, gridZ), else None.
+
+    A template kernel (mm, conv) does not walk the output the way a pointwise
+    kernel does. It tiles with its own BLOCK_M/BLOCK_N and reads
+    `tl.program_id(0..2)` directly, so the grid is the template's to state --
+    Inductor passes it as three extra launcher arguments rather than deriving it
+    (`FixedGrid.setup_grid_as_args`). The `numels` such a kernel reports describe
+    the output tensor, not its iteration space, so ceil(numel / XBLOCK) is not a
+    grid at all: for ResNet's first conv it gave 6272 where the template asks for
+    196, and the surplus programs index tiles past the end of every operand.
+
+    Asked the same way Inductor asks it for its own benchmark harness
+    (`TritonTemplateKernel.kernel_benchmark_extra_args`), so the grid here is the
+    grid the launcher would have passed.
+    """
+    grid_fn = getattr(kernel, "grid_fn", None)
+    call_sizes = getattr(kernel, "call_sizes", None)
+    if grid_fn is None or call_sizes is None:
+        return None                       # not a template; the numels are real
+    grid = grid_fn(*V.graph.sizevars.size_hints(call_sizes), kernel.meta)
+    try:
+        extents = tuple(int(g) for g in grid)
+    except TypeError:
+        extents = ()
+    if len(extents) != 3 or any(g < 1 for g in extents):
+        raise SpecIncomplete(
+            f"{getattr(kernel, 'kernel_name', kernel)}: template grid_fn returned "
+            f"{grid!r}; this route needs three static positive extents. Refusing "
+            f"rather than falling back to the numels, which describe the output "
+            f"tensor and not this kernel's iteration space.")
+    return extents
 
 
 #: Parallel iteration prefixes, OUTERMOST first. Inductor's `x` is the
@@ -156,6 +191,41 @@ def _block_name(prefix):
 def parallel_axes(numels):
     """Grid axes this kernel uses, outermost first."""
     return [p for p in _PARALLEL_PREFIXES if f"{p}numel" in numels]
+
+
+def launch_axes(meta, numels=None):
+    """The axes the LAUNCH spreads programs over, outermost first.
+
+    Same question as `parallel_axes`, asked of the whole kernel rather than of
+    its numels, because a template kernel's numels do not answer it: it declares
+    its grid outright. Every consumer that pairs an axis with an extent -- the
+    spec's grid, the trace's shape file, the WorkItem's program-id arguments --
+    must ask this one, or two of them disagree about which slot is which.
+    """
+    grid = meta.get("template_grid")
+    if grid is None:
+        return parallel_axes(meta["numels"] if numels is None else numels)
+    # ALL THREE, including a slot whose extent is 1. A pointwise kernel reads
+    # exactly the program ids its numels name, but a template reads
+    # `tl.program_id(0..2)` from its own text no matter what the grid says --
+    # ResNet's first conv multiplies pidY by BLOCK_N even though gridY is 1. An
+    # axis left undeclared is a kernel argument nothing accounts for, and the
+    # trace producer stops at it ("kernel arg still used after build_skeleton").
+    # A declared axis of extent 1 just runs its loop once.
+    return list(_PARALLEL_PREFIXES)
+
+
+def launch_extents(meta, numels=None):
+    """The extents of `launch_axes`, in the same order.
+
+    Kept beside the axes rather than recomputed per consumer: the pairing is the
+    part that has been got wrong, not either half on its own.
+    """
+    grid = meta.get("template_grid")
+    if grid is None:
+        return grid_of(meta if numels is None else {**meta, "numels": numels})
+    by_axis = dict(zip(("x", "y", "z"), grid))
+    return tuple(by_axis[p] for p in launch_axes(meta, numels))
 
 
 def reduction_axes(numels):
@@ -516,7 +586,13 @@ def grid_of(meta):
 
     Also read by the timing path, which needs the same extents to enumerate the
     work-items -- so it lives here rather than being recomputed per consumer.
+
+    A template kernel states its own grid and this derivation does not apply to
+    it; see `_template_grid`.
     """
+    if meta.get("template_grid") is not None:
+        return launch_extents(meta)
+
     numels = meta["numels"]
     cfg = meta.get("fixed_config") or {}
     axes = parallel_axes(numels)
@@ -551,7 +627,7 @@ def grid_xyz(meta):
     back with only its first XBLOCK columns written and the rest left at zero.
     Silently wrong output, not a crash, so it is built here by axis NAME.
     """
-    extents = dict(zip(parallel_axes(meta["numels"]), grid_of(meta)))
+    extents = dict(zip(launch_axes(meta), launch_extents(meta)))
     return tuple(extents.get(p, 1) for p in ("x", "y", "z"))
 
 

@@ -103,7 +103,7 @@ def work_item_for(meta):
 
     n_tensor, n_scalar = _runtime_arg_layout(meta)
     pid_base = n_tensor + n_scalar + 3       # after gridX, gridY, gridZ
-    axes = kernel_spec.parallel_axes(meta["numels"])
+    axes = kernel_spec.launch_axes(meta)
     # Extents are left to run time: only the axis COUNT has to be compiled in,
     # and the launch knows the real numels. One trace then serves every shape.
     return WorkItem(parallel_args=[pid_base + _PID_SLOT[p] for p in axes],
@@ -120,6 +120,18 @@ def write_shape(workdir, meta, args=()):
     from . import kernel_spec
 
     numels = dict(meta["numels"])
+    # A template kernel's trailing call arguments are its grid, not its numels
+    # (FixedGrid passes _grid_0/1/2), and its numels describe the output tensor
+    # rather than its iteration space. Reading either into the other silently
+    # rescales the launch, so the recorded grid is used verbatim.
+    if meta.get("template_grid") is not None:
+        grid = list(kernel_spec.launch_extents(meta))
+        path = os.path.join(workdir, SHAPE_TXT)
+        with open(path, "w") as f:
+            f.write("\n".join(str(g) for g in grid) + "\n")
+        logger.info("[TOGSim] grid %s -> %s", grid, SHAPE_TXT)
+        return grid
+
     # Only the PARALLEL numels ride along on the call -- a reduction axis is
     # looped inside the kernel, so it is not passed and must not consume one of
     # the trailing values. They arrive in kernel order, which is the dict's.

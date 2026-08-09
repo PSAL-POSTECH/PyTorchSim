@@ -9,7 +9,7 @@ tnpu and returns the callable the wrapper then invokes per launch.
 
 Layout mirrors the MLIR route so the two are comparable: one directory per source
 hash under the dump path, holding the generated tnpu kernel file and every tnpu
-artifact (01-ttir.mlir ... 05-*.elf).
+artifact (01-ttir.mlir ... *-<kernel>.elf).
 """
 
 import os
@@ -40,7 +40,6 @@ class TritonNPULauncher:
         self.kernel_name = kernel_name
         self.workdir = workdir
         self.meta = meta
-        self.elf = os.path.join(workdir, f"05-{kernel_name}.elf")
 
     def __call__(self, *args):
         """One launch of the whole grid: run it on Spike, then time it.
@@ -76,8 +75,8 @@ def triton_npu_compile(src_code, meta, kernel_name):
     lock = FileLock(os.path.join(write_path, ".compile.lock"), timeout=LOCK_TIMEOUT)
     with lock:
         spec_path = os.path.join(write_path, f"{kernel_name}_spec.py")
-        elf = os.path.join(write_path, f"05-{kernel_name}.elf")
-        if not os.path.isfile(elf):
+        elf = tnpu_bridge.stage_artifact(write_path, f"{kernel_name}.elf")
+        if elf is None:
             # Before write_spec_file, which rejects exactly the kernels whose
             # source is worth keeping.
             with open(os.path.join(write_path, "kernel.py"), "w") as f:

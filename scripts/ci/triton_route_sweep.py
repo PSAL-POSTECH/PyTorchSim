@@ -140,6 +140,22 @@ def run_one(test, timeout, artifacts, scratch):
     shutil.rmtree(dump, ignore_errors=True)
     os.makedirs(dump, exist_ok=True)
     env = dict(os.environ, TORCHSIM_TRITON_CODEGEN="1", TORCHSIM_DUMP_PATH=dump)
+    # WHAT THIS SWEEP CHECKS IS VALUES, so it does not pay for cycles. Every test
+    # here compares its output against a torch reference and none of them looks
+    # at a cycle count, but the default config has pytorchsim_timing_mode on, so
+    # each one also ran TOGSim over every kernel it compiled.
+    #
+    #     measured   mobilenet_v2 takes about 21 minutes here with timing off and
+    #                does not finish inside the 1800s timeout with it on -- its
+    #                depthwise layers launch one program per group, 28544 of them
+    #                across the model. resnet18 takes 587s with timing on.
+    #
+    # The config is the mirror of `_timing_only`, which turns the functional half
+    # off for the same reason from the other side. A caller that wants cycles
+    # sets TOGSIM_CONFIG itself and this leaves it alone.
+    env.setdefault("TOGSIM_CONFIG", os.path.join(
+        ROOT, "configs",
+        "systolic_ws_128x128_c1_simple_noc_tpuv3_functional_only.yml"))
 
     t0, timed_out = time.time(), False
     try:

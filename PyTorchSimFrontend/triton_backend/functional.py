@@ -144,15 +144,102 @@ def read_outputs(workdir, meta, args):
     return written
 
 
+REPLAY_DIR = ".triton_replay"
+
+
+def _replay_root(workdir):
+    """Beside the workdirs, not inside one.
+
+    A tnpu-side fix is picked up by DELETING `outputs/triton_*`, which is the
+    project's own instruction and is what forces the pipeline to run again. A
+    cache kept inside a workdir would go with it every time it was most wanted,
+    so it lives one level up and is keyed strictly enough not to need the
+    deletion: the ELF's bytes are in the key, so the rebuilt kernel misses.
+    """
+    return os.path.join(os.path.dirname(os.path.abspath(workdir)), REPLAY_DIR)
+
+
+def _replay_key(workdir, meta, runtime):
+    """What this launch's outputs are a function of.
+
+    A GRAPH IS RE-RUN TO SEE THE NEXT LAYER, not the ones already settled, and
+    Spike is the whole cost -- resnet18 spends minutes there per conv and the
+    first twenty are unchanged between runs. So a launch whose every input is
+    the one it had last time replays that answer instead of simulating it.
+
+    THE KEY IS EVERYTHING THE ANSWER DEPENDS ON, which is why this is safe to
+    leave on: the ELF's own bytes, so a fix anywhere in tnpu misses (the workdir
+    is keyed by the TRITON source alone and would not), and the bytes of every
+    input, so a different tensor misses. The Triton source is already in the
+    workdir path. Nothing else reaches the kernel.
+    """
+    import hashlib
+
+    h = hashlib.sha256()
+    elf = [f for f in sorted(os.listdir(workdir)) if f.endswith(".elf")]
+    if not elf:
+        return None                       # nothing compiled yet; do not replay
+    with open(os.path.join(workdir, elf[0]), "rb") as f:
+        h.update(f.read())
+    for m in meta["args"]:
+        h.update(("%s|%s|%s|%s;" % (m["name"], m["role"], m["dtype"],
+                                    m["numel"])).encode())
+        if m["role"] in ("in", "inout"):
+            with open(os.path.join(runtime, f"{m['name']}.raw"), "rb") as f:
+                h.update(f.read())
+    return h.hexdigest()[:32]
+
+
+def _outputs_of(meta):
+    return [m["name"] for m in meta["args"] if m["role"] in ("out", "inout")]
+
+
+def _replay(workdir, meta, runtime, key):
+    """Put a saved run's outputs back in runtime/, or say it is not there."""
+    import shutil
+
+    saved = os.path.join(_replay_root(workdir), key)
+    names = _outputs_of(meta)
+    if not all(os.path.isfile(os.path.join(saved, f"{n}.raw")) for n in names):
+        return False
+    for n in names:
+        shutil.copyfile(os.path.join(saved, f"{n}.raw"),
+                        os.path.join(runtime, f"{n}.raw"))
+    return True
+
+
+def _save_replay(workdir, meta, runtime, key):
+    import shutil
+
+    saved = os.path.join(_replay_root(workdir), key)
+    os.makedirs(saved, exist_ok=True)
+    for n in _outputs_of(meta):
+        shutil.copyfile(os.path.join(runtime, f"{n}.raw"),
+                        os.path.join(saved, f"{n}.raw"))
+
+
 def run(workdir, meta, args, timeout_sec=None):
-    """Execute the kernel on the launch's tensors. Returns the names written."""
+    """Execute the kernel on the launch's tensors. Returns the names written.
+
+    Returns the same names whether Spike ran or a saved run was replayed; the
+    caller is told which in the log, because "it passed" means something
+    different when nothing was simulated.
+    """
     from . import tnpu_bridge
 
     spec = os.path.join(workdir, f"{meta['kernel_name']}_spec.py")
     if not os.path.isfile(spec):
         raise FileNotFoundError(f"{spec} not found -- compile the kernel first")
 
-    write_inputs(workdir, meta, args)
+    runtime = write_inputs(workdir, meta, args)
+
+    key = None
+    if os.environ.get("TORCHSIM_TRITON_REPLAY", "1") != "0":
+        key = _replay_key(workdir, meta, runtime)
+        if key and _replay(workdir, meta, runtime, key):
+            logger.info("[Spike] %s replayed %s (same ELF, same inputs)",
+                        meta["kernel_name"], key)
+            return read_outputs(workdir, meta, args)
 
     env = dict(os.environ)
     env.pop("PYTHONPATH", None)          # keep tnpu on its own MLIR bindings
@@ -165,4 +252,6 @@ def run(workdir, meta, args, timeout_sec=None):
             f"[Spike] {meta['kernel_name']} failed:\n"
             + (proc.stdout + proc.stderr)[-2000:])
 
+    if key:
+        _save_replay(workdir, meta, runtime, key)
     return read_outputs(workdir, meta, args)

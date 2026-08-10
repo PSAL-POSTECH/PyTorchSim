@@ -65,6 +65,34 @@ def _check(meta, pairs):
                 f"binary was compiled for {m['dtype']}")
 
 
+def _memory_order(t):
+    """`t`'s axes ordered the way its storage is, outermost first.
+
+    THE KERNEL INDEXES WITH THE TENSOR'S STRIDES, not with its shape. Inductor
+    reads those strides at compile time and writes them into the source as
+    constants -- resnet18's first conv carries `stride_xc = 1`, because the
+    graph put its input in channels-last -- so the bytes the kernel is handed
+    have to be the storage in ADDRESS order. `.contiguous()` produces logical
+    order instead, which for a channels-last tensor is a different permutation
+    of the same values, and the kernel then reads every element from the wrong
+    place while computing perfectly correctly on what it found.
+
+    MEASURED on resnet18's first conv: the output matched a torch reference
+    taken over the file read channels-last to 1e-5, and differed from the real
+    answer in 602115 of 802816 elements. PyTorchSim's own per-kernel check said
+    602108 and the same 1.38288 -- the same divergence from the other side.
+    """
+    return sorted(range(t.dim()), key=lambda i: -t.stride(i))
+
+
+def _inverse(order):
+    """The permutation that puts `order` back."""
+    inv = [0] * len(order)
+    for slot, axis in enumerate(order):
+        inv[axis] = slot
+    return inv
+
+
 def write_inputs(workdir, meta, args):
     """Write every arg as runtime/<name>.raw. Returns the runtime directory.
 
@@ -81,7 +109,9 @@ def write_inputs(workdir, meta, args):
     for m, t in pairs:
         path = os.path.join(runtime, f"{m['name']}.raw")
         if m["role"] in ("in", "inout"):
-            t.detach().to("cpu").contiguous().numpy().tofile(path)
+            cpu = t.detach().to("cpu")
+            (cpu.permute(*_memory_order(cpu)).contiguous()
+                .numpy().reshape(-1).tofile(path))
         else:
             np.zeros(m["numel"], dtype=_np_dtype(m["dtype"])).tofile(path)
     return runtime
@@ -103,7 +133,13 @@ def read_outputs(workdir, meta, args):
             raise RuntimeError(
                 f"{path} holds {flat.size} element(s), expected {m['numel']} "
                 f"-- Spike did not write the whole tensor")
-        t.copy_(torch.from_numpy(flat).view_as(t).to(t.dtype))
+        # Scattered back the way it was gathered: the kernel wrote address
+        # order, so the flat buffer is read in the tensor's storage order and
+        # permuted home. `view_as(t)` is logical order and is the same defect
+        # as `.contiguous()` on the way in -- see _memory_order.
+        order = _memory_order(t)
+        stored = torch.from_numpy(flat).view(*[t.shape[i] for i in order])
+        t.copy_(stored.permute(*_inverse(order)).to(t.dtype))
         written.append(m["name"])
     return written
 

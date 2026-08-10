@@ -66,8 +66,14 @@ class TritonNPULauncher:
         # route already reads (extension_codecache.py), so this route reads the
         # same one rather than inventing a second name.
         if not extension_config.pytorchsim_timing_mode:
+            # NOT "[TOGSim]". The sweep buckets a failure by matching its
+            # output, and its togsim bucket is `TOGSim|trace\.so|SIGSEGV|...` --
+            # so a line carrying that word puts every failing test in this mode
+            # into the wrong bucket whatever actually went wrong. MEASURED:
+            # tests/system/test_triton_codegen.py came back "[togsim]" for a
+            # failure that had nothing to do with it.
             logger.warning(
-                "[TOGSim] %s: timing mode is off, so no cycles are reported",
+                "[timing] %s: timing mode is off, so no cycles are reported",
                 self.kernel_name)
             return None
 

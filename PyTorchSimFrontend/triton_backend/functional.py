@@ -165,10 +165,10 @@ def _replay_key(workdir, meta, runtime):
     A GRAPH IS RE-RUN TO SEE THE NEXT LAYER, not the ones already settled, and
     Spike is the whole cost -- resnet18 spends minutes there per conv and the
     first twenty are unchanged between runs. So a launch whose every input is
-    the one it had last time replays that answer instead of simulating it.
+    the one it had last time can replay that answer instead of simulating it,
+    when `TORCHSIM_TRITON_REPLAY=1` asks for it.
 
-    THE KEY IS EVERYTHING THE ANSWER DEPENDS ON, which is why this is safe to
-    leave on: the ELF's own bytes, so a fix anywhere in tnpu misses (the workdir
+    THE KEY IS EVERYTHING THE ANSWER DEPENDS ON: the ELF's own bytes, so a fix anywhere in tnpu misses (the workdir
     is keyed by the TRITON source alone and would not), and the bytes of every
     input, so a different tensor misses. The Triton source is already in the
     workdir path. Nothing else reaches the kernel.
@@ -233,8 +233,13 @@ def run(workdir, meta, args, timeout_sec=None):
 
     runtime = write_inputs(workdir, meta, args)
 
+    # OFF BY DEFAULT. A full run is the thing being trusted, and a result that
+    # came out of a file is not a result the simulator produced today -- the key
+    # argues it would have been the same, but an argument is not a measurement.
+    # Turn it on for the inner loop, where the same graph is re-run to reach the
+    # kernel actually being worked on, and leave it off for anything reported.
     key = None
-    if os.environ.get("TORCHSIM_TRITON_REPLAY", "1") != "0":
+    if os.environ.get("TORCHSIM_TRITON_REPLAY", "0") == "1":
         key = _replay_key(workdir, meta, runtime)
         if key and _replay(workdir, meta, runtime, key):
             logger.info("[Spike] %s replayed %s (same ELF, same inputs)",

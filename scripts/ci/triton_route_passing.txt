@@ -2,6 +2,7 @@
 # Gated by scripts/ci/triton_route_sweep.py; regenerate with
 #   python scripts/ci/triton_route_sweep.py --all --update-allowlist
 # A test that passes without emitting a kernel is deliberately absent.
+tests/models/test_resnet.py
 tests/ops/attention/test_gqa.py
 tests/ops/elementwise/test_activation.py
 tests/ops/elementwise/test_add.py

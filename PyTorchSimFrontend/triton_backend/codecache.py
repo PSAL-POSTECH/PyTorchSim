@@ -55,6 +55,19 @@ class TritonNPULauncher:
                 "[Spike] %s: functional mode is off, so the output tensors keep "
                 "whatever they held", self.kernel_name)
 
+        # AND THE OTHER HALF IS SWITCHED TOO, which the paragraph above already
+        # claims: "the two halves are independent". Only the functional one was
+        # -- the timing half ran whatever the config said, so a graph being
+        # checked for VALUES paid for a cycle simulation of every kernel it
+        # touched. `pytorchsim_timing_mode` is the switch the MLIR route already
+        # reads (extension_codecache.py), so this route reads the same one
+        # rather than inventing a second name.
+        if not extension_config.pytorchsim_timing_mode:
+            logger.warning(
+                "[TOGSim] %s: timing mode is off, so no cycles are reported",
+                self.kernel_name)
+            return None
+
         if not os.path.isfile(os.path.join(self.workdir, timing.TRACE_SO)):
             timing.emit_trace(self.workdir, self.meta)
         result = timing.run_togsim(self.workdir, meta=self.meta, args=args)

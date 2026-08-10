@@ -56,6 +56,80 @@ def _register_template_heuristics():
         pass
 
 
+#: The `groups` of the convolution being lowered right now, for the one question
+#: that needs it and cannot reach it. Inductor picks a conv's block sizes from
+#: `(m, n, k)` with `n` the weight's FIRST extent -- which for a grouped
+#: convolution is every group's channels together, while the kernel it configures
+#: indexes `GROUP_OUT_C = OUT_C // GROUPS`. Nothing in that call carries `groups`,
+#: and the only frame that knows it is the lowering. See _clamp_conv_block_n and
+#: _size_conv_blocks_from_the_machine, which are the writer and the reader.
+_conv_groups = None
+
+
+def _groups_now():
+    return getattr(_conv_groups, "value", 1) or 1
+
+
+def _clamp_conv_block_n():
+    """Tell the conv heuristic how many channels a GROUP has.
+
+    THE CLAMP EXISTS AND IT IS GIVEN THE WRONG NUMBER. `preprocess_mm_configs`
+    already narrows BLOCK_N to the extent it is handed -- that is why a 32-channel
+    convolution gets BLOCK_N 32 and not 128 -- and for a grouped convolution it is
+    handed `out_chan`, all groups at once. So a depthwise layer, whose every group has
+    ONE output channel, is configured with BLOCK_N = 128 and masks 127 of them
+    away on every program.
+
+        measured   mobilenet_v2: every depthwise convolution comes out
+                   BLOCK_N=128 with GROUP_OUT_C=1, so 1/128 of each tile is live.
+                   The DMA still moves the whole tile and add_spad still reserves
+                   it.
+
+    WRAPPED AT THE LOWERING because that is the only frame holding `groups`; the
+    heuristic is called from inside it, so a thread-local set here is read there
+    and cleared on the way out. Nested lowerings restore the previous value
+    rather than assuming 1, since a convolution can be lowered while another is
+    on the stack (conv1d converts to conv2d and re-enters).
+    """
+    import functools
+    import inspect
+    import threading
+
+    global _conv_groups
+    from torch._inductor import lowering as inductor_lowering
+    from torch._inductor.kernel import conv as conv_kernel
+
+    _conv_groups = threading.local()
+    sig = inspect.signature(conv_kernel.convolution)
+
+    def wrap(inner):
+        @functools.wraps(inner)
+        def convolution(*args, **kwargs):
+            try:
+                groups = sig.bind(*args, **kwargs).arguments.get("groups", 1)
+            except TypeError:
+                groups = 1
+            prev = getattr(_conv_groups, "value", 1)
+            _conv_groups.value = groups if isinstance(groups, int) else 1
+            try:
+                return inner(*args, **kwargs)
+            finally:
+                _conv_groups.value = prev
+
+        return convolution
+
+    # EVERY KEY THE LOWERING IS UNDER, and there are three. `register_lowering`
+    # files it under the OpOverloadPacket AND under each of its overloads, and a
+    # lowered graph reaches for `aten.convolution.default` -- so wrapping the
+    # packet alone fires on nothing. MEASURED: with only the packet wrapped,
+    # mobilenet's depthwise layers still came out BLOCK_N=128.
+    packet = torch.ops.aten.convolution
+    for key in [packet] + [getattr(packet, o) for o in packet.overloads()]:
+        inner = inductor_lowering.lowerings.get(key)
+        if inner is not None:
+            inductor_lowering.lowerings[key] = wrap(inner)
+
+
 def _size_conv_blocks_from_the_machine():
     """Offer conv tiles this machine has lanes for.
 
@@ -102,6 +176,18 @@ def _size_conv_blocks_from_the_machine():
                 ConvConfig(64, lanes, 32, 1, 4),
             ]
 
+        def get_conv_configs(self):
+            # THE CHANNELS ONE PROGRAM INDEXES, which for a grouped convolution
+            # is not the extent Inductor passes. See _clamp_conv_block_n.
+            base = super().get_conv_configs()
+
+            def per_group(m, n, k, **kwargs):
+                groups = _groups_now()
+                return base(m, max(1, n // groups) if groups > 1 else n, k,
+                            **kwargs)
+
+            return per_group
+
     original = InductorChoices.get_config_heuristics
 
     def get_config_heuristics(self, device_type="cuda"):
@@ -110,6 +196,76 @@ def _size_conv_blocks_from_the_machine():
         return original(self, device_type)
 
     InductorChoices.get_config_heuristics = get_config_heuristics
+
+
+def _size_grouped_conv_grid_per_group():
+    """Launch a grouped convolution over the channels a GROUP has, not all of them.
+
+    Inductor's conv grid asks for the whole channel count on the axis its kernel
+    indexes PER GROUP:
+
+        def conv2d_grid(n, c, h, w, meta, *, cdiv):
+            return (cdiv(n * h * w, meta["BLOCK_M"]),
+                    cdiv(c, meta["BLOCK_N"]),     <-- c is OUT_C, all groups
+                    meta["GROUPS"])
+
+    and inside the template `idx_y_c = program_id(1) * BLOCK_N + arange(BLOCK_N)`
+    is masked against `GROUP_OUT_C = OUT_C // GROUPS`. The two disagree for every
+    grouped convolution: axis 1 runs `cdiv(OUT_C, BLOCK_N)` blocks and only
+    `cdiv(GROUP_OUT_C, BLOCK_N)` of them have a live column. The rest are
+    launched, DMA their tiles, mask everything away and write nothing.
+
+        measured   mobilenet_v2 on this backend. Its depthwise convolutions have
+                   GROUP_OUT_C = 1, so every one of them overshoots:
+
+                     GROUPS=960  BLOCK_N=128  grid=(1, 8, 960)   7680 programs
+                     GROUPS=576  BLOCK_N=128  grid=(4, 5, 576)  11520
+                     GROUPS=384  BLOCK_N=128  grid=(4, 3, 384)   4608
+                     GROUPS=144  BLOCK_N=128  grid=(49, 2, 144) 14112
+
+                   In the first, blocks 1..7 of axis 1 hold `idx_y_c` >= 128
+                   against a bound of 1 -- 6720 of 7680 programs do literally
+                   nothing, and the simulator runs every one.
+
+    IT IS A CORRECTNESS-PRESERVING FIX AND NOT A HEURISTIC. The programs removed
+    are exactly those whose stores are masked off in full, so the output is the
+    same tensor; what changes is how many times the machine is asked to produce
+    nothing. GROUPS == 1 is untouched -- there `GROUP_OUT_C` IS `OUT_C` and the
+    two expressions are the same number.
+
+    PATCHED ON THE TEMPLATE, not on the module. `conv2d_template` captured the
+    function at construction, so rebinding `conv.conv2d_grid` alone changes
+    nothing that runs; the object's own attribute is what the launcher reads.
+    """
+    from torch._inductor.kernel import conv as conv_kernel
+    # `SymbolicGridFn` lives in select_algorithm, which is where conv.py itself
+    # imports it from; torch._inductor.ir does not re-export it.
+    from torch._inductor.select_algorithm import SymbolicGridFn
+
+    @SymbolicGridFn
+    def conv2d_grid(n, c, h, w, meta, *, cdiv):
+        groups = meta.get("GROUPS", 1) or 1
+        return (
+            cdiv(n * h * w, meta["BLOCK_M"]),
+            cdiv(cdiv(c, groups), meta["BLOCK_N"]),
+            groups,
+        )
+
+    @SymbolicGridFn
+    def conv3d_grid(n, c, d, h, w, meta, *, cdiv):
+        groups = meta.get("GROUPS", 1) or 1
+        return (
+            cdiv(n * d * h * w, meta["BLOCK_M"]),
+            cdiv(cdiv(c, groups), meta["BLOCK_N"]),
+            groups,
+        )
+
+    conv_kernel.conv2d_grid = conv2d_grid
+    conv_kernel.conv3d_grid = conv3d_grid
+    for tmpl, fn in ((getattr(conv_kernel, "conv2d_template", None), conv2d_grid),
+                     (getattr(conv_kernel, "conv3d_template", None), conv3d_grid)):
+        if tmpl is not None:
+            tmpl.grid = fn
 
 
 def pick_config(choices):
@@ -189,6 +345,8 @@ def install():
     _claim_triton_present()
     _register_template_heuristics()
     _size_conv_blocks_from_the_machine()
+    _size_grouped_conv_grid_per_group()
+    _clamp_conv_block_n()
     _short_circuit_degenerate_gemms()
     _install_selection()
 

@@ -441,4 +441,38 @@ def install():
     # Epilogue-fusion benchmarking renders a benchmark-flavoured kernel whose
     # harness imports land indented in the real module.
     config.benchmark_epilogue_fusion = False
+
+    # SPLITTING A REDUCTION PAYS FOR PARALLELISM THIS BACKEND CANNOT COLLECT YET,
+    # and the cost is a form it cannot compile. The option says what it buys:
+    # "For reductions with a small output size (usually 1, e.g. x.sum()) there is
+    # not enough parallelism to saturate the GPU ... split_reductions: uses
+    # multiple kernels to gain more parallelism". The extra kernel is only a win
+    # where the two halves RUN AT ONCE, and today they do not -- tnpu compiles
+    # one binary per kernel and the C wrapper walks the grid as a sequential
+    # loop. THAT IS THE CURRENT LAUNCHER, NOT A PROPERTY OF THE MACHINE: the
+    # hardware has cores and the config has `num_cores`, so when launches run
+    # concurrently this trade changes sign and this line should be revisited
+    # rather than assumed.
+    #
+    # WHAT IT COSTS MEANWHILE. Stage one leaves partial (mean, m2, weight)
+    # triples and stage two combines them, which for a variance is Welford's:
+    # `tl.reduce` over a triple with a six-argument body. Inductor has a two-pass
+    # fallback for `welford_reduce` and NONE for `welford_combine` -- that branch
+    # always emits the triple -- and triton_shared's ReduceConverter takes a body
+    # of exactly one op from a fixed list, so it survives as `tt.reduce` into a
+    # pass with no lowering for it. So the split is not merely unpaid for, it
+    # produces a kernel that does not build.
+    #
+    #     measured   e2e convnextv2's `convolution_native_layer_norm_permute_17`:
+    #                r0_numel 2, so persistent by any threshold, and still a
+    #                `(3 x tensor<128x2xf32>) -> (3 x tensor<128xf32>)` Welford
+    #                because the reduction was split in two. With the split off,
+    #                convnextv2 goes 17 kernels compiled to 35.
+    #
+    # THE ORDER TO LIFT THIS IN, when concurrent launches land: give
+    # `welford_combine` a lowering (or a two-pass fallback of its own) FIRST,
+    # then turn this back on and measure. Turning it on while that branch still
+    # emits an unconvertible triple only brings the failure back.
+    config.split_reductions = False
+
     _installed = True

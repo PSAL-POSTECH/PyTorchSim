@@ -198,6 +198,84 @@ def _size_conv_blocks_from_the_machine():
     InductorChoices.get_config_heuristics = get_config_heuristics
 
 
+def _persist_a_reduction_that_fits_one_tile():
+    """Say a reduction is PERSISTENT when our own block would cover it anyway.
+
+    Inductor decides persistent-vs-looped from the reduction's extent against a
+    threshold -- 64, unless the hint is INNER -- and this backend then pins the
+    block itself, in kernel_spec.fixed_config_for, to "cover the extent and no
+    more, then shrink to the budget". The two disagree exactly in the middle:
+
+        r0_numel = 96   >  64          Inductor: looped
+        R0_BLOCK = 128  >= 96          ours:     the loop runs ONCE
+
+    A looped reduction is not merely redundant there. Its partial results have to
+    be COMBINED across blocks, and for a variance that combination is Welford's --
+    `tl.reduce` over a (mean, m2, weight) triple with a six-argument body.
+    triton-shared converts a reduction only when the body is ONE op from a fixed
+    list ("Only support lowering reduction with body containing 1 max(i/f), addf,
+    ori, or mulf"), so the triple survives as `tt.reduce` into a pass that has no
+    lowering for it. Before p10_bufferize learned to refuse a Triton op by
+    dialect, that was a SEGFAULT inside one-shot-bufferize's inliner.
+
+        measured   e2e convnextv2, `convolution_native_layer_norm_permute_5`:
+                   r0_numel 96, R0_BLOCK 128, and a
+                   `for r0_offset in range(0, r0_numel, R0_BLOCK)` around
+                   `welford_reduce`, followed by the triple-`tl.reduce`. The loop
+                   body runs once.
+
+    WITH PERSISTENT CHOSEN, INDUCTOR EMITS THE TWO-PASS FORM ITSELF and says why:
+    "For persistent reductions, don't bother with welford's algorithm since it
+    uses more registers, and taking two reductions doesn't increase memory
+    usage." That is `welford_reduce_fallback` -- a sum, a mean, then a sum of
+    squared deviations -- and each of those IS one `addf`, which converts.
+
+    AND THE BLOCK CANNOT DISAGREE, which is the thing that would make this
+    dangerous. For a persistent reduction Inductor writes the block into the
+    kernel itself (`R0_BLOCK: tl.constexpr = _get_persistent_RBLOCK(numel)`,
+    codegen_static_numels), so our fixed_config is not consulted for that axis at
+    all, and the value is the next power of two above the extent -- covering it
+    by construction.
+
+    ONLY WHERE IT FITS ONE LANE. The budget below is fixed_config_for's, for the
+    same reason: the reduced axis has to live inside a lane, and a reduction too
+    long for that has to loop for real. There Welford is genuinely needed and
+    this returns False, leaving the decision exactly where it was.
+    """
+    import os
+
+    from torch._inductor.choices import InductorChoices
+    from torch._inductor.virtualized import V  # noqa: F401  (import parity)
+
+    from PyTorchSimFrontend.triton_backend.kernel_spec import (
+        _REDUCTION_LIVE_TILES)
+
+    original = InductorChoices.should_use_persistent_reduction
+
+    def should_use_persistent_reduction(features, cooperative_reduction):
+        if original(features, cooperative_reduction):
+            return True
+        if cooperative_reduction:
+            return False                  # its own path, and it needs Welford
+        try:
+            numel = int(features.reduction_numel)
+        except (TypeError, ValueError):
+            return False                  # dynamic: no extent to compare
+        if numel <= 0:
+            return False
+        block = 1 << (numel - 1).bit_length()
+        # THE WIDEST ELEMENT, not the one this kernel happens to use. `features`
+        # does not carry the dtype, and guessing narrow would claim a fit that
+        # the tile does not have. 4 bytes is what fixed_config_for sizes f32
+        # against and is the common case; anything wider simply is not claimed.
+        lane_bytes = int(os.environ.get("TNPU_SPAD_SIZE", str(64 * 1024)), 0)
+        budget = lane_bytes // 2 // _REDUCTION_LIVE_TILES
+        return block * 4 <= budget
+
+    InductorChoices.should_use_persistent_reduction = staticmethod(
+        should_use_persistent_reduction)
+
+
 def _size_grouped_conv_grid_per_group():
     """Launch a grouped convolution over the channels a GROUP has, not all of them.
 
@@ -347,6 +425,7 @@ def install():
     _size_conv_blocks_from_the_machine()
     _size_grouped_conv_grid_per_group()
     _clamp_conv_block_n()
+    _persist_a_reduction_that_fits_one_tile()
     _short_circuit_degenerate_gemms()
     _install_selection()
 

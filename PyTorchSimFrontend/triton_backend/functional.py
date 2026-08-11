@@ -48,12 +48,48 @@ def tensor_args(meta, args):
     return list(zip(metas, tensors))
 
 
+def _storage_numel(t):
+    """How many elements of storage `t` spans -- its last addressable one.
+
+    NOT `t.numel()`. The kernel addresses with the tensor's STRIDES, and a
+    tensor whose strides leave gaps reaches past its element count: attention's
+    probabilities arrive as `empty_strided((1, 12, 197, 197), (465792, 38816,
+    197, 1))`, seven elements of hole at the end of every head. The .raw round
+    trip below is a flat file, so it has to be as long as the addresses the
+    kernel computes -- read at 465708 the last head is 77 elements short, and
+    every head after the first is read at the wrong offset.
+
+    Matches kernel_spec._buffer_numel, which is the same definition on the
+    compile side. The two must agree: one sizes the buffer the binary is
+    handed, the other the file that fills it.
+
+    IT REPLACES A PERMUTATION, and the measurement that bought that permutation
+    still holds -- `as_strided` gives the same answer where it applied. The
+    round trip used to `.permute(...).contiguous()` into memory order, because
+    `.contiguous()` alone is LOGICAL order and a channels-last tensor is a
+    different permutation of the same values:
+
+        measured   resnet18's first conv, whose input the graph put in
+                   channels-last. The output matched a torch reference taken
+                   over the file read channels-last to 1e-5 and differed from
+                   the real answer in 602115 of 802816 elements; PyTorchSim's
+                   own per-kernel check said 602108 and the same 1.38288.
+
+    A permutation can only reorder, though, so it could never place a stride
+    that skips. Saying it once with the tensor's own strides covers both.
+    """
+    if t.dim() == 0:
+        return 1
+    return 1 + sum((s - 1) * st for s, st in zip(t.shape, t.stride()))
+
+
 def _check(meta, pairs):
     for m, t in pairs:
-        if t.numel() != m["numel"]:
+        if _storage_numel(t) != m["numel"]:
             raise ShapeMismatch(
-                f"{meta['kernel_name']}: '{m['name']}' has {t.numel()} "
-                f"element(s), but the binary was compiled for {m['numel']}. "
+                f"{meta['kernel_name']}: '{m['name']}' spans "
+                f"{_storage_numel(t)} element(s) of storage, but the binary was "
+                f"compiled for {m['numel']}. "
                 f"tnpu bakes the extents, the grid and the scalar values into "
                 f"the kernel, so a dynamic-shape graph reuses an ELF that does "
                 f"not fit. The timing path does handle this (it takes the grid "
@@ -63,34 +99,6 @@ def _check(meta, pairs):
             raise ShapeMismatch(
                 f"{meta['kernel_name']}: '{m['name']}' is {t.dtype}, but the "
                 f"binary was compiled for {m['dtype']}")
-
-
-def _memory_order(t):
-    """`t`'s axes ordered the way its storage is, outermost first.
-
-    THE KERNEL INDEXES WITH THE TENSOR'S STRIDES, not with its shape. Inductor
-    reads those strides at compile time and writes them into the source as
-    constants -- resnet18's first conv carries `stride_xc = 1`, because the
-    graph put its input in channels-last -- so the bytes the kernel is handed
-    have to be the storage in ADDRESS order. `.contiguous()` produces logical
-    order instead, which for a channels-last tensor is a different permutation
-    of the same values, and the kernel then reads every element from the wrong
-    place while computing perfectly correctly on what it found.
-
-    MEASURED on resnet18's first conv: the output matched a torch reference
-    taken over the file read channels-last to 1e-5, and differed from the real
-    answer in 602115 of 802816 elements. PyTorchSim's own per-kernel check said
-    602108 and the same 1.38288 -- the same divergence from the other side.
-    """
-    return sorted(range(t.dim()), key=lambda i: -t.stride(i))
-
-
-def _inverse(order):
-    """The permutation that puts `order` back."""
-    inv = [0] * len(order)
-    for slot, axis in enumerate(order):
-        inv[axis] = slot
-    return inv
 
 
 def write_inputs(workdir, meta, args):
@@ -109,9 +117,17 @@ def write_inputs(workdir, meta, args):
     for m, t in pairs:
         path = os.path.join(runtime, f"{m['name']}.raw")
         if m["role"] in ("in", "inout"):
+            import torch
             cpu = t.detach().to("cpu")
-            (cpu.permute(*_memory_order(cpu)).contiguous()
-                .numpy().reshape(-1).tofile(path))
+            flat = torch.zeros(m["numel"], dtype=cpu.dtype)
+            # SCATTERED TO THE ADDRESSES THE KERNEL WILL COMPUTE, in one
+            # statement, because that is what `as_strided` means. It subsumes
+            # the permute-to-memory-order this used to do -- a channels-last
+            # tensor lands the same way -- and it also handles the case that one
+            # could not express: strides with GAPS in them. Any hole stays zero;
+            # nothing logically reads one.
+            flat.as_strided(cpu.shape, cpu.stride()).copy_(cpu)
+            flat.numpy().tofile(path)
         else:
             np.zeros(m["numel"], dtype=_np_dtype(m["dtype"])).tofile(path)
     return runtime
@@ -133,13 +149,12 @@ def read_outputs(workdir, meta, args):
             raise RuntimeError(
                 f"{path} holds {flat.size} element(s), expected {m['numel']} "
                 f"-- Spike did not write the whole tensor")
-        # Scattered back the way it was gathered: the kernel wrote address
-        # order, so the flat buffer is read in the tensor's storage order and
-        # permuted home. `view_as(t)` is logical order and is the same defect
-        # as `.contiguous()` on the way in -- see _memory_order.
-        order = _memory_order(t)
-        stored = torch.from_numpy(flat).view(*[t.shape[i] for i in order])
-        t.copy_(stored.permute(*_inverse(order)).to(t.dtype))
+        # Gathered back the way it was scattered, by the same one statement:
+        # the kernel wrote the addresses the strides name, so read them from
+        # there. `view_as(t)` is logical order and is the same defect as
+        # `.contiguous()` on the way in -- see _storage_numel.
+        stored = torch.from_numpy(flat).as_strided(t.shape, t.stride())
+        t.copy_(stored.to(t.dtype))
         written.append(m["name"])
     return written
 

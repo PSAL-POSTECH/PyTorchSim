@@ -452,7 +452,8 @@ _HELPER_USE_RE = re.compile(r"\btriton_helpers\.(\w+)")
 # and what tl.maximum does not do.
 _VENDORED_HELPERS = {"promote_to_tensor", "is_floating",
                      "minimum", "maximum", "min2", "max2", "any",
-                     "welford_reduce", "welford_combine", "welford"}
+                     "welford_reduce", "welford_combine", "welford",
+                     "div_floor_integer", "remainder_integer"}
 
 _HELPERS_SRC = '''
 # Self-sufficient on purpose: this block is prepended, so it runs BEFORE the
@@ -527,6 +528,23 @@ def _tnpu_welford_combine(mean_1, m2_1, weight_1, mean_2, m2_2, weight_2):
 def _tnpu_welford(mean, m2, weight, dim):
     return tl.reduce((mean, m2, weight), dim, _tnpu_welford_combine)
 
+# FLOOR division, not C division, and the difference is the whole point --
+# `a // b` in triton truncates toward zero, and torch's `//` rounds toward
+# minus infinity. SwinV2's window partition indexes with it, and a negative
+# operand appears there the moment a cyclic shift is applied.
+@triton.jit
+def _tnpu_div_floor_integer(a, b):
+    quot = a // b
+    remainder = a % b
+    fixed = tl.where(remainder != 0, quot - 1, quot)
+    return tl.where((a < 0) != (b < 0), fixed, quot)
+
+@triton.jit
+def _tnpu_remainder_integer(a, b):
+    remainder = a % b
+    return tl.where((remainder != 0) & ((a < 0) != (b < 0)),
+                    remainder + b, remainder)
+
 triton_helpers = _types.ModuleType("triton_helpers")
 triton_helpers.any = _tnpu_any
 triton_helpers.welford_reduce = _tnpu_welford_reduce
@@ -538,6 +556,8 @@ triton_helpers.minimum = _tnpu_minimum
 triton_helpers.maximum = _tnpu_maximum
 triton_helpers.min2 = _tnpu_min2
 triton_helpers.max2 = _tnpu_max2
+triton_helpers.div_floor_integer = _tnpu_div_floor_integer
+triton_helpers.remainder_integer = _tnpu_remainder_integer
 '''
 
 

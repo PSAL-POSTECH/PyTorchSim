@@ -58,6 +58,51 @@ def tnpu_dir():
     return d
 
 
+def machine():
+    """The machine the kernel is being compiled for, FROM THE TOGSIM YAML.
+
+    THE YAML IS THE HARDWARE DESCRIPTION AND THEREFORE THE AUTHORITY. It is what
+    TOGSim simulates and what a user edits to study a different machine; tnpu's
+    config.py holds DEFAULTS for the same quantities so it can run standalone.
+    Two copies of a number with no direction between them drift, and these
+    already have: the YAML says 128 KB of scratchpad per lane while tnpu's
+    default is 64 KB, so a reduction block sized against one and linked against
+    the other died at LINK time with an error naming the scratchpad rather than
+    the block size.
+
+    Reading the YAML here is only half of that. `tnpu_env` below hands the same
+    numbers to every tnpu subprocess through the environment variables its
+    config.py already reads, so changing the YAML changes what the compiler
+    targets instead of only changing what this side believes. That is the half
+    that makes them one number rather than two that happen to agree.
+    """
+    spad = extension_config.CONFIG_SPAD_INFO["spad_size"]
+    return {"lanes": int(extension_config.vpu_num_lanes),
+            "vlen_bits": int(extension_config.vpu_vector_length_bits),
+            "spad_size": int(spad)}
+
+
+def tnpu_env():
+    """The environment for a tnpu subprocess: this machine, and no PYTHONPATH.
+
+    PYTHONPATH goes because `mlir` is a namespace package -- a stale entry
+    pointing at LLVM 20's mlir_core is picked up before tnpu's own
+    activate_bindings() runs, and the two LLVMs merge silently.
+
+    The three TNPU_* names are the ones tnpu/config.py reads for exactly these
+    quantities, so this is telling it rather than overriding it. Anything the
+    caller already set in the environment wins, which keeps the pinned-worktree
+    workflow (TNPU_SPAD_SIZE=... for a one-off experiment) working.
+    """
+    env = dict(os.environ)
+    env.pop("PYTHONPATH", None)
+    m = machine()
+    env.setdefault("TNPU_VECTORLANE_SIZE", str(m["lanes"]))
+    env.setdefault("TNPU_VLEN_BITS", str(m["vlen_bits"]))
+    env.setdefault("TNPU_SPAD_SIZE", str(m["spad_size"]))
+    return env
+
+
 def doctor():
     """Return (ok, output) for tnpu's own toolchain check."""
     proc = subprocess.run(
@@ -84,12 +129,10 @@ def run_pipeline(spec_path, workdir, to_stage="binary", from_stage="ttir",
     if verbose:
         cmd.append("-v")
 
-    env = dict(os.environ)
     # tnpu deliberately does not read TORCHSIM_LLVM_PATH (it would drag the
-    # backend back to LLVM 20 and break the textual seam), but a stale
-    # PYTHONPATH pointing at LLVM 20's mlir_core would still be picked up by the
-    # namespace package before tnpu's own activate_bindings() runs.
-    env.pop("PYTHONPATH", None)
+    # backend back to LLVM 20 and break the textual seam). tnpu_env drops the
+    # stale PYTHONPATH and hands over the machine this repo's YAML describes.
+    env = tnpu_env()
 
     proc = subprocess.run(cmd, capture_output=True, text=True,
                           cwd=tnpu_dir(), env=env, timeout=timeout)

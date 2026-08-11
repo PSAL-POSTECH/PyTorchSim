@@ -118,8 +118,9 @@ def run(workdir, meta, args, timeout_sec=None):
 
     write_inputs(workdir, meta, args)
 
-    env = dict(os.environ)
-    env.pop("PYTHONPATH", None)          # keep tnpu on its own MLIR bindings
+    # Drops the stale PYTHONPATH (tnpu keeps its own MLIR bindings) and hands
+    # over the machine the TOGSim YAML describes.
+    env = tnpu_bridge.tnpu_env()
     proc = subprocess.run(
         [extension_config.CONFIG_TNPU_PYTHON, "-m", "tnpu.spike", spec, workdir],
         capture_output=True, text=True, cwd=tnpu_bridge.tnpu_dir(), env=env,

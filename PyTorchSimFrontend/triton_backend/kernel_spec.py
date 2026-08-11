@@ -247,10 +247,10 @@ def fixed_config_for(kernel, numels, args):
     real tile sizes is still the block-size policy gap in README; what has gone
     away is the reason to believe there was only one legal answer.
     """
-    from PyTorchSimFrontend import extension_config
-    lanes = int(extension_config.vpu_num_lanes)
-    vlen = int(extension_config.vpu_vector_length_bits)
-    per_vector = max(1, vlen // _element_bits(args))
+    from . import tnpu_bridge
+    machine = tnpu_bridge.machine()
+    lanes = machine["lanes"]
+    per_vector = max(1, machine["vlen_bits"] // _element_bits(args))
 
     axes = parallel_axes(numels)
     cfg = {}
@@ -310,7 +310,7 @@ def fixed_config_for(kernel, numels, args):
         # --scratchpad-size=65536), so sizing against the YAML overshoots by 2x
         # and the kernel dies at LINK time. tnpu is the one that refuses, so its
         # number is the one that counts; TNPU_SPAD_SIZE overrides both.
-        lane_bytes = int(os.environ.get("TNPU_SPAD_SIZE", str(64 * 1024)), 0)
+        lane_bytes = machine["spad_size"]
         elem_bytes = max(1, _element_bits(args) // 8)
         budget = lane_bytes // 2 // _REDUCTION_LIVE_TILES
         for p in reduction_axes(numels) or ["r0_"]:

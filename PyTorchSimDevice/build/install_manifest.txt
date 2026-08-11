@@ -1,0 +1,3 @@
+/workspace/PyTorchSim-e2e-transformer/PyTorchSimDevice/torch_openreg/lib/libopenreg.so
+/workspace/PyTorchSim-e2e-transformer/PyTorchSimDevice/torch_openreg/lib/libtorch_openreg.so
+/workspace/PyTorchSim-e2e-transformer/PyTorchSimDevice/torch_openreg/lib/libtorch_bindings.so

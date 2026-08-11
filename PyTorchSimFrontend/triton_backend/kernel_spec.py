@@ -68,16 +68,51 @@ class SpecIncomplete(RuntimeError):
 # 1. codegen-time metadata capture
 # ---------------------------------------------------------------------------
 def _buffer_numel(name):
-    """Element count of an Inductor buffer, or None if it cannot be resolved."""
+    """How many elements of STORAGE an Inductor buffer spans, or None.
+
+    NOT the product of its shape, which is what this used to be. The kernel
+    addresses with the buffer's STRIDES -- Inductor bakes them into the source
+    as constants -- so the buffer it is handed has to be as long as those
+    strides reach, and a layout whose strides leave gaps reaches further than
+    its element count:
+
+        buf18 = empty_strided((1, 12, 197, 197), (465792, 38816, 197, 1))
+                   197 * 197 = 38809 elements per head, at a PITCH of 38816
+
+    Seven elements of hole per head, twelve heads: 465792 of storage against
+    465708 of shape. Sized by the shape, the last head runs 77 elements past
+    the end of the buffer the harness allocated, and those 77 are simply lost on
+    the way back -- which is what ViT's first functional-verify failure was.
+    Every element of `buf18` read as if the heads were packed, 416959 of 465708
+    over tolerance, while the kernel had in fact computed the softmax correctly
+    (0.0318 max error over the padded reading, and all of that in the truncated
+    tail).
+
+    `1 + sum((size - 1) * stride)` is the last addressable element, which is the
+    definition that holds for a permuted layout as well as a padded one -- a
+    channels-last buffer has no gaps and comes out at the product, as before.
+    """
     try:
         buf = V.graph.get_buffer(name)
         if buf is None:
             return None
-        size = buf.get_layout().size
-        n = 1
-        for s in size:
-            n *= int(V.graph.sizevars.size_hint(s))
-        return n
+        layout = buf.get_layout()
+        hint = V.graph.sizevars.size_hint
+        size = [int(hint(s)) for s in layout.size]
+        if any(s <= 0 for s in size):
+            return 0
+        try:
+            stride = [int(hint(s)) for s in layout.stride]
+        except (AttributeError, TypeError):
+            # A layout with no strides to read: fall back to the shape, which
+            # is what this function always did and is right whenever the buffer
+            # is contiguous.
+            n = 1
+            for s in size:
+                n *= s
+            return n
+        offset = int(hint(getattr(layout, "offset", 0)))
+        return offset + 1 + sum((s - 1) * t for s, t in zip(size, stride))
     except Exception:  # noqa: BLE001 - best effort; caller reports it as missing
         return None
 
@@ -253,6 +288,17 @@ def reduction_axes(numels):
 #: because the count is a property of the kernel and not a constant. The cost of
 #: guessing high is one more trip round a loop that already exists; the cost of
 #: guessing low is a link-time scratchpad error that never mentions block sizes.
+#:
+#: IT IS AN OPENING BID NOW, NOT AN ANSWER, and the sentence above says why it
+#: could never have been one: the count is a property of the LOWERING, which
+#: does not exist until this number has already been used. ViT's first LayerNorm
+#: -- fused with a patch convolution, an addmm and a transpose -- keeps 41
+#: scratchpad globals live, and no constant that serves that kernel is tolerable
+#: for an ordinary reduction (it would cost three quarters of the tile). So
+#: codecache._shrink_reduction_blocks corrects it instead: tnpu measures the
+#: real usage, says by how much it is over, and the kernel is recompiled with a
+#: block divided by that ratio. Guessing low now costs one recompile rather than
+#: a failure, which is what makes 12 an acceptable guess rather than a bet.
 _REDUCTION_LIVE_TILES = 12
 
 

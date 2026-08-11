@@ -225,12 +225,38 @@ def run(workdir, meta, args, timeout_sec=None):
     caller is told which in the log, because "it passed" means something
     different when nothing was simulated.
     """
+    from filelock import FileLock
+
     from . import tnpu_bridge
 
     spec = os.path.join(workdir, f"{meta['kernel_name']}_spec.py")
     if not os.path.isfile(spec):
         raise FileNotFoundError(f"{spec} not found -- compile the kernel first")
 
+    # ONE LAUNCH AT A TIME PER KERNEL, and the lock has to span all three steps.
+    # `runtime/` is a FIXED name under the kernel's hash directory, and that
+    # directory is shared by every process that compiled the same source -- two
+    # test sessions in one TORCHSIM_DUMP_PATH, most obviously. The compile is
+    # locked (codecache.py); the launch was not, so A's write_inputs, B's
+    # write_inputs, A's spike, A's read_outputs interleaves freely and A reads
+    # back the answer to B's tensors. It does not raise: the file is there and
+    # the right size, it is just someone else's data.
+    #
+    # MEASURED: two sessions sharing TORCHSIM_DUMP_PATH on
+    # tests/ops/elementwise/test_add.py -- "VectorAdd Test Failed", max abs diff
+    # 1.25, on a kernel that passes alone. Wrong values reported as a compiler
+    # failure is the most expensive bug this repo can produce.
+    #
+    # Serialising rather than giving each process its own runtime/ because the
+    # directory name is tnpu's (tnpu/spike.py joins "runtime" itself) and that is
+    # another repo. Contention is per (kernel, concurrent launch) and one spike
+    # run is seconds; wrong answers are not a tradeoff against seconds.
+    with FileLock(os.path.join(workdir, ".launch.lock"), timeout=1800):
+        return _run_locked(workdir, meta, args, spec, timeout_sec, tnpu_bridge)
+
+
+def _run_locked(workdir, meta, args, spec, timeout_sec, tnpu_bridge):
+    """`run` with the per-kernel launch lock already held."""
     runtime = write_inputs(workdir, meta, args)
 
     # OFF BY DEFAULT. A full run is the thing being trusted, and a result that

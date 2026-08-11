@@ -60,12 +60,21 @@ class TritonNPULauncher:
         # claims: "the two halves are independent". Only the functional one was
         # -- the timing half ran whatever the config said, so a graph being
         # checked for VALUES paid for a cycle simulation of every kernel it
-        # touched. `pytorchsim_timing_mode` is the switch the MLIR route already
-        # reads (extension_codecache.py), so this route reads the same one
-        # rather than inventing a second name.
+        # touched. That is the whole cost of an e2e run: mobilenet_v2's
+        # depthwise convolutions launch a grid of [144, 2, 49] each, and the
+        # model took over two hours to reach kernel 16 of 57 with timing on and
+        # minutes with it off. `pytorchsim_timing_mode` is the switch the MLIR
+        # route already reads (extension_codecache.py), so this route reads the
+        # same one rather than inventing a second name.
         if not extension_config.pytorchsim_timing_mode:
+            # NOT "[TOGSim]". The sweep buckets a failure by matching its
+            # output, and its togsim bucket is `TOGSim|trace\.so|SIGSEGV|...` --
+            # so a line carrying that word puts every failing test in this mode
+            # into the wrong bucket whatever actually went wrong. MEASURED:
+            # tests/system/test_triton_codegen.py came back "[togsim]" for a
+            # failure that had nothing to do with it.
             logger.warning(
-                "[TOGSim] %s: timing mode is off, so no cycles are reported",
+                "[timing] %s: timing mode is off, so no cycles are reported",
                 self.kernel_name)
             return None
 

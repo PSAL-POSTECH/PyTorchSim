@@ -92,28 +92,33 @@ def check_multi_axis_grid():
     return not problems
 
 
-def check_reduction_is_refused():
-    """A reduction must fail LOUDLY, not compile into wrong numbers.
+def check_reduction_is_right():
+    """A reduction must compute the right numbers.
 
-    tnpu has no lane-aware reduction: the scratchpad is lane-banked, so the
-    reduced axis has to live inside a lane, and triton-shared hands over a
-    linalg.reduce (plus a linalg.transpose) that no pass lowers that way. Until
-    one does, reaching the launcher would mean simulating a kernel whose compute
-    is not what the hardware would do.
+    THIS CHECK USED TO REQUIRE THE OPPOSITE and said so: "A reduction must fail
+    LOUDLY, not compile into wrong numbers ... tnpu has no lane-aware reduction
+    ... When the lane path lands, this is the test to delete." It landed, from an
+    unexpected direction: nothing in tnpu changed, but Inductor now emits a
+    PERSISTENT reduction wherever this backend's block covers the extent
+    (inductor_templates._persist_a_reduction_that_fits_one_tile), and a
+    reduction that finishes inside one tile never crosses a lane -- which was the
+    whole reason the old form could not be lowered.
 
-    Passing this check means the attempt still stops. When the lane path lands,
-    this is the test to delete.
+    Deleting it outright would give up the thing it was really guarding, which is
+    not "does this stop" but "are the numbers real". So it is turned around and
+    asks that instead.
     """
     x = torch.randn(128, 64)
+    ref = x.sum(dim=1)
     try:
-        torch.compile(lambda t: t.sum(dim=1))(x.to("npu:0"))
-    except Exception as e:  # noqa: BLE001 - any diagnosed stop is the point
+        got = torch.compile(lambda t: t.sum(dim=1))(x.to("npu:0")).to("cpu")
+    except Exception as e:  # noqa: BLE001 - a stop is now a failure, and says so
         first = (str(e).strip().splitlines() or [type(e).__name__])[0]
-        print(f"  reduction stops at: {type(e).__name__}: {first[:74]}")
-        return True
-    print("  reduction COMPILED -- if the lane-aware path landed, drop this "
-          "check; otherwise the numbers it produces are wrong")
-    return False
+        print(f"  reduction stopped at: {type(e).__name__}: {first[:72]}")
+        return False
+    err = (got - ref).abs().max().item()
+    print(f"  reduction max_abs_err: {err:g}")
+    return bool(torch.allclose(got, ref, rtol=1e-4, atol=1e-4))
 
 
 def main():
@@ -122,8 +127,8 @@ def main():
 
     print(f"multi-axis grid          = "
           f"{'ok' if check_multi_axis_grid() else 'FAILED'}")
-    print(f"reduction refused        = "
-          f"{'ok' if check_reduction_is_refused() else 'FAILED'}")
+    print(f"reduction is right       = "
+          f"{'ok' if check_reduction_is_right() else 'FAILED'}")
     print(f"TORCHSIM_TRITON_CODEGEN = {extension_config.CONFIG_TRITON_CODEGEN}")
     print(f"TNPU_DIR                = {extension_config.CONFIG_TNPU_DIR}")
     ok, _out = tnpu_bridge.doctor()

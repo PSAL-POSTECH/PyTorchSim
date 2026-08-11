@@ -223,12 +223,29 @@ def fixed_config_for(kernel, numels, args):
     runtime `grid=` callable. Fixing them here is what makes the launch shape
     static.
 
-    Tile dim 0 is the one `bank_vectorize` spreads over the lanes, so the
-    OUTERMOST axis gets the lane count -- a per-lane depth of 1, the shape every
-    tnpu baseline runs. The remaining axes get 1, which leaves the tile exactly
-    that verified shape and lets the grid cover the rest. It is conservative
-    rather than fast; choosing real tile sizes is the block-size policy gap in
-    README, not something to guess at here.
+    THESE ARE SIZES, NOT A LAYOUT. Nothing here chooses which axis lands on the
+    lanes, because that is not decided until tnpu's select_lane_axis, several
+    passes into the other repo: it gathers what every op demands (a matmul wants
+    its last axis on the lanes, a reduction wants the axis it folds off them,
+    elementwise operands have to agree), resolves conflicts by flipping the
+    matmul, and only defaults to dim 0 when nothing asked. Measured over the
+    tnpu dumps: 26 of 36 stamped kernels are axis 0, gemm_fp16_kernel is axis 1
+    throughout, and gemm/bmm carry BOTH on different operands of one op.
+
+    THIS USED TO SAY DIM 0 WAS THE LANE AXIS AND THAT A LANE MUST HOLD EXACTLY
+    ONE ELEMENT. Both halves were wrong, and the second is why the first looked
+    right: pinning the outermost block to the lane count made dim 0 the
+    degenerate answer often enough that the claim was never tested. It is tested
+    now -- kernels/coverage/tile/tile_deeper_than_one_per_lane.py runs a
+    256-wide tile on 128 lanes exactly, and tile_gemm_lane_axis_deeper.py does
+    it on the axis a matmul demanded, at 9.54e-06 against a 1.53e-05 control.
+    Nine memref<128x256xf32, 1> spad buffers in that kernel's 04-adapted.mlir,
+    so the deeper tile is really built and really addressed.
+
+    So the lane count below is a DEFAULT WIDTH -- a tile at least as wide as the
+    machine -- and not a requirement the backend would break without. Choosing
+    real tile sizes is still the block-size policy gap in README; what has gone
+    away is the reason to believe there was only one legal answer.
     """
     from PyTorchSimFrontend import extension_config
     lanes = int(extension_config.vpu_num_lanes)
@@ -239,17 +256,17 @@ def fixed_config_for(kernel, numels, args):
     cfg = {}
     for i, p in enumerate(axes):
         if i == 0:
-            # Tile dim 0. The MVIN DMA scatters it across the lanes, and it is
-            # also the systolic array's side (tnpu config.py: sa_dim = n_vu), so
-            # the lane count is the one value that satisfies both -- which is
-            # why matmul needs this read from the config rather than assumed.
+            # The widest block goes on the outermost axis. NOT because that axis
+            # is the lane axis -- see the docstring; tnpu decides that later and
+            # picks 1 for every gemm it was measured on -- but because the tile
+            # has to be wide SOMEWHERE for the machine to be busy, and with the
+            # lane axis unknown at this point one axis is as good a guess as
+            # another. Outermost is the arbitrary half of this; the lane count
+            # is the part that is about the machine.
             #
             # WHICH LETTER dim 0 IS DEPENDS ON RANK, so it is indexed rather
             # than named. Inductor gives the outermost axis the [:, None] slot,
-            # so a 2D kernel puts y there and a 1D one has only x. Confirmed in
-            # 04-custom.mlir: the 2D transpose stages memref<128x8xf32, 1> with
-            # vlane_split_axis = 0 under YBLOCK=128, XBLOCK=8, and 1D add stages
-            # memref<128xf32, 1>, same axis, under XBLOCK=128.
+            # so a 2D kernel puts y there and a 1D one has only x.
             cfg[_block_name(p)] = lanes
         elif i == len(axes) - 1:
             # Innermost, so contiguous (tile_stride ends in 1): give each lane

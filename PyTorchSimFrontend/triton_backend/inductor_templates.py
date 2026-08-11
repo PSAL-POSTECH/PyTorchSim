@@ -75,15 +75,26 @@ def _size_conv_blocks_from_the_machine():
     THIS IS THE MAPPING POLICY, NOT A WORKAROUND FOR THAT REFUSAL. A block size
     is a statement about the machine the kernel runs on, and taking a table
     written for a GPU is not one -- the heuristic registered below has carried
-    the same TODO since it was written. The refusal is a real defect and stays
-    one: a tile deeper than one element per lane is a shape this backend has to
-    handle, and pinning BLOCK_N to the lane count only stops resnet from being
-    the thing that reports it.
+    the same TODO since it was written.
 
-    N IS THE LANE AXIS, so it takes the lane count exactly -- the same choice
-    kernel_spec.fixed_config_for makes for XBLOCK, and for the same reason. M
-    and K are per-lane depth and cost scratchpad rather than lanes, so they are
-    offered small-to-large and the first that the shape does not clamp wins.
+    N IS NOT KNOWN TO BE THE LANE AXIS, and this used to say it was. Nothing
+    here picks the lane axis: tnpu's select_lane_axis does, from what the ops
+    demand, and the answer is per-operand -- gemm and bmm carry two different
+    ones on a single op. Measured over the tnpu dumps, 26 of 36 stamped kernels
+    are axis 0 and gemm_fp16_kernel is axis 1 throughout, so neither letter is
+    the rule.
+
+    NOR IS ONE ELEMENT PER LANE REQUIRED, which was the other half of the claim.
+    kernels/coverage/tile/tile_deeper_than_one_per_lane.py puts two per lane on
+    axis 0 and comes out exact; tile_gemm_lane_axis_deeper.py does it on the
+    axis a matmul demanded, at 9.54e-06 against a 1.53e-05 control, with nine
+    memref<128x256xf32, 1> spad buffers to show the tile was really built.
+
+    What is left is a size, not a layout: BLOCK_N takes the lane count because a
+    tile should be at least as wide as the machine, and M and K cost scratchpad
+    rather than lanes, so they are offered small-to-large and the first the
+    shape does not clamp wins. The bank_vectorize refusal quoted above is still
+    a real defect -- it is just not the reason for this number.
     """
     from torch._inductor.choices import InductorChoices
     from torch._inductor.template_heuristics.triton import (

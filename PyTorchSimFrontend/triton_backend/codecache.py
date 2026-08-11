@@ -55,6 +55,23 @@ class TritonNPULauncher:
                 "[Spike] %s: functional mode is off, so the output tensors keep "
                 "whatever they held", self.kernel_name)
 
+        if not extension_config.pytorchsim_timing_mode:
+            # THE TWO HALVES ARE INDEPENDENT AND THE SWITCH HAS TO BE TOO.
+            # functional_mode already turns Spike off above; timing had no
+            # equivalent here, so a run that wanted only correctness still built
+            # trace.so and still ran TOGSim -- and a kernel whose TIMING path
+            # fails then fails the whole launch even though Spike wrote the
+            # right values. That is the state tests/ops/attention/test_gqa.py
+            # and tests/ops/fusion/test_prologue_fusion.py were in: their bmm
+            # template kernels ran on Spike and died in emit_trace.
+            #
+            # The YAML key exists and the MLIR route reads it; this route was
+            # the one not asking.
+            logger.warning(
+                "[TOGSim] %s: timing mode is off, so no trace was built and no "
+                "cycles were measured", self.kernel_name)
+            return None
+
         if not os.path.isfile(os.path.join(self.workdir, timing.TRACE_SO)):
             timing.emit_trace(self.workdir, self.meta)
         result = timing.run_togsim(self.workdir, meta=self.meta, args=args)

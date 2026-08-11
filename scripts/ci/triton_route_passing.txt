@@ -4,6 +4,8 @@
 # A test that passes without emitting a kernel is deliberately absent.
 tests/models/MobileNet/test_mobilenet.py
 tests/models/test_resnet.py
+tests/models/test_transformer.py
+tests/models/test_vit.py
 tests/ops/attention/test_gqa.py
 tests/ops/elementwise/test_activation.py
 tests/ops/elementwise/test_add.py

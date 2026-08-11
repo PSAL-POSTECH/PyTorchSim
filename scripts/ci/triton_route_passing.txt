@@ -23,3 +23,19 @@ tests/ops/view/test_view3D_2D.py
 tests/system/test_eager.py
 tests/system/test_stonne.py
 tests/system/test_triton_codegen.py
+
+# BLOCKED UPSTREAM, not by this route -- kept here so the next person does not
+# re-derive it:
+#
+#   tests/models/test_swinv2.py   26 kernels compile, then Inductor's own CPU
+#     backend fails to compile a CPU island of the graph:
+#       error: 'decltype' evaluates to 'float', which is not a class or
+#              enumeration type   (at::vec::Vectorized<float>, ::blendv)
+#     Reproduced with STOCK torch + transformers, PyTorchSim not imported
+#     (TORCH_DEVICE_BACKEND_AUTOLOAD=0), compiling for CPU alone. Two upstream
+#     causes stacked: transformers' Swinv2Layer.get_attn_mask builds its mask
+#     with torch.zeros(...) and no `device=`, so an input-independent constant
+#     stays on CPU inside the traced graph; Inductor's CPU vectorizer then
+#     miscompiles its double masked_fill. Neither is ours to fix (rule 16) --
+#     forking transformers or setting cpp.simdlen=0 would both be papering over
+#     someone else's backend.

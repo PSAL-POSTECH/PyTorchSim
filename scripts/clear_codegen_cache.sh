@@ -12,6 +12,16 @@
 #   $TORCHSIM_DUMP_PATH/<11-char-hash>/     (per-source MLIR/wrapper dirs,
 #                                            keyed by hash_prefix(src) in
 #                                            extension_codecache.py)
+#   $TORCHSIM_DUMP_PATH/triton_<hash>/      (the Triton route's per-kernel
+#                                            artifacts: spec, staged IR, ELF)
+#
+# WHY THE TRITON ONES MATTER MORE THAN THEY LOOK. That hash is of the INDUCTOR
+# SOURCE, so a fix anywhere BELOW it -- a tnpu pass, triton-shared -- leaves the
+# hash alone and the launcher reuses the ELF it already has. Measured: two runs
+# of test_transformer.py reported the same divergence while the kernel, given
+# the model's own recorded inputs, passed standalone at 2.7e-07; the artifacts
+# were a day old. A compiler that moved and a cache that did not is a wrong
+# measurement, not a slow one.
 #
 # Does NOT touch:
 #   $TORCHSIM_LOG_PATH (togsim_results/, just simulation logs)
@@ -28,7 +38,7 @@ if [[ ! -d "$DUMP_PATH" ]]; then
     exit 0
 fi
 
-echo "Clearing $DUMP_PATH/.torchinductor and per-source-hash dirs"
+echo "Clearing $DUMP_PATH/.torchinductor, per-source-hash and triton_* dirs"
 rm -rf "$DUMP_PATH/.torchinductor"
 
 # Per-source-hash dirs are an 11-char alphanumeric prefix
@@ -36,6 +46,11 @@ rm -rf "$DUMP_PATH/.torchinductor"
 # touch anything else a developer may have parked under outputs/.
 find "$DUMP_PATH" -mindepth 1 -maxdepth 1 -type d \
     -regextype posix-egrep -regex '.*/[a-z0-9]{11}$' \
+    -exec rm -rf {} +
+
+# The Triton route's dirs, same reasoning and a different prefix.
+find "$DUMP_PATH" -mindepth 1 -maxdepth 1 -type d \
+    -regextype posix-egrep -regex '.*/triton_[a-z0-9]+$' \
     -exec rm -rf {} +
 
 echo "Done."

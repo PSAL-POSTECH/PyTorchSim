@@ -53,8 +53,9 @@ def measure_tile_cycles(workdir, meta):
     import subprocess
 
     from . import tnpu_bridge
-    env = dict(os.environ)
-    env.pop("PYTHONPATH", None)          # keep tnpu on its own MLIR bindings
+    # Drops the stale PYTHONPATH (tnpu keeps its own MLIR bindings) and hands
+    # over the machine the TOGSim YAML describes.
+    env = tnpu_bridge.tnpu_env()
     proc = subprocess.run(
         [extension_config.CONFIG_TNPU_PYTHON, "-m", "tnpu.cycle", spec, workdir],
         capture_output=True, text=True, cwd=tnpu_bridge.tnpu_dir(), env=env)
@@ -97,13 +98,46 @@ def work_item_for(meta):
     one), while the program-id arguments are always laid out x, y, z. The two
     are zipped downstream, so the argument list is built per axis rather than as
     a range.
+
+    A TEMPLATE KERNEL'S AXIS COUNT IS NOT IN ITS NUMELS, which is the same thing
+    kernel_spec.grid_xyz has to say about the extents. mm and conv come from a
+    jinja template whose grid is over output tiles; Inductor still hands them a
+    numels dict, and it describes the pointwise iteration space rather than that
+    grid. Counting axes from it gives 1 for every template kernel.
+
+    That is right often enough to hide: an mm at 128x128 has template grid
+    (16, 1, 1), so one axis is the true answer and the numels agree by accident.
+    A bmm does not -- measured on tests/ops/fusion/test_prologue_fusion.py,
+    triton_npu_fused_add_bmm_mul_4 has template grid (256, 4, 1) while its
+    numels hold a single xnumel. One pid argument was replaced and the other was
+    left, and _rewrite_signature refuses a kernel argument that still has uses:
+
+        ValueError: kernel arg still used after build_skeleton; cannot drop it
+
+    with %arg6 feeding remsi/divsi (the pid decomposition) and %arg7 feeding
+    muli by 262144 (the batch stride). Both allowlist failures on this route,
+    test_gqa and test_prologue_fusion, are bmm template kernels dying there.
+
+    So the template's own grid decides the count when it has one, and the numels
+    do otherwise. The extents still are not compiled in -- only the COUNT has to
+    be, and the launch knows the rest -- so this reads the length and nothing
+    more.
     """
     from PyTorchSimFrontend.mlir.passes.lower_to_emitc import WorkItem
     from . import kernel_spec
 
     n_tensor, n_scalar = _runtime_arg_layout(meta)
     pid_base = n_tensor + n_scalar + 3       # after gridX, gridY, gridZ
-    axes = kernel_spec.parallel_axes(meta["numels"])
+    tg = meta.get("template_grid")
+    if isinstance(tg, (list, tuple)):
+        # The template grid is already in pid order (x, y, z), so the axes are
+        # its non-degenerate leading slots rather than a numels lookup.
+        n_axes = len([e for e in tg if e is not None]) or 1
+        while n_axes > 1 and tg[n_axes - 1] == 1:
+            n_axes -= 1
+        axes = ["x", "y", "z"][:n_axes]
+    else:
+        axes = kernel_spec.parallel_axes(meta["numels"])
     # Extents are left to run time: only the axis COUNT has to be compiled in,
     # and the launch knows the real numels. One trace then serves every shape.
     return WorkItem(parallel_args=[pid_base + _PID_SLOT[p] for p in axes],

@@ -126,7 +126,18 @@ def write_inputs(workdir, meta, args):
             # tensor lands the same way -- and it also handles the case that one
             # could not express: strides with GAPS in them. Any hole stays zero;
             # nothing logically reads one.
-            flat.as_strided(cpu.shape, cpu.stride()).copy_(cpu)
+            #
+            # `t.stride()`, NOT `cpu.stride()`. `.to("cpu")` does not carry
+            # arbitrary strides across -- it materialises a contiguous copy --
+            # so a padded tensor arrives packed and asking IT for the layout
+            # reproduces the very defect this is here to fix. Measured on
+            # ViT's buf18: the file then diverged from the kernel that wrote it
+            # at flat index 38809, which is 197*197, the head size WITHOUT the
+            # seven-element hole. The copy into a strided view is by logical
+            # index, so the contiguous cpu tensor lands in the padded slots
+            # correctly; only the layout has to come from the tensor the kernel
+            # was compiled against.
+            flat.as_strided(t.shape, t.stride()).copy_(cpu)
             flat.numpy().tofile(path)
         else:
             np.zeros(m["numel"], dtype=_np_dtype(m["dtype"])).tofile(path)

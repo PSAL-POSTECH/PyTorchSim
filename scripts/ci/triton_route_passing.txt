@@ -20,6 +20,8 @@
 tests/models/BERT/test_bert.py
 tests/models/DeepSeek/test_deepseek_v3_base.py
 tests/models/GPT2/test_gpt2.py
+tests/models/Llama/test_llama.py
+tests/models/Llama/test_llama3.py
 tests/models/Mixtral8x7B/test_mistral.py
 tests/models/MobileNet/test_mobilenet.py
 tests/models/Yolov5/test_yolov5.py

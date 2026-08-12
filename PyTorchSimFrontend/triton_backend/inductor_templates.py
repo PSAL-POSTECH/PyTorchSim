@@ -72,24 +72,25 @@ def _gemm_tiles(m, n, k, dtype_size):
     mapped tile is an illegal block size still has to compile, and `pick_config`
     takes the first offered, so a tail is a fallback rather than a competitor.
 
-    A CAP AT THE LANE COUNT, AND IT IS A DEFECT RATHER THAN A PROPERTY. This
-    used to say no axis may exceed the lane count and call it a fact about the
-    machine. It is not. Three separate things hid behind that sentence; two are
-    fixed and the cap is now over the third.
+    NO CAP ON THE TILE SIZE. There was one, at the lane count, and this
+    docstring called it a fact about the machine. It never was: it was two
+    defects wearing one sentence, and it took five wrong guesses to get there.
 
-    FIXED, THE WRAP. Measured on triton-npu, one thing at a time on the same
+    THE WRAP. Measured on triton-npu, one thing at a time on the same
     512x512x512 kernel:
 
         wrap, 2x2 grid, (256, 256, 512)     110.93 off
         NO wrap, 2x2 grid, (256, 256, 512)  5.34e-05
         no wrap, one program, 256 cube      3.81e-05
 
-    so neither the wide tile nor the grid was the fault, and the array
+    so neither the wide tile nor the grid was ever the fault, and the array
     instructions come out as the same 2 x 4 x 2 loop nest either way.
-    `kernel_spec.clamp_instead_of_wrap` removes it.
+    `kernel_spec.clamp_instead_of_wrap` removes it -- and reaching the BMM
+    spelling of it, `tl.load(A)` against mm's `tl.load(A + (xindex))`, is what
+    took tests/ops/fusion/test_prologue_fusion.py from 127.39 off to passing.
 
-    FIXED, THE BIAS. Running each suspect alone at BLOCK_N = 512, M = 32,
-    K = 768, N = 1536:
+    THE BIAS. Running each suspect alone at BLOCK_N = 512, M = 32, K = 768,
+    N = 1536:
 
         matmul(a, b)             6.96e-05
         matmul(a, bt.t())        5.53e-05
@@ -99,20 +100,15 @@ def _gemm_tiles(m, n, k, dtype_size):
     An addmm epilogue loads its bias through a BROADCAST pointer tensor, and
     triton_shared's PtrAnalysis rewrote every op on the way to it except the
     broadcast, so the load found no descriptor at [BLOCK_M, BLOCK_N] and fell to
-    a gather -- which then wrote each lane's single fetched value into both of
-    the slots that lane owns. `PtrAnalysis::rewriteBroadcastOp` supplies the
-    missing arm; the transfer comes out `dram_stride = [0, 1]` with no gather,
-    and tests/ops/attention/test_gqa.py then passes with the cap lifted.
+    a gather -- which then wrote each lane's one fetched value into both of the
+    slots that lane owns. Fixed upstream by `PtrAnalysis::rewriteBroadcastOp`;
+    the transfer comes out `dram_stride = [0, 1]` with no gather.
 
-    NOT FIXED, AND NOT YET NAMED. With the cap off,
-    tests/ops/fusion/test_prologue_fusion.py is 127.39 off. Its kernel is a bmm
-    at BLOCK_M = BLOCK_N = 512, BLOCK_K = 64, one program per batch. A bare
-    512x512x64 matmul at the SAME tile passes standalone on triton-npu at
-    7.63e-06, so it is not the width -- it is the bmm form or the fusion, and
-    saying which needs a measurement nobody has taken yet.
-
-    So the cap stays, over one case instead of three. Every candidate it removes
-    is a LARGER tile, so the cost is speed rather than reach.
+    Both reproducers live in triton-npu:
+    kernels/coverage/tile/tile_bias_row_deeper_than_one_per_lane.py for the
+    second, and tile_gemm_wide_tile_grid.py for a REAL gather at a lane depth
+    above one -- which is still red, and which this route no longer reaches
+    because it no longer makes gathers it does not need.
     """
     from torch._inductor.template_heuristics.triton import GemmConfig
 
@@ -155,13 +151,10 @@ def _gemm_tiles(m, n, k, dtype_size):
         # No offline mapping study on this route -- see BaseMLIRHardwareInfo.
         dump_candidates=False)
 
-    lanes = int(extension_config.vpu_num_lanes)
     out = []
     for tile_m, tile_n, tile_k in tiles:
         if not all(_power_of_two(b) and b >= _MIN_BLOCK
                    for b in (tile_m, tile_n, tile_k)):
-            continue
-        if max(tile_m, tile_n, tile_k) > lanes:
             continue
         out.append(GemmConfig(tile_m, tile_n, tile_k, 1, 4))
     return out

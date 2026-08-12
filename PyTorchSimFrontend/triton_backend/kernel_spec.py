@@ -477,24 +477,49 @@ _COL_MASK = "_tnpu_col_mask"
 _MASK_FOR = {"A": _ROW_MASK, "B": _COL_MASK}
 
 
+#: `tl.load(A ...` in every spelling the two templates use. mm builds the
+#: address at the load -- `tl.load(A + (xindex))` -- while bmm accumulates it
+#: into the pointer and writes `tl.load(A)` or `tl.load(A, mask=..., other=0.)`.
+#: Matching only the first silently skipped every bmm, which then kept its wrap
+#: and its gather while the log said nothing.
+def _load_re(ptr):
+    return re.compile(rf"\btl\.load\({ptr}\b")
+
+
 def _add_mask_to_loads(lines, ptr, mask_name):
-    """Give every `tl.load(<ptr> + ...)` the bound `mask_name`. Count applied.
+    """Give every `tl.load(<ptr>...)` the bound `mask_name`. Count applied.
 
     A load either already carries the template's K mask -- `mask=a_mask,
     other=0.0`, emitted when EVEN_K is false -- or carries none at all. The
     first is widened with `&` and the second gets one; both end up reading 0
     where the tile runs past the operand.
     """
+    rx = _load_re(ptr)
     n = 0
     for i, line in enumerate(lines):
         stripped = line.rstrip()
-        if f"tl.load({ptr} + " not in stripped or not stripped.endswith(")"):
+        if not rx.search(stripped) or not stripped.endswith(")"):
             continue
-        if "mask=" in stripped:
-            lines[i] = re.sub(r"mask=([^,)]+)", rf"mask=(\1) & {mask_name}",
-                              stripped)
-        else:
+        at = stripped.find("mask=")
+        if at < 0:
             lines[i] = stripped[:-1] + f", mask={mask_name}, other=0.0)"
+            n += 1
+            continue
+        # NOT A REGEX. The existing mask is an EXPRESSION and it contains both
+        # of the characters a regex would stop at: `mask=rk[None, :] < k` has a
+        # comma inside a subscript and a `)` in neither place a naive `[^,)]+`
+        # expects, and matching that way produced
+        #   mask=(rk[None) & _tnpu_row_mask, :] < k
+        # which is syntactically valid Python and means nothing. The end of the
+        # expression is the ` other=` keyword the templates always follow it
+        # with, or the load's own closing paren.
+        start = at + len("mask=")
+        end = stripped.find(", other=", start)
+        if end < 0:
+            end = len(stripped) - 1
+        expr = stripped[start:end]
+        lines[i] = (stripped[:start] + f"({expr}) & {mask_name}"
+                    + stripped[end:])
         n += 1
     return n
 
@@ -559,25 +584,35 @@ def clamp_instead_of_wrap(body, kernel_name=""):
             continue                    # dynamic shape: leave the wrap alone
         needs[idx] = bool(d % b)        # a tail exists -> the mask is load-bearing
 
-    if not needs or f"tl.load(A + " not in text:
+    if not needs:
         return body
 
-    # The masks go right after offs_k, which both templates emit after rm/rn and
-    # before the k-loop, so every load is in their scope.
-    anchor = next((i for i, l in enumerate(lines)
-                   if l.strip().startswith("offs_k = tl.arange(")), None)
-    if anchor is None:
-        return body
+    # A DIVIDING BLOCK NEEDS NO LOAD AT ALL. Only the tail case has to find and
+    # bound the loads, so the anchor and the load patterns are looked for ONLY
+    # when some axis asks for a mask -- otherwise a template this does not
+    # recognise still gets its dead wrap removed.
+    if any(needs.values()):
+        # The masks go right after offs_k / rk, which both templates emit after
+        # rm/rn and before the k-loop, so every load is in their scope. mm calls
+        # it offs_k and bmm calls it rk.
+        anchor = next((i for i, l in enumerate(lines)
+                       if l.strip().startswith(("offs_k = tl.arange(",
+                                                "rk = tl.arange("))), None)
+        if anchor is None or not any(_load_re(p).search(text) for p in _MASK_FOR):
+            logger.warning(
+                "[triton-npu] %s: a block does not divide its dimension and "
+                "this does not recognise the loads to bound; leaving the wrap",
+                kernel_name or "kernel")
+            return body
 
-    pad = " " * (len(lines[anchor]) - len(lines[anchor].lstrip()))
-    inserted, applied = [], {}
-    for idx, dim, _block in _WRAP_TRIPLES:
-        if not needs.get(idx):
-            continue
-        name = _ROW_MASK if idx == "rm" else _COL_MASK
-        slice_ = "[:, None]" if idx == "rm" else "[None, :]"
-        inserted.append(f"{pad}{name} = {idx}{slice_} < {dim}")
-    if inserted:
+        pad = " " * (len(lines[anchor]) - len(lines[anchor].lstrip()))
+        inserted, applied = [], {}
+        for idx, dim, _block in _WRAP_TRIPLES:
+            if not needs.get(idx):
+                continue
+            name = _ROW_MASK if idx == "rm" else _COL_MASK
+            slice_ = "[:, None]" if idx == "rm" else "[None, :]"
+            inserted.append(f"{pad}{name} = {idx}{slice_} < {dim}")
         lines[anchor + 1:anchor + 1] = inserted
         for ptr, name in _MASK_FOR.items():
             if name in "".join(inserted):

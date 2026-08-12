@@ -73,31 +73,40 @@ def _gemm_tiles(m, n, k, dtype_size):
     takes the first offered, so a tail is a fallback rather than a competitor.
 
     A CAP AT THE LANE COUNT, AND IT IS A DEFECT RATHER THAN A PROPERTY. This
-    docstring used to say that no axis may exceed the lane count and call it a
-    fact about the machine. IT IS NOT. Measured on triton-npu, one thing at a
-    time on the same 512x512x512 kernel:
+    docstring used to say no axis may exceed the lane count and call it a fact
+    about the machine. It is not, and it took four wrong guesses to say what it
+    is. Measured on triton-npu, one thing at a time:
 
         wrap, 2x2 grid, (256, 256, 512)     110.93 off
         NO wrap, 2x2 grid, (256, 256, 512)  5.34e-05
         no wrap, one program, 256 cube      3.81e-05
 
-    The wide tile is not the fault and neither is the grid -- both pass once the
-    `rm % M` wrap is gone, and the array instructions come out as the same
-    2 x 4 x 2 loop nest either way, so the large-matmul lowering was never it.
-    `kernel_spec.drop_dead_wraps` removes the wrap for exactly the tiles this
-    function returns, and with it gone
-    tests/ops/fusion/test_addmm_residual.py passes at all four of its sizes with
-    the maximal (512, 512, 512) tile, and a bare 32x768x768 matmul at
-    (32, 256, 256) comes back at 7.63e-05 where it was 110.03.
+    so neither the wide tile nor the grid was ever the fault, and the array
+    instructions come out as the same 2 x 4 x 2 loop nest either way.
+    `kernel_spec.clamp_instead_of_wrap` removes the wrap, and with it gone
+    tests/ops/fusion/test_addmm_residual.py passes at all four sizes on the
+    maximal (512, 512, 512) tile.
 
-    WHAT THE CAP STILL HIDES IS SMALLER AND NOT YET NAMED.
-    tests/ops/attention/test_gqa.py is 0.0816 off with the wrap gone and the cap
-    lifted, and passes with the cap on and nothing else changed -- so something
-    above the lane count is still wrong on ITS shapes (BLOCK_N = 512 against
-    N = 1536 is the one candidate no smaller test covers) while 512-cubed and
-    32x768x768 are both exact. The cap is a marker over that, not an answer, and
-    every candidate it removes is a LARGER tile, so the cost is speed rather
-    than reach.
+    WHAT IS LEFT IS ONE THING AND IT IS NAMED. tests/ops/attention/test_gqa.py
+    is still 0.0954 off with the cap lifted. Running each suspect alone at
+    BLOCK_N = 512, M = 32, K = 768, N = 1536:
+
+        matmul(a, b)             6.96e-05
+        matmul(a, bt.t())        5.53e-05
+        addmm(bias, a, b)        5.84        <-- the bias
+        addmm(bias, a, bt.t())   5.84
+
+    An addmm's epilogue reads its bias as a full [BLOCK_M, BLOCK_N] tile whose
+    DRAM row stride is 0 -- `tl.load(in_ptr0 + tl.broadcast_to(idx_n, [BLOCK_M,
+    BLOCK_N]))` -- and that REPLICATING load breaks the moment the lane axis
+    carries more than one element: 128 passes, 256 and 512 do not. The
+    reproducer is triton-npu's
+    kernels/coverage/tile/tile_bias_row_deeper_than_one_per_lane.py, and the
+    rank-1 spelling of the same epilogue passes at 512, so it is the
+    replication and not the width.
+
+    So the cap stands until that is fixed, and every candidate it removes is a
+    LARGER tile -- the cost is speed rather than reach.
     """
     from torch._inductor.template_heuristics.triton import GemmConfig
 

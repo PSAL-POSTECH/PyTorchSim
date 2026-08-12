@@ -42,6 +42,14 @@ def _power_of_two(n):
     return n >= 1 and (n & (n - 1)) == 0
 
 
+def _round_up_pow2(n):
+    """The smallest legal Triton block extent that covers `n`."""
+    v = _MIN_BLOCK
+    while v < n:
+        v *= 2
+    return v
+
+
 def _gemm_tiles(m, n, k, dtype_size):
     """This machine's mm tiles for [m, k] @ [k, n], best first.
 
@@ -114,8 +122,22 @@ def _gemm_tiles(m, n, k, dtype_size):
 
     from PyTorchSimFrontend.mlir.mlir_common import BaseMLIRHardwareInfo
 
+    # ASK ABOUT THE ROUNDED SHAPE, NOT THE REAL ONE. Every tile this mapping
+    # returns is a divisor of the padded extent times the lane count, so a
+    # power-of-two extent gives power-of-two tiles and nothing has to be
+    # dropped. Asking about 100 gives 104 and asking about 384 gives 384, both
+    # illegal blocks, and the whole shape then falls back to torch's table --
+    # measured: 129x61x56 offered 2 tiles and kept 0, 100-cubed 1 and 0,
+    # 384-cubed 8 and 1.
+    #
+    # ROUNDING UP IS SAFE BECAUSE THE TAILS ARE MASKED. M and N are bounded by
+    # `kernel_spec.clamp_instead_of_wrap`, which is exactly what it is for, and
+    # K by the template's own EVEN_K masks. The budget is computed on the
+    # rounded shape, so it over-reserves rather than under-, and the
+    # power-of-two filter below stays as the check that this held.
     tiles = BaseMLIRHardwareInfo().gemm_combination_mapping(
-        int(m), int(n), int(k), precision_bytes=int(dtype_size),
+        _round_up_pow2(int(m)), _round_up_pow2(int(n)), _round_up_pow2(int(k)),
+        precision_bytes=int(dtype_size),
         # The Triton grid IS the tile count, so the same reason the MLIR gemm
         # template asks for at least num_cores tiles applies here.
         min_tile=True,

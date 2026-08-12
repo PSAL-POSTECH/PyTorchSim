@@ -40,6 +40,10 @@ import re
 
 from torch._inductor.virtualized import V
 
+from PyTorchSimFrontend import extension_config
+
+logger = extension_config.setup_logger()
+
 #: Triton signature token -> (torch dtype name, bytes). Only the dtypes
 #: tnpu/wrapper.py can round-trip through .raw files.
 _DTYPE = {
@@ -443,6 +447,77 @@ triton_helpers.max2 = _tnpu_max2
 '''
 
 
+#: The mm and bmm templates' names for a row/column index, its bound, and the
+#: block that walks it. Both templates spell them the same and both write the
+#: wrap twice (once per branch of a contiguity test), which is why this is a
+#: pattern rather than a line number.
+_WRAP_TRIPLES = (("rm", "M", "BLOCK_M"), ("rn", "N", "BLOCK_N"))
+
+
+def _literal_int(body, name):
+    """`name`'s value if the kernel assigns it an integer literal, else None.
+
+    Inductor renders M, N, K and the blocks into the BODY of the kernel rather
+    than passing them (`M = 512`, `BLOCK_M : tl.constexpr = 256`), so the
+    divisibility question can be answered from the source alone -- no need to
+    thread the config down to here, and a dynamic shape simply has no literal
+    and gets no rewrite.
+    """
+    m = re.search(rf"^\s*{name}\s*(?::\s*tl\.constexpr\s*)?=\s*(\d+)\s*$",
+                  body, re.M)
+    return int(m.group(1)) if m else None
+
+
+def drop_dead_wraps(body, kernel_name=""):
+    """Remove `rm % M` / `rn % N` when the block divides the dimension.
+
+    WHAT THE WRAP IS FOR. `rm = pid_m * BLOCK_M + arange(BLOCK_M)` runs past M
+    whenever BLOCK_M does not divide M, so the last program addresses rows that
+    do not exist. The template folds them back to the top of the matrix with
+    `% M` and lets the store's mask discard whatever they computed. On a GPU
+    that is the right trade: no branch, no fault, and reading garbage is free.
+
+    WHAT IT COSTS HERE. A modulo on a pointer index is not a stride, so the
+    descriptor stops being one: triton-shared marks it (`static_shape != 0`) and
+    tnpu lowers it as an INDIRECT transfer -- a per-element index tile with the
+    wrapped dim's stride set to 0. That is three separate bills.
+
+      the index tile is real scratchpad, in i64, the shape of the operand --
+      TWICE the bytes of an f32 tile, and both mm operands are wrapped, so a
+      three-tile kernel stages five. Measured on a 512x512x512 addmm with a
+      residual: 73760 bytes/lane against a 65536 budget, refused at link.
+
+      a gather is element-by-element where a descriptor is a burst.
+
+      and it is where the bugs are. Measured on the SAME kernel, changing only
+      this one thing: 512x512x512 with BM/BN = 256 answers 110.93 with the wrap
+      and 5.34e-05 without it, at the same tile and the same 2x2 grid. A wide
+      tile is not the problem and neither is the grid -- both pass once the wrap
+      is gone.
+
+    WHY IT IS SAFE TO REMOVE. `gemm_combination_mapping` picks tiles from the
+    DIVISORS of the shape, so BLOCK_M divides M and there is no tail: rm runs
+    0..M-1 and `rm % M` is the identity. This is deleting a line that cannot
+    execute, not changing what the kernel means, and the guard below is exactly
+    that proof -- a shape whose block does not divide it keeps its wrap and
+    keeps the gather, which is what it needs.
+
+    Torch's template already reasons this way about K (`EVEN_K` skips the K
+    mask) and simply does not for M and N. This supplies the missing half.
+    """
+    for idx, dim, block in _WRAP_TRIPLES:
+        d, b = _literal_int(body, dim), _literal_int(body, block)
+        if d is None or not b or d % b:
+            continue
+        body, n = re.subn(rf"\b{idx}\s*%\s*{dim}\b", idx, body)
+        if n:
+            logger.info("[triton-npu] %s: dropped %d dead `%s %% %s` "
+                        "(%s=%d divides %s=%d), so the operand stays a "
+                        "descriptor instead of becoming a gather",
+                        kernel_name or "kernel", n, idx, dim, block, b, dim, d)
+    return body
+
+
 def strip_for_tnpu(src):
     """Remove everything the torch-free tnpu venv cannot import.
 
@@ -709,7 +784,8 @@ def write_spec_file(src_code, meta, path, tnpu_dir):
 
     triton_module = f"{meta['kernel_name']}_triton.py"
     with open(os.path.join(os.path.dirname(path), triton_module), "w") as f:
-        f.write(strip_for_tnpu(src_code))
+        f.write(drop_dead_wraps(strip_for_tnpu(src_code),
+                                meta['kernel_name']))
 
     scalars = scalar_args(meta)
     text = SPEC_TEMPLATE.format(

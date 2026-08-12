@@ -108,12 +108,20 @@ def _gemm_tiles(m, n, k, dtype_size):
         # The Triton grid IS the tile count, so the same reason the MLIR gemm
         # template asks for at least num_cores tiles applies here.
         min_tile=True,
-        # WHAT ELSE THIS ROUTE STAGES, in the mapping's own vocabulary. The mm
-        # template wraps both operands (`rm % M`, `rn % N`), which lowers to an
-        # indirect transfer carrying an i64 index tile the shape of the operand
-        # -- two f32 tiles' worth each, since the mapping counts in
-        # precision_bytes. So A and B each cost their tile plus two, and that is
-        # a fact of the template rather than an allowance.
+        # HEADROOM FOR WHAT THIS ROUTE STAGES AND THIS MAPPING CANNOT SEE.
+        # It budgets three tiles; Inductor fuses the epilogue into the same
+        # kernel AFTER the config is chosen -- the scheduler decides that, and
+        # this runs during autotune -- so the extra output-shaped tiles are not
+        # countable here. The MLIR route has the number when it asks and passes
+        # n_extra_node; this asks for two tiles' worth of slack in the mapping's
+        # own vocabulary instead.
+        #
+        # IT USED TO BE THE i64 INDEX TILES, and that reason is gone:
+        # kernel_spec.clamp_instead_of_wrap replaces `rm % M` with a load bound,
+        # so no operand becomes an indirect transfer and no index tile is staged
+        # at all. Measured on a ragged 100x100x100, whose every transfer now
+        # reads `masked_axes = [0, 1], masked_fill = 0` and none reads
+        # `indirect`. The slack stays for the epilogue.
         n_prologue_node=2, n_prologue_extra_read=2,
         # AND WHAT IT CANNOT COUNT. Inductor fuses the epilogue into this kernel
         # AFTER the config is chosen -- the scheduler decides it, and this runs
@@ -122,17 +130,12 @@ def _gemm_tiles(m, n, k, dtype_size):
         # n_extra_node; this one gives the mm's own staging half the
         # double-buffer budget and leaves the rest for whatever fuses in.
         #
-        # MEASURED: without it, tests/ops/fusion/test_addmm_residual.py at
-        # 512x512x512 takes the maximal (512, 512, 512) and tnpu refuses the
-        # link at 73760 bytes/lane against a 65536 budget -- exactly the three
-        # tiles, the two i64 index tiles, and TWO more f32 output tiles for the
-        # bias and the residual. With it the tile is (256, 256, 512), about
-        # 30 KB/lane, and the same kernel links and runs.
-        #
-        # This is a policy over an unknown, not a bound: an epilogue deeper than
-        # the half left for it still overflows, and the real fix is the
-        # re-codegen loop the MLIR route has (BaseMLIRKernel.recodegen, "spad
-        # overflow") and this route does not.
+        # WHY THERE IS A DIVISOR AT ALL: tests/ops/fusion/test_addmm_residual
+        # at 512x512x512 fuses a bias AND a residual, two more output-shaped
+        # tiles that nothing here counts. This is a policy over an unknown, not
+        # a bound -- an epilogue deeper than the half left for it still
+        # overflows, and the real fix is the re-codegen loop the MLIR route has
+        # (BaseMLIRKernel.recodegen, "spad overflow") and this route does not.
         budget_divisor=2,
         # No offline mapping study on this route -- see BaseMLIRHardwareInfo.
         dump_candidates=False)

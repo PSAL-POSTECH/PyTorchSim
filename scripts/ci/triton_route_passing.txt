@@ -18,6 +18,7 @@
 # work. 26 kernels and a compile error before; 27 kernels, no C++ kernel at all,
 # and 4.77e-06 after. The test carries the two-line scope and the reasoning.
 tests/models/DeepSeek/test_deepseek_v3_base.py
+tests/models/Mixtral8x7B/test_mistral.py
 tests/models/MobileNet/test_mobilenet.py
 tests/models/Yolov5/test_yolov5.py
 tests/models/test_clip.py

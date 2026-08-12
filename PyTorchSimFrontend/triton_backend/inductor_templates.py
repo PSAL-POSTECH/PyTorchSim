@@ -11,6 +11,10 @@ import os
 
 import torch
 
+from PyTorchSimFrontend import extension_config
+
+logger = extension_config.setup_logger()
+
 
 def _register_npu_as_gpu():
     import torch._inductor.utils as inductor_utils
@@ -30,6 +34,167 @@ def _claim_triton_present():
         scheduler.has_triton = lambda: True
 
 
+#: Triton's smallest block: `tl.dot` refuses an operand shorter than this.
+_MIN_BLOCK = 16
+
+
+def _power_of_two(n):
+    return n >= 1 and (n & (n - 1)) == 0
+
+
+def _round_up_pow2(n):
+    """The smallest legal Triton block extent that covers `n`."""
+    v = _MIN_BLOCK
+    while v < n:
+        v *= 2
+    return v
+
+
+def _gemm_tiles(m, n, k, dtype_size):
+    """This machine's mm tiles for [m, k] @ [k, n], best first.
+
+    THE MAPPING IS PyTorchSim's OWN, not a table. `gemm_combination_mapping`
+    enumerates every tile that is a multiple of the lane count and whose three
+    operands fit half the scratchpad -- half because the tiles are double
+    buffered -- checking the total AND the per-lane footprint, and ranks them by
+    scratchpad used, descending. That is rule 6's enumerate-rank-select over the
+    quantity that actually limits this machine, and it is the same call the MLIR
+    route's gemm and bmm templates make, so the two routes now answer the tile
+    question once (mlir_common.BaseMLIRHardwareInfo).
+
+    WHAT IT REPLACES: torch's generic set, whose first entry is
+    GemmConfig(64, 64, 16) for f32 -- sized for a GPU's shared memory and warp
+    tiling, both of which this machine has neither of. Nothing in it knows the
+    lane count or the scratchpad, so the tile it picked was right only by
+    accident, and the TODO saying so had been in this file since it was written.
+
+    ONE THING THE MLIR ROUTE DOES NOT NEED, AND IT IS TRITON'S: a block size
+    reaches `tl.arange` and `tl.dot`, so it must be a power of two and at least
+    16. `gemm_combination_mapping` pads to multiples of 8 or of the lane count
+    and multiplies by divisors, so 384 and 104 are both reachable and neither is
+    a legal Triton block. They are dropped rather than rounded -- rounding up
+    breaks the scratchpad budget the mapping just proved, and rounding down
+    hands back a tile nothing enumerated.
+
+    The generic set is appended after them, never before: a shape whose every
+    mapped tile is an illegal block size still has to compile, and `pick_config`
+    takes the first offered, so a tail is a fallback rather than a competitor.
+
+    NO CAP ON THE TILE SIZE. There was one, at the lane count, and this
+    docstring called it a fact about the machine. It never was: it was two
+    defects wearing one sentence, and it took five wrong guesses to get there.
+
+    THE WRAP. Measured on triton-npu, one thing at a time on the same
+    512x512x512 kernel:
+
+        wrap, 2x2 grid, (256, 256, 512)     110.93 off
+        NO wrap, 2x2 grid, (256, 256, 512)  5.34e-05
+        no wrap, one program, 256 cube      3.81e-05
+
+    so neither the wide tile nor the grid was ever the fault, and the array
+    instructions come out as the same 2 x 4 x 2 loop nest either way.
+    `kernel_spec.clamp_instead_of_wrap` removes it -- and reaching the BMM
+    spelling of it, `tl.load(A)` against mm's `tl.load(A + (xindex))`, is what
+    took tests/ops/fusion/test_prologue_fusion.py from 127.39 off to passing.
+
+    THE BIAS. Running each suspect alone at BLOCK_N = 512, M = 32, K = 768,
+    N = 1536:
+
+        matmul(a, b)             6.96e-05
+        matmul(a, bt.t())        5.53e-05
+        addmm(bias, a, b)        5.84        <-- the bias
+        addmm(bias, a, bt.t())   5.84
+
+    An addmm epilogue loads its bias through a BROADCAST pointer tensor, and
+    triton_shared's PtrAnalysis rewrote every op on the way to it except the
+    broadcast, so the load found no descriptor at [BLOCK_M, BLOCK_N] and fell to
+    a gather -- which then wrote each lane's one fetched value into both of the
+    slots that lane owns. Fixed upstream by `PtrAnalysis::rewriteBroadcastOp`;
+    the transfer comes out `dram_stride = [0, 1]` with no gather.
+
+    Both reproducers live in triton-npu:
+    kernels/coverage/tile/tile_bias_row_deeper_than_one_per_lane.py for the
+    second, and tile_gemm_wide_tile_grid.py for a REAL gather at a lane depth
+    above one -- which is still red, and which this route no longer reaches
+    because it no longer makes gathers it does not need.
+    """
+    from torch._inductor.template_heuristics.triton import GemmConfig
+
+    from PyTorchSimFrontend.mlir.mlir_common import BaseMLIRHardwareInfo
+
+    # ASK ABOUT THE ROUNDED SHAPE, NOT THE REAL ONE. Every tile this mapping
+    # returns is a divisor of the padded extent times the lane count, so a
+    # power-of-two extent gives power-of-two tiles and nothing has to be
+    # dropped. Asking about 100 gives 104 and asking about 384 gives 384, both
+    # illegal blocks, and the whole shape then falls back to torch's table --
+    # measured: 129x61x56 offered 2 tiles and kept 0, 100-cubed 1 and 0,
+    # 384-cubed 8 and 1.
+    #
+    # ROUNDING UP IS SAFE BECAUSE THE TAILS ARE MASKED. M and N are bounded by
+    # `kernel_spec.clamp_instead_of_wrap`, which is exactly what it is for, and
+    # K by the template's own EVEN_K masks. The budget is computed on the
+    # rounded shape, so it over-reserves rather than under-, and the
+    # power-of-two filter below stays as the check that this held.
+    tiles = BaseMLIRHardwareInfo().gemm_combination_mapping(
+        _round_up_pow2(int(m)), _round_up_pow2(int(n)), _round_up_pow2(int(k)),
+        precision_bytes=int(dtype_size),
+        # The Triton grid IS the tile count, so the same reason the MLIR gemm
+        # template asks for at least num_cores tiles applies here.
+        min_tile=True,
+        # HEADROOM FOR WHAT THIS ROUTE STAGES AND THIS MAPPING CANNOT SEE.
+        # It budgets three tiles; Inductor fuses the epilogue into the same
+        # kernel AFTER the config is chosen -- the scheduler decides that, and
+        # this runs during autotune -- so the extra output-shaped tiles are not
+        # countable here. The MLIR route has the number when it asks and passes
+        # n_extra_node; this asks for two tiles' worth of slack in the mapping's
+        # own vocabulary instead.
+        #
+        # IT USED TO BE THE i64 INDEX TILES, and that reason is gone:
+        # kernel_spec.clamp_instead_of_wrap replaces `rm % M` with a load bound,
+        # so no operand becomes an indirect transfer and no index tile is staged
+        # at all. Measured on a ragged 100x100x100, whose every transfer now
+        # reads `masked_axes = [0, 1], masked_fill = 0` and none reads
+        # `indirect`. The slack stays for the epilogue.
+        n_prologue_node=2, n_prologue_extra_read=2,
+        # AND WHAT IT CANNOT COUNT. Inductor fuses the epilogue into this kernel
+        # AFTER the config is chosen -- the scheduler decides it, and this runs
+        # during autotune -- so the number of extra output-shaped tiles is not
+        # knowable here. The MLIR route has the count when it asks and passes
+        # n_extra_node; this one gives the mm's own staging half the
+        # double-buffer budget and leaves the rest for whatever fuses in.
+        #
+        # WHY THERE IS A DIVISOR AT ALL: tests/ops/fusion/test_addmm_residual
+        # at 512x512x512 fuses a bias AND a residual, two more output-shaped
+        # tiles that nothing here counts.
+        #
+        # AND IT HOLDS, WHICH IS WHY THERE IS NO RETRY LOOP HERE. The MLIR route
+        # re-codegens on a scratchpad overflow (BaseMLIRKernel.recodegen, "spad
+        # overflow") and this route cannot, so the obvious next step was to
+        # build one -- except nothing overflows. Measured, deliberately trying
+        # to: a 512-cubed matmul with FIVE fused elementwise epilogue nodes
+        # comes back at 1.98e-04, and a 1024-cubed one with TEN at 1.71e-03.
+        # Both link. Halving the budget makes the mapping pick a smaller tile,
+        # and a smaller tile makes the epilogue's own tiles smaller with it, so
+        # the reservation scales with what it is reserving for.
+        #
+        # A retry path with no case that needs it is machinery nobody can check
+        # (rule 2 wants a kernel that fails without the fix, and there is none),
+        # so this stays a measured reservation rather than a stopgap. If a
+        # kernel ever does overflow, THAT is the reproducer and the loop can be
+        # built against it.
+        budget_divisor=2,
+        # No offline mapping study on this route -- see BaseMLIRHardwareInfo.
+        dump_candidates=False)
+
+    out = []
+    for tile_m, tile_n, tile_k in tiles:
+        if not all(_power_of_two(b) and b >= _MIN_BLOCK
+                   for b in (tile_m, tile_n, tile_k)):
+            continue
+        out.append(GemmConfig(tile_m, tile_n, tile_k, 1, 4))
+    return out
+
+
 def _register_template_heuristics():
     from torch._inductor.kernel.bmm import bmm_template
     from torch._inductor.kernel.mm import mm_template
@@ -41,11 +206,33 @@ def _register_template_heuristics():
     @register_template_heuristic(mm_template.uid, "npu")
     @register_template_heuristic(bmm_template.uid, "npu")
     class NPUMMTemplateConfigHeuristic(MMTemplateConfigMixin, BaseConfigHeuristic):
-        # TODO: size these from the hardware config (lanes, spad per lane)
-        # rather than taking the generic set.
-        def __init__(self):
-            super().__init__()
-            self.exhaustive_configs = self.mm_configs
+        def _get_config_generator(self):
+            """The hook the mixin documents for exactly this.
+
+            It is the one place the shape is known -- the mixin calls what this
+            returns as `configs(m, n, k, dtype_size=..., op_name=...)` -- and a
+            tile mapping that does not see M, N and K is not a mapping. The
+            configs still go through `_finalize_mm_configs`, so torch keeps
+            doing the deduping and the num_warps clamp.
+            """
+            generic = super()._get_config_generator()
+
+            def configs(m, n, k, **kwargs):
+                from torch._inductor.virtualized import V
+                try:
+                    mnk = [int(V.graph.sizevars.size_hint(s)) for s in (m, n, k)]
+                except Exception:  # noqa: BLE001 - unhinted dynamic shape
+                    yield from generic(m, n, k, **kwargs)
+                    return
+                mapped = _gemm_tiles(*mnk, kwargs.get("dtype_size", 4))
+                if not mapped:
+                    logger.warning(
+                        "[triton-npu] no mapped tile for %sx%sx%s is a legal "
+                        "Triton block; falling back to the generic set", *mnk)
+                yield from self._finalize_mm_configs(mapped)
+                yield from generic(m, n, k, **kwargs)
+
+            return configs
 
     # addmm and baddbmm carry a bias as input_nodes[0]; without their own entry
     # the mm heuristic is used with prefix_args=0 and def_kernel asserts.
@@ -149,15 +336,26 @@ def _size_conv_blocks_from_the_machine():
     THIS IS THE MAPPING POLICY, NOT A WORKAROUND FOR THAT REFUSAL. A block size
     is a statement about the machine the kernel runs on, and taking a table
     written for a GPU is not one -- the heuristic registered below has carried
-    the same TODO since it was written. The refusal is a real defect and stays
-    one: a tile deeper than one element per lane is a shape this backend has to
-    handle, and pinning BLOCK_N to the lane count only stops resnet from being
-    the thing that reports it.
+    the same TODO since it was written.
 
-    N IS THE LANE AXIS, so it takes the lane count exactly -- the same choice
-    kernel_spec.fixed_config_for makes for XBLOCK, and for the same reason. M
-    and K are per-lane depth and cost scratchpad rather than lanes, so they are
-    offered small-to-large and the first that the shape does not clamp wins.
+    N IS NOT KNOWN TO BE THE LANE AXIS, and this used to say it was. Nothing
+    here picks the lane axis: tnpu's select_lane_axis does, from what the ops
+    demand, and the answer is per-operand -- gemm and bmm carry two different
+    ones on a single op. Measured over the tnpu dumps, 26 of 36 stamped kernels
+    are axis 0 and gemm_fp16_kernel is axis 1 throughout, so neither letter is
+    the rule.
+
+    NOR IS ONE ELEMENT PER LANE REQUIRED, which was the other half of the claim.
+    kernels/coverage/tile/tile_deeper_than_one_per_lane.py puts two per lane on
+    axis 0 and comes out exact; tile_gemm_lane_axis_deeper.py does it on the
+    axis a matmul demanded, at 9.54e-06 against a 1.53e-05 control, with nine
+    memref<128x256xf32, 1> spad buffers to show the tile was really built.
+
+    What is left is a size, not a layout: BLOCK_N takes the lane count because a
+    tile should be at least as wide as the machine, and M and K cost scratchpad
+    rather than lanes, so they are offered small-to-large and the first the
+    shape does not clamp wins. The bank_vectorize refusal quoted above is still
+    a real defect -- it is just not the reason for this number.
     """
     from torch._inductor.choices import InductorChoices
     from torch._inductor.template_heuristics.triton import (
@@ -198,83 +396,20 @@ def _size_conv_blocks_from_the_machine():
     InductorChoices.get_config_heuristics = get_config_heuristics
 
 
-def _persist_a_reduction_that_fits_one_tile():
-    """Say a reduction is PERSISTENT when our own block would cover it anyway.
-
-    Inductor decides persistent-vs-looped from the reduction's extent against a
-    threshold -- 64, unless the hint is INNER -- and this backend then pins the
-    block itself, in kernel_spec.fixed_config_for, to "cover the extent and no
-    more, then shrink to the budget". The two disagree exactly in the middle:
-
-        r0_numel = 96   >  64          Inductor: looped
-        R0_BLOCK = 128  >= 96          ours:     the loop runs ONCE
-
-    A looped reduction is not merely redundant there. Its partial results have to
-    be COMBINED across blocks, and for a variance that combination is Welford's --
-    `tl.reduce` over a (mean, m2, weight) triple with a six-argument body.
-    triton-shared converts a reduction only when the body is ONE op from a fixed
-    list ("Only support lowering reduction with body containing 1 max(i/f), addf,
-    ori, or mulf"), so the triple survives as `tt.reduce` into a pass that has no
-    lowering for it. Before p10_bufferize learned to refuse a Triton op by
-    dialect, that was a SEGFAULT inside one-shot-bufferize's inliner.
-
-        measured   e2e convnextv2, `convolution_native_layer_norm_permute_5`:
-                   r0_numel 96, R0_BLOCK 128, and a
-                   `for r0_offset in range(0, r0_numel, R0_BLOCK)` around
-                   `welford_reduce`, followed by the triple-`tl.reduce`. The loop
-                   body runs once.
-
-    WITH PERSISTENT CHOSEN, INDUCTOR EMITS THE TWO-PASS FORM ITSELF and says why:
-    "For persistent reductions, don't bother with welford's algorithm since it
-    uses more registers, and taking two reductions doesn't increase memory
-    usage." That is `welford_reduce_fallback` -- a sum, a mean, then a sum of
-    squared deviations -- and each of those IS one `addf`, which converts.
-
-    AND THE BLOCK CANNOT DISAGREE, which is the thing that would make this
-    dangerous. For a persistent reduction Inductor writes the block into the
-    kernel itself (`R0_BLOCK: tl.constexpr = _get_persistent_RBLOCK(numel)`,
-    codegen_static_numels), so our fixed_config is not consulted for that axis at
-    all, and the value is the next power of two above the extent -- covering it
-    by construction.
-
-    ONLY WHERE IT FITS ONE LANE. The budget below is fixed_config_for's, for the
-    same reason: the reduced axis has to live inside a lane, and a reduction too
-    long for that has to loop for real. There Welford is genuinely needed and
-    this returns False, leaving the decision exactly where it was.
-    """
-    import os
-
-    from torch._inductor.choices import InductorChoices
-    from torch._inductor.virtualized import V  # noqa: F401  (import parity)
-
-    from PyTorchSimFrontend.triton_backend.kernel_spec import (
-        _REDUCTION_LIVE_TILES)
-
-    original = InductorChoices.should_use_persistent_reduction
-
-    def should_use_persistent_reduction(features, cooperative_reduction):
-        if original(features, cooperative_reduction):
-            return True
-        if cooperative_reduction:
-            return False                  # its own path, and it needs Welford
-        try:
-            numel = int(features.reduction_numel)
-        except (TypeError, ValueError):
-            return False                  # dynamic: no extent to compare
-        if numel <= 0:
-            return False
-        block = 1 << (numel - 1).bit_length()
-        # THE WIDEST ELEMENT, not the one this kernel happens to use. `features`
-        # does not carry the dtype, and guessing narrow would claim a fit that
-        # the tile does not have. 4 bytes is what fixed_config_for sizes f32
-        # against and is the common case; anything wider simply is not claimed.
-        lane_bytes = int(os.environ.get("TNPU_SPAD_SIZE", str(64 * 1024)), 0)
-        budget = lane_bytes // 2 // _REDUCTION_LIVE_TILES
-        return block * 4 <= budget
-
-    InductorChoices.should_use_persistent_reduction = staticmethod(
-        should_use_persistent_reduction)
-
+# WHAT WAS HERE, AND WHY IT IS NOT. `_persist_a_reduction_that_fits_one_tile`
+# forced Inductor to call a reduction persistent whenever our block would cover
+# it, so that it took the two-pass `welford_reduce_fallback` instead of emitting
+# a three-tensor Welford this backend could not lower. The lowering exists now
+# (triton_shared 46d70d7, ReduceGeneralConverter: seed from slice 0 along the
+# reduced axis and fold the rest), so the premise is gone -- and forcing
+# persistence was not free. It fixes the block at the next power of two above
+# the extent, which is what put ViT's first LayerNorm at 97440 bytes/lane
+# against a 65536 budget; letting Inductor loop instead brought that to 77504,
+# and codecache's R0_BLOCK retry takes it the rest of the way.
+#
+# It was also a monkeypatch of `InductorChoices.should_use_persistent_reduction`
+# -- a class attribute of someone else's class -- which is the thing rule 16
+# forbids outright. Removing it removes that debt with it.
 
 def _size_grouped_conv_grid_per_group():
     """Launch a grouped convolution over the channels a GROUP has, not all of them.
@@ -425,7 +560,6 @@ def install():
     _size_conv_blocks_from_the_machine()
     _size_grouped_conv_grid_per_group()
     _clamp_conv_block_n()
-    _persist_a_reduction_that_fits_one_tile()
     _short_circuit_degenerate_gemms()
     _install_selection()
 
@@ -442,37 +576,22 @@ def install():
     # harness imports land indented in the real module.
     config.benchmark_epilogue_fusion = False
 
-    # SPLITTING A REDUCTION PAYS FOR PARALLELISM THIS BACKEND CANNOT COLLECT YET,
-    # and the cost is a form it cannot compile. The option says what it buys:
-    # "For reductions with a small output size (usually 1, e.g. x.sum()) there is
-    # not enough parallelism to saturate the GPU ... split_reductions: uses
-    # multiple kernels to gain more parallelism". The extra kernel is only a win
-    # where the two halves RUN AT ONCE, and today they do not -- tnpu compiles
-    # one binary per kernel and the C wrapper walks the grid as a sequential
-    # loop. THAT IS THE CURRENT LAUNCHER, NOT A PROPERTY OF THE MACHINE: the
-    # hardware has cores and the config has `num_cores`, so when launches run
-    # concurrently this trade changes sign and this line should be revisited
-    # rather than assumed.
+    # SPLIT REDUCTIONS ARE BACK ON, on the condition the note that turned them
+    # off wrote down for itself: "give `welford_combine` a lowering (or a
+    # two-pass fallback of its own) FIRST, then turn this back on and measure."
+    # The lowering landed in triton_shared 46d70d7 -- ReduceGeneralConverter
+    # takes a body of any shape by seeding the accumulator from slice 0 along
+    # the reduced axis and folding the rest -- so a split reduction's second
+    # kernel, which combines partial (mean, m2, weight) triples, now compiles.
     #
-    # WHAT IT COSTS MEANWHILE. Stage one leaves partial (mean, m2, weight)
-    # triples and stage two combines them, which for a variance is Welford's:
-    # `tl.reduce` over a triple with a six-argument body. Inductor has a two-pass
-    # fallback for `welford_reduce` and NONE for `welford_combine` -- that branch
-    # always emits the triple -- and triton_shared's ReduceConverter takes a body
-    # of exactly one op from a fixed list, so it survives as `tt.reduce` into a
-    # pass with no lowering for it. So the split is not merely unpaid for, it
-    # produces a kernel that does not build.
+    # The measurement that turned it off was convnextv2's
+    # `convolution_native_layer_norm_permute_17`: 17 kernels compiled with the
+    # split on, 35 with it off. Re-measure before trusting either number now;
+    # the reason it produced an unbuildable kernel no longer holds.
     #
-    #     measured   e2e convnextv2's `convolution_native_layer_norm_permute_17`:
-    #                r0_numel 2, so persistent by any threshold, and still a
-    #                `(3 x tensor<128x2xf32>) -> (3 x tensor<128xf32>)` Welford
-    #                because the reduction was split in two. With the split off,
-    #                convnextv2 goes 17 kernels compiled to 35.
-    #
-    # THE ORDER TO LIFT THIS IN, when concurrent launches land: give
-    # `welford_combine` a lowering (or a two-pass fallback of its own) FIRST,
-    # then turn this back on and measure. Turning it on while that branch still
-    # emits an unconvertible triple only brings the failure back.
-    config.split_reductions = False
+    # It stays worth revisiting for its OWN reason, which is unchanged: the
+    # extra kernel is only a win where the two halves run at once, and tnpu
+    # compiles one binary per kernel with the C wrapper walking the grid as a
+    # sequential loop. That is the launcher, not the machine.
 
     _installed = True

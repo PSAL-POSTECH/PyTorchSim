@@ -223,6 +223,7 @@ class ExtensionWrapperCodegen(wrapper.PythonWrapperCodegen):
         # result.splice(self.header)
 
         self._fverify_seen = set()
+        self._fverify_last = None
         with contextlib.ExitStack() as stack:
             stack.enter_context(self.wrapper_call.indent())
             # memory_plan_reuse() reaches self.estimate_peak through
@@ -249,7 +250,7 @@ class ExtensionWrapperCodegen(wrapper.PythonWrapperCodegen):
                     elif isinstance(line, wrapper.KernelCallLine):
                         self.wrapper_call.writeline(self.wrap_kernel_call(line.kernel_name, line.call_args))
                         if _func_verify.enabled():
-                            self._fverify_emit_checks(line.call_args)
+                            self._fverify_emit_checks(line.call_args, id(line))
                     else:
                         if isinstance(line, wrapper.WrapperLine):
                             line.codegen(self.wrapper_call)
@@ -279,21 +280,59 @@ class ExtensionWrapperCodegen(wrapper.PythonWrapperCodegen):
             self.kernel_declarations.getvaluewithlinemap(),
         )
 
-    def _fverify_emit_checks(self, call_args):
+    def _fverify_last_writer(self):
+        """{buffer name: id of the LAST kernel call that names it}.
+
+        THE FIRST KERNEL TO NAME A BUFFER IS NOT ALWAYS THE ONE THAT FINISHES
+        IT. One fx op can be split across several kernels, and then the buffer
+        is only complete after the last of them -- checking after the first
+        compares a half-built buffer against a finished golden and reports a
+        divergence that is not one.
+
+            measured   DeepSeek-V3's MoE router. `aten.scatter.value` comes out
+                       as two kernels sharing one origin node:
+
+                         triton_npu_fused_scatter_zeros_like_38(buf9, 256)
+                         _fverify.verify_check(buf9, ...)        <- here
+                         triton_npu_fused_scatter_zeros_like_39(buf8, buf9, 128)
+
+                       38 writes the zeros and 39 scatters the ones, so the
+                       check saw an all-zero buffer and reported "128/256
+                       elements over tol, all npu=0 cpu=1" -- every one of the
+                       scattered ones "missing". Running kernel 39 standalone
+                       against a torch reference gives max_abs_err 0.
+
+        So the walk is done twice: once to find where each buffer is last
+        written, and once to emit. Same order, same buffers, one check each --
+        only the position moves.
+        """
+        last = {}
+        for line in self.lines:
+            if not isinstance(line, wrapper.KernelCallLine):
+                continue
+            for a in line.call_args:
+                if isinstance(a, str) and a.strip().isidentifier():
+                    last[a.strip()] = id(line)
+        return last
+
+    def _fverify_emit_checks(self, call_args, line_id=None):
         """Emit per-kernel CPU verify calls for this kernel's output buffers.
 
-        A buffer's value is produced by the first kernel that names it (producer
-        precedes consumers in topo order), so we check each bare-identifier buffer
-        arg the first time it is seen -- that occurrence is its output. The buffer
-        is mapped to its originating fx node (op) so the runtime check can compare
-        against the CPU golden keyed by that node.
+        Each bare-identifier buffer arg is checked once, after the LAST kernel
+        that names it -- see _fverify_last_writer for why not the first. The
+        buffer is mapped to its originating fx node (op) so the runtime check
+        can compare against the CPU golden keyed by that node.
         """
+        if self._fverify_last is None:
+            self._fverify_last = self._fverify_last_writer()
         for a in call_args:
             if not isinstance(a, str):
                 continue
             name = a.strip()
             if not name.isidentifier() or name in self._fverify_seen:
                 continue
+            if line_id is not None and self._fverify_last.get(name) != line_id:
+                continue          # a later kernel still writes this buffer
             self._fverify_seen.add(name)
             if name in V.graph.graph_inputs:
                 continue  # placeholders: golden == input, nothing to verify

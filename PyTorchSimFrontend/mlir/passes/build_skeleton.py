@@ -429,22 +429,28 @@ def _transfer_fields(op):
     """Decode a `togsim.transfer`'s fixed operands by position.
 
     Layout (see mlir_codegen_backend.emit_transfer / lower_transfer_to_gemmini):
-        operands: dram, dram_idx, sram, sram_idx, tag, tag_idx, dma_type, vst
-                  [, offset_spad]        # 8 or 9 operands
+        operands: dram, dram_idx, sram, sram_idx, tag, tag_idx[, dma_type], vst
+                  [, offset_spad][, mask clamps]
     Unlike the old `memref.dma_start`, dram/sram are FIXED (not direction-swapped):
     the DRAM side is always operand[0]/[1], the SRAM spad always operand[2], the
-    runtime tag slot always operand[4] (tag memref) + operand[5] (tag_idx). The
-    optional indirect-offset spad is operand[8]; its owning `memref.get_global`
-    carries the offset symbol name in its "name" attribute (matching
-    lower_transfer_to_gemmini's offset_sym derivation)."""
+    runtime tag slot always operand[4] (tag memref) + operand[5] (tag_idx).
+
+    ONLY THE FIRST SIX SLOTS ARE FIXED. Past the tag the two producers of this op
+    disagree -- the MLIR route emits a `dma_type` operand and triton-npu does not
+    -- so the indirect offset is read off the operand TYPES by
+    build_tog.transfer_index_operand rather than counted to. `dma_type` and `vst`
+    were decoded here too; nothing read either, and under tnpu's layout
+    operands[7] does not exist on a plain transfer, so they are gone rather than
+    wrong. The offset's owning `memref.get_global` carries the offset symbol name
+    in its "name" attribute (matching lower_transfer_to_gemmini's offset_sym
+    derivation)."""
+    from .build_tog import transfer_index_operand
     operands = list(op.operands)
-    offset = operands[8] if "indirect" in op.attributes else None
     return {
         "dram": operands[0], "dram_idx": operands[1],
         "sram": operands[2], "sram_idx": operands[3],
         "tag": operands[4], "tag_idx": operands[5],
-        "dma_type": operands[6], "vst": operands[7],
-        "offset": offset,
+        "offset": transfer_index_operand(op),
     }
 
 

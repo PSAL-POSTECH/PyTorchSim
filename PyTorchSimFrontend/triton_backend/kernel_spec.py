@@ -40,6 +40,10 @@ import re
 
 from torch._inductor.virtualized import V
 
+from PyTorchSimFrontend import extension_config
+
+logger = extension_config.setup_logger()
+
 #: Triton signature token -> (torch dtype name, bytes). Only the dtypes
 #: tnpu/wrapper.py can round-trip through .raw files.
 _DTYPE = {
@@ -169,6 +173,7 @@ def collect_meta(kernel, kernel_name):
 
     return {
         "kernel_name": kernel_name,
+        "template_grid": _template_grid(kernel),
         "signature": {str(k): str(v) for k, v in signature.items()},
         "constants": {str(k): v for k, v in constants.items()},
         "args": args,
@@ -338,43 +343,100 @@ def fixed_config_for(kernel, numels, args):
     runtime `grid=` callable. Fixing them here is what makes the launch shape
     static.
 
-    Tile dim 0 is the one `bank_vectorize` spreads over the lanes, so the
-    OUTERMOST axis gets the lane count -- a per-lane depth of 1, the shape every
-    tnpu baseline runs. The remaining axes get 1, which leaves the tile exactly
-    that verified shape and lets the grid cover the rest. It is conservative
-    rather than fast; choosing real tile sizes is the block-size policy gap in
-    README, not something to guess at here.
+    THESE ARE SIZES, NOT A LAYOUT. Nothing here chooses which axis lands on the
+    lanes, because that is not decided until tnpu's select_lane_axis, several
+    passes into the other repo: it gathers what every op demands (a matmul wants
+    its last axis on the lanes, a reduction wants the axis it folds off them,
+    elementwise operands have to agree), resolves conflicts by flipping the
+    matmul, and only defaults to dim 0 when nothing asked. Measured over the
+    tnpu dumps: 26 of 36 stamped kernels are axis 0, gemm_fp16_kernel is axis 1
+    throughout, and gemm/bmm carry BOTH on different operands of one op.
+
+    THIS USED TO SAY DIM 0 WAS THE LANE AXIS AND THAT A LANE MUST HOLD EXACTLY
+    ONE ELEMENT. Both halves were wrong, and the second is why the first looked
+    right: pinning the outermost block to the lane count made dim 0 the
+    degenerate answer often enough that the claim was never tested. It is tested
+    now -- kernels/coverage/tile/tile_deeper_than_one_per_lane.py runs a
+    256-wide tile on 128 lanes exactly, and tile_gemm_lane_axis_deeper.py does
+    it on the axis a matmul demanded, at 9.54e-06 against a 1.53e-05 control.
+    Nine memref<128x256xf32, 1> spad buffers in that kernel's 04-adapted.mlir,
+    so the deeper tile is really built and really addressed.
+
+    So the lane count below is a DEFAULT WIDTH -- a tile at least as wide as the
+    machine -- and not a requirement the backend would break without. Choosing
+    real tile sizes is still the block-size policy gap in README; what has gone
+    away is the reason to believe there was only one legal answer.
     """
-    from PyTorchSimFrontend import extension_config
-    lanes = int(extension_config.vpu_num_lanes)
-    vlen = int(extension_config.vpu_vector_length_bits)
-    per_vector = max(1, vlen // _element_bits(args))
+    from . import tnpu_bridge
+    machine = tnpu_bridge.machine()
+    lanes = machine["lanes"]
+    per_vector = max(1, machine["vlen_bits"] // _element_bits(args))
+
+    def _covers(want, n):
+        """`want`, clamped to the smallest legal block that covers `n`.
+
+        A BLOCK BIGGER THAN ITS NUMEL IS NOT FREE, and it used to be handed out
+        unconditionally. `t.sum(dim=0)` on a [128, 64] tensor gives xnumel 64
+        against XBLOCK 128, so the tile is twice the iteration space and the
+        surplus is carried by a mask -- whose rank-1 index rows are then
+        stranded ONE_LANE while the data is banked across the lanes, and stage 4
+        stops:
+
+            NotVectorisable: one operand of this elementwise op is in a single
+            bank (ONE_LANE) while another is banked across the lanes on
+            iteration dim 0 of extent 128
+
+        `sum(dim=1)` on the same tensor has xnumel 128 against the same XBLOCK,
+        needs no mask at all, and comes back at 1.907e-06. So the axis was never
+        the difference; the block overshooting its numel was.
+
+        Rounded UP to a power of two because `tl.arange` needs one, so a numel
+        of 100 still gets 128 and still needs its mask -- that one is real.
+
+        AND THE BACKEND'S SIDE IS NARROWER THAN ITS MESSAGE. A hand-written tnpu
+        kernel that reduces over the banked axis with a block deliberately wider
+        than the extent -- [128, 64] data under a [128, 128] block, so the mask
+        genuinely fires -- COMPILES AND IS EXACT. Written with the block equal
+        to the extent it also passes, because a trivially true mask folds away
+        before stage 4 sees it. So the refusal above is not "a mask over a
+        banked axis" in general, and no coverage kernel was added for it: one
+        that passes either way pins nothing. What is measured is this: the
+        oversized block was the whole observable, and clamping it is the fix.
+        """
+        if not n or n <= 0:
+            return want
+        cover = 1
+        while cover < n:
+            cover *= 2
+        return min(want, cover)
 
     axes = parallel_axes(numels)
     cfg = {}
     for i, p in enumerate(axes):
         if i == 0:
-            # Tile dim 0. The MVIN DMA scatters it across the lanes, and it is
-            # also the systolic array's side (tnpu config.py: sa_dim = n_vu), so
-            # the lane count is the one value that satisfies both -- which is
-            # why matmul needs this read from the config rather than assumed.
+            # The widest block goes on the outermost axis. NOT because that axis
+            # is the lane axis -- see the docstring; tnpu decides that later and
+            # picks 1 for every gemm it was measured on -- but because the tile
+            # has to be wide SOMEWHERE for the machine to be busy, and with the
+            # lane axis unknown at this point one axis is as good a guess as
+            # another. Outermost is the arbitrary half of this; the lane count
+            # is the part that is about the machine.
             #
             # WHICH LETTER dim 0 IS DEPENDS ON RANK, so it is indexed rather
             # than named. Inductor gives the outermost axis the [:, None] slot,
-            # so a 2D kernel puts y there and a 1D one has only x. Confirmed in
-            # 04-custom.mlir: the 2D transpose stages memref<128x8xf32, 1> with
-            # vlane_split_axis = 0 under YBLOCK=128, XBLOCK=8, and 1D add stages
-            # memref<128xf32, 1>, same axis, under XBLOCK=128.
-            cfg[_block_name(p)] = lanes
+            # so a 2D kernel puts y there and a 1D one has only x.
+            cfg[_block_name(p)] = _covers(lanes, numels.get(f"{p}numel"))
         elif i == len(axes) - 1:
             # Innermost, so contiguous (tile_stride ends in 1): give each lane
             # one full vector register. 8 fp32 at vlen 256 is exactly that.
             # Pinned to 1 before, which is why a multi-axis work-item moved a
             # strided column -- correct but nothing worth measuring.
-            cfg[_block_name(p)] = per_vector
+            cfg[_block_name(p)] = _covers(per_vector,
+                                          numels.get(f"{p}numel"))
         else:
             cfg[_block_name(p)] = 1
-    cfg.setdefault("XBLOCK", lanes)         # a kernel with no tiling info still has x
+    cfg.setdefault("XBLOCK", _covers(lanes, numels.get("xnumel")))
+    # a kernel with no tiling info still has x
     if getattr(kernel, "inside_reduction", False):
         # A reduction block is NOT free to be the lane count. The scratchpad is
         # lane-banked and there is no lane-crossing primitive, so the reduced
@@ -408,7 +470,7 @@ def fixed_config_for(kernel, numels, args):
         # --scratchpad-size=65536), so sizing against the YAML overshoots by 2x
         # and the kernel dies at LINK time. tnpu is the one that refuses, so its
         # number is the one that counts; TNPU_SPAD_SIZE overrides both.
-        lane_bytes = int(os.environ.get("TNPU_SPAD_SIZE", str(64 * 1024)), 0)
+        lane_bytes = machine["spad_size"]
         elem_bytes = max(1, _element_bits(args) // 8)
         budget = lane_bytes // 2 // _REDUCTION_LIVE_TILES
         for p in reduction_axes(numels) or ["r0_"]:
@@ -688,6 +750,198 @@ triton_helpers.remainder_integer = _tnpu_remainder_integer
 '''
 
 
+#: The mm and bmm templates' names for a row/column index, its bound, and the
+#: block that walks it. Both templates spell them the same and both write the
+#: wrap twice (once per branch of a contiguity test), which is why this is a
+#: pattern rather than a line number.
+_WRAP_TRIPLES = (("rm", "M", "BLOCK_M"), ("rn", "N", "BLOCK_N"))
+
+
+def _literal_int(body, name):
+    """`name`'s value if the kernel assigns it an integer literal, else None.
+
+    Inductor renders M, N, K and the blocks into the BODY of the kernel rather
+    than passing them (`M = 512`, `BLOCK_M : tl.constexpr = 256`), so the
+    divisibility question can be answered from the source alone -- no need to
+    thread the config down to here, and a dynamic shape simply has no literal
+    and gets no rewrite.
+    """
+    m = re.search(rf"^\s*{name}\s*(?::\s*tl\.constexpr\s*)?=\s*(\d+)\s*$",
+                  body, re.M)
+    return int(m.group(1)) if m else None
+
+
+#: Names the loads are keyed on. Both templates call the operand pointers A and
+#: B and both keep `rm` / `rn` live across the k-loop (they are rematerialized
+#: only for the store, after it), so the mask can be built from them directly
+#: rather than from whichever name the wrap was assigned to.
+_ROW_MASK = "_tnpu_row_mask"
+_COL_MASK = "_tnpu_col_mask"
+_MASK_FOR = {"A": _ROW_MASK, "B": _COL_MASK}
+
+
+#: `tl.load(A ...` in every spelling the two templates use. mm builds the
+#: address at the load -- `tl.load(A + (xindex))` -- while bmm accumulates it
+#: into the pointer and writes `tl.load(A)` or `tl.load(A, mask=..., other=0.)`.
+#: Matching only the first silently skipped every bmm, which then kept its wrap
+#: and its gather while the log said nothing.
+def _load_re(ptr):
+    return re.compile(rf"\btl\.load\({ptr}\b")
+
+
+def _add_mask_to_loads(lines, ptr, mask_name):
+    """Give every `tl.load(<ptr>...)` the bound `mask_name`. Count applied.
+
+    A load either already carries the template's K mask -- `mask=a_mask,
+    other=0.0`, emitted when EVEN_K is false -- or carries none at all. The
+    first is widened with `&` and the second gets one; both end up reading 0
+    where the tile runs past the operand.
+    """
+    rx = _load_re(ptr)
+    n = 0
+    for i, line in enumerate(lines):
+        stripped = line.rstrip()
+        if not rx.search(stripped) or not stripped.endswith(")"):
+            continue
+        at = stripped.find("mask=")
+        if at < 0:
+            lines[i] = stripped[:-1] + f", mask={mask_name}, other=0.0)"
+            n += 1
+            continue
+        # NOT A REGEX. The existing mask is an EXPRESSION and it contains both
+        # of the characters a regex would stop at: `mask=rk[None, :] < k` has a
+        # comma inside a subscript and a `)` in neither place a naive `[^,)]+`
+        # expects, and matching that way produced
+        #   mask=(rk[None) & _tnpu_row_mask, :] < k
+        # which is syntactically valid Python and means nothing. The end of the
+        # expression is the ` other=` keyword the templates always follow it
+        # with, or the load's own closing paren.
+        start = at + len("mask=")
+        end = stripped.find(", other=", start)
+        if end < 0:
+            end = len(stripped) - 1
+        expr = stripped[start:end]
+        lines[i] = (stripped[:start] + f"({expr}) & {mask_name}"
+                    + stripped[end:])
+        n += 1
+    return n
+
+
+def clamp_instead_of_wrap(body, kernel_name=""):
+    """Replace the mm/bmm templates' `rm % M` / `rn % N` with a load mask.
+
+    WHAT THE WRAP IS FOR. `rm = pid_m * BLOCK_M + arange(BLOCK_M)` runs past M
+    whenever BLOCK_M does not divide M, so the last program addresses rows that
+    do not exist. The template folds them back to the top of the matrix with
+    `% M` and lets the store's mask discard whatever they computed. On a GPU
+    that is the right trade: no branch, no fault, and reading garbage is free.
+
+    WHAT IT COSTS HERE. A modulo on a pointer index is not a stride, so the
+    descriptor stops being one: triton-shared marks it (`static_shape != 0`) and
+    tnpu lowers it as an INDIRECT transfer -- a per-element index tile with the
+    wrapped dim's stride set to 0. Three bills follow.
+
+      the index tile is real scratchpad, in i64, the shape of the operand --
+      TWICE the bytes of an f32 tile, and both operands are wrapped, so a
+      three-tile kernel stages five. Measured on a 512x512x512 addmm with a
+      residual: 73760 bytes/lane against a 65536 budget, refused at link.
+
+      a gather is element-by-element where a descriptor is a burst.
+
+      and it is where the wrong numbers are. Measured on the SAME kernel with
+      only this changed: 512x512x512 at BM/BN = 256 answers 110.93 with the wrap
+      and 5.34e-05 without, at the same tile and the same 2x2 grid.
+
+    THE ANSWER IS THE ONE THIS BACKEND ALREADY USES ON THE OTHER SIDE. The store
+    in the very same kernel does not fold, it CLAMPS:
+
+        mask = (idx_m < M) & (idx_n < N)
+        tl.store(out_ptr0 + xindex, acc, mask)
+
+    which lowers to `tts.store`'s `static_mask_dims` and then to a transfer with
+    `masked_axes` / `masked_fill = 0`. PyTorchSim's MLIR route answers the same
+    question the same way on BOTH sides -- `def_dma_op` clamps each tile dim to
+    the real DRAM extent and zero-fills past it, and its gemm template contains
+    no modulo at all. The Triton route was the asymmetric one: clamping stores
+    and folding loads.
+
+    So the wrap goes and the loads get the matching bound. Out-of-range rows
+    read 0 instead of a folded row, contribute 0 to the dot product, and land in
+    output rows the store's mask already discards -- the same values are kept,
+    by construction.
+
+    A DIVIDING BLOCK NEEDS NEITHER. `gemm_combination_mapping` picks tiles from
+    the DIVISORS of the shape, so rm runs 0..M-1 and both the wrap and the mask
+    are dead; the wrap is dropped and no mask is added, which is what keeps the
+    common case a bare descriptor.
+
+    Torch's template already reasons this way about K -- `EVEN_K` skips the K
+    mask -- and simply does not for M and N. This supplies the missing half.
+    """
+    lines = body.splitlines()
+    text = "\n".join(lines)
+    needs = {}
+    for idx, dim, block in _WRAP_TRIPLES:
+        d, b = _literal_int(text, dim), _literal_int(text, block)
+        if d is None or not b:
+            continue                    # dynamic shape: leave the wrap alone
+        needs[idx] = bool(d % b)        # a tail exists -> the mask is load-bearing
+
+    if not needs:
+        return body
+
+    # A DIVIDING BLOCK NEEDS NO LOAD AT ALL. Only the tail case has to find and
+    # bound the loads, so the anchor and the load patterns are looked for ONLY
+    # when some axis asks for a mask -- otherwise a template this does not
+    # recognise still gets its dead wrap removed.
+    if any(needs.values()):
+        # The masks go right after offs_k / rk, which both templates emit after
+        # rm/rn and before the k-loop, so every load is in their scope. mm calls
+        # it offs_k and bmm calls it rk.
+        anchor = next((i for i, l in enumerate(lines)
+                       if l.strip().startswith(("offs_k = tl.arange(",
+                                                "rk = tl.arange("))), None)
+        if anchor is None or not any(_load_re(p).search(text) for p in _MASK_FOR):
+            logger.warning(
+                "[triton-npu] %s: a block does not divide its dimension and "
+                "this does not recognise the loads to bound; leaving the wrap",
+                kernel_name or "kernel")
+            return body
+
+        pad = " " * (len(lines[anchor]) - len(lines[anchor].lstrip()))
+        inserted, applied = [], {}
+        for idx, dim, _block in _WRAP_TRIPLES:
+            if not needs.get(idx):
+                continue
+            name = _ROW_MASK if idx == "rm" else _COL_MASK
+            slice_ = "[:, None]" if idx == "rm" else "[None, :]"
+            inserted.append(f"{pad}{name} = {idx}{slice_} < {dim}")
+        lines[anchor + 1:anchor + 1] = inserted
+        for ptr, name in _MASK_FOR.items():
+            if name in "".join(inserted):
+                applied[ptr] = _add_mask_to_loads(lines, ptr, name)
+        # A mask nobody could attach would leave the load unbounded once the
+        # wrap is gone, so the wrap stays and this whole rewrite is given back.
+        if any(v == 0 for v in applied.values()):
+            logger.warning(
+                "[triton-npu] %s: could not attach a bound to every load; "
+                "leaving the wrap in place", kernel_name or "kernel")
+            return body
+
+    body = "\n".join(lines)
+    for idx, dim, block in _WRAP_TRIPLES:
+        if idx not in needs:
+            continue
+        body, n = re.subn(rf"\b{idx}\s*%\s*{dim}\b", idx, body)
+        if n:
+            logger.info(
+                "[triton-npu] %s: replaced %d `%s %% %s` with %s, so the "
+                "operand stays a descriptor instead of becoming a gather",
+                kernel_name or "kernel", n, idx, dim,
+                "a load bound" if needs[idx] else "nothing (the block divides)")
+    return body
+
+
 def strip_for_tnpu(src):
     """Remove everything the torch-free tnpu venv cannot import.
 
@@ -806,6 +1060,35 @@ def grid_of(meta):
     return tuple(grid)
 
 
+def _template_grid(kernel):
+    """A template kernel's grid, from the template rather than from the numels.
+
+    mm and conv do not come from Inductor's pointwise codegen: their source is a
+    jinja template with its own BLOCK_M/N/K baked in as literals, and their grid
+    is over OUTPUT TILES -- select_algorithm.TritonTemplateKernel.call_kernel
+    emits `*grid_fn(*call_sizes, meta)`. Nothing about that is derivable from
+    xnumel and XBLOCK.
+
+    Deriving it that way anyway is what a pointwise formula does to an mm: an
+    18432-element output at XBLOCK 128 becomes grid 144, when the template wants
+    cdiv(M, 32) * cdiv(N, 32). The kernel then runs the wrong number of programs
+    over tiles it never asked for, and nothing about the shapes disagrees loudly
+    enough to notice.
+
+    Returns None for an ordinary kernel, which is every kernel that HAS numels.
+    """
+    grid_fn = getattr(kernel, "grid_fn", None)
+    sizes = getattr(kernel, "call_sizes", None)
+    if grid_fn is None or sizes is None:
+        return None
+    try:
+        vals = [int(V.graph.sizevars.size_hint(s)) for s in sizes]
+        g = grid_fn(*vals, dict(getattr(kernel, "meta", None) or {}))
+    except Exception as e:  # noqa: BLE001 - reported by grid_xyz, with the cause
+        return {"error": f"{type(e).__name__}: {e}"}
+    return [int(x) for x in g]
+
+
 def grid_xyz(meta):
     """The same grid in tnpu's order: (gridX, gridY, gridZ).
 
@@ -921,7 +1204,8 @@ def write_spec_file(src_code, meta, path, tnpu_dir):
 
     triton_module = f"{meta['kernel_name']}_triton.py"
     with open(os.path.join(os.path.dirname(path), triton_module), "w") as f:
-        f.write(strip_for_tnpu(src_code))
+        f.write(clamp_instead_of_wrap(strip_for_tnpu(src_code),
+                                      meta["kernel_name"]))
 
     scalars = scalar_args(meta)
     text = SPEC_TEMPLATE.format(

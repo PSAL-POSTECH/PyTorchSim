@@ -265,78 +265,6 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
 
         return inner_I, inner_J, inner_K
 
-    def gemm_combination_mapping(self, M, N, K, n_extra_node=0, n_prologue_node=0, n_prologue_extra_read=0, pad_k=True, min_tile=False, is_conv=False, precision_bytes=4):
-        tile_candidates = []
-        spad_size_per_lane = self.spad_info["spad_size"]
-        spad_size = spad_size_per_lane * self.vector_lane
-        max_spad_size = spad_size // 2 # double buffer
-        max_spad_per_lane = spad_size_per_lane // 2 # double buffer
-        minimum_n_tile = self.num_cores if min_tile else 1
-        m_pad_factor = self.vector_lane if M > self.vector_lane else 8
-        n_pad_factor = self.vector_lane if N > self.vector_lane else 8
-        k_pad_factor = self.vector_lane if K > self.vector_lane else (8 if pad_k else 1)
-        K = max(K, 8)
-        M_padded = ((M + m_pad_factor - 1) // m_pad_factor) * m_pad_factor
-        N_padded = ((N + n_pad_factor - 1) // n_pad_factor) * n_pad_factor
-        K_padded = ((K + k_pad_factor - 1) // k_pad_factor) * k_pad_factor
-        indexI, indexJ, indexK = (M_padded // self.vector_lane, N_padded // self.vector_lane, K_padded // self.vector_lane)
-
-        max_used_spad_size = 0
-        mapping = (self.vector_lane, self.vector_lane, self.vector_lane)
-        tile_M_range = sympy.divisors(indexI) if M > self.vector_lane else [1]
-        tile_N_range = sympy.divisors(indexJ) if N > self.vector_lane else [1]
-        tile_K_range = sympy.divisors(indexK) if K > self.vector_lane else [1]
-        maximize_i_j = 1 # reuse weight
-        for k in tile_K_range: # store tile candidates for manual mapping
-            tile_K = k * self.vector_lane if K > self.vector_lane else K_padded
-            for i in tile_M_range:
-                tile_M = i * self.vector_lane if M > self.vector_lane else M_padded
-                for j in tile_N_range:
-                    tile_N = j * self.vector_lane if N > self.vector_lane else N_padded
-                    used_spad_size = (tile_M * tile_K * (1 + n_prologue_node) + tile_K * tile_N * (1 + n_prologue_extra_read) + tile_M * tile_N * (1 + n_extra_node)) * precision_bytes
-                    weight_size_per_lane = self.get_spad_size_per_lane(tile_K, tile_N) * (1 + n_prologue_extra_read)
-                    input_size_per_lane = self.get_spad_size_per_lane(tile_M * (1 + n_prologue_node), tile_K)
-                    output_size_per_lane = self.get_spad_size_per_lane(tile_M * (1 + n_extra_node), tile_N)
-                    used_spad_size_per_lane = (weight_size_per_lane + input_size_per_lane + output_size_per_lane) * precision_bytes
-                    check_spad_size = (used_spad_size < max_spad_size and used_spad_size_per_lane < max_spad_per_lane)
-                    if check_spad_size:
-                        dir_path = f"{extension_config.CONFIG_TORCHSIM_DIR}/validation/gemm_candidates"
-                        os.makedirs(dir_path, exist_ok=True)
-                        file_path = f"{dir_path}/gemm_{M}_{K}_{N}.txt"
-                        line_to_write = f"{tile_M} {tile_K} {tile_N}\n"
-                        try:
-                            with open(file_path, "r") as f:
-                                lines = f.readlines()
-                        except FileNotFoundError:
-                            lines = []
-                        if line_to_write not in lines:
-                            with open(file_path, "a") as f:
-                                f.write(line_to_write)
-
-        for k in tile_K_range: # heuristic search
-            tile_K = k * self.vector_lane if K > self.vector_lane else K_padded
-            for i in tile_M_range:
-                tile_M = i * self.vector_lane if M > self.vector_lane else M_padded
-                for j in tile_N_range:
-                    tile_N = j * self.vector_lane if N > self.vector_lane else N_padded
-                    used_spad_size = (tile_M * tile_K * (1 + n_prologue_node) + tile_K * tile_N * (1 + n_prologue_extra_read) + tile_M * tile_N * (1 + n_extra_node)) * precision_bytes
-                    weight_size_per_lane = self.get_spad_size_per_lane(tile_K, tile_N) * (1 + n_prologue_extra_read)
-                    input_size_per_lane = self.get_spad_size_per_lane(tile_M * (1 + n_prologue_node), tile_K)
-                    output_size_per_lane = self.get_spad_size_per_lane(tile_M * (1 + n_extra_node), tile_N)
-                    used_spad_size_per_lane = (weight_size_per_lane + input_size_per_lane + output_size_per_lane) * precision_bytes
-                    n_tile = math.ceil(M / max(tile_M, 128)) * math.ceil(N / max(tile_N, 128))
-                    check_spad_size = (used_spad_size < max_spad_size and used_spad_size_per_lane < max_spad_per_lane)
-                    if check_spad_size and max_used_spad_size < used_spad_size and maximize_i_j <= tile_M * tile_N and n_tile >= minimum_n_tile and max(tile_N, 128) // max(tile_M, 128) < 10:
-                        max_used_spad_size = used_spad_size
-                        maximize_i_j = tile_M * tile_N
-                        mapping = (tile_M, tile_N, tile_K)
-                    if check_spad_size:
-                        tile_candidates.append((used_spad_size, (tile_M, tile_N, tile_K)))
-
-        tile_candidates = sorted(tile_candidates, key=lambda x: x[0], reverse=True)
-        tile_candidates = [v for _, v in tile_candidates]
-        return tile_candidates
-
     def conv_combination_mapping(self, M, N, K, K_H, K_W, O_H, O_W, stride, dilation, n_extra_node=0, precision_bytes=4):
         tile_candidates = []
         spad_size_per_lane = self.spad_info["spad_size"]
@@ -1091,10 +1019,6 @@ class MLIRTemplateKernel(MLIRKernel, BaseMLIRHardwareInfo):
             code,
             self._sort_hooks_by_priority(),
         )
-
-    def get_spad_size_per_lane(self, tile_m, tile_n):
-        size = tile_m * ((tile_n + self.vector_lane - 1) // self.vector_lane)
-        return max(size, 2) # vector load/store
 
     def load_epilogue(self, name: str, index: sympy.Expr):
         dram_var = self.kernel_group.args.input(name)

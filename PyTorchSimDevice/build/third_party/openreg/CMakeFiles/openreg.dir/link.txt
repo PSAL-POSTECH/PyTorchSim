@@ -1,0 +1,1 @@
+/usr/bin/g++ -fPIC -O3 -DNDEBUG -shared -Wl,-soname,libopenreg.so -o libopenreg.so CMakeFiles/openreg.dir/csrc/device.cpp.o CMakeFiles/openreg.dir/csrc/memory.cpp.o CMakeFiles/openreg.dir/csrc/stream.cpp.o  -Wl,-rpath,"\$ORIGIN/lib:\$ORIGIN" 

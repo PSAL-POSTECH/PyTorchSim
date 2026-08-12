@@ -327,7 +327,7 @@ def _element_bits(args):
     return max(bits) if bits else 32
 
 
-def reduction_block_for(extent, elem_bytes=4):
+def reduction_block_for(extent, elem_bytes=4, lane_bytes=None):
     """The R0_BLOCK this backend pins for a reduction of `extent`.
 
     Cover the extent and no more, then shrink to the budget. Rounding 1536 up
@@ -349,7 +349,13 @@ def reduction_block_for(extent, elem_bytes=4):
     while the persistent form can leave the scratchpad retry with no lever at
     all. The safe direction is the cheap one.
     """
-    lane_bytes = int(os.environ.get("TNPU_SPAD_SIZE", str(64 * 1024)), 0)
+    if lane_bytes is None:
+        # The choices hook is asked before a kernel exists, so it has no machine
+        # to read. tnpu_bridge.machine() puts the same number in TNPU_SPAD_SIZE
+        # for the pipeline, which is why this default is the same number and not
+        # a second opinion -- see the caller in fixed_config_for, which passes
+        # the machine's directly.
+        lane_bytes = int(os.environ.get("TNPU_SPAD_SIZE", str(64 * 1024)), 0)
     budget = lane_bytes // 2 // _REDUCTION_LIVE_TILES
     block = 1 << (int(extent) - 1).bit_length()
     while block * elem_bytes > budget and block > 1:
@@ -517,7 +523,6 @@ def fixed_config_for(kernel, numels, args):
         # number is the one that counts; TNPU_SPAD_SIZE overrides both.
         lane_bytes = machine["spad_size"]
         elem_bytes = max(1, _element_bits(args) // 8)
-        budget = lane_bytes // 2 // _REDUCTION_LIVE_TILES
         for p in reduction_axes(numels) or ["r0_"]:
             n = numels.get(f"{p}numel")
             if not n:
@@ -527,7 +532,8 @@ def fixed_config_for(kernel, numels, args):
             # 1536 up to 2048 buys nothing -- the tail is all mask -- and costs a
             # third of the tile, so the loop running twice over 1024 is strictly
             # better than once over 2048 plus 512 wasted lanes of nothing.
-            cfg[_block_name(p)] = reduction_block_for(n, elem_bytes)
+            cfg[_block_name(p)] = reduction_block_for(n, elem_bytes,
+                                                      lane_bytes)
     return cfg
 
 

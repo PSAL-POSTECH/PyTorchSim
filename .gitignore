@@ -10,3 +10,7 @@ tutorial/session1/fused/
 tutorial/session1/togsim_results/
 tutorial/session2/togsim_results/
 tutorial/session2/fx_graph.svg
+
+# Per-worktree environment, documented as local and uncommitted in
+# docs/worktrees.md -- it names absolute paths that differ per worktree.
+.envrc

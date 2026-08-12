@@ -468,8 +468,39 @@ def _literal_int(body, name):
     return int(m.group(1)) if m else None
 
 
-def drop_dead_wraps(body, kernel_name=""):
-    """Remove `rm % M` / `rn % N` when the block divides the dimension.
+#: Names the loads are keyed on. Both templates call the operand pointers A and
+#: B and both keep `rm` / `rn` live across the k-loop (they are rematerialized
+#: only for the store, after it), so the mask can be built from them directly
+#: rather than from whichever name the wrap was assigned to.
+_ROW_MASK = "_tnpu_row_mask"
+_COL_MASK = "_tnpu_col_mask"
+_MASK_FOR = {"A": _ROW_MASK, "B": _COL_MASK}
+
+
+def _add_mask_to_loads(lines, ptr, mask_name):
+    """Give every `tl.load(<ptr> + ...)` the bound `mask_name`. Count applied.
+
+    A load either already carries the template's K mask -- `mask=a_mask,
+    other=0.0`, emitted when EVEN_K is false -- or carries none at all. The
+    first is widened with `&` and the second gets one; both end up reading 0
+    where the tile runs past the operand.
+    """
+    n = 0
+    for i, line in enumerate(lines):
+        stripped = line.rstrip()
+        if f"tl.load({ptr} + " not in stripped or not stripped.endswith(")"):
+            continue
+        if "mask=" in stripped:
+            lines[i] = re.sub(r"mask=([^,)]+)", rf"mask=(\1) & {mask_name}",
+                              stripped)
+        else:
+            lines[i] = stripped[:-1] + f", mask={mask_name}, other=0.0)"
+        n += 1
+    return n
+
+
+def clamp_instead_of_wrap(body, kernel_name=""):
+    """Replace the mm/bmm templates' `rm % M` / `rn % N` with a load mask.
 
     WHAT THE WRAP IS FOR. `rm = pid_m * BLOCK_M + arange(BLOCK_M)` runs past M
     whenever BLOCK_M does not divide M, so the last program addresses rows that
@@ -480,41 +511,96 @@ def drop_dead_wraps(body, kernel_name=""):
     WHAT IT COSTS HERE. A modulo on a pointer index is not a stride, so the
     descriptor stops being one: triton-shared marks it (`static_shape != 0`) and
     tnpu lowers it as an INDIRECT transfer -- a per-element index tile with the
-    wrapped dim's stride set to 0. That is three separate bills.
+    wrapped dim's stride set to 0. Three bills follow.
 
       the index tile is real scratchpad, in i64, the shape of the operand --
-      TWICE the bytes of an f32 tile, and both mm operands are wrapped, so a
+      TWICE the bytes of an f32 tile, and both operands are wrapped, so a
       three-tile kernel stages five. Measured on a 512x512x512 addmm with a
       residual: 73760 bytes/lane against a 65536 budget, refused at link.
 
       a gather is element-by-element where a descriptor is a burst.
 
-      and it is where the bugs are. Measured on the SAME kernel, changing only
-      this one thing: 512x512x512 with BM/BN = 256 answers 110.93 with the wrap
-      and 5.34e-05 without it, at the same tile and the same 2x2 grid. A wide
-      tile is not the problem and neither is the grid -- both pass once the wrap
-      is gone.
+      and it is where the wrong numbers are. Measured on the SAME kernel with
+      only this changed: 512x512x512 at BM/BN = 256 answers 110.93 with the wrap
+      and 5.34e-05 without, at the same tile and the same 2x2 grid.
 
-    WHY IT IS SAFE TO REMOVE. `gemm_combination_mapping` picks tiles from the
-    DIVISORS of the shape, so BLOCK_M divides M and there is no tail: rm runs
-    0..M-1 and `rm % M` is the identity. This is deleting a line that cannot
-    execute, not changing what the kernel means, and the guard below is exactly
-    that proof -- a shape whose block does not divide it keeps its wrap and
-    keeps the gather, which is what it needs.
+    THE ANSWER IS THE ONE THIS BACKEND ALREADY USES ON THE OTHER SIDE. The store
+    in the very same kernel does not fold, it CLAMPS:
 
-    Torch's template already reasons this way about K (`EVEN_K` skips the K
-    mask) and simply does not for M and N. This supplies the missing half.
+        mask = (idx_m < M) & (idx_n < N)
+        tl.store(out_ptr0 + xindex, acc, mask)
+
+    which lowers to `tts.store`'s `static_mask_dims` and then to a transfer with
+    `masked_axes` / `masked_fill = 0`. PyTorchSim's MLIR route answers the same
+    question the same way on BOTH sides -- `def_dma_op` clamps each tile dim to
+    the real DRAM extent and zero-fills past it, and its gemm template contains
+    no modulo at all. The Triton route was the asymmetric one: clamping stores
+    and folding loads.
+
+    So the wrap goes and the loads get the matching bound. Out-of-range rows
+    read 0 instead of a folded row, contribute 0 to the dot product, and land in
+    output rows the store's mask already discards -- the same values are kept,
+    by construction.
+
+    A DIVIDING BLOCK NEEDS NEITHER. `gemm_combination_mapping` picks tiles from
+    the DIVISORS of the shape, so rm runs 0..M-1 and both the wrap and the mask
+    are dead; the wrap is dropped and no mask is added, which is what keeps the
+    common case a bare descriptor.
+
+    Torch's template already reasons this way about K -- `EVEN_K` skips the K
+    mask -- and simply does not for M and N. This supplies the missing half.
     """
+    lines = body.splitlines()
+    text = "\n".join(lines)
+    needs = {}
     for idx, dim, block in _WRAP_TRIPLES:
-        d, b = _literal_int(body, dim), _literal_int(body, block)
-        if d is None or not b or d % b:
+        d, b = _literal_int(text, dim), _literal_int(text, block)
+        if d is None or not b:
+            continue                    # dynamic shape: leave the wrap alone
+        needs[idx] = bool(d % b)        # a tail exists -> the mask is load-bearing
+
+    if not needs or f"tl.load(A + " not in text:
+        return body
+
+    # The masks go right after offs_k, which both templates emit after rm/rn and
+    # before the k-loop, so every load is in their scope.
+    anchor = next((i for i, l in enumerate(lines)
+                   if l.strip().startswith("offs_k = tl.arange(")), None)
+    if anchor is None:
+        return body
+
+    pad = " " * (len(lines[anchor]) - len(lines[anchor].lstrip()))
+    inserted, applied = [], {}
+    for idx, dim, _block in _WRAP_TRIPLES:
+        if not needs.get(idx):
+            continue
+        name = _ROW_MASK if idx == "rm" else _COL_MASK
+        slice_ = "[:, None]" if idx == "rm" else "[None, :]"
+        inserted.append(f"{pad}{name} = {idx}{slice_} < {dim}")
+    if inserted:
+        lines[anchor + 1:anchor + 1] = inserted
+        for ptr, name in _MASK_FOR.items():
+            if name in "".join(inserted):
+                applied[ptr] = _add_mask_to_loads(lines, ptr, name)
+        # A mask nobody could attach would leave the load unbounded once the
+        # wrap is gone, so the wrap stays and this whole rewrite is given back.
+        if any(v == 0 for v in applied.values()):
+            logger.warning(
+                "[triton-npu] %s: could not attach a bound to every load; "
+                "leaving the wrap in place", kernel_name or "kernel")
+            return body
+
+    body = "\n".join(lines)
+    for idx, dim, block in _WRAP_TRIPLES:
+        if idx not in needs:
             continue
         body, n = re.subn(rf"\b{idx}\s*%\s*{dim}\b", idx, body)
         if n:
-            logger.info("[triton-npu] %s: dropped %d dead `%s %% %s` "
-                        "(%s=%d divides %s=%d), so the operand stays a "
-                        "descriptor instead of becoming a gather",
-                        kernel_name or "kernel", n, idx, dim, block, b, dim, d)
+            logger.info(
+                "[triton-npu] %s: replaced %d `%s %% %s` with %s, so the "
+                "operand stays a descriptor instead of becoming a gather",
+                kernel_name or "kernel", n, idx, dim,
+                "a load bound" if needs[idx] else "nothing (the block divides)")
     return body
 
 
@@ -784,8 +870,8 @@ def write_spec_file(src_code, meta, path, tnpu_dir):
 
     triton_module = f"{meta['kernel_name']}_triton.py"
     with open(os.path.join(os.path.dirname(path), triton_module), "w") as f:
-        f.write(drop_dead_wraps(strip_for_tnpu(src_code),
-                                meta['kernel_name']))
+        f.write(clamp_instead_of_wrap(strip_for_tnpu(src_code),
+                                      meta["kernel_name"]))
 
     scalars = scalar_args(meta)
     text = SPEC_TEMPLATE.format(

@@ -41,3 +41,11 @@ tests/system/test_triton_codegen.py
 #     miscompiles its double masked_fill. Neither is ours to fix (rule 16) --
 #     forking transformers or setting cpp.simdlen=0 would both be papering over
 #     someone else's backend.
+#
+#     AND cpp.simdlen=0 DOES MAKE IT PASS -- measured, so that the day upstream
+#     fixes its vectorizer nobody has to re-derive whether anything ELSE is in
+#     the way: with that one setting the test runs end to end, 26 kernels, max
+#     diff 4.77e-06. So the upstream bug is the ONLY blocker; this route already
+#     compiles every kernel swinv2 needs. The setting stays declined for the
+#     reason above -- it is process-wide and it hides someone else's defect --
+#     and what is kept is the measurement, not the workaround.

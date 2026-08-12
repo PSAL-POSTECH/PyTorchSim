@@ -7,6 +7,7 @@ tests/models/test_clip.py
 tests/models/test_convnextv2.py
 tests/models/test_resnet.py
 tests/models/test_single_perceptron.py
+tests/models/test_swinv2.py
 tests/models/test_transformer.py
 tests/models/test_vit.py
 tests/ops/attention/test_gqa.py
@@ -26,26 +27,18 @@ tests/system/test_eager.py
 tests/system/test_stonne.py
 tests/system/test_triton_codegen.py
 
-# BLOCKED UPSTREAM, not by this route -- kept here so the next person does not
-# re-derive it:
+# WHAT WAS BLOCKED HERE AND IS NOT. tests/models/test_swinv2.py stopped after
+# 26 kernels because transformers' Swinv2Layer.get_attn_mask builds its
+# shifted-window mask with `torch.zeros(...)` and no `device=`, so an
+# input-independent constant stayed on the host INSIDE the traced graph and
+# Inductor emitted a C++ kernel for it -- which its own CPU vectorizer then
+# failed to compile (`decltype` of a scalar float, then
+# `Vectorized<float>::blendv`), reproducible with stock torch and PyTorchSim not
+# imported at all.
 #
-#   tests/models/test_swinv2.py   26 kernels compile, then Inductor's own CPU
-#     backend fails to compile a CPU island of the graph:
-#       error: 'decltype' evaluates to 'float', which is not a class or
-#              enumeration type   (at::vec::Vectorized<float>, ::blendv)
-#     Reproduced with STOCK torch + transformers, PyTorchSim not imported
-#     (TORCH_DEVICE_BACKEND_AUTOLOAD=0), compiling for CPU alone. Two upstream
-#     causes stacked: transformers' Swinv2Layer.get_attn_mask builds its mask
-#     with torch.zeros(...) and no `device=`, so an input-independent constant
-#     stays on CPU inside the traced graph; Inductor's CPU vectorizer then
-#     miscompiles its double masked_fill. Neither is ours to fix (rule 16) --
-#     forking transformers or setting cpp.simdlen=0 would both be papering over
-#     someone else's backend.
-#
-#     AND cpp.simdlen=0 DOES MAKE IT PASS -- measured, so that the day upstream
-#     fixes its vectorizer nobody has to re-derive whether anything ELSE is in
-#     the way: with that one setting the test runs end to end, 26 kernels, max
-#     diff 4.77e-06. So the upstream bug is the ONLY blocker; this route already
-#     compiles every kernel swinv2 needs. The setting stays declined for the
-#     reason above -- it is process-wide and it hides someone else's defect --
-#     and what is kept is the measurement, not the workaround.
+# Two ways out were measured. `cpp.simdlen = 0` makes the C++ compile, and was
+# declined: it is process-wide and it hides someone else's defect. Naming the
+# default device for the compiled call removes the island instead -- the mask is
+# built on the device and this backend compiles it like any other elementwise
+# work. 26 kernels and a compile error before; 27 kernels, no C++ kernel at all,
+# and 4.77e-06 after. The test carries the two-line scope and the reasoning.

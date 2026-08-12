@@ -3,6 +3,7 @@
 #   python scripts/ci/triton_route_sweep.py --all --update-allowlist
 # A test that passes without emitting a kernel is deliberately absent.
 tests/models/MobileNet/test_mobilenet.py
+tests/models/Yolov5/test_yolov5.py
 tests/models/test_clip.py
 tests/models/test_convnextv2.py
 tests/models/test_resnet.py

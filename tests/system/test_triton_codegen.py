@@ -107,24 +107,30 @@ def check_reduction():
     strictly more than asserting that nothing stopped, and a refusal returning
     here would now be the regression.
 
-    dim=1 ON PURPOSE. `t.sum(dim=0)` still stops (InductorError out of the tnpu
-    pipeline), so the two axes are not the same question and this one pins the
-    axis that works. The other is a gap, not a guarantee, and pinning it here
-    would make this test fail for something it is not about.
+    BOTH AXES NOW, and dim 0 used to be the one that stopped. It did not stop
+    for being dim 0: Inductor handed the reduction down correctly either way
+    (dim 0 gives xnumel 64 against r0_numel 128, dim 1 the reverse) and
+    `fixed_config_for` gave both XBLOCK = 128 without looking at the numel, so
+    dim 0 got a tile twice its iteration space and the surplus became a mask
+    that stage 4 refused. Clamping the block to its numel is the fix and this
+    checks both.
     """
     x = torch.randn(128, 64)
-    expected = x.sum(dim=1)
-    try:
-        got = torch.compile(lambda t: t.sum(dim=1))(x.to("npu:0")).cpu()
-    except Exception as e:  # noqa: BLE001 - a stop is now the failure
-        first = (str(e).strip().splitlines() or [type(e).__name__])[0]
-        print(f"  reduction STOPPED at: {type(e).__name__}: {first[:72]}")
-        return False
-    err = (got - expected).abs().max().item()
-    if not torch.allclose(got, expected, rtol=1e-4, atol=1e-4):
-        print(f"  reduction compiled but the values are wrong: max_abs_err {err}")
-        return False
-    print(f"  reduction over the contiguous axis: max_abs_err {err:g}")
+    for dim in (1, 0):
+        expected = x.sum(dim=dim)
+        try:
+            got = torch.compile(lambda t: t.sum(dim=dim))(x.to("npu:0")).cpu()
+        except Exception as e:  # noqa: BLE001 - a stop is now the failure
+            first = (str(e).strip().splitlines() or [type(e).__name__])[0]
+            print(f"  reduction dim={dim} STOPPED at: "
+                  f"{type(e).__name__}: {first[:64]}")
+            return False
+        err = (got - expected).abs().max().item()
+        if not torch.allclose(got, expected, rtol=1e-4, atol=1e-4):
+            print(f"  reduction dim={dim} compiled but the values are wrong: "
+                  f"max_abs_err {err}")
+            return False
+        print(f"  reduction dim={dim}: max_abs_err {err:g}")
     return True
 
 

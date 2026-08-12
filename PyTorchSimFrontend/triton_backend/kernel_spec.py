@@ -256,6 +256,44 @@ def fixed_config_for(kernel, numels, args):
     lanes = machine["lanes"]
     per_vector = max(1, machine["vlen_bits"] // _element_bits(args))
 
+    def _covers(want, n):
+        """`want`, clamped to the smallest legal block that covers `n`.
+
+        A BLOCK BIGGER THAN ITS NUMEL IS NOT FREE, and it used to be handed out
+        unconditionally. `t.sum(dim=0)` on a [128, 64] tensor gives xnumel 64
+        against XBLOCK 128, so the tile is twice the iteration space and the
+        surplus is carried by a mask -- whose rank-1 index rows are then
+        stranded ONE_LANE while the data is banked across the lanes, and stage 4
+        stops:
+
+            NotVectorisable: one operand of this elementwise op is in a single
+            bank (ONE_LANE) while another is banked across the lanes on
+            iteration dim 0 of extent 128
+
+        `sum(dim=1)` on the same tensor has xnumel 128 against the same XBLOCK,
+        needs no mask at all, and comes back at 1.907e-06. So the axis was never
+        the difference; the block overshooting its numel was.
+
+        Rounded UP to a power of two because `tl.arange` needs one, so a numel
+        of 100 still gets 128 and still needs its mask -- that one is real.
+
+        AND THE BACKEND'S SIDE IS NARROWER THAN ITS MESSAGE. A hand-written tnpu
+        kernel that reduces over the banked axis with a block deliberately wider
+        than the extent -- [128, 64] data under a [128, 128] block, so the mask
+        genuinely fires -- COMPILES AND IS EXACT. Written with the block equal
+        to the extent it also passes, because a trivially true mask folds away
+        before stage 4 sees it. So the refusal above is not "a mask over a
+        banked axis" in general, and no coverage kernel was added for it: one
+        that passes either way pins nothing. What is measured is this: the
+        oversized block was the whole observable, and clamping it is the fix.
+        """
+        if not n or n <= 0:
+            return want
+        cover = 1
+        while cover < n:
+            cover *= 2
+        return min(want, cover)
+
     axes = parallel_axes(numels)
     cfg = {}
     for i, p in enumerate(axes):
@@ -271,16 +309,18 @@ def fixed_config_for(kernel, numels, args):
             # WHICH LETTER dim 0 IS DEPENDS ON RANK, so it is indexed rather
             # than named. Inductor gives the outermost axis the [:, None] slot,
             # so a 2D kernel puts y there and a 1D one has only x.
-            cfg[_block_name(p)] = lanes
+            cfg[_block_name(p)] = _covers(lanes, numels.get(f"{p}numel"))
         elif i == len(axes) - 1:
             # Innermost, so contiguous (tile_stride ends in 1): give each lane
             # one full vector register. 8 fp32 at vlen 256 is exactly that.
             # Pinned to 1 before, which is why a multi-axis work-item moved a
             # strided column -- correct but nothing worth measuring.
-            cfg[_block_name(p)] = per_vector
+            cfg[_block_name(p)] = _covers(per_vector,
+                                          numels.get(f"{p}numel"))
         else:
             cfg[_block_name(p)] = 1
-    cfg.setdefault("XBLOCK", lanes)         # a kernel with no tiling info still has x
+    cfg.setdefault("XBLOCK", _covers(lanes, numels.get("xnumel")))
+    # a kernel with no tiling info still has x
     if getattr(kernel, "inside_reduction", False):
         # A reduction block is NOT free to be the lane count. The scratchpad is
         # lane-banked and there is no lane-crossing primitive, so the reduced

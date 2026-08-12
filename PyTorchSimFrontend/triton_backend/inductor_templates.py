@@ -73,40 +73,46 @@ def _gemm_tiles(m, n, k, dtype_size):
     takes the first offered, so a tail is a fallback rather than a competitor.
 
     A CAP AT THE LANE COUNT, AND IT IS A DEFECT RATHER THAN A PROPERTY. This
-    docstring used to say no axis may exceed the lane count and call it a fact
-    about the machine. It is not, and it took four wrong guesses to say what it
-    is. Measured on triton-npu, one thing at a time:
+    used to say no axis may exceed the lane count and call it a fact about the
+    machine. It is not. Three separate things hid behind that sentence; two are
+    fixed and the cap is now over the third.
+
+    FIXED, THE WRAP. Measured on triton-npu, one thing at a time on the same
+    512x512x512 kernel:
 
         wrap, 2x2 grid, (256, 256, 512)     110.93 off
         NO wrap, 2x2 grid, (256, 256, 512)  5.34e-05
         no wrap, one program, 256 cube      3.81e-05
 
-    so neither the wide tile nor the grid was ever the fault, and the array
+    so neither the wide tile nor the grid was the fault, and the array
     instructions come out as the same 2 x 4 x 2 loop nest either way.
-    `kernel_spec.clamp_instead_of_wrap` removes the wrap, and with it gone
-    tests/ops/fusion/test_addmm_residual.py passes at all four sizes on the
-    maximal (512, 512, 512) tile.
+    `kernel_spec.clamp_instead_of_wrap` removes it.
 
-    WHAT IS LEFT IS ONE THING AND IT IS NAMED. tests/ops/attention/test_gqa.py
-    is still 0.0954 off with the cap lifted. Running each suspect alone at
-    BLOCK_N = 512, M = 32, K = 768, N = 1536:
+    FIXED, THE BIAS. Running each suspect alone at BLOCK_N = 512, M = 32,
+    K = 768, N = 1536:
 
         matmul(a, b)             6.96e-05
         matmul(a, bt.t())        5.53e-05
         addmm(bias, a, b)        5.84        <-- the bias
         addmm(bias, a, bt.t())   5.84
 
-    An addmm's epilogue reads its bias as a full [BLOCK_M, BLOCK_N] tile whose
-    DRAM row stride is 0 -- `tl.load(in_ptr0 + tl.broadcast_to(idx_n, [BLOCK_M,
-    BLOCK_N]))` -- and that REPLICATING load breaks the moment the lane axis
-    carries more than one element: 128 passes, 256 and 512 do not. The
-    reproducer is triton-npu's
-    kernels/coverage/tile/tile_bias_row_deeper_than_one_per_lane.py, and the
-    rank-1 spelling of the same epilogue passes at 512, so it is the
-    replication and not the width.
+    An addmm epilogue loads its bias through a BROADCAST pointer tensor, and
+    triton_shared's PtrAnalysis rewrote every op on the way to it except the
+    broadcast, so the load found no descriptor at [BLOCK_M, BLOCK_N] and fell to
+    a gather -- which then wrote each lane's single fetched value into both of
+    the slots that lane owns. `PtrAnalysis::rewriteBroadcastOp` supplies the
+    missing arm; the transfer comes out `dram_stride = [0, 1]` with no gather,
+    and tests/ops/attention/test_gqa.py then passes with the cap lifted.
 
-    So the cap stands until that is fixed, and every candidate it removes is a
-    LARGER tile -- the cost is speed rather than reach.
+    NOT FIXED, AND NOT YET NAMED. With the cap off,
+    tests/ops/fusion/test_prologue_fusion.py is 127.39 off. Its kernel is a bmm
+    at BLOCK_M = BLOCK_N = 512, BLOCK_K = 64, one program per batch. A bare
+    512x512x64 matmul at the SAME tile passes standalone on triton-npu at
+    7.63e-06, so it is not the width -- it is the bmm form or the fusion, and
+    saying which needs a measurement nobody has taken yet.
+
+    So the cap stays, over one case instead of three. Every candidate it removes
+    is a LARGER tile, so the cost is speed rather than reach.
     """
     from torch._inductor.template_heuristics.triton import GemmConfig
 

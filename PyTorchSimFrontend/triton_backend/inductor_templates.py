@@ -11,6 +11,10 @@ import os
 
 import torch
 
+from PyTorchSimFrontend import extension_config
+
+logger = extension_config.setup_logger()
+
 
 def _register_npu_as_gpu():
     import torch._inductor.utils as inductor_utils
@@ -30,6 +34,121 @@ def _claim_triton_present():
         scheduler.has_triton = lambda: True
 
 
+#: Triton's smallest block: `tl.dot` refuses an operand shorter than this.
+_MIN_BLOCK = 16
+
+
+def _power_of_two(n):
+    return n >= 1 and (n & (n - 1)) == 0
+
+
+def _gemm_tiles(m, n, k, dtype_size):
+    """This machine's mm tiles for [m, k] @ [k, n], best first.
+
+    THE MAPPING IS PyTorchSim's OWN, not a table. `gemm_combination_mapping`
+    enumerates every tile that is a multiple of the lane count and whose three
+    operands fit half the scratchpad -- half because the tiles are double
+    buffered -- checking the total AND the per-lane footprint, and ranks them by
+    scratchpad used, descending. That is rule 6's enumerate-rank-select over the
+    quantity that actually limits this machine, and it is the same call the MLIR
+    route's gemm and bmm templates make, so the two routes now answer the tile
+    question once (mlir_common.BaseMLIRHardwareInfo).
+
+    WHAT IT REPLACES: torch's generic set, whose first entry is
+    GemmConfig(64, 64, 16) for f32 -- sized for a GPU's shared memory and warp
+    tiling, both of which this machine has neither of. Nothing in it knows the
+    lane count or the scratchpad, so the tile it picked was right only by
+    accident, and the TODO saying so had been in this file since it was written.
+
+    ONE THING THE MLIR ROUTE DOES NOT NEED, AND IT IS TRITON'S: a block size
+    reaches `tl.arange` and `tl.dot`, so it must be a power of two and at least
+    16. `gemm_combination_mapping` pads to multiples of 8 or of the lane count
+    and multiplies by divisors, so 384 and 104 are both reachable and neither is
+    a legal Triton block. They are dropped rather than rounded -- rounding up
+    breaks the scratchpad budget the mapping just proved, and rounding down
+    hands back a tile nothing enumerated.
+
+    The generic set is appended after them, never before: a shape whose every
+    mapped tile is an illegal block size still has to compile, and `pick_config`
+    takes the first offered, so a tail is a fallback rather than a competitor.
+
+    A CAP AT THE LANE COUNT, AND IT IS A DEFECT RATHER THAN A PROPERTY. This
+    docstring used to say that no axis may exceed the lane count and call it a
+    fact about the machine. IT IS NOT. Measured on triton-npu, one thing at a
+    time on the same 512x512x512 kernel:
+
+        wrap, 2x2 grid, (256, 256, 512)     110.93 off
+        NO wrap, 2x2 grid, (256, 256, 512)  5.34e-05
+        no wrap, one program, 256 cube      3.81e-05
+
+    The wide tile is not the fault and neither is the grid -- both pass once the
+    `rm % M` wrap is gone, and the array instructions come out as the same
+    2 x 4 x 2 loop nest either way, so the large-matmul lowering was never it.
+    `kernel_spec.drop_dead_wraps` removes the wrap for exactly the tiles this
+    function returns, and with it gone
+    tests/ops/fusion/test_addmm_residual.py passes at all four of its sizes with
+    the maximal (512, 512, 512) tile, and a bare 32x768x768 matmul at
+    (32, 256, 256) comes back at 7.63e-05 where it was 110.03.
+
+    WHAT THE CAP STILL HIDES IS SMALLER AND NOT YET NAMED.
+    tests/ops/attention/test_gqa.py is 0.0816 off with the wrap gone and the cap
+    lifted, and passes with the cap on and nothing else changed -- so something
+    above the lane count is still wrong on ITS shapes (BLOCK_N = 512 against
+    N = 1536 is the one candidate no smaller test covers) while 512-cubed and
+    32x768x768 are both exact. The cap is a marker over that, not an answer, and
+    every candidate it removes is a LARGER tile, so the cost is speed rather
+    than reach.
+    """
+    from torch._inductor.template_heuristics.triton import GemmConfig
+
+    from PyTorchSimFrontend.mlir.mlir_common import BaseMLIRHardwareInfo
+
+    tiles = BaseMLIRHardwareInfo().gemm_combination_mapping(
+        int(m), int(n), int(k), precision_bytes=int(dtype_size),
+        # The Triton grid IS the tile count, so the same reason the MLIR gemm
+        # template asks for at least num_cores tiles applies here.
+        min_tile=True,
+        # WHAT ELSE THIS ROUTE STAGES, in the mapping's own vocabulary. The mm
+        # template wraps both operands (`rm % M`, `rn % N`), which lowers to an
+        # indirect transfer carrying an i64 index tile the shape of the operand
+        # -- two f32 tiles' worth each, since the mapping counts in
+        # precision_bytes. So A and B each cost their tile plus two, and that is
+        # a fact of the template rather than an allowance.
+        n_prologue_node=2, n_prologue_extra_read=2,
+        # AND WHAT IT CANNOT COUNT. Inductor fuses the epilogue into this kernel
+        # AFTER the config is chosen -- the scheduler decides it, and this runs
+        # during autotune -- so the number of extra output-shaped tiles is not
+        # knowable here. The MLIR route has the count when it asks and passes
+        # n_extra_node; this one gives the mm's own staging half the
+        # double-buffer budget and leaves the rest for whatever fuses in.
+        #
+        # MEASURED: without it, tests/ops/fusion/test_addmm_residual.py at
+        # 512x512x512 takes the maximal (512, 512, 512) and tnpu refuses the
+        # link at 73760 bytes/lane against a 65536 budget -- exactly the three
+        # tiles, the two i64 index tiles, and TWO more f32 output tiles for the
+        # bias and the residual. With it the tile is (256, 256, 512), about
+        # 30 KB/lane, and the same kernel links and runs.
+        #
+        # This is a policy over an unknown, not a bound: an epilogue deeper than
+        # the half left for it still overflows, and the real fix is the
+        # re-codegen loop the MLIR route has (BaseMLIRKernel.recodegen, "spad
+        # overflow") and this route does not.
+        budget_divisor=2,
+        # No offline mapping study on this route -- see BaseMLIRHardwareInfo.
+        dump_candidates=False)
+
+    lanes = int(extension_config.vpu_num_lanes)
+    out = []
+    for tile_m, tile_n, tile_k in tiles:
+        if not all(_power_of_two(b) and b >= _MIN_BLOCK
+                   for b in (tile_m, tile_n, tile_k)):
+            continue
+        if max(tile_m, tile_n, tile_k) > lanes:
+            continue
+        out.append(GemmConfig(tile_m, tile_n, tile_k, 1, 4))
+    return out
+
+
 def _register_template_heuristics():
     from torch._inductor.kernel.bmm import bmm_template
     from torch._inductor.kernel.mm import mm_template
@@ -41,11 +160,33 @@ def _register_template_heuristics():
     @register_template_heuristic(mm_template.uid, "npu")
     @register_template_heuristic(bmm_template.uid, "npu")
     class NPUMMTemplateConfigHeuristic(MMTemplateConfigMixin, BaseConfigHeuristic):
-        # TODO: size these from the hardware config (lanes, spad per lane)
-        # rather than taking the generic set.
-        def __init__(self):
-            super().__init__()
-            self.exhaustive_configs = self.mm_configs
+        def _get_config_generator(self):
+            """The hook the mixin documents for exactly this.
+
+            It is the one place the shape is known -- the mixin calls what this
+            returns as `configs(m, n, k, dtype_size=..., op_name=...)` -- and a
+            tile mapping that does not see M, N and K is not a mapping. The
+            configs still go through `_finalize_mm_configs`, so torch keeps
+            doing the deduping and the num_warps clamp.
+            """
+            generic = super()._get_config_generator()
+
+            def configs(m, n, k, **kwargs):
+                from torch._inductor.virtualized import V
+                try:
+                    mnk = [int(V.graph.sizevars.size_hint(s)) for s in (m, n, k)]
+                except Exception:  # noqa: BLE001 - unhinted dynamic shape
+                    yield from generic(m, n, k, **kwargs)
+                    return
+                mapped = _gemm_tiles(*mnk, kwargs.get("dtype_size", 4))
+                if not mapped:
+                    logger.warning(
+                        "[triton-npu] no mapped tile for %sx%sx%s is a legal "
+                        "Triton block; falling back to the generic set", *mnk)
+                yield from self._finalize_mm_configs(mapped)
+                yield from generic(m, n, k, **kwargs)
+
+            return configs
 
     # addmm and baddbmm carry a bias as input_nodes[0]; without their own entry
     # the mm heuristic is used with prefix_args=0 and def_kernel asserts.

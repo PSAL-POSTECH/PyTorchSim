@@ -11,6 +11,24 @@ route on and timing off (rule 13a):
 
     source .envrc
     python tests/models/GPT2/test_gpt2.py --preset small
+
+ALL FOUR PRESETS PASS, measured 2026-08-12 with per-kernel verify on
+(pytorchsim_functional_verify_per_kernel), so every intermediate buffer is
+compared to a CPU golden and not just the logits:
+
+    preset  layers  n_embd  vocab   kernels  max diff     goldens  time
+    tiny      1      128      256      14    4.7684e-07     121
+    small     2      768     1024      26    2.9206e-06     219
+    medium    4      768     4096      50    4.1723e-06     415     235s
+    full     12      768    50257     146    5.1260e-06    1199     717s
+
+`full` is GPT-2 base itself -- 123,702,528 parameters -- and zero buffers
+diverge in any of the four.
+
+THE GATE IS `small`, DELIBERATELY. `full` compiles 146 kernels but only ~30
+distinct ones, the same block repeated twelve times, so it costs the sweep
+twelve minutes to cover what `small` already covers. Raise the default only
+if a defect appears that needs the depth.
 """
 
 import argparse

@@ -165,10 +165,23 @@ def _gemm_tiles(m, n, k, dtype_size):
         #
         # WHY THERE IS A DIVISOR AT ALL: tests/ops/fusion/test_addmm_residual
         # at 512x512x512 fuses a bias AND a residual, two more output-shaped
-        # tiles that nothing here counts. This is a policy over an unknown, not
-        # a bound -- an epilogue deeper than the half left for it still
-        # overflows, and the real fix is the re-codegen loop the MLIR route has
-        # (BaseMLIRKernel.recodegen, "spad overflow") and this route does not.
+        # tiles that nothing here counts.
+        #
+        # AND IT HOLDS, WHICH IS WHY THERE IS NO RETRY LOOP HERE. The MLIR route
+        # re-codegens on a scratchpad overflow (BaseMLIRKernel.recodegen, "spad
+        # overflow") and this route cannot, so the obvious next step was to
+        # build one -- except nothing overflows. Measured, deliberately trying
+        # to: a 512-cubed matmul with FIVE fused elementwise epilogue nodes
+        # comes back at 1.98e-04, and a 1024-cubed one with TEN at 1.71e-03.
+        # Both link. Halving the budget makes the mapping pick a smaller tile,
+        # and a smaller tile makes the epilogue's own tiles smaller with it, so
+        # the reservation scales with what it is reserving for.
+        #
+        # A retry path with no case that needs it is machinery nobody can check
+        # (rule 2 wants a kernel that fails without the fix, and there is none),
+        # so this stays a measured reservation rather than a stopgap. If a
+        # kernel ever does overflow, THAT is the reproducer and the loop can be
+        # built against it.
         budget_divisor=2,
         # No offline mapping study on this route -- see BaseMLIRHardwareInfo.
         dump_candidates=False)

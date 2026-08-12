@@ -17,6 +17,7 @@
 # built on the device and this backend compiles it like any other elementwise
 # work. 26 kernels and a compile error before; 27 kernels, no C++ kernel at all,
 # and 4.77e-06 after. The test carries the two-line scope and the reasoning.
+tests/models/BERT/test_bert.py
 tests/models/DeepSeek/test_deepseek_v3_base.py
 tests/models/GPT2/test_gpt2.py
 tests/models/Mixtral8x7B/test_mistral.py

@@ -322,6 +322,36 @@ def _element_bits(args):
     return max(bits) if bits else 32
 
 
+def reduction_block_for(extent, elem_bytes=4):
+    """The R0_BLOCK this backend pins for a reduction of `extent`.
+
+    Cover the extent and no more, then shrink to the budget. Rounding 1536 up
+    to 2048 buys nothing -- the tail is all mask -- and costs a third of the
+    tile, so the loop running twice over 1024 is strictly better than once over
+    2048 plus 512 wasted lanes of nothing.
+
+    LIFTED OUT SO TWO CALLERS CAN AGREE. `fixed_config_for` pins the block;
+    `inductor_templates` asks whether Inductor's PERSISTENT block -- which is
+    `next_pow2(extent)`, fixed in the generated source and out of our reach --
+    is one this would have chosen. Deriving that number twice is how the two
+    drift, and the drift is silent: a persistent kernel simply ignores the
+    config we hand it.
+
+    `elem_bytes` defaults to fp32 because the choices hook is asked before the
+    kernel's arguments exist. Guessing 4 for a narrower element makes this
+    answer SMALLER than it needs to be, which declines persistence a little
+    more often than strictly necessary -- and the looped form always works,
+    while the persistent form can leave the scratchpad retry with no lever at
+    all. The safe direction is the cheap one.
+    """
+    lane_bytes = int(os.environ.get("TNPU_SPAD_SIZE", str(64 * 1024)), 0)
+    budget = lane_bytes // 2 // _REDUCTION_LIVE_TILES
+    block = 1 << (int(extent) - 1).bit_length()
+    while block * elem_bytes > budget and block > 1:
+        block //= 2
+    return block
+
+
 def fixed_config_for(kernel, numels, args):
     """Block sizes pinned at codegen time.
 
@@ -420,10 +450,7 @@ def fixed_config_for(kernel, numels, args):
             # 1536 up to 2048 buys nothing -- the tail is all mask -- and costs a
             # third of the tile, so the loop running twice over 1024 is strictly
             # better than once over 2048 plus 512 wasted lanes of nothing.
-            block = 1 << (int(n) - 1).bit_length()
-            while block * elem_bytes > budget and block > 1:
-                block //= 2
-            cfg[_block_name(p)] = block
+            cfg[_block_name(p)] = reduction_block_for(n, elem_bytes)
     return cfg
 
 

@@ -529,6 +529,99 @@ def _short_circuit_degenerate_gemms():
                 lowerings[o] = wrap(o, bias)
 
 
+
+#: Built once and kept, because Inductor PICKLES the choices class into its FX
+#: graph cache key. A class defined inside a function is a `<locals>` object and
+#: pickling it raises, which does not fail the compile -- it silently disables
+#: the cache and prints a traceback per graph. Measured:
+#: "AttributeError: Can't pickle local object
+#:  '_decline_persistence_we_cannot_resize.<locals>.NPUChoices'".
+_NPU_CHOICES = None
+
+
+def _npu_choices_class():
+    global _NPU_CHOICES
+    if _NPU_CHOICES is not None:
+        return _NPU_CHOICES
+    from torch._inductor.choices import InductorChoices
+
+    from . import kernel_spec
+
+    class NPUChoices(InductorChoices):
+        @staticmethod
+        def should_use_persistent_reduction(features, cooperative_reduction):
+            base = InductorChoices.should_use_persistent_reduction(
+                features, cooperative_reduction)
+            if not base:
+                return False
+            try:
+                extent = int(features.reduction_numel)
+            except (TypeError, ValueError):
+                # Dynamic. We cannot size a block for it either, so leave
+                # Inductor's answer alone rather than guess in the dark.
+                return base
+            if extent < 1:
+                return base
+            persistent = 1 << (extent - 1).bit_length()
+            return persistent <= kernel_spec.reduction_block_for(extent)
+
+    NPUChoices.__module__ = __name__
+    NPUChoices.__qualname__ = "NPUChoices"
+    globals()["NPUChoices"] = NPUChoices      # picklable by name
+    _NPU_CHOICES = NPUChoices
+    return NPUChoices
+
+
+def _decline_persistence_we_cannot_resize():
+    """Persist a reduction only at a block this backend would have chosen.
+
+    THE LEVER THE SCRATCHPAD RETRY PULLS IS THE BLOCK, and a persistent
+    reduction takes it away. Inductor writes `R0_BLOCK: tl.constexpr = <next
+    power of two above the extent>` INTO the generated source, so
+    `kernel_spec.fixed_config_for`'s answer is never read and
+    `codecache._shrink_reduction_blocks` halves a number the kernel does not
+    consult.
+
+    MEASURED, BERT-small kernel 0 (three embedding gathers + the first
+    LayerNorm, r0_numel 768, 21 scratchpad globals). Inductor calls 768
+    persistent -- it is under the INNER threshold of 1024 -- and bakes
+    R0_BLOCK 1024. The retry then recompiles EIGHT TIMES, 128 -> 64 -> 32 ->
+    16 -> 8 -> 4 -> 2 -> 1, and the measurement does not move by one byte:
+
+        70944 bytes/lane over a budget of 65536, retrying with R0_BLOCK 128
+        70944 ...                                                       64
+        70944 ...                              32, 16, 8, 4, 2, 1
+
+    then `blocks` is empty and it re-raises. With persistence declined the same
+    kernel compiles on the FIRST try at our own block of 512.
+
+    THE RULE IS THE ONE FACT, NOT A HEURISTIC: persist iff the persistent block
+    IS the block we would have pinned. Equal, and nothing is given up -- the
+    kernel gets the size we wanted and Inductor writes the two-pass form that
+    needs no Welford. Bigger, and persisting trades our only correction for a
+    tile we already know does not fit. BERT-tiny (extent 128, our block 128)
+    keeps persistence and its numbers; BERT-small (extent 768, next power of
+    two 1024, our block 512) loses it, which is the point.
+
+    THIS IS THE DOCUMENTED HOOK, NOT A MONKEYPATCH -- rule 16.
+    `torch._inductor.config.inductor_choices_class` names the class
+    `virtualized._choices_default` instantiates, and virtualized.py says what it
+    is for in as many words: "We virtualize InductorChoices to allow changing
+    inductor heuristics from out of tree." An earlier version of this file
+    forced persistence by REBINDING `InductorChoices.should_use_persistent_
+    reduction`, and the comment that removed it called that out as the thing
+    rule 16 forbids. The decision is the inverse of that one and the wiring is
+    not the same wiring.
+    """
+    from torch._inductor import config
+
+    # Only when nobody else has claimed it: this is a global, and stamping over
+    # another out-of-tree backend's choices would be the same rudeness this
+    # file just stopped committing against InductorChoices itself.
+    if config.inductor_choices_class is None:
+        config.inductor_choices_class = _npu_choices_class()
+
+
 def _install_selection():
     from torch._inductor.select_algorithm import AlgorithmSelectorCache
 
@@ -561,6 +654,7 @@ def install():
     _size_grouped_conv_grid_per_group()
     _clamp_conv_block_n()
     _short_circuit_degenerate_gemms()
+    _decline_persistence_we_cannot_resize()
     _install_selection()
 
     # Not max_autotune: that also turns on pointwise autotuning, which appends

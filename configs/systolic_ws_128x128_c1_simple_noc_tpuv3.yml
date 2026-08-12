@@ -19,7 +19,7 @@ icnt_freq_mhz: 940
 icnt_injection_ports_per_core: 16
 
 pytorchsim_functional_mode: 1
-pytorchsim_timing_mode: 1
+pytorchsim_timing_mode: 0
 
 codegen_mapping_strategy: heuristic
 codegen_external_mapping_file: ''

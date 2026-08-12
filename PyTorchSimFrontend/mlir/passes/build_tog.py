@@ -273,6 +273,46 @@ def _value_key(value):
     return ("res", value.owner, 0)
 
 
+#: First slot after the tag pair. Everything at or past it is scalar (dma_type,
+#: vlane stride, mask clamps) except the indirect index, which is a tile.
+_TRANSFER_TAIL = 6
+
+
+def transfer_index_operand(op):
+    """The indirect gather index of a `togsim.transfer`, or None if it has none.
+
+    READ OFF THE OPERAND TYPES, NOT OFF A SLOT NUMBER, BECAUSE THERE ARE TWO
+    PRODUCERS AND THEY DISAGREE. The MLIR route mints this op in
+    mlir_codegen_backend.emit_transfer with a `dma_type` operand at slot 6, so
+    its index lands at 8. triton-npu mints the same op without one -- it says
+    what the `dma_kind` attribute already said, and tnpu deleted it (see that
+    repo's passes/lib_transfer.py, which now names INDIRECT = 7) -- so its index
+    lands at 7. Both readers here had 8 written in, which is why the whole
+    Triton route stopped producing a trace the moment triton-npu's develop was
+    merged:
+
+        offset = operands[8] if "indirect" in op.attributes else None
+        IndexError: list index out of range
+
+    and, in _dma_start_fields, the softer half of the same bug: `if
+    len(operands) > 8` is False for tnpu's eight-operand indirect transfer, so
+    the index was silently dropped and the gather lost its dependency edge.
+
+    THE TYPES SAY IT AND THE SLOT NUMBERS DO NOT. Everything from slot 6 on is
+    an `index` scalar -- dma_type where it exists, the vlane stride, and a
+    masked transfer's clamp operands -- except the index buffer, which is the
+    only shaped operand back there. So the first shaped operand past the tag is
+    the answer under either layout, and a masked transfer with no `indirect`
+    attribute correctly has none.
+    """
+    if "indirect" not in op.attributes:
+        return None
+    for v in list(op.operands)[_TRANSFER_TAIL:]:
+        if ir.ShapedType.isinstance(v.type):
+            return v
+    return None
+
+
 def _memref_space(memref_type):
     mt = ir.MemRefType(memref_type)
     sp = mt.memory_space
@@ -751,10 +791,12 @@ class TogBuilder:
 
         togsim.transfer operand layout (mirrors build_skeleton._transfer_fields /
         lower_transfer_to_gemmini):
-            dram, dram_idx, sram, sram_idx, tag, tag_idx, dma_type, vst[, offset]
+            dram, dram_idx, sram, sram_idx, tag, tag_idx[, dma_type], vst[, offset]
         The DRAM side is always operand[0]/[1], the SRAM spad operand[2]/[3], the
         runtime tag slot operand[4] (tag memref) + operand[5] (tag_idx). The
-        optional indirect-offset spad is operand[8].
+        optional indirect-offset spad is NOT at a fixed slot -- the two producers
+        of this op differ from slot 6 on -- so it comes from
+        `transfer_index_operand`, which reads it off the operand types.
 
         Direction (from dma_kind / dma_type) decides the src/dst mapping so the
         rest of build_tog keeps the old memref.dma_start convention: for a load
@@ -766,7 +808,7 @@ class TogBuilder:
         sram, sram_idx = operands[2], operands[3]
         tag, tag_idx = operands[4], operands[5]
         dma_type = operands[6]
-        offset = operands[8] if len(operands) > 8 else None
+        offset = transfer_index_operand(op)
 
         if self._transfer_is_load(op, dma_type):   # DRAM -> SRAM
             src, src_idx = dram, dram_idx

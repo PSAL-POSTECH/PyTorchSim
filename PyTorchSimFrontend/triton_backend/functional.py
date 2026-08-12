@@ -308,8 +308,9 @@ def _run_locked(workdir, meta, args, spec, timeout_sec, tnpu_bridge):
                         meta["kernel_name"], key)
             return read_outputs(workdir, meta, args)
 
-    env = dict(os.environ)
-    env.pop("PYTHONPATH", None)          # keep tnpu on its own MLIR bindings
+    # Drops the stale PYTHONPATH (tnpu keeps its own MLIR bindings) and hands
+    # over the machine the TOGSim YAML describes.
+    env = tnpu_bridge.tnpu_env()
     proc = subprocess.run(
         [extension_config.CONFIG_TNPU_PYTHON, "-m", "tnpu.spike", spec, workdir],
         capture_output=True, text=True, cwd=tnpu_bridge.tnpu_dir(), env=env,

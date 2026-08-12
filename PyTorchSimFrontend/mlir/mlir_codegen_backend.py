@@ -70,6 +70,23 @@ def reduction_partial_combine_vec(reduction_type, vector_value, init_value):
         return ops.logical_or(vector_value, init_value)
     raise AssertionError(reduction_type)
 
+def _fverify_writes(kernel_name, position):
+    """Does `kernel_name` write the tensor argument at `position`?
+
+    The roles are recorded at define_kernel by the Triton backend, which is
+    the only route that has them; the MLIR route records nothing and every
+    argument stays checkable, which is what this did for both routes before.
+    Unknown kernel, unknown position, backend not imported -> True.
+    """
+    if kernel_name is None:
+        return True
+    try:
+        from PyTorchSimFrontend.triton_backend import kernel_spec
+    except Exception:  # noqa: BLE001 - the MLIR route need not have it
+        return True
+    return kernel_spec.writes_arg(kernel_name, position)
+
+
 class ExtensionWrapperCodegen(wrapper.PythonWrapperCodegen):
     def __init__(self):
         super().__init__()
@@ -250,7 +267,8 @@ class ExtensionWrapperCodegen(wrapper.PythonWrapperCodegen):
                     elif isinstance(line, wrapper.KernelCallLine):
                         self.wrapper_call.writeline(self.wrap_kernel_call(line.kernel_name, line.call_args))
                         if _func_verify.enabled():
-                            self._fverify_emit_checks(line.call_args, id(line))
+                            self._fverify_emit_checks(line.call_args, id(line),
+                                                      line.kernel_name)
                     else:
                         if isinstance(line, wrapper.WrapperLine):
                             line.codegen(self.wrapper_call)
@@ -310,27 +328,51 @@ class ExtensionWrapperCodegen(wrapper.PythonWrapperCodegen):
         for line in self.lines:
             if not isinstance(line, wrapper.KernelCallLine):
                 continue
-            for a in line.call_args:
-                if isinstance(a, str) and a.strip().isidentifier():
-                    last[a.strip()] = id(line)
+            for pos, a in enumerate(line.call_args):
+                if not (isinstance(a, str) and a.strip().isidentifier()):
+                    continue
+                if not _fverify_writes(line.kernel_name, pos):
+                    continue
+                last[a.strip()] = id(line)
         return last
 
-    def _fverify_emit_checks(self, call_args, line_id=None):
+    def _fverify_emit_checks(self, call_args, line_id=None, kernel_name=None):
         """Emit per-kernel CPU verify calls for this kernel's output buffers.
 
-        Each bare-identifier buffer arg is checked once, after the LAST kernel
-        that names it -- see _fverify_last_writer for why not the first. The
-        buffer is mapped to its originating fx node (op) so the runtime check
-        can compare against the CPU golden keyed by that node.
+        Each bare-identifier buffer arg the kernel WRITES is checked once,
+        after the LAST kernel that writes it -- see _fverify_last_writer for
+        why not the first. The buffer is mapped to its originating fx node (op)
+        so the runtime check can compare against the CPU golden keyed by that
+        node.
+
+        WRITES, NOT NAMES. This used to check every bare-identifier argument,
+        inputs included, and the docstrings on both halves said "writes" while
+        the code said "names". The two part company under buffer REUSE: the
+        wrapper renames storage (`buf20 = buf9  # reuse`), so one buffer's
+        contents live under another buffer's name, and that name's
+        `origin_node` describes what Inductor MEANT to put there. Check it
+        after a kernel that only reads it and the comparison is against a value
+        nothing computed.
+
+            measured   Stable Diffusion v1.5's UNet. Two kernels take an
+                       `in_out_ptr0` and never store to it; they are called
+                       eight times between them, on buf20, buf88, buf104,
+                       buf170, buf189, buf208, buf230 and buf298 -- and those
+                       eight are EXACTLY the eight divergences the run
+                       reported, each against an `add_N` node that no kernel
+                       materialises. Nothing else in the model diverges; 217
+                       kernels run between them.
         """
         if self._fverify_last is None:
             self._fverify_last = self._fverify_last_writer()
-        for a in call_args:
+        for pos, a in enumerate(call_args):
             if not isinstance(a, str):
                 continue
             name = a.strip()
             if not name.isidentifier() or name in self._fverify_seen:
                 continue
+            if not _fverify_writes(kernel_name, pos):
+                continue          # this kernel only reads it
             if line_id is not None and self._fverify_last.get(name) != line_id:
                 continue          # a later kernel still writes this buffer
             self._fverify_seen.add(name)

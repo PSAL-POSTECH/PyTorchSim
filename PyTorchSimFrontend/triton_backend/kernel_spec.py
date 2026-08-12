@@ -403,7 +403,22 @@ def fixed_config_for(kernel, numels, args):
         that passes either way pins nothing. What is measured is this: the
         oversized block was the whole observable, and clamping it is the fix.
         """
-        if not n or n <= 0:
+        # A NUMEL OF 1 IS NOT CLAMPED, AND THAT IS NOT A CORNER. A parallel
+        # block of 1 leaves no axis for the lanes, so the tile banks on the
+        # REDUCTION axis instead -- which is the one arrangement stage 4
+        # refuses, and it refuses it with the scalar the reduction produced:
+        #
+        #   NotVectorisable: operand [1, 1] spans iteration dims [] of a tile
+        #   [512, 1] banked on dim 0, and it was staged one element per lane --
+        #   every lane needs the whole row, which takes a replicating transfer
+        #   this operand did not get
+        #
+        # Measured on Mistral's RMSNorm (xnumel 1, r0_numel 512), which passed
+        # before this clamp existed and stopped after it: XBLOCK went 128 -> 1
+        # and the tile went [512, 128] banked on x to [512, 1] banked on r0.
+        # The reduction over a degenerate parallel axis is exactly the case the
+        # lane count was there for.
+        if not n or n <= 1:
             return want
         cover = 1
         while cover < n:

@@ -92,28 +92,40 @@ def check_multi_axis_grid():
     return not problems
 
 
-def check_reduction_is_refused():
-    """A reduction must fail LOUDLY, not compile into wrong numbers.
+def check_reduction():
+    """A reduction over the contiguous axis compiles AND the numbers are right.
 
-    tnpu has no lane-aware reduction: the scratchpad is lane-banked, so the
-    reduced axis has to live inside a lane, and triton-shared hands over a
-    linalg.reduce (plus a linalg.transpose) that no pass lowers that way. Until
-    one does, reaching the launcher would mean simulating a kernel whose compute
-    is not what the hardware would do.
+    THIS CHECK USED TO ASSERT THE OPPOSITE, and it was correct when it was
+    written: tnpu had no lane-aware reduction, the scratchpad is lane-banked so
+    the reduced axis has to live inside a lane, and triton-shared handed over a
+    linalg.reduce plus a linalg.transpose that no pass lowered that way. It said
+    "when the lane path lands, this is the test to delete".
 
-    Passing this check means the attempt still stops. When the lane path lands,
-    this is the test to delete.
+    The lane path landed. Measured on a fresh process, `t.sum(dim=1)` over
+    [128, 64] compiles, runs on Spike and comes back at 1.907e-06 against torch.
+    So the check is inverted rather than deleted: asserting the values is
+    strictly more than asserting that nothing stopped, and a refusal returning
+    here would now be the regression.
+
+    dim=1 ON PURPOSE. `t.sum(dim=0)` still stops (InductorError out of the tnpu
+    pipeline), so the two axes are not the same question and this one pins the
+    axis that works. The other is a gap, not a guarantee, and pinning it here
+    would make this test fail for something it is not about.
     """
     x = torch.randn(128, 64)
+    expected = x.sum(dim=1)
     try:
-        torch.compile(lambda t: t.sum(dim=1))(x.to("npu:0"))
-    except Exception as e:  # noqa: BLE001 - any diagnosed stop is the point
+        got = torch.compile(lambda t: t.sum(dim=1))(x.to("npu:0")).cpu()
+    except Exception as e:  # noqa: BLE001 - a stop is now the failure
         first = (str(e).strip().splitlines() or [type(e).__name__])[0]
-        print(f"  reduction stops at: {type(e).__name__}: {first[:74]}")
-        return True
-    print("  reduction COMPILED -- if the lane-aware path landed, drop this "
-          "check; otherwise the numbers it produces are wrong")
-    return False
+        print(f"  reduction STOPPED at: {type(e).__name__}: {first[:72]}")
+        return False
+    err = (got - expected).abs().max().item()
+    if not torch.allclose(got, expected, rtol=1e-4, atol=1e-4):
+        print(f"  reduction compiled but the values are wrong: max_abs_err {err}")
+        return False
+    print(f"  reduction over the contiguous axis: max_abs_err {err:g}")
+    return True
 
 
 def main():
@@ -122,8 +134,8 @@ def main():
 
     print(f"multi-axis grid          = "
           f"{'ok' if check_multi_axis_grid() else 'FAILED'}")
-    print(f"reduction refused        = "
-          f"{'ok' if check_reduction_is_refused() else 'FAILED'}")
+    print(f"reduction values         = "
+          f"{'ok' if check_reduction() else 'FAILED'}")
     print(f"TORCHSIM_TRITON_CODEGEN = {extension_config.CONFIG_TRITON_CODEGEN}")
     print(f"TNPU_DIR                = {extension_config.CONFIG_TNPU_DIR}")
     ok, _out = tnpu_bridge.doctor()
@@ -163,6 +175,14 @@ def main():
         print("no kernel directory was produced")
         return 1
     workdir = max(dirs, key=os.path.getmtime)
+    if not extension_config.pytorchsim_timing_mode:
+        # NOT A SKIP OF THE TEST, A SKIP OF THE HALF THAT WAS TURNED OFF.
+        # `codecache` builds no trace and runs no TOGSim when timing mode is
+        # off, so trace.so and trace_cycles.tsv do not exist and their absence
+        # is the setting working. The values above still went through Spike,
+        # which is what this test is mostly for.
+        print(f"\ntiming mode is off, so no trace was built ({workdir})")
+        return 0
     for name in (timing.TRACE_SO, timing.CYCLE_TSV):
         path = os.path.join(workdir, name)
         if not os.path.isfile(path):

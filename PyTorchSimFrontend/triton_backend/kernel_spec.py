@@ -72,16 +72,51 @@ class SpecIncomplete(RuntimeError):
 # 1. codegen-time metadata capture
 # ---------------------------------------------------------------------------
 def _buffer_numel(name):
-    """Element count of an Inductor buffer, or None if it cannot be resolved."""
+    """How many elements of STORAGE an Inductor buffer spans, or None.
+
+    NOT the product of its shape, which is what this used to be. The kernel
+    addresses with the buffer's STRIDES -- Inductor bakes them into the source
+    as constants -- so the buffer it is handed has to be as long as those
+    strides reach, and a layout whose strides leave gaps reaches further than
+    its element count:
+
+        buf18 = empty_strided((1, 12, 197, 197), (465792, 38816, 197, 1))
+                   197 * 197 = 38809 elements per head, at a PITCH of 38816
+
+    Seven elements of hole per head, twelve heads: 465792 of storage against
+    465708 of shape. Sized by the shape, the last head runs 77 elements past
+    the end of the buffer the harness allocated, and those 77 are simply lost on
+    the way back -- which is what ViT's first functional-verify failure was.
+    Every element of `buf18` read as if the heads were packed, 416959 of 465708
+    over tolerance, while the kernel had in fact computed the softmax correctly
+    (0.0318 max error over the padded reading, and all of that in the truncated
+    tail).
+
+    `1 + sum((size - 1) * stride)` is the last addressable element, which is the
+    definition that holds for a permuted layout as well as a padded one -- a
+    channels-last buffer has no gaps and comes out at the product, as before.
+    """
     try:
         buf = V.graph.get_buffer(name)
         if buf is None:
             return None
-        size = buf.get_layout().size
-        n = 1
-        for s in size:
-            n *= int(V.graph.sizevars.size_hint(s))
-        return n
+        layout = buf.get_layout()
+        hint = V.graph.sizevars.size_hint
+        size = [int(hint(s)) for s in layout.size]
+        if any(s <= 0 for s in size):
+            return 0
+        try:
+            stride = [int(hint(s)) for s in layout.stride]
+        except (AttributeError, TypeError):
+            # A layout with no strides to read: fall back to the shape, which
+            # is what this function always did and is right whenever the buffer
+            # is contiguous.
+            n = 1
+            for s in size:
+                n *= s
+            return n
+        offset = int(hint(getattr(layout, "offset", 0)))
+        return offset + 1 + sum((s - 1) * t for s, t in zip(size, stride))
     except Exception:  # noqa: BLE001 - best effort; caller reports it as missing
         return None
 
@@ -145,7 +180,42 @@ def collect_meta(kernel, kernel_name):
         "numels": numels,
         "inside_reduction": bool(getattr(kernel, "inside_reduction", False)),
         "fixed_config": fixed_config_for(kernel, numels, args),
+        "template_grid": _template_grid(kernel),
     }
+
+
+def _template_grid(kernel):
+    """A TEMPLATE kernel's launch grid as (gridX, gridY, gridZ), else None.
+
+    A template kernel (mm, conv) does not walk the output the way a pointwise
+    kernel does. It tiles with its own BLOCK_M/BLOCK_N and reads
+    `tl.program_id(0..2)` directly, so the grid is the template's to state --
+    Inductor passes it as three extra launcher arguments rather than deriving it
+    (`FixedGrid.setup_grid_as_args`). The `numels` such a kernel reports describe
+    the output tensor, not its iteration space, so ceil(numel / XBLOCK) is not a
+    grid at all: for ResNet's first conv it gave 6272 where the template asks for
+    196, and the surplus programs index tiles past the end of every operand.
+
+    Asked the same way Inductor asks it for its own benchmark harness
+    (`TritonTemplateKernel.kernel_benchmark_extra_args`), so the grid here is the
+    grid the launcher would have passed.
+    """
+    grid_fn = getattr(kernel, "grid_fn", None)
+    call_sizes = getattr(kernel, "call_sizes", None)
+    if grid_fn is None or call_sizes is None:
+        return None                       # not a template; the numels are real
+    grid = grid_fn(*V.graph.sizevars.size_hints(call_sizes), kernel.meta)
+    try:
+        extents = tuple(int(g) for g in grid)
+    except TypeError:
+        extents = ()
+    if len(extents) != 3 or any(g < 1 for g in extents):
+        raise SpecIncomplete(
+            f"{getattr(kernel, 'kernel_name', kernel)}: template grid_fn returned "
+            f"{grid!r}; this route needs three static positive extents. Refusing "
+            f"rather than falling back to the numels, which describe the output "
+            f"tensor and not this kernel's iteration space.")
+    return extents
 
 
 #: Parallel iteration prefixes, OUTERMOST first. Inductor's `x` is the
@@ -161,6 +231,41 @@ def _block_name(prefix):
 def parallel_axes(numels):
     """Grid axes this kernel uses, outermost first."""
     return [p for p in _PARALLEL_PREFIXES if f"{p}numel" in numels]
+
+
+def launch_axes(meta, numels=None):
+    """The axes the LAUNCH spreads programs over, outermost first.
+
+    Same question as `parallel_axes`, asked of the whole kernel rather than of
+    its numels, because a template kernel's numels do not answer it: it declares
+    its grid outright. Every consumer that pairs an axis with an extent -- the
+    spec's grid, the trace's shape file, the WorkItem's program-id arguments --
+    must ask this one, or two of them disagree about which slot is which.
+    """
+    grid = meta.get("template_grid")
+    if grid is None:
+        return parallel_axes(meta["numels"] if numels is None else numels)
+    # ALL THREE, including a slot whose extent is 1. A pointwise kernel reads
+    # exactly the program ids its numels name, but a template reads
+    # `tl.program_id(0..2)` from its own text no matter what the grid says --
+    # ResNet's first conv multiplies pidY by BLOCK_N even though gridY is 1. An
+    # axis left undeclared is a kernel argument nothing accounts for, and the
+    # trace producer stops at it ("kernel arg still used after build_skeleton").
+    # A declared axis of extent 1 just runs its loop once.
+    return list(_PARALLEL_PREFIXES)
+
+
+def launch_extents(meta, numels=None):
+    """The extents of `launch_axes`, in the same order.
+
+    Kept beside the axes rather than recomputed per consumer: the pairing is the
+    part that has been got wrong, not either half on its own.
+    """
+    grid = meta.get("template_grid")
+    if grid is None:
+        return grid_of(meta if numels is None else {**meta, "numels": numels})
+    by_axis = dict(zip(("x", "y", "z"), grid))
+    return tuple(by_axis[p] for p in launch_axes(meta, numels))
 
 
 def reduction_axes(numels):
@@ -188,6 +293,17 @@ def reduction_axes(numels):
 #: because the count is a property of the kernel and not a constant. The cost of
 #: guessing high is one more trip round a loop that already exists; the cost of
 #: guessing low is a link-time scratchpad error that never mentions block sizes.
+#:
+#: IT IS AN OPENING BID NOW, NOT AN ANSWER, and the sentence above says why it
+#: could never have been one: the count is a property of the LOWERING, which
+#: does not exist until this number has already been used. ViT's first LayerNorm
+#: -- fused with a patch convolution, an addmm and a transpose -- keeps 41
+#: scratchpad globals live, and no constant that serves that kernel is tolerable
+#: for an ordinary reduction (it would cost three quarters of the tile). So
+#: codecache._shrink_reduction_blocks corrects it instead: tnpu measures the
+#: real usage, says by how much it is over, and the kernel is recompiled with a
+#: block divided by that ratio. Guessing low now costs one recompile rather than
+#: a failure, which is what makes 12 an acceptable guess rather than a bet.
 _REDUCTION_LIVE_TILES = 12
 
 
@@ -398,7 +514,9 @@ _HELPER_USE_RE = re.compile(r"\btriton_helpers\.(\w+)")
 # and what tl.maximum does not do.
 _VENDORED_HELPERS = {"promote_to_tensor", "is_floating",
                      "minimum", "maximum", "min2", "max2", "any",
-                     "welford_reduce", "welford_combine", "welford"}
+                     "welford_reduce", "welford_combine", "welford",
+                     "sort_with_index",
+                     "div_floor_integer", "remainder_integer"}
 
 _HELPERS_SRC = '''
 # Self-sufficient on purpose: this block is prepended, so it runs BEFORE the
@@ -473,6 +591,148 @@ def _tnpu_welford_combine(mean_1, m2_1, weight_1, mean_2, m2_2, weight_2):
 def _tnpu_welford(mean, m2, weight, dim):
     return tl.reduce((mean, m2, weight), dim, _tnpu_welford_combine)
 
+# --- bitonic sort, for top-k -------------------------------------------------
+# `_log2` is TRITON'S OWN (triton.language.standard), not torch's -- torch
+# imports it from there too, through triton_compat. So the chain below reaches
+# nothing outside triton once is_floating is the vendored one.
+from triton.language.standard import _log2 as _tnpu_log2
+
+@triton.jit
+def _tnpu_compare_and_swap_with_index(
+    x, idxs, rnumel, flip,
+    i: tl.constexpr, n_dims: tl.constexpr,
+    stable: tl.constexpr, descending: tl.constexpr,
+):
+    n_outer: tl.constexpr = x.numel >> n_dims
+    shape: tl.constexpr = [n_outer * 2**i, 2, 2 ** (n_dims - i - 1)]
+
+    idtype = tl.core.get_int_dtype(bitwidth=x.dtype.primitive_bitwidth, signed=True)
+
+    y = tl.reshape(x, shape)
+    iy = y.to(idtype, bitcast=True)
+    right_mask = tl.arange(0, 2)[None, :, None].to(idtype)
+    left_mask = (1 - right_mask).to(idtype)
+    ileft = tl.broadcast_to(tl.sum(iy * left_mask, 1).to(idtype)[:, None, :], shape)
+    iright = tl.broadcast_to(tl.sum(iy * right_mask, 1).to(idtype)[:, None, :], shape)
+    ileft = tl.reshape(ileft, x.shape)
+    iright = tl.reshape(iright, x.shape)
+    left = ileft.to(x.dtype, bitcast=True)
+    right = iright.to(x.dtype, bitcast=True)
+
+    y_idx = tl.reshape(idxs, shape)
+    left_idx = tl.broadcast_to(
+        tl.sum(y_idx * left_mask.to(y_idx.dtype), 1)[:, None, :], shape
+    )
+    right_idx = tl.broadcast_to(
+        tl.sum(y_idx * right_mask.to(y_idx.dtype), 1)[:, None, :], shape
+    )
+    left_idx = tl.reshape(left_idx, x.shape)
+    right_idx = tl.reshape(right_idx, x.shape)
+
+    if rnumel is None:
+        left_valid_mask = tl.full(x.shape, True, tl.int1)
+        right_valid_mask = tl.full(x.shape, True, tl.int1)
+    else:
+        left_valid_mask = left_idx < rnumel
+        right_valid_mask = right_idx < rnumel
+
+    ix = x.to(idtype, bitcast=True)
+
+    # sort treats nan as the higher value, and comparisons with nan are always
+    # False -- so the isnan terms are load-bearing, exactly as in _tnpu_maximum.
+    left_isnan = left != left
+    right_isnan = right != right
+
+    if descending:
+        cond = left < right
+        if _tnpu_is_floating(left):
+            if not stable:
+                cond = cond | right_isnan
+            else:
+                cond = cond | (right_isnan & (~left_isnan))
+    else:
+        cond = left > right
+        if _tnpu_is_floating(left):
+            if not stable:
+                cond = cond | left_isnan
+            else:
+                cond = cond | (left_isnan & (~right_isnan))
+
+    if stable:
+        eq = left == right
+        if _tnpu_is_floating(left):
+            eq = eq | (left_isnan & right_isnan)
+        cond = cond | (eq & (left_idx > right_idx))
+
+    cond = (right_valid_mask > left_valid_mask) | (
+        (right_valid_mask == left_valid_mask) & cond
+    )
+    cond = (cond ^ flip).to(tl.int1)
+    ret = ix ^ tl.where(cond, ileft ^ iright, tl.zeros_like(ix))
+    new_idxs = idxs ^ tl.where(cond, left_idx ^ right_idx, tl.zeros_like(idxs))
+
+    return ret.to(x.dtype, bitcast=True), new_idxs
+
+@triton.jit
+def _tnpu_bitonic_merge_with_index(
+    x, idxs, rnumel,
+    stage: tl.constexpr, alternating: tl.constexpr, n_dims: tl.constexpr,
+    stable: tl.constexpr, descending: tl.constexpr,
+):
+    n_outer: tl.constexpr = x.numel >> n_dims
+    tl.static_assert(stage <= n_dims)
+    if alternating:
+        shape: tl.constexpr = [n_outer * 2 ** (n_dims - 1 - stage), 2, 2**stage]
+        flip = tl.reshape(
+            tl.broadcast_to(tl.arange(0, 2)[None, :, None], shape), x.shape
+        )
+    else:
+        flip = False
+    for i in tl.static_range(stage):
+        x, idxs = _tnpu_compare_and_swap_with_index(
+            x, idxs, rnumel, flip, i + (n_dims - stage), n_dims, stable, descending
+        )
+    return x, idxs
+
+@triton.jit
+def _tnpu_sort_with_index(
+    x, idxs, rnumel,
+    dim: tl.constexpr = None,
+    stable: tl.constexpr = tl.constexpr(False),
+    descending: tl.constexpr = tl.constexpr(False),
+):
+    x, idxs = tl.broadcast(x, idxs)
+    _dim: tl.constexpr = len(x.shape) - 1 if dim is None else dim
+    tl.static_assert(
+        _dim == len(x.shape) - 1, "only minor dimension is currently supported"
+    )
+    n_dims: tl.constexpr = _tnpu_log2(x.shape[_dim])
+
+    for i in tl.static_range(1, n_dims + 1):
+        x, idxs = _tnpu_bitonic_merge_with_index(
+            x, idxs, rnumel, i,
+            alternating=i < n_dims, n_dims=n_dims,
+            stable=stable, descending=descending,
+        )
+    return x, idxs
+
+# FLOOR division, not C division, and the difference is the whole point --
+# `a // b` in triton truncates toward zero, and torch's `//` rounds toward
+# minus infinity. SwinV2's window partition indexes with it, and a negative
+# operand appears there the moment a cyclic shift is applied.
+@triton.jit
+def _tnpu_div_floor_integer(a, b):
+    quot = a // b
+    remainder = a % b
+    fixed = tl.where(remainder != 0, quot - 1, quot)
+    return tl.where((a < 0) != (b < 0), fixed, quot)
+
+@triton.jit
+def _tnpu_remainder_integer(a, b):
+    remainder = a % b
+    return tl.where((remainder != 0) & ((a < 0) != (b < 0)),
+                    remainder + b, remainder)
+
 triton_helpers = _types.ModuleType("triton_helpers")
 triton_helpers.any = _tnpu_any
 triton_helpers.welford_reduce = _tnpu_welford_reduce
@@ -484,6 +744,9 @@ triton_helpers.minimum = _tnpu_minimum
 triton_helpers.maximum = _tnpu_maximum
 triton_helpers.min2 = _tnpu_min2
 triton_helpers.max2 = _tnpu_max2
+triton_helpers.sort_with_index = _tnpu_sort_with_index
+triton_helpers.div_floor_integer = _tnpu_div_floor_integer
+triton_helpers.remainder_integer = _tnpu_remainder_integer
 '''
 
 
@@ -770,7 +1033,13 @@ def grid_of(meta):
 
     Also read by the timing path, which needs the same extents to enumerate the
     work-items -- so it lives here rather than being recomputed per consumer.
+
+    A template kernel states its own grid and this derivation does not apply to
+    it; see `_template_grid`.
     """
+    if meta.get("template_grid") is not None:
+        return launch_extents(meta)
+
     numels = meta["numels"]
     cfg = meta.get("fixed_config") or {}
     axes = parallel_axes(numels)
@@ -834,17 +1103,7 @@ def grid_xyz(meta):
     back with only its first XBLOCK columns written and the rest left at zero.
     Silently wrong output, not a crash, so it is built here by axis NAME.
     """
-
-    tg = meta.get("template_grid")
-    if tg is not None:
-        if isinstance(tg, dict):
-            raise SpecIncomplete(
-                f"{meta['kernel_name']} is a template kernel and its own grid "
-                f"function could not be evaluated ({tg['error']}); the pointwise "
-                f"formula would silently give the wrong number of programs")
-        return tuple(list(tg)[:3] + [1, 1, 1])[:3]
-
-    extents = dict(zip(parallel_axes(meta["numels"]), grid_of(meta)))
+    extents = dict(zip(launch_axes(meta), launch_extents(meta)))
     return tuple(extents.get(p, 1) for p in ("x", "y", "z"))
 
 

@@ -46,7 +46,31 @@ def test_swinv2(device, batch=2, image_size=64, window_size=8):
         x_device = x.to(device=device)
         model.to(device)
         opt_model = torch.compile(dynamic=False)(model)
-        out_device = opt_model(pixel_values=x_device).last_hidden_state
+        # THE DEFAULT DEVICE IS PART OF THE LAUNCH, for this model, and scoped
+        # to the compiled call rather than set for the process.
+        #
+        # Swinv2Layer.get_attn_mask builds its shifted-window mask with
+        # `torch.zeros(...)` and no `device=`, then moves it with
+        # `.to(hidden_states_windows.device)`. Building a constant on the host
+        # and copying it once is an ordinary thing to do and costs nothing on a
+        # GPU -- but torch.compile traces the whole forward, so that constant
+        # becomes a CPU ISLAND inside the compiled graph and Inductor emits a
+        # C++ kernel for it beside the device ones. Its CPU vectorizer then
+        # fails to compile what it wrote (`decltype` of a scalar float, then
+        # `Vectorized<float>::blendv`), which is an upstream defect reproducible
+        # with stock torch and no PyTorchSim imported at all.
+        #
+        # Naming the default device removes the island instead of working
+        # around it: the mask is built on the device, the backend compiles it
+        # like any other elementwise work, and no C++ is generated to miscompile.
+        #
+        #     measured   26 kernels and a CPP compile error without this; 27
+        #                kernels, cpp_fused = 0, and 4.77e-06 with it.
+        #
+        # `torch.device(...)` as a context manager is the documented scoped form
+        # of `set_default_device`, so the CPU reference below is unaffected.
+        with torch.device(device):
+            out_device = opt_model(pixel_values=x_device).last_hidden_state
 
         out_cpu = model.cpu()(pixel_values=x.cpu()).last_hidden_state
 

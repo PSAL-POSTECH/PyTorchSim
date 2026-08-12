@@ -92,45 +92,44 @@ def check_multi_axis_grid():
     return not problems
 
 
-def check_reduction():
-    """A reduction over the contiguous axis compiles AND the numbers are right.
+def check_reduction_is_right():
+    """A reduction must compute the right numbers, on BOTH axes.
 
-    THIS CHECK USED TO ASSERT THE OPPOSITE, and it was correct when it was
-    written: tnpu had no lane-aware reduction, the scratchpad is lane-banked so
-    the reduced axis has to live inside a lane, and triton-shared handed over a
-    linalg.reduce plus a linalg.transpose that no pass lowered that way. It said
-    "when the lane path lands, this is the test to delete".
+    THIS CHECK USED TO REQUIRE THE OPPOSITE and said so: "A reduction must fail
+    LOUDLY, not compile into wrong numbers ... tnpu has no lane-aware reduction
+    ... When the lane path lands, this is the test to delete." It landed, from an
+    unexpected direction: nothing in tnpu changed, but Inductor now emits a
+    PERSISTENT reduction wherever this backend's block covers the extent
+    (inductor_templates._persist_a_reduction_that_fits_one_tile), and a
+    reduction that finishes inside one tile never crosses a lane -- which was the
+    whole reason the old form could not be lowered.
 
-    The lane path landed. Measured on a fresh process, `t.sum(dim=1)` over
-    [128, 64] compiles, runs on Spike and comes back at 1.907e-06 against torch.
-    So the check is inverted rather than deleted: asserting the values is
-    strictly more than asserting that nothing stopped, and a refusal returning
-    here would now be the regression.
+    Deleting it outright would give up the thing it was really guarding, which is
+    not "does this stop" but "are the numbers real". So it is turned around and
+    asks that instead.
 
-    BOTH AXES NOW, and dim 0 used to be the one that stopped. It did not stop
-    for being dim 0: Inductor handed the reduction down correctly either way
-    (dim 0 gives xnumel 64 against r0_numel 128, dim 1 the reverse) and
-    `fixed_config_for` gave both XBLOCK = 128 without looking at the numel, so
+    AND IT ASKS IT OF dim 0 TOO, which used to be the axis that stopped. It did
+    not stop for being dim 0: Inductor hands the reduction down correctly either
+    way (dim 0 gives xnumel 64 against r0_numel 128, dim 1 the reverse) and
+    `fixed_config_for` gave BOTH XBLOCK = 128 without looking at the numel, so
     dim 0 got a tile twice its iteration space and the surplus became a mask
-    that stage 4 refused. Clamping the block to its numel is the fix and this
-    checks both.
+    that stage 4 refused. Blocks are clamped to their numel now, and this checks
+    the axis that clamping fixed as well as the one that never needed it.
     """
     x = torch.randn(128, 64)
     for dim in (1, 0):
-        expected = x.sum(dim=dim)
+        ref = x.sum(dim=dim)
         try:
-            got = torch.compile(lambda t: t.sum(dim=dim))(x.to("npu:0")).cpu()
-        except Exception as e:  # noqa: BLE001 - a stop is now the failure
+            got = torch.compile(lambda t: t.sum(dim=dim))(x.to("npu:0")).to("cpu")
+        except Exception as e:  # noqa: BLE001 - a stop is now a failure, and says so
             first = (str(e).strip().splitlines() or [type(e).__name__])[0]
-            print(f"  reduction dim={dim} STOPPED at: "
+            print(f"  reduction dim={dim} stopped at: "
                   f"{type(e).__name__}: {first[:64]}")
             return False
-        err = (got - expected).abs().max().item()
-        if not torch.allclose(got, expected, rtol=1e-4, atol=1e-4):
-            print(f"  reduction dim={dim} compiled but the values are wrong: "
-                  f"max_abs_err {err}")
+        err = (got - ref).abs().max().item()
+        print(f"  reduction dim={dim} max_abs_err: {err:g}")
+        if not torch.allclose(got, ref, rtol=1e-4, atol=1e-4):
             return False
-        print(f"  reduction dim={dim}: max_abs_err {err:g}")
     return True
 
 
@@ -140,8 +139,8 @@ def main():
 
     print(f"multi-axis grid          = "
           f"{'ok' if check_multi_axis_grid() else 'FAILED'}")
-    print(f"reduction values         = "
-          f"{'ok' if check_reduction() else 'FAILED'}")
+    print(f"reduction is right       = "
+          f"{'ok' if check_reduction_is_right() else 'FAILED'}")
     print(f"TORCHSIM_TRITON_CODEGEN = {extension_config.CONFIG_TRITON_CODEGEN}")
     print(f"TNPU_DIR                = {extension_config.CONFIG_TNPU_DIR}")
     ok, _out = tnpu_bridge.doctor()

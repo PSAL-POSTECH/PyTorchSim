@@ -48,12 +48,48 @@ def tensor_args(meta, args):
     return list(zip(metas, tensors))
 
 
+def _storage_numel(t):
+    """How many elements of storage `t` spans -- its last addressable one.
+
+    NOT `t.numel()`. The kernel addresses with the tensor's STRIDES, and a
+    tensor whose strides leave gaps reaches past its element count: attention's
+    probabilities arrive as `empty_strided((1, 12, 197, 197), (465792, 38816,
+    197, 1))`, seven elements of hole at the end of every head. The .raw round
+    trip below is a flat file, so it has to be as long as the addresses the
+    kernel computes -- read at 465708 the last head is 77 elements short, and
+    every head after the first is read at the wrong offset.
+
+    Matches kernel_spec._buffer_numel, which is the same definition on the
+    compile side. The two must agree: one sizes the buffer the binary is
+    handed, the other the file that fills it.
+
+    IT REPLACES A PERMUTATION, and the measurement that bought that permutation
+    still holds -- `as_strided` gives the same answer where it applied. The
+    round trip used to `.permute(...).contiguous()` into memory order, because
+    `.contiguous()` alone is LOGICAL order and a channels-last tensor is a
+    different permutation of the same values:
+
+        measured   resnet18's first conv, whose input the graph put in
+                   channels-last. The output matched a torch reference taken
+                   over the file read channels-last to 1e-5 and differed from
+                   the real answer in 602115 of 802816 elements; PyTorchSim's
+                   own per-kernel check said 602108 and the same 1.38288.
+
+    A permutation can only reorder, though, so it could never place a stride
+    that skips. Saying it once with the tensor's own strides covers both.
+    """
+    if t.dim() == 0:
+        return 1
+    return 1 + sum((s - 1) * st for s, st in zip(t.shape, t.stride()))
+
+
 def _check(meta, pairs):
     for m, t in pairs:
-        if t.numel() != m["numel"]:
+        if _storage_numel(t) != m["numel"]:
             raise ShapeMismatch(
-                f"{meta['kernel_name']}: '{m['name']}' has {t.numel()} "
-                f"element(s), but the binary was compiled for {m['numel']}. "
+                f"{meta['kernel_name']}: '{m['name']}' spans "
+                f"{_storage_numel(t)} element(s) of storage, but the binary was "
+                f"compiled for {m['numel']}. "
                 f"tnpu bakes the extents, the grid and the scalar values into "
                 f"the kernel, so a dynamic-shape graph reuses an ELF that does "
                 f"not fit. The timing path does handle this (it takes the grid "
@@ -81,7 +117,38 @@ def write_inputs(workdir, meta, args):
     for m, t in pairs:
         path = os.path.join(runtime, f"{m['name']}.raw")
         if m["role"] in ("in", "inout"):
-            t.detach().to("cpu").contiguous().numpy().tofile(path)
+            import torch
+            cpu = t.detach().to("cpu")
+            # `device="cpu"` SAID OUT LOUD, because this is the buffer that
+            # becomes a .raw FILE -- it is host storage by definition, and the
+            # next line calls `.numpy()` on it. Without it the tensor goes to
+            # whatever `torch.set_default_device` says, and that is not always
+            # CPU: setting the default to npu is the documented way to stop a
+            # model that writes `torch.zeros(...)` with no device from leaving
+            # an input-independent constant on the host (transformers' SwinV2
+            # attention mask does exactly that). Measured before this line
+            # existed: `TypeError: can't convert npu:0 device type tensor to
+            # numpy`, raised from here, three frames under the model.
+            flat = torch.zeros(m["numel"], dtype=cpu.dtype, device="cpu")
+            # SCATTERED TO THE ADDRESSES THE KERNEL WILL COMPUTE, in one
+            # statement, because that is what `as_strided` means. It subsumes
+            # the permute-to-memory-order this used to do -- a channels-last
+            # tensor lands the same way -- and it also handles the case that one
+            # could not express: strides with GAPS in them. Any hole stays zero;
+            # nothing logically reads one.
+            #
+            # `t.stride()`, NOT `cpu.stride()`. `.to("cpu")` does not carry
+            # arbitrary strides across -- it materialises a contiguous copy --
+            # so a padded tensor arrives packed and asking IT for the layout
+            # reproduces the very defect this is here to fix. Measured on
+            # ViT's buf18: the file then diverged from the kernel that wrote it
+            # at flat index 38809, which is 197*197, the head size WITHOUT the
+            # seven-element hole. The copy into a strided view is by logical
+            # index, so the contiguous cpu tensor lands in the padded slots
+            # correctly; only the layout has to come from the tensor the kernel
+            # was compiled against.
+            flat.as_strided(t.shape, t.stride()).copy_(cpu)
+            flat.numpy().tofile(path)
         else:
             np.zeros(m["numel"], dtype=_np_dtype(m["dtype"])).tofile(path)
     return runtime
@@ -103,20 +170,143 @@ def read_outputs(workdir, meta, args):
             raise RuntimeError(
                 f"{path} holds {flat.size} element(s), expected {m['numel']} "
                 f"-- Spike did not write the whole tensor")
-        t.copy_(torch.from_numpy(flat).view_as(t).to(t.dtype))
+        # Gathered back the way it was scattered, by the same one statement:
+        # the kernel wrote the addresses the strides name, so read them from
+        # there. `view_as(t)` is logical order and is the same defect as
+        # `.contiguous()` on the way in -- see _storage_numel.
+        stored = torch.from_numpy(flat).as_strided(t.shape, t.stride())
+        t.copy_(stored.to(t.dtype))
         written.append(m["name"])
     return written
 
 
+REPLAY_DIR = ".triton_replay"
+
+
+def _replay_root(workdir):
+    """Beside the workdirs, not inside one.
+
+    A tnpu-side fix is picked up by DELETING `outputs/triton_*`, which is the
+    project's own instruction and is what forces the pipeline to run again. A
+    cache kept inside a workdir would go with it every time it was most wanted,
+    so it lives one level up and is keyed strictly enough not to need the
+    deletion: the ELF's bytes are in the key, so the rebuilt kernel misses.
+    """
+    return os.path.join(os.path.dirname(os.path.abspath(workdir)), REPLAY_DIR)
+
+
+def _replay_key(workdir, meta, runtime):
+    """What this launch's outputs are a function of.
+
+    A GRAPH IS RE-RUN TO SEE THE NEXT LAYER, not the ones already settled, and
+    Spike is the whole cost -- resnet18 spends minutes there per conv and the
+    first twenty are unchanged between runs. So a launch whose every input is
+    the one it had last time can replay that answer instead of simulating it,
+    when `TORCHSIM_TRITON_REPLAY=1` asks for it.
+
+    THE KEY IS EVERYTHING THE ANSWER DEPENDS ON: the ELF's own bytes, so a fix anywhere in tnpu misses (the workdir
+    is keyed by the TRITON source alone and would not), and the bytes of every
+    input, so a different tensor misses. The Triton source is already in the
+    workdir path. Nothing else reaches the kernel.
+    """
+    import hashlib
+
+    h = hashlib.sha256()
+    elf = [f for f in sorted(os.listdir(workdir)) if f.endswith(".elf")]
+    if not elf:
+        return None                       # nothing compiled yet; do not replay
+    with open(os.path.join(workdir, elf[0]), "rb") as f:
+        h.update(f.read())
+    for m in meta["args"]:
+        h.update(("%s|%s|%s|%s;" % (m["name"], m["role"], m["dtype"],
+                                    m["numel"])).encode())
+        if m["role"] in ("in", "inout"):
+            with open(os.path.join(runtime, f"{m['name']}.raw"), "rb") as f:
+                h.update(f.read())
+    return h.hexdigest()[:32]
+
+
+def _outputs_of(meta):
+    return [m["name"] for m in meta["args"] if m["role"] in ("out", "inout")]
+
+
+def _replay(workdir, meta, runtime, key):
+    """Put a saved run's outputs back in runtime/, or say it is not there."""
+    import shutil
+
+    saved = os.path.join(_replay_root(workdir), key)
+    names = _outputs_of(meta)
+    if not all(os.path.isfile(os.path.join(saved, f"{n}.raw")) for n in names):
+        return False
+    for n in names:
+        shutil.copyfile(os.path.join(saved, f"{n}.raw"),
+                        os.path.join(runtime, f"{n}.raw"))
+    return True
+
+
+def _save_replay(workdir, meta, runtime, key):
+    import shutil
+
+    saved = os.path.join(_replay_root(workdir), key)
+    os.makedirs(saved, exist_ok=True)
+    for n in _outputs_of(meta):
+        shutil.copyfile(os.path.join(runtime, f"{n}.raw"),
+                        os.path.join(saved, f"{n}.raw"))
+
+
 def run(workdir, meta, args, timeout_sec=None):
-    """Execute the kernel on the launch's tensors. Returns the names written."""
+    """Execute the kernel on the launch's tensors. Returns the names written.
+
+    Returns the same names whether Spike ran or a saved run was replayed; the
+    caller is told which in the log, because "it passed" means something
+    different when nothing was simulated.
+    """
+    from filelock import FileLock
+
     from . import tnpu_bridge
 
     spec = os.path.join(workdir, f"{meta['kernel_name']}_spec.py")
     if not os.path.isfile(spec):
         raise FileNotFoundError(f"{spec} not found -- compile the kernel first")
 
-    write_inputs(workdir, meta, args)
+    # ONE LAUNCH AT A TIME PER KERNEL, and the lock has to span all three steps.
+    # `runtime/` is a FIXED name under the kernel's hash directory, and that
+    # directory is shared by every process that compiled the same source -- two
+    # test sessions in one TORCHSIM_DUMP_PATH, most obviously. The compile is
+    # locked (codecache.py); the launch was not, so A's write_inputs, B's
+    # write_inputs, A's spike, A's read_outputs interleaves freely and A reads
+    # back the answer to B's tensors. It does not raise: the file is there and
+    # the right size, it is just someone else's data.
+    #
+    # MEASURED: two sessions sharing TORCHSIM_DUMP_PATH on
+    # tests/ops/elementwise/test_add.py -- "VectorAdd Test Failed", max abs diff
+    # 1.25, on a kernel that passes alone. Wrong values reported as a compiler
+    # failure is the most expensive bug this repo can produce.
+    #
+    # Serialising rather than giving each process its own runtime/ because the
+    # directory name is tnpu's (tnpu/spike.py joins "runtime" itself) and that is
+    # another repo. Contention is per (kernel, concurrent launch) and one spike
+    # run is seconds; wrong answers are not a tradeoff against seconds.
+    with FileLock(os.path.join(workdir, ".launch.lock"), timeout=1800):
+        return _run_locked(workdir, meta, args, spec, timeout_sec, tnpu_bridge)
+
+
+def _run_locked(workdir, meta, args, spec, timeout_sec, tnpu_bridge):
+    """`run` with the per-kernel launch lock already held."""
+    runtime = write_inputs(workdir, meta, args)
+
+    # OFF BY DEFAULT. A full run is the thing being trusted, and a result that
+    # came out of a file is not a result the simulator produced today -- the key
+    # argues it would have been the same, but an argument is not a measurement.
+    # Turn it on for the inner loop, where the same graph is re-run to reach the
+    # kernel actually being worked on, and leave it off for anything reported.
+    key = None
+    if os.environ.get("TORCHSIM_TRITON_REPLAY", "0") == "1":
+        key = _replay_key(workdir, meta, runtime)
+        if key and _replay(workdir, meta, runtime, key):
+            logger.info("[Spike] %s replayed %s (same ELF, same inputs)",
+                        meta["kernel_name"], key)
+            return read_outputs(workdir, meta, args)
 
     # Drops the stale PYTHONPATH (tnpu keeps its own MLIR bindings) and hands
     # over the machine the TOGSim YAML describes.
@@ -130,4 +320,6 @@ def run(workdir, meta, args, timeout_sec=None):
             f"[Spike] {meta['kernel_name']} failed:\n"
             + (proc.stdout + proc.stderr)[-2000:])
 
+    if key:
+        _save_replay(workdir, meta, runtime, key)
     return read_outputs(workdir, meta, args)

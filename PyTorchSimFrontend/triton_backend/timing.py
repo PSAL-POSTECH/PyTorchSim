@@ -128,52 +128,11 @@ def work_item_for(meta):
 
     n_tensor, n_scalar = _runtime_arg_layout(meta)
     pid_base = n_tensor + n_scalar + 3       # after gridX, gridY, gridZ
-    axes = grid_axes(meta)
+    axes = kernel_spec.launch_axes(meta)
     # Extents are left to run time: only the axis COUNT has to be compiled in,
     # and the launch knows the real numels. One trace then serves every shape.
     return WorkItem(parallel_args=[pid_base + _PID_SLOT[p] for p in axes],
                     grid=[None] * len(axes))
-
-
-def _template_extents(meta):
-    """The template grid's non-degenerate leading extents, or None.
-
-    The trailing 1s go because a launch of (256, 4, 1) is two-dimensional; the
-    slots are in pid order already, so what is left is x, y, z as far as it
-    goes.
-    """
-    tg = meta.get("template_grid")
-    if not isinstance(tg, (list, tuple)):
-        return None
-    ext = [e for e in tg if e is not None] or [1]
-    while len(ext) > 1 and ext[-1] == 1:
-        ext.pop()
-    return ext
-
-
-def grid_axes(meta):
-    """Which parallel axes this kernel's launch has -- ONE ANSWER, TWO READERS.
-
-    `work_item_for` compiles the COUNT into the trace and `write_shape` writes
-    one EXTENT per axis at launch, and the trace producer zips them: a count and
-    an extent list of different lengths is not a mismatch it can see. It reads
-    the second bound off the end of the list.
-
-    THEY USED TO COUNT DIFFERENTLY, and only for template kernels -- which is the
-    case the template-grid rule was added for in the first place. Measured on
-    tests/ops/attention/test_gqa.py: triton_npu_fused_bmm_..._1 has
-    template_grid [1, 8, 1] and a single xnumel, so the WorkItem got two pid
-    arguments while trace_shape.txt got one line, "1". TOGSim then looped to
-    whatever was past the end of shape_args and allocated against it -- tens of
-    gigabytes, and a SIGABRT once the address space was capped. Not a wrong
-    number: the machine falls over.
-    """
-    from . import kernel_spec
-
-    ext = _template_extents(meta)
-    if ext is not None:
-        return ["x", "y", "z"][:len(ext)]
-    return kernel_spec.parallel_axes(meta["numels"])
 
 
 def write_shape(workdir, meta, args=()):
@@ -184,24 +143,22 @@ def write_shape(workdir, meta, args=()):
     order. Falls back to the compile-time hint when they are absent.
 
     A TEMPLATE KERNEL'S EXTENTS ARE ITS TEMPLATE GRID, not a numels/BLOCK
-    division -- the same thing `grid_xyz` says about the launch and
-    `work_item_for` about the axis count. mm and conv come from a jinja template
-    whose grid is over output tiles, and the numels Inductor still attaches
-    describe a pointwise iteration space that is not it. Dividing them gives one
-    extent for a launch that has two, and `grid_axes` says so above.
-
-    The template grid is evaluated at CODEGEN time from the call sizes, so it is
-    a compile-time constant here; `dynamic=False` is what this route runs under
-    and a dynamic shape has no template grid to record.
+    division. `kernel_spec.launch_axes` and `launch_extents` own that pairing --
+    both readers ask them, so neither can disagree about which slot is which --
+    and this writes what they answer.
     """
     from . import kernel_spec
 
-    ext = _template_extents(meta)
-    if ext is not None:
-        _write_extents(workdir, ext, "template grid")
-        return ext
-
     numels = dict(meta["numels"])
+    # A template kernel's trailing call arguments are its grid, not its numels
+    # (FixedGrid passes _grid_0/1/2), and its numels describe the output tensor
+    # rather than its iteration space. Reading either into the other silently
+    # rescales the launch, so the recorded grid is used verbatim.
+    if meta.get("template_grid") is not None:
+        grid = list(kernel_spec.launch_extents(meta))
+        _write_extents(workdir, grid, "template grid")
+        return grid
+
     # Only the PARALLEL numels ride along on the call -- a reduction axis is
     # looped inside the kernel, so it is not passed and must not consume one of
     # the trailing values. They arrive in kernel order, which is the dict's.
@@ -246,8 +203,8 @@ def _write_extents(workdir, ext, what):
     whatever was past the end -- tens of gigabytes, killed by hand, and a
     SIGABRT once the address space was capped.
 
-    `grid_axes` is now the single source both readers use, so they agree by
-    construction. This guards what that cannot: a trace.so is REUSED when it is
+    `kernel_spec.launch_axes` and `launch_extents` are the single source both
+    readers use, so they agree by construction. This guards what that cannot: a trace.so is REUSED when it is
     already on disk (see `emit_trace`'s caller), so a stale one can meet a meta
     that counts differently. The count travels with the trace and is compared
     here, where the answer is a diagnostic instead of an allocation.

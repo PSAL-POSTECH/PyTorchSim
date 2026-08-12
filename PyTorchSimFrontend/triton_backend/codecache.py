@@ -13,6 +13,7 @@ artifact (01-ttir.mlir ... *-<kernel>.elf).
 """
 
 import os
+import re
 
 from filelock import FileLock
 from torch._inductor.codecache import get_hash
@@ -55,21 +56,33 @@ class TritonNPULauncher:
                 "[Spike] %s: functional mode is off, so the output tensors keep "
                 "whatever they held", self.kernel_name)
 
+        # AND THE OTHER HALF IS SWITCHED TOO, which the paragraph above already
+        # claims: "the two halves are independent". Only the functional one was
+        # -- the timing half ran whatever the config said, so a graph being
+        # checked for VALUES paid for a cycle simulation of every kernel it
+        # touched. That is the whole cost of an e2e run: mobilenet_v2's
+        # depthwise convolutions launch a grid of [144, 2, 49] each, and the
+        # model took over two hours to reach kernel 16 of 57 with timing on and
+        # minutes with it off. `pytorchsim_timing_mode` is the switch the MLIR
+        # route already reads (extension_codecache.py), so this route reads the
+        # same one rather than inventing a second name.
+        # AND THE MEASUREMENT FROM THE OTHER DIRECTION. Before this switch
+        # existed the timing half ran even when only correctness was wanted, so
+        # a kernel whose TIMING path failed failed the whole launch though Spike
+        # had written the right values -- which is the state
+        # tests/ops/attention/test_gqa.py and
+        # tests/ops/fusion/test_prologue_fusion.py were in: their bmm template
+        # kernels ran on Spike and died in emit_trace.
         if not extension_config.pytorchsim_timing_mode:
-            # THE TWO HALVES ARE INDEPENDENT AND THE SWITCH HAS TO BE TOO.
-            # functional_mode already turns Spike off above; timing had no
-            # equivalent here, so a run that wanted only correctness still built
-            # trace.so and still ran TOGSim -- and a kernel whose TIMING path
-            # fails then fails the whole launch even though Spike wrote the
-            # right values. That is the state tests/ops/attention/test_gqa.py
-            # and tests/ops/fusion/test_prologue_fusion.py were in: their bmm
-            # template kernels ran on Spike and died in emit_trace.
-            #
-            # The YAML key exists and the MLIR route reads it; this route was
-            # the one not asking.
+            # NOT "[TOGSim]". The sweep buckets a failure by matching its
+            # output, and its togsim bucket is `TOGSim|trace\.so|SIGSEGV|...` --
+            # so a line carrying that word puts every failing test in this mode
+            # into the wrong bucket whatever actually went wrong. MEASURED:
+            # tests/system/test_triton_codegen.py came back "[togsim]" for a
+            # failure that had nothing to do with it.
             logger.warning(
-                "[TOGSim] %s: timing mode is off, so no trace was built and no "
-                "cycles were measured", self.kernel_name)
+                "[timing] %s: timing mode is off, so no cycles are reported",
+                self.kernel_name)
             return None
 
         if not os.path.isfile(os.path.join(self.workdir, timing.TRACE_SO)):
@@ -77,6 +90,66 @@ class TritonNPULauncher:
         result = timing.run_togsim(self.workdir, meta=self.meta, args=args)
         logger.info("[TOGSim] %s simulated -> %s", self.kernel_name, result)
         return result
+
+
+#: tnpu's machine-readable half of a scratchpad refusal (tnpu/spad.py,
+#: SPAD_OVERFLOW_MARKER). The rest of that message is advice for a person.
+_SPAD_OVERFLOW_RE = re.compile(
+    r"tnpu-spad-overflow: usage=(\d+) budget=(\d+)")
+
+
+def _spad_overflow(exc):
+    """(usage, budget) if this failure was the scratchpad, else None.
+
+    READ OFF `exc.output`, NOT `str(exc)`. TnpuError's message is a summary --
+    it keeps the last few lines that look like a diagnostic (`error:`, an
+    exception name, an assertion) so Inductor, which prints only `str(exc)`,
+    shows something useful. The marker looks like none of those on purpose: it
+    is addressed to this function, not to a reader, and widening that filter to
+    let it through would put it in front of the reader instead. The raw stage
+    output is where a contract belongs.
+    """
+    m = _SPAD_OVERFLOW_RE.search(getattr(exc, "output", None) or str(exc))
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def _shrink_reduction_blocks(meta, usage, budget):
+    """Divide every reduction block by enough to fit, in place. False if stuck.
+
+    WHY THE BLOCK SIZE IS THE FREE VARIABLE AND THE BUFFER COUNT IS NOT.
+    `fixed_config_for` sizes R0_BLOCK against a budget divided by
+    `_REDUCTION_LIVE_TILES`, a constant standing in for how many block-sized
+    tiles the kernel will keep live -- and that count is a property of the
+    LOWERING, which does not exist until the block size has been chosen. The
+    constant's own comment says so ("the count is a property of the kernel and
+    not a constant") and then guesses anyway, at 12. ViT's first LayerNorm,
+    fused with a patch convolution, an addmm and a transpose, lowers to 41
+    scratchpad globals:
+
+        R0_BLOCK 512   77504 bytes/lane   over the 65536 budget
+        R0_BLOCK 256   38680             fits
+        R0_BLOCK 128   19356
+
+    So the guess cannot be made right by picking a bigger number -- 41 would
+    cost every ordinary reduction three quarters of its tile. It can only be
+    CORRECTED, and the correction is one recompile: tnpu measures the real
+    thing and says by how much.
+
+    `usage / budget` rounded up to a power of two, so an overshoot of 1.18x
+    halves once and an overshoot of 5x goes straight to an eighth rather than
+    walking there. Only reduction blocks move: XBLOCK is the lane axis and
+    shrinking it would leave lanes idle without freeing a byte per lane.
+    """
+    factor = 1
+    while usage > budget * factor:
+        factor *= 2
+    blocks = {k: v for k, v in (meta.get("fixed_config") or {}).items()
+              if k.startswith("R") and k.endswith("_BLOCK") and v and v > 1}
+    if not blocks:
+        return False
+    for k, v in blocks.items():
+        meta["fixed_config"][k] = max(1, v // factor)
+    return True
 
 
 def triton_npu_compile(src_code, meta, kernel_name):
@@ -98,9 +171,26 @@ def triton_npu_compile(src_code, meta, kernel_name):
             # source is worth keeping.
             with open(os.path.join(write_path, "kernel.py"), "w") as f:
                 f.write(src_code)      # the unmodified Inductor source
-            kernel_spec.write_spec_file(src_code, meta, spec_path,
-                                        tnpu_bridge.tnpu_dir())
             timing.store_meta(write_path, meta)   # lets the timing step run standalone
-            tnpu_bridge.run_pipeline(spec_path, write_path, to_stage="binary")
+            while True:
+                kernel_spec.write_spec_file(src_code, meta, spec_path,
+                                            tnpu_bridge.tnpu_dir())
+                try:
+                    tnpu_bridge.run_pipeline(spec_path, write_path,
+                                             to_stage="binary")
+                    break
+                except tnpu_bridge.TnpuError as exc:
+                    over = _spad_overflow(exc)
+                    if over is None or not _shrink_reduction_blocks(meta, *over):
+                        raise
+                    logger.info(
+                        "[triton-npu] %s: %d bytes/lane over a budget of %d, "
+                        "retrying with %s", kernel_name, over[0], over[1],
+                        {k: v for k, v in meta["fixed_config"].items()
+                         if k.endswith("_BLOCK")})
+            # The spec now records the block sizes that actually compiled, and
+            # timing.store_meta above wrote the ones that did not. Restate it so
+            # a standalone timing run launches the grid the ELF was built for.
+            timing.store_meta(write_path, meta)
         logger.info("[triton-npu] %s -> %s", kernel_name, write_path)
         return TritonNPULauncher(kernel_name, write_path, meta)

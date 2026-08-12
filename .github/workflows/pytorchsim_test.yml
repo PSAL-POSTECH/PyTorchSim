@@ -613,7 +613,7 @@ jobs:
           echo "Running test_mistral.py"
           docker run --rm \
             -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
-            ${{ inputs.image_name }} python3 PyTorchSim/tests/models/Mixtral8x7B/test_attention.py
+            ${{ inputs.image_name }} python3 PyTorchSim/tests/models/Mixtral8x7B/test_mistral.py
 
   test_vit:
     name: Run test_vit

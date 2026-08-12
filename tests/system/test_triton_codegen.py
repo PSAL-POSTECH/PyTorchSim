@@ -93,7 +93,7 @@ def check_multi_axis_grid():
 
 
 def check_reduction_is_right():
-    """A reduction must compute the right numbers.
+    """A reduction must compute the right numbers, on BOTH axes.
 
     THIS CHECK USED TO REQUIRE THE OPPOSITE and said so: "A reduction must fail
     LOUDLY, not compile into wrong numbers ... tnpu has no lane-aware reduction
@@ -107,18 +107,30 @@ def check_reduction_is_right():
     Deleting it outright would give up the thing it was really guarding, which is
     not "does this stop" but "are the numbers real". So it is turned around and
     asks that instead.
+
+    AND IT ASKS IT OF dim 0 TOO, which used to be the axis that stopped. It did
+    not stop for being dim 0: Inductor hands the reduction down correctly either
+    way (dim 0 gives xnumel 64 against r0_numel 128, dim 1 the reverse) and
+    `fixed_config_for` gave BOTH XBLOCK = 128 without looking at the numel, so
+    dim 0 got a tile twice its iteration space and the surplus became a mask
+    that stage 4 refused. Blocks are clamped to their numel now, and this checks
+    the axis that clamping fixed as well as the one that never needed it.
     """
     x = torch.randn(128, 64)
-    ref = x.sum(dim=1)
-    try:
-        got = torch.compile(lambda t: t.sum(dim=1))(x.to("npu:0")).to("cpu")
-    except Exception as e:  # noqa: BLE001 - a stop is now a failure, and says so
-        first = (str(e).strip().splitlines() or [type(e).__name__])[0]
-        print(f"  reduction stopped at: {type(e).__name__}: {first[:72]}")
-        return False
-    err = (got - ref).abs().max().item()
-    print(f"  reduction max_abs_err: {err:g}")
-    return bool(torch.allclose(got, ref, rtol=1e-4, atol=1e-4))
+    for dim in (1, 0):
+        ref = x.sum(dim=dim)
+        try:
+            got = torch.compile(lambda t: t.sum(dim=dim))(x.to("npu:0")).to("cpu")
+        except Exception as e:  # noqa: BLE001 - a stop is now a failure, and says so
+            first = (str(e).strip().splitlines() or [type(e).__name__])[0]
+            print(f"  reduction dim={dim} stopped at: "
+                  f"{type(e).__name__}: {first[:64]}")
+            return False
+        err = (got - ref).abs().max().item()
+        print(f"  reduction dim={dim} max_abs_err: {err:g}")
+        if not torch.allclose(got, ref, rtol=1e-4, atol=1e-4):
+            return False
+    return True
 
 
 def main():
@@ -168,6 +180,14 @@ def main():
         print("no kernel directory was produced")
         return 1
     workdir = max(dirs, key=os.path.getmtime)
+    if not extension_config.pytorchsim_timing_mode:
+        # NOT A SKIP OF THE TEST, A SKIP OF THE HALF THAT WAS TURNED OFF.
+        # `codecache` builds no trace and runs no TOGSim when timing mode is
+        # off, so trace.so and trace_cycles.tsv do not exist and their absence
+        # is the setting working. The values above still went through Spike,
+        # which is what this test is mostly for.
+        print(f"\ntiming mode is off, so no trace was built ({workdir})")
+        return 0
     for name in (timing.TRACE_SO, timing.CYCLE_TSV):
         path = os.path.join(workdir, name)
         if not os.path.isfile(path):

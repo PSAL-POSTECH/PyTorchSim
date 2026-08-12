@@ -53,8 +53,9 @@ def measure_tile_cycles(workdir, meta):
     import subprocess
 
     from . import tnpu_bridge
-    env = dict(os.environ)
-    env.pop("PYTHONPATH", None)          # keep tnpu on its own MLIR bindings
+    # Drops the stale PYTHONPATH (tnpu keeps its own MLIR bindings) and hands
+    # over the machine the TOGSim YAML describes.
+    env = tnpu_bridge.tnpu_env()
     proc = subprocess.run(
         [extension_config.CONFIG_TNPU_PYTHON, "-m", "tnpu.cycle", spec, workdir],
         capture_output=True, text=True, cwd=tnpu_bridge.tnpu_dir(), env=env)
@@ -97,6 +98,30 @@ def work_item_for(meta):
     one), while the program-id arguments are always laid out x, y, z. The two
     are zipped downstream, so the argument list is built per axis rather than as
     a range.
+
+    A TEMPLATE KERNEL'S AXIS COUNT IS NOT IN ITS NUMELS, which is the same thing
+    kernel_spec.grid_xyz has to say about the extents. mm and conv come from a
+    jinja template whose grid is over output tiles; Inductor still hands them a
+    numels dict, and it describes the pointwise iteration space rather than that
+    grid. Counting axes from it gives 1 for every template kernel.
+
+    That is right often enough to hide: an mm at 128x128 has template grid
+    (16, 1, 1), so one axis is the true answer and the numels agree by accident.
+    A bmm does not -- measured on tests/ops/fusion/test_prologue_fusion.py,
+    triton_npu_fused_add_bmm_mul_4 has template grid (256, 4, 1) while its
+    numels hold a single xnumel. One pid argument was replaced and the other was
+    left, and _rewrite_signature refuses a kernel argument that still has uses:
+
+        ValueError: kernel arg still used after build_skeleton; cannot drop it
+
+    with %arg6 feeding remsi/divsi (the pid decomposition) and %arg7 feeding
+    muli by 262144 (the batch stride). Both allowlist failures on this route,
+    test_gqa and test_prologue_fusion, are bmm template kernels dying there.
+
+    So the template's own grid decides the count when it has one, and the numels
+    do otherwise. The extents still are not compiled in -- only the COUNT has to
+    be, and the launch knows the rest -- so this reads the length and nothing
+    more.
     """
     from PyTorchSimFrontend.mlir.passes.lower_to_emitc import WorkItem
     from . import kernel_spec
@@ -116,6 +141,11 @@ def write_shape(workdir, meta, args=()):
     `args` is the launch's positional arguments; Inductor appends the numels
     after the tensors, so the trailing values are them, in `meta["numels"]`
     order. Falls back to the compile-time hint when they are absent.
+
+    A TEMPLATE KERNEL'S EXTENTS ARE ITS TEMPLATE GRID, not a numels/BLOCK
+    division. `kernel_spec.launch_axes` and `launch_extents` own that pairing --
+    both readers ask them, so neither can disagree about which slot is which --
+    and this writes what they answer.
     """
     from . import kernel_spec
 
@@ -126,10 +156,7 @@ def write_shape(workdir, meta, args=()):
     # rescales the launch, so the recorded grid is used verbatim.
     if meta.get("template_grid") is not None:
         grid = list(kernel_spec.launch_extents(meta))
-        path = os.path.join(workdir, SHAPE_TXT)
-        with open(path, "w") as f:
-            f.write("\n".join(str(g) for g in grid) + "\n")
-        logger.info("[TOGSim] grid %s -> %s", grid, SHAPE_TXT)
+        _write_extents(workdir, grid, "template grid")
         return grid
 
     # Only the PARALLEL numels ride along on the call -- a reduction axis is
@@ -151,11 +178,50 @@ def write_shape(workdir, meta, args=()):
             raise ValueError(f"no extent for grid axis '{p}': {n!r} / {block!r}")
         grid.append(-(-int(n) // int(block)))     # ceil-div
 
-    path = os.path.join(workdir, SHAPE_TXT)
-    with open(path, "w") as f:
-        f.write("\n".join(str(g) for g in grid) + "\n")
-    logger.info("[TOGSim] grid %s -> %s", grid, SHAPE_TXT)
+    _write_extents(workdir, grid, "grid")
     return grid
+
+
+#: How many extents the compiled trace reads. Written beside it, checked before
+#: every launch -- see `_write_extents`.
+AXES_TXT = "trace_axes.txt"
+
+
+def _write_extents(workdir, ext, what):
+    """Write `ext` as the trace's shape_args, refusing a count the trace cannot use.
+
+    THE ABI CARRIES THE COUNT AND NOBODY WAS READING IT. The producer entry is
+    `togsim_kernel(EmitCtx* ctx, int64_t* shape_args, int32_t n)` and
+    `_bind_runtime_bounds` subscripts `shape_args[k]` without ever looking at
+    `n`, so a trace compiled for two axes and launched with one extent reads an
+    int64 off the end of the list and loops to it.
+
+    THAT IS NOT A WRONG NUMBER, IT IS THE MACHINE. Measured on
+    tests/ops/attention/test_gqa.py: triton_npu_fused_bmm_..._1 had
+    template_grid [1, 8, 1] and a single xnumel, so the WorkItem compiled two
+    pid arguments while this wrote one line, "1". TOGSim allocated against
+    whatever was past the end -- tens of gigabytes, killed by hand, and a
+    SIGABRT once the address space was capped.
+
+    `kernel_spec.launch_axes` and `launch_extents` are the single source both
+    readers use, so they agree by construction. This guards what that cannot: a trace.so is REUSED when it is
+    already on disk (see `emit_trace`'s caller), so a stale one can meet a meta
+    that counts differently. The count travels with the trace and is compared
+    here, where the answer is a diagnostic instead of an allocation.
+    """
+    path = os.path.join(workdir, AXES_TXT)
+    if os.path.isfile(path):
+        with open(path) as f:
+            want = int(f.read().strip())
+        if want != len(ext):
+            raise ValueError(
+                f"{TRACE_SO} in {workdir} was compiled to read {want} grid "
+                f"extent(s) and this launch has {len(ext)} ({ext}); the trace "
+                f"would read past the end of shape_args. Delete the workdir to "
+                f"rebuild it.")
+    with open(os.path.join(workdir, SHAPE_TXT), "w") as f:
+        f.write("\n".join(str(int(g)) for g in ext) + "\n")
+    logger.info("[TOGSim] %s %s -> %s", what, ext, SHAPE_TXT)
 
 
 def emit_trace(workdir, meta):
@@ -204,8 +270,12 @@ def emit_trace(workdir, meta):
                 "compute latency is NOT modelled",
                 CYCLE_TSV, PLACEHOLDER_CYCLE, n_tiles)
 
-        l2e.skeleton_to_so(module, os.path.join(workdir, TRACE_SO),
-                           work_item=work_item_for(meta))
+        wi = work_item_for(meta)
+        l2e.skeleton_to_so(module, os.path.join(workdir, TRACE_SO), work_item=wi)
+    # Beside the trace, so a launch can refuse a shape list of the wrong length
+    # instead of reading past the end of it -- see `_write_extents`.
+    with open(os.path.join(workdir, AXES_TXT), "w") as f:
+        f.write(f"{len(wi.parallel_args)}\n")
 
     ct.dump_cycle_table_tsv(table, os.path.join(workdir, CYCLE_TSV))
     if cycles:

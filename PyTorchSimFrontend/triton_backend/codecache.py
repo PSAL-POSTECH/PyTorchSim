@@ -66,6 +66,13 @@ class TritonNPULauncher:
         # minutes with it off. `pytorchsim_timing_mode` is the switch the MLIR
         # route already reads (extension_codecache.py), so this route reads the
         # same one rather than inventing a second name.
+        # AND THE MEASUREMENT FROM THE OTHER DIRECTION. Before this switch
+        # existed the timing half ran even when only correctness was wanted, so
+        # a kernel whose TIMING path failed failed the whole launch though Spike
+        # had written the right values -- which is the state
+        # tests/ops/attention/test_gqa.py and
+        # tests/ops/fusion/test_prologue_fusion.py were in: their bmm template
+        # kernels ran on Spike and died in emit_trace.
         if not extension_config.pytorchsim_timing_mode:
             # NOT "[TOGSim]". The sweep buckets a failure by matching its
             # output, and its togsim bucket is `TOGSim|trace\.so|SIGSEGV|...` --

@@ -134,6 +134,76 @@ def _roles(kernel):
     return out
 
 
+#: A store, in every spelling the generated kernels use. `tl.store` covers the
+#: ordinary one; the atomics write too, and a kernel that only atomically
+#: accumulates into a buffer has still written it.
+_STORE_RE = re.compile(r"\btl\.(store|atomic_\w+)\s*\(\s*([A-Za-z_]\w*)")
+
+
+def stored_args(src_code):
+    """The argument names `src_code` actually WRITES.
+
+    Read off the source rather than taken from Inductor's tables, because the
+    two do not always agree and only one of them is what runs. Measured on
+    Stable Diffusion v1.5's UNet: twelve kernels take an `in_out_ptr0`, and TWO
+    of them -- `..._native_group_norm_silu_unsqueeze_12` and `..._41` -- never
+    store to it. They load it, fold it into a value, and store that value
+    somewhere else; `mutated_arg_names` still lists `in_out_ptr0`, because the
+    buffer Inductor renamed onto that storage is the one it planned to write
+    there.
+
+    Believing the table costs two things. The runtime copies the buffer back as
+    an output, which is harmless only because the file still holds what was
+    written INTO it. And the per-kernel verify compares that storage against
+    the golden for a node NOTHING materialised -- `add_5` for buf20 -- which is
+    a divergence report about a value that was never supposed to be there. The
+    eight `add_N` reports SD1.5 raises are exactly the eight calls of these two
+    kernels, one for one.
+    """
+    return {m.group(2) for m in _STORE_RE.finditer(src_code)}
+
+
+def demote_unwritten_inout(meta, src_code):
+    """Turn an `inout` the kernel never stores to back into a plain `in`.
+
+    IN PLACE, on the meta dict, and returns it. Only `inout` is touched: an
+    `out` with no store would be a kernel that produces nothing, which is a
+    different fact and not one to paper over here.
+    """
+    stores = stored_args(src_code)
+    for a in meta.get("args", ()):
+        if a.get("role") == "inout" and a.get("name") not in stores:
+            a["role"] = "in"
+    return meta
+
+
+#: kernel name -> the role of each TENSOR argument, in call order. Filled at
+#: define_kernel and read by the wrapper's per-kernel verify, which sees only
+#: a call's argument NAMES and cannot otherwise tell a buffer this kernel wrote
+#: from one it merely read. Names will not do: the same kernel is called with
+#: different buffers (SD1.5 calls one of the two above three times and the
+#: other five), so the meta's `buffer` fields name the FIRST call only.
+#: Position is what every call shares.
+ROLES_BY_KERNEL = {}
+
+
+def record_roles(kernel_name, meta):
+    ROLES_BY_KERNEL[kernel_name] = [a["role"] for a in meta.get("args", ())]
+
+
+def writes_arg(kernel_name, position):
+    """Does `kernel_name` write the tensor argument at `position`?
+
+    True when nothing is recorded -- an unknown kernel keeps the old
+    behaviour of treating every argument as checkable, so this narrows only
+    where there is a measurement to narrow it with.
+    """
+    roles = ROLES_BY_KERNEL.get(kernel_name)
+    if roles is None or position >= len(roles):
+        return True
+    return roles[position] in ("out", "inout")
+
+
 def collect_meta(kernel, kernel_name):
     """Everything the compile step needs, as plain repr-able data.
 

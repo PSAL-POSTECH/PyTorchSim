@@ -76,6 +76,11 @@ class TritonNPUScheduling(TritonScheduling):
         src_code = src_code.replace(str(Placeholder.KERNEL_NAME), kernel_name)
 
         meta = kernel_spec.collect_meta(kernel, kernel_name)
+        # AFTER the substitutions above, so the source measured is the source
+        # that runs. Inductor's `inplace_buffers` says which buffer it MEANT to
+        # write in place; this asks the kernel body what it actually stores.
+        kernel_spec.demote_unwritten_inout(meta, src_code)
+        kernel_spec.record_roles(kernel_name, meta)
 
         compile_wrapper = IndentedBuffer()
         compile_wrapper.writeline(f"triton_npu_compile('''{src_code}''',")

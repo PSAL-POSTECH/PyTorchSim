@@ -17,7 +17,25 @@
 # built on the device and this backend compiles it like any other elementwise
 # work. 26 kernels and a compile error before; 27 kernels, no C++ kernel at all,
 # and 4.77e-06 after. The test carries the two-line scope and the reasoning.
+#
+# WHAT SD1.5 NEEDED, since it is the newest and the longest entry here.
+# tests/models/Diffusion/test_diffusion.py runs the UNet2DConditionModel at
+# reduced channel counts: 87 kernels compiled, 220 executed, and it stopped
+# three times before it ran.
+#   buf3    GroupNorm's Welford mean, 32 of 32 channels equal to the mean over
+#           the whole tile -- the gather's rank-1 index vector pinned the loop
+#           body to the reduction axis while the accumulators kept the other
+#           one, because lib_axis_graph had no scf.for edge (triton-npu).
+#   kernel 83  a segfault on the SECOND trip round a reduction loop: a gather
+#           index non-affine in the loop variable had the loop offset added to
+#           the base as well as carried in the index tensor (triton_shared,
+#           PtrAnalysis::rebuildAsGatherScatter).
+#   buf20   eight reports against add_N nodes nothing materialises -- the
+#           per-kernel verify checked buffers a kernel only READS, and
+#           Inductor can name an in_out_ptr the kernel never stores to.
+# Runtime here is about 11 minutes, inside the sweep's 1800s default.
 tests/models/DeepSeek/test_deepseek_v3_base.py
+tests/models/Diffusion/test_diffusion.py
 tests/models/Mixtral8x7B/test_mistral.py
 tests/models/MobileNet/test_mobilenet.py
 tests/models/Yolov5/test_yolov5.py

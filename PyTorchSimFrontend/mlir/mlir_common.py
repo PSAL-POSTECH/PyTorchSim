@@ -420,7 +420,9 @@ class TileAdjustMixin():
                 BETA = 0
 
             padding_ratio = TileAdjustMixin.get_padding_ratio(tile_range, dim_range)
-            if padding_ratio < self.tail_ratio_threshold:
+            if padding_ratio == 0:
+                continue
+            if padding_ratio < self.tail_ratio_threshold and not constraint.must_divide_dim:
                 continue
             best_tile = tile_range
             best_cost = (
@@ -428,15 +430,27 @@ class TileAdjustMixin():
                 BETA * (dim_range / tile_range)
             )
 
-            min_tile = 1
+            # Candidates below the axis granularity are not representable
+            min_tile = max(1, constraint.multiple_of)
             for candidate in range(tile_range - 1, min_tile - 1, -1):
-                new_candidate = constraint.adjust(tile_range, candidate, dim_range)
+                try:
+                    new_candidate = constraint.adjust(tile_range, candidate, dim_range)
+                except extension_codecache.TileSizeError:
+                    continue
                 ratio = TileAdjustMixin.get_padding_ratio(new_candidate, dim_range)
                 iter_penalty = (dim_range / new_candidate)
 
                 cost = ALPHA * ratio + BETA * iter_penalty
                 if cost < best_cost:
                     best_tile, best_cost = new_candidate, cost
+
+            if constraint.must_divide_dim and dim_range % best_tile:
+                # No tile both divides the dimension and respects the axis
+                # granularity. Overhang with this tile would corrupt data.
+                best_tile = next(c for c in range(tile_range, 0, -1)
+                                 if dim_range % c == 0)
+                if i == self.vmap.vlane_split_axis and best_tile % self.vmap.vlane_stride:
+                    self.vmap.vlane_stride = 1
             self._tile_size[i] = best_tile
 
     def select_vlane_axis(self):
@@ -533,6 +547,10 @@ class MLIRMultiDimTile(TileAdjustMixin):
         self._tile_size = list(tile_size)
         self._tile_stride = None
         self.tile_constraint = [TileConstraint(vlane_stride if idx == vlane_split_axis else 1) for idx, _ in enumerate(tile_size)]
+        
+        for constraint in self.tile_constraint:
+            if constraint.multiple_of == 1:
+                constraint.must_divide_dim = True
         self.tile_axis_order = list(range(len(tile_size)))
         self.update_tile_stride()
 

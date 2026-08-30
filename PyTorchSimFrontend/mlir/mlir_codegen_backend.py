@@ -1025,7 +1025,7 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
                     bench_runner = self.run_bench(nodes, kernel_name, src_code)
                     choices.append((bench_runner, src_code, meta_code, self.kernel_group.tile_desc.get_tile_size(), self.kernel_group.tile_desc.vmap.vlane_stride))
                     prevent_infinite_loop += 1
-        self.kernel_group.tile_desc.prev_tail_threshold = prev_tail_threshold
+        self.kernel_group.tile_desc.tail_ratio_threshold = prev_tail_threshold
         return choices
 
     def autotune(self, *args):
@@ -1583,3 +1583,4 @@ class MLIRKernel(mlir_common.BaseMLIRKernel):
             if mlir_dtype != "index":
                 out = ops.index_cast(out, "index")
         return index + sympy.Symbol(str(out)), compute_dependecy
+

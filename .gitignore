@@ -10,3 +10,11 @@ tutorial/session1/fused/
 tutorial/session1/togsim_results/
 tutorial/session2/togsim_results/
 tutorial/session2/fx_graph.svg
+
+# PyTorchSimDevice generated build artifacts
+/PyTorchSimDevice/build/
+/PyTorchSimDevice/torch_openreg/_C*.so
+/PyTorchSimDevice/torch_openreg/lib/
+
+# Generated GEMM candidates
+/validation/gemm_candidates/

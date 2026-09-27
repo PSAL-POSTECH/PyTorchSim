@@ -29,7 +29,7 @@ struct TraceRec {
   std::vector<int64_t> write_bufs;  // SRAM buffer ids written (MEMORY_BAR: released bufs)
   // COMPUTE
   uint64_t tile_id;
-  int32_t  compute_type;  // 0 vector / 1 matmul / 2 preload (Core unit enum)
+  int32_t  compute_type;  // 0 vector / 1 matmul / 2 preload / 3 cross-lane (Core unit enum)
   int64_t  cycle;         // looked up from the cycle table
   int64_t  overlapping;   // looked up from the cycle table
 };

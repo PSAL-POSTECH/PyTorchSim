@@ -55,7 +55,7 @@ std::shared_ptr<Instruction> make_compute(const togsim::TraceRec& t) {
       /*dram_addr=*/0, std::vector<size_t>{}, std::vector<int>{}, /*elem_bits=*/0,
       std::vector<int64_t>{}, std::vector<int64_t>{}, std::vector<int64_t>{});
   inst->set_overlapping_cycle((cycle_type)t.overlapping);
-  inst->set_compute_type(t.compute_type);  // route to VPU vs systolic array
+  inst->set_compute_type(t.compute_type);  // route to VPU, systolic array or cross-lane unit
   return inst;
 }
 

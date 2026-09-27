@@ -31,7 +31,8 @@ _DMA = re.compile(r"Core \[(\d+)\] : DMA active_cycles: (\d+), DMA idle_cycles: 
 _VU = re.compile(r"Core \[(\d+)\] : Vector unit [Uu]tilization\(%\): ([\d.]+), "
                  r"active[ _]cycles?: (\d+), idle[ _]cycles?: (\d+)")
 _TOTCYC = re.compile(r"Core \[(\d+)\] : Total_cycles: (\d+)")
-_INST = re.compile(r"Core \[(\d+)\] : (\w+) +inst_count: (\d+)(?: \(GEMM: (\d+), Vector: (\d+)\))?")
+_INST = re.compile(r"Core \[(\d+)\] : (\w+) +inst_count: (\d+)"
+                   r"(?: \(GEMM: (\d+), Vector: (\d+)(?:, XLU: (\d+))?\))?")
 _DRAM_CH = re.compile(r"\[DRAM\] channel (\d+) \| ([\d.]+) GB/s avg\., ([\d.]+)% of utilization "
                       r"\| (\d+) reads, (\d+) writes")
 _DRAM_WINDOW = re.compile(r"\[DRAM\] all \d+ channels combined \| ([\d.]+) GB/s "

@@ -34,7 +34,8 @@ typedef enum {
 //              is_async, tag_id, tag_slot, read_bufs[], n_read, write_bufs[], n_write)
 //              dir: 0=load (MOVIN), 1=store (MOVOUT)
 //   togsim_compute(ctx, tile_id, compute_type, ndim, dims[], read_bufs[], n_read,
-//                  write_bufs[], n_write)   compute_type: 0=vector, 1=matmul, 2=preload
+//                  write_bufs[], n_write)   compute_type: 0=vector, 1=matmul, 2=preload,
+//                                          3=cross-lane
 //   togsim_memory_barrier(ctx, tag_id, tag_slot, write_bufs[], n_write)
 //   togsim_dispatch(ctx, tile_fn, iv[], n_iv)        // run one work-item
 //   togsim_kernel(ctx, shape_args[], n_shape_args)   // producer entry point
@@ -47,8 +48,8 @@ void togsim_dma(EmitCtx* ctx, int32_t dir, int32_t arg_id,
                 const int64_t* write_bufs, int32_t n_write);
 
 // Emit a fixed-size tile compute. Cost comes from the tile_id->cycle table (sec 6),
-// not from `dims`. `compute_type` (0 vector / 1 matmul / 2 preload) routes the op to
-// the VPU or the systolic array.
+// not from `dims`. `compute_type` (0 vector / 1 matmul / 2 preload / 3 cross-lane) routes
+// the op to the VPU, the systolic array or the cross-lane unit.
 void togsim_compute(EmitCtx* ctx, uint64_t tile_id, int32_t compute_type,
                     int32_t ndim, const int64_t* dims,
                     const int64_t* read_bufs, int32_t n_read,

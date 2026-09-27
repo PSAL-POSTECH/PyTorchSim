@@ -100,11 +100,14 @@ class Core {
   cycle_type _stat_tot_dma_cycle = 0;
   cycle_type _stat_tot_dma_idle_cycle = 0;
   cycle_type _stat_tot_vu_compute_idle_cycle = 0;
+  cycle_type _stat_tot_xlu_compute_cycle = 0;
+  cycle_type _stat_tot_xlu_compute_idle_cycle = 0;
   std::vector<cycle_type> _stat_tot_sa_compute_idle_cycle;
   std::vector<uint64_t> _stat_inst_count;
   std::vector<uint64_t> _stat_tot_skipped_inst;
   uint64_t _stat_tot_mem_response = 0;
   uint64_t _stat_gemm_inst = 0;
+  uint64_t _stat_xlu_inst = 0;
   uint64_t _stat_skip_dma = 0;
   uint64_t _stat_numa_local_access = 0;
   uint64_t _stat_numa_remote_access = 0;

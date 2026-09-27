@@ -303,7 +303,6 @@ SPEC = KernelSpec(
     make_inputs=make_inputs,
     extra={{"scalar_args": {scalar_decls!r},
            "scalar_values": {scalar_values!r}}},
-    notes="generated from Inductor triton codegen",
 )
 '''
 

@@ -1,6 +1,7 @@
 """Run a compiled kernel object on Spike, over tensors already on disk.
 
-Reads kernel.json for the entry, the grid, the argument roles and the machine.
+Reads kernel.json for the kernel's address range, the grid, the argument roles
+and the machine.
 Never opens the compiler's source or the kernel's Python spec.
 """
 
@@ -18,7 +19,7 @@ PK = os.environ.get("TORCHSIM_PK",
 SPIKE_ISA = os.environ.get("TORCHSIM_SPIKE_ISA",
                            os.environ.get("TORCHSIM_COMPILE_SPIKE_ISA", "rv64gcv_zfh"))
 
-ITEMSIZE = {"float64": 8, "float32": 4, "float16": 2,
+ITEMSIZE = {"float64": 8, "float32": 4, "float16": 2, "bfloat16": 2,
             "int64": 8, "int32": 4, "int16": 2, "int8": 1,
             "uint64": 8, "uint32": 4, "uint16": 2, "uint8": 1, "bool": 1}
 

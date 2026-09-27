@@ -10,3 +10,8 @@ tutorial/session1/fused/
 tutorial/session1/togsim_results/
 tutorial/session2/togsim_results/
 tutorial/session2/fx_graph.svg
+
+# External compiler checkouts used for local PyTorchSim development.
+/llvm-project-1.0.8/
+/llvm-project-ispass2026/
+/.claude/

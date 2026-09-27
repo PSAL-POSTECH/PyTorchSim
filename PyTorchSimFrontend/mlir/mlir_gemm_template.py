@@ -44,7 +44,7 @@ func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[X, W, Bias], outputs=[Y]
         {{ kernel.def_dma_op("MVIN", "X", X_idx, X_tile_desc, subtile_size=[SUB_TILE_M, SUB_TILE_K], indent_size=8) }}
         {{ kernel.def_dma_op("MVIN", "W", W_idx, W_tile_desc, subtile_size=[SUB_TILE_K, SUB_TILE_N], indent_size=8) }}
         {%- endif %}
-        linalg.matmul ins(%X_buffer, %W_buffer : {{ X_tile_desc.get_mlir_shape(DATA_STYPE) }}, {{ W_tile_desc.get_mlir_shape(DATA_STYPE) }})
+        linalg.matmul { pytorchsim.operation_origin = "gemm" } ins(%X_buffer, %W_buffer : {{ X_tile_desc.get_mlir_shape(DATA_STYPE) }}, {{ W_tile_desc.get_mlir_shape(DATA_STYPE) }})
                 outs(%Y_buffer : {{ Y_tile_desc.get_mlir_shape(DATA_STYPE) }})
       } { accumulation_loop=true, subtile_loop="k" }
       {{kernel.store_output(indent_size=6)}}
@@ -91,7 +91,7 @@ func.func @{{ KERNEL_NAME }}{{kernel.def_kernel(inputs=[X, W, Bias], outputs=[Y]
       affine.for %index2 = 0 to {{ K }} step {{ TILE_K }} {
         {{ kernel.def_dma_op("MVIN", "X", X_idx, X_tile_desc, subtile_size=[SUB_TILE_M, SUB_TILE_K], indent_size=8) }}
         {{ kernel.def_dma_op("MVIN", "W", W_idx, W_tile_desc, subtile_size=[SUB_TILE_K, SUB_TILE_N], indent_size=8) }}
-        linalg.matmul ins(%X_buffer, %W_buffer : {{ X_tile_desc.get_mlir_shape(DATA_STYPE) }}, {{ W_tile_desc.get_mlir_shape(DATA_STYPE) }})
+        linalg.matmul { pytorchsim.operation_origin = "gemm" } ins(%X_buffer, %W_buffer : {{ X_tile_desc.get_mlir_shape(DATA_STYPE) }}, {{ W_tile_desc.get_mlir_shape(DATA_STYPE) }})
                 outs(%Y_bufferT : memref<{{TILE_M}}x{{TILE_N}}x{{DATA_STYPE}}, 1>)
       } { accumulation_loop=true, subtile_loop="k" }
       {{kernel.store_output(indent_size=6)}}
@@ -335,6 +335,17 @@ class MLIRGemmTemplate(MLIRTemplate):
         if (M == 0) or (N == 0) or (K == 0):
             TILE_M, TILE_N, TILE_K = 1, 1, 1
             tile_candidates = [[TILE_M, TILE_N, TILE_K]]
+
+        # The NPU accumulator holds one output microtile across K iterations.
+        # Keep all three SRAM tiles within one systolic microtile so no other
+        # output tile is computed between its first and final K tile. Explicit
+        # mappings larger than the array remain supported by the lowering's
+        # original per-compute output path.
+        if K > kernel.vector_lane and len(tile_candidates) > 1:
+            accumulator_tiles = [tile for tile in tile_candidates
+                                 if all(size <= kernel.vector_lane for size in tile)]
+            if accumulator_tiles:
+                tile_candidates = accumulator_tiles
 
         full_tile_candidates = []
         for idx, (TILE_M, TILE_N, TILE_K) in enumerate(tile_candidates):

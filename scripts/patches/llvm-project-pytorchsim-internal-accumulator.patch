@@ -1,0 +1,335 @@
+diff --git a/mlir/test/lib/Conversion/PyTorchSimToVCIX/TestPyTorchSimToVCIXConversion.cpp b/mlir/test/lib/Conversion/PyTorchSimToVCIX/TestPyTorchSimToVCIXConversion.cpp
+index 75899f4fe..1c8ee3208 100644
+--- a/mlir/test/lib/Conversion/PyTorchSimToVCIX/TestPyTorchSimToVCIXConversion.cpp
++++ b/mlir/test/lib/Conversion/PyTorchSimToVCIX/TestPyTorchSimToVCIXConversion.cpp
+@@ -21,6 +21,7 @@
+ #include "mlir/Dialect/Math/IR/Math.h"
+ #include "mlir/Dialect/MemRef/IR/MemRef.h"
+ #include "mlir/Dialect/Vector/IR/VectorOps.h"
++#include "mlir/IR/IntegerSet.h"
+ #include "mlir/IR/PatternMatch.h"
+ #include "mlir/IR/Types.h"
+ #include "mlir/Pass/Pass.h"
+@@ -347,7 +348,27 @@ struct MatmulOpLowering : public OpRewritePattern<linalg::MatmulOp> {
+       affineForOp = llvm::dyn_cast_or_null<affine::AffineForOp>(affineForOp->getParentOp());
+     }
+ 
+-    bool is_conv2d = (innerLoops.size() == 4);
++    // The frontend marks the operation's origin because convolution is lowered
++    // to linalg.matmul too.  Only explicitly marked GEMM/BMM operations may
++    // keep partial sums in the VCIX accumulator.  Preserve the structural
++    // heuristic for old, unannotated IR.
++    auto origin = op->getAttrOfType<StringAttr>("pytorchsim.operation_origin");
++    bool is_gemm = origin && origin.getValue() == "gemm";
++    bool is_conv2d = origin && origin.getValue() == "convolution";
++    if (!origin || (!is_gemm && !is_conv2d))
++      is_conv2d = (innerLoops.size() == 4);
++
++    affine::AffineForOp gemmKLoop;
++    if (is_gemm) {
++      for (auto loop : accumulationLoops) {
++        auto subtileLoop = loop->getAttrOfType<StringAttr>("subtile_loop");
++        if (subtileLoop && subtileLoop.getValue() == "k") {
++          gemmKLoop = loop;
++          break;
++        }
++      }
++    }
++
+     if (accumulationLoops.empty()) {
+       op.emitError()
+           << "Expected at least one loop with 'accumulation_loop' attribute";
+@@ -764,6 +785,33 @@ struct MatmulOpLowering : public OpRewritePattern<linalg::MatmulOp> {
+     // Compute instruction
+     rewriter.create<vcix::UnaryNoDestImmOp>(loc, compute_opcode, zeroImmAttr, compute_cycle, zeroImmAttr, sew, lmul, rvl);
+ 
++    // Keep one output microtile in the NPU across consecutive frontend K tiles.
++    // No other output microtile may be computed before the final K tile is
++    // popped: the NPU accumulator belongs to the current output microtile.
++    // Larger SRAM tiles still use the existing per-compute path until their
++    // microtile loops can be interchanged with the frontend K loop.
++    bool useAccumulator = is_gemm && gemmKLoop &&
++                          gemmKLoop.hasConstantLowerBound() &&
++                          gemmKLoop.getConstantLowerBound() == 0 &&
++                          getLoopUpperBound(gemmKLoop) > 0 &&
++                          K <= SYSTOLIC_SIZE &&
++                          M <= SYSTOLIC_SIZE && N <= SYSTOLIC_SIZE;
++    affine::AffineIfOp frontendFinalKIf;
++    if (useAccumulator) {
++      int64_t frontendKUpper = getLoopUpperBound(gemmKLoop);
++      int64_t frontendKStep = gemmKLoop.getStep().getSExtValue();
++      // Use a >= constraint rather than equality so a K dimension that is not
++      // divisible by the frontend tile size still reads on its last iteration.
++      auto frontendKExpr = rewriter.getAffineDimExpr(0) + frontendKStep -
++                           frontendKUpper;
++      auto frontendKSet = IntegerSet::get(
++          /*dimCount=*/1, /*symbolCount=*/0, {frontendKExpr}, {false});
++      frontendFinalKIf = rewriter.create<affine::AffineIfOp>(
++          loc, frontendKSet, ValueRange{gemmKLoop.getInductionVar()},
++          /*withElseRegion=*/false);
++      rewriter.setInsertionPointToStart(frontendFinalKIf.getThenBlock());
++    }
++
+     // For vpop loop part
+     for (int i=0; i<M_LOOP; i+=nr_element) { // MxN
+       Value i_val = rewriter.create<mlir::arith::ConstantIndexOp>(rewriter.getUnknownLoc(), i);
+@@ -788,6 +836,9 @@ struct MatmulOpLowering : public OpRewritePattern<linalg::MatmulOp> {
+       }
+     }
+ 
++    if (frontendFinalKIf)
++      rewriter.setInsertionPointAfter(frontendFinalKIf);
++
+     rewriter.eraseOp(op);
+     return success();
+   }
+diff --git a/mlir/test/Conversion/PyTorchSimToVCIX/convolution-per-compute.mlir b/mlir/test/Conversion/PyTorchSimToVCIX/convolution-per-compute.mlir
+new file mode 100644
+--- /dev/null
++++ b/mlir/test/Conversion/PyTorchSimToVCIX/convolution-per-compute.mlir
+@@ -0,0 +1,115 @@
++
++// RUN: mlir-opt --test-pytorchsim-to-vcix %s | FileCheck %s
++// Convolution must pop each compute and add it to the SRAM output rather
++// than retaining its partial sums across the convolution reduction loops.
++// CHECK-LABEL: func.func @kernel(
++// CHECK: "vcix.i"{{.*}}opcode = 1 : i64
++// CHECK-NOT: affine.if
++// CHECK: "vcix.v.i"{{.*}}opcode = 2 : i64
++// CHECK: arith.addf
++// CHECK: vector.transfer_write
++
++// Single Batch Conv2D kernel
++// BATCH = 1
++// I_C = 8
++// I_H = 8
++// I_W = 8
++// O_C = 16
++// K_H = 3
++// K_W = 3
++// O_H = 8
++// O_W = 8
++// TILE_M = 8
++// TILE_N = 16
++// TILE_K = 8
++// TILE_I_H=10,
++// TILE_I_W=8,
++// TILE_O_H=8,
++// TILE_O_W=8,
++// TILE_K_H=3,
++// TILE_K_W=1,
++// SUB_TILE_M=8,
++// SUB_TILE_N=16,
++// SUB_TILE_I_W=1,
++// SUB_TILE_K_H=1,
++// SUB_TILE_K_W=1,
++// PADDING_H = 1
++// PADDING_W = 1
++// STRIDE_H = 1
++// STRIDE_W = 1
++// DATA_STYPE = f32
++
++#map_I_H = affine_map<(d0, d1) -> (d0 * 1 + d1)>
++#map_I_W = affine_map<(d0, d1) -> (d0 * 1 + d1)>
++#offset_w_map = affine_map<(d0, d1) -> (d0 * 8 + d1 * 8)>
++#offset_x_map = affine_map<(d0, d1) -> (d0 * 8 + d1)>
++#offset_y_map = affine_map<(d0, d1) -> (d0 * 8 + d1 * 8)>
++memref.global @X_spad : memref<1x10x8x8xf32, 1>
++memref.global @W_spad : memref<3x1x8x16xf32, 1>
++memref.global @Y_spad : memref<1x16x8x8xf32, 1>
++#t_map0 = affine_map<(d0, d1, d2, d3) -> (64*d1 + 8*d2 + d3)>
++#t_map1 = affine_map<(d0, d1, d2, d3) -> (d1)>
++#t_map2 = affine_map<(d0, d1, d2, d3) -> (800*d0 + 80*d1 + 8*d2 + d3)>
++#t_map3 = affine_map<(d0, d1, d2, d3) -> (384*d0 + 128*d1 + 16*d2 + d3)>
++
++func.func @kernel(%X: memref<800xf32>, %W: memref<1152xf32>, %Bias: memref<16xf32>, %Y: memref<1024xf32>) {
++  %input_buffer = memref.get_global @X_spad : memref<1x10x8x8xf32, 1>
++  %weight_buffer = memref.get_global @W_spad : memref<3x1x8x16xf32, 1>
++  %output_buffer = memref.get_global @Y_spad : memref<1x16x8x8xf32, 1>
++  %v0 = arith.constant dense<0.0> : vector<64xf32>
++  %c0 = arith.constant 0 : index%t_const0 = arith.constant 0 : index
++  %t_const1 = arith.constant 1 : index
++  %t_const2 = arith.constant 3 : index
++  %t_const3 = arith.constant 2 : index
++  %t_alloc0 = memref.alloc() : memref<1xi32> // 0
++  %t_alloc1 = memref.alloc() : memref<1xi32> // 1
++  %t_alloc2 = memref.alloc() : memref<1xi32> // 2
++  %t_alloc3 = memref.alloc() : memref<1xi32> // 3
++  affine.for %tile_n = 0 to 16 step 16 {
++    affine.for %o_h = 0 to 8 step 8 {
++      affine.for %tile_m = 0 to 8 step 8 {
++        // Initialize output
++        %apply0 = affine.apply #t_map1(%t_const0, %tile_n, %t_const0, %t_const0)
++        memref.dma_start %Bias[%apply0], %output_buffer[%t_const0, %t_const0, %t_const0, %t_const0], %t_const3, %t_alloc1[%t_const0], %t_const1, %t_const1 : memref<16xf32>, memref<1x16x8x8xf32, 1>, memref<1xi32> {dram_stride = [0, 1, 0, 0], sram_stride = [1024, 8, 128, 1], padding = 0, subtile_size = [1, 16, 8, 8], async = 1 : i64}
++        affine.for %k_h = 0 to 3 step 3 {
++          affine.for %k_w = 0 to 3 step 1 {
++            affine.for %tile_k = 0 to 8 step 8 {
++              %index_i_h = affine.apply #map_I_H(%o_h, %k_h)
++              %index_i_w = affine.apply #map_I_W(%tile_m, %k_w)
++              // Load input & weight matrix
++              %apply1 = affine.apply #t_map2(%c0, %index_i_h, %index_i_w, %tile_k)
++              memref.dma_start %X[%apply1], %input_buffer[%t_const0, %t_const0, %t_const0, %t_const0], %t_const1, %t_alloc2[%t_const0], %t_const2, %t_const1 : memref<800xf32>, memref<1x10x8x8xf32, 1>, memref<1xi32> {dram_stride = [800, 80, 8, 1], sram_stride = [640, 64, 1, 8], padding = 0, subtile_size = [1, 1, 8, 8], async = 1 : i64}
++              %apply2 = affine.apply #t_map3(%k_h, %k_w, %tile_k, %tile_n)
++              memref.dma_start %W[%apply2], %weight_buffer[%t_const0, %t_const0, %t_const0, %t_const0], %t_const1, %t_alloc3[%t_const0], %t_const2, %t_const1 : memref<1152xf32>, memref<3x1x8x16xf32, 1>, memref<1xi32> {dram_stride = [384, 128, 16, 1], sram_stride = [128, 128, 1, 8], padding = 0, subtile_size = [1, 1, 8, 16], async = 1 : i64}
++              // Compute body part
++              affine.for %tile_k_h = 0 to 3 { // loop order should be fixed for timing simulation. Do not change this order.
++                affine.for %tile_k_w = 0 to 1 {
++                  %offset_w = affine.apply #offset_w_map(%tile_k_h, %tile_k_w)
++                  %W_buffer = memref.reinterpret_cast %weight_buffer to offset: [%offset_w], sizes: [8, 16], strides: [16, 1] : memref<3x1x8x16xf32, 1> to memref<8x16xf32, strided<[16, 1], offset: ?>, 1>
++                  affine.for %tile_o_h = 0 to 8 {
++                    affine.for %tile_o_w = 0 to 1 { // TILE_O_W
++                      %tile_i_h = affine.apply #map_I_H(%tile_o_h, %tile_k_h)
++                      %offset_x = affine.apply #offset_x_map(%tile_i_h, %tile_k_w)
++                      %offset_y = affine.apply #offset_y_map(%tile_o_h, %tile_o_w)
++                      %X_buffer = memref.reinterpret_cast %input_buffer to offset: [%offset_x], sizes: [8, 8], strides: [8, 1] : memref<1x10x8x8xf32, 1> to memref<8x8xf32, strided<[8, 1], offset: ?>, 1>
++                      %Y_buffer = memref.reinterpret_cast %output_buffer to offset: [%offset_y], sizes: [8, 16], strides: [16, 1] : memref<1x16x8x8xf32, 1> to memref<8x16xf32, strided<[16, 1], offset: ?>, 1>
++                      linalg.matmul { pytorchsim.operation_origin = "convolution" } ins(%X_buffer, %W_buffer : memref<8x8xf32, strided<[8, 1], offset: ?>, 1>, memref<8x16xf32, strided<[16, 1], offset: ?>, 1>)
++                            outs(%Y_buffer : memref<8x16xf32, strided<[16, 1], offset: ?>, 1>)
++                    } { inner_loop=true }
++                  } { inner_loop=true }
++                } { inner_loop=true }
++              } { inner_loop=true }
++            } { accumulation_loop=true, subtile_loop="k" }
++          } { accumulation_loop=true }
++        } { accumulation_loop=true }
++        // Store output matrix
++        affine.for %compute_idx = 0 to 1 step 1
++        {
++        } {inner_loop=false}
++        %epilogue_apply0 = affine.apply #t_map0(%t_const0, %tile_n, %o_h, %tile_m)
++        memref.dma_start %output_buffer[%t_const0, %t_const0, %t_const0, %t_const0], %Y[%epilogue_apply0], %t_const2, %t_alloc0[%t_const0], %t_const1, %t_const1 : memref<1x16x8x8xf32, 1>, memref<1024xf32>, memref<1xi32> {dram_stride = [0, 64, 8, 1], sram_stride = [1024, 8, 128, 1], padding = 0}
++      } { outer_loop=true, subtile_loop="m" }
++    } { outer_loop=true }
++  } { outer_loop=true, subtile_loop="n" }
++  return
++}
+diff --git a/mlir/test/Conversion/PyTorchSimToVCIX/gemm-accumulate-k.mlir b/mlir/test/Conversion/PyTorchSimToVCIX/gemm-accumulate-k.mlir
+new file mode 100644
+--- /dev/null
++++ b/mlir/test/Conversion/PyTorchSimToVCIX/gemm-accumulate-k.mlir
+@@ -0,0 +1,61 @@
++// RUN: mlir-opt --test-pytorchsim-to-vcix %s | FileCheck %s
++// The NPU keeps one output microtile across both frontend K tiles. The
++// output is read once, only after the last compute for this microtile.
++// CHECK: #set = affine_set<(d0) : (d0 - 128 >= 0)>
++// CHECK-LABEL: func.func @kernel(
++// CHECK: affine.for [[K:%[a-zA-Z0-9_]+]] = 0 to 256 step 128 {
++// CHECK: "vcix.i"{{.*}}opcode = 1 : i64
++// CHECK-NOT: "vcix.v.i"
++// CHECK: affine.if #set([[K]]) {
++// CHECK: "vcix.v.i"
++// CHECK: } {accumulation_loop = true, subtile_loop = "k"}
++
++
++// GEMM   kernel
++// M = 32
++// N = 32
++// K = 256
++// TILE_M = 32
++// TILE_N = 32
++// TILE_K = 128
++// SUB_TILE_M = 32
++// SUB_TILE_N = 32
++memref.global @X_spad : memref<32x128xf32, 1>
++memref.global @W_spad : memref<128x32xf32, 1>
++memref.global @Y_spad : memref<32x32xf32, 1>
++#t_map0 = affine_map<(d0, d1) -> (32*d0 + d1)>
++#t_map1 = affine_map<(d0, d1) -> (256*d0 + d1)>
++
++func.func @kernel(%X: memref<8192xf32>, %W: memref<8192xf32>, %Y: memref<1024xf32>) {
++  %X_buffer = memref.get_global @X_spad : memref<32x128xf32, 1>
++  %W_buffer = memref.get_global @W_spad : memref<128x32xf32, 1>
++  %Y_buffer = memref.get_global @Y_spad : memref<32x32xf32, 1>
++
++  %v0 = arith.constant dense<0.0> : vector<32xf32>
++  %t_const0 = arith.constant 0 : index
++  %t_const1 = arith.constant 1 : index
++  %t_const2 = arith.constant 3 : index
++  %t_const3 = arith.constant 2 : index
++  %t_alloc0 = memref.alloc() : memref<1xi32> // 0
++  %t_alloc1 = memref.alloc() : memref<1xi32> // 1
++  %t_alloc2 = memref.alloc() : memref<1xi32> // 2
++  affine.for %index0 = 0 to 32 step 32 {
++    affine.for %index1 = 0 to 32 step 32 {
++      affine.vector_store %v0, %Y_buffer[0, 0] : memref<32x32xf32, 1>, vector<32xf32>
++      affine.for %index2 = 0 to 256 step 128 {
++        %apply0 = affine.apply #t_map1(%index0, %index2)
++        memref.dma_start %X[%apply0], %X_buffer[%t_const0, %t_const0], %t_const3, %t_alloc1[%t_const0], %t_const1, %t_const1 : memref<8192xf32>, memref<32x128xf32, 1>, memref<1xi32> {dram_stride = [256, 1], sram_stride = [1, 32], padding = 0, subtile_size = [32, 128], async = 1 : i64}
++        %apply1 = affine.apply #t_map0(%index2, %index1)
++        memref.dma_start %W[%apply1], %W_buffer[%t_const0, %t_const0], %t_const3, %t_alloc2[%t_const0], %t_const1, %t_const1 : memref<8192xf32>, memref<128x32xf32, 1>, memref<1xi32> {dram_stride = [32, 1], sram_stride = [1, 128], padding = 0, subtile_size = [128, 32], async = 1 : i64}
++        linalg.matmul { pytorchsim.operation_origin = "gemm" } ins(%X_buffer, %W_buffer : memref<32x128xf32, 1>, memref<128x32xf32, 1>)
++                outs(%Y_buffer : memref<32x32xf32, 1>)
++      } { accumulation_loop=true, subtile_loop="k" }
++      affine.for %compute_idx = 0 to 1 step 1
++      {
++      } {inner_loop=false}
++      %epilogue_apply0 = affine.apply #t_map0(%index0, %index1)
++      memref.dma_start %Y_buffer[%t_const0, %t_const0], %Y[%epilogue_apply0], %t_const2, %t_alloc0[%t_const0], %t_const1, %t_const1 : memref<32x32xf32, 1>, memref<1024xf32>, memref<1xi32> {dram_stride = [32, 1], sram_stride = [1, 32], padding = 0}
++    } { outer_loop=true, subtile_loop="n"  }
++  } { outer_loop=true, subtile_loop="m" }
++  return
++}
+diff --git a/mlir/test/Conversion/PyTorchSimToVCIX/gemm-large-tile-fallback.mlir b/mlir/test/Conversion/PyTorchSimToVCIX/gemm-large-tile-fallback.mlir
+new file mode 100644
+--- /dev/null
++++ b/mlir/test/Conversion/PyTorchSimToVCIX/gemm-large-tile-fallback.mlir
+@@ -0,0 +1,59 @@
++
++// RUN: mlir-opt --test-pytorchsim-to-vcix %s | FileCheck %s
++// A tile spanning multiple systolic microtiles uses the original per-compute
++// output path until the microtile loops can be reordered across frontend K.
++// CHECK-LABEL: func.func @kernel(
++// CHECK: "vcix.i"{{.*}}opcode = 1 : i64
++// CHECK-NOT: affine.if
++// CHECK: "vcix.v.i"{{.*}}opcode = 2 : i64
++// CHECK: arith.addf
++// CHECK: vector.transfer_write
++
++// GEMM   kernel
++// M = 32
++// N = 4096
++// K = 4096
++// TILE_M = 32
++// TILE_N = 128
++// TILE_K = 256
++// SUB_TILE_M = 32
++// SUB_TILE_N = 128
++memref.global @X_spad : memref<32x256xf32, 1>
++memref.global @W_spad : memref<256x128xf32, 1>
++memref.global @Y_spad : memref<32x128xf32, 1>
++#t_map0 = affine_map<(d0, d1) -> (4096*d0 + d1)>
++#t_map1 = affine_map<(d0, d1) -> (4096*d0 + d1)>
++
++func.func @kernel(%X: memref<131072xf32>, %W: memref<16777216xf32>, %Y: memref<131072xf32>) {
++  %X_buffer = memref.get_global @X_spad : memref<32x256xf32, 1>
++  %W_buffer = memref.get_global @W_spad : memref<256x128xf32, 1>
++  %Y_buffer = memref.get_global @Y_spad : memref<32x128xf32, 1>
++
++  %v0 = arith.constant dense<0.0> : vector<32xf32>
++  %t_const0 = arith.constant 0 : index
++  %t_const1 = arith.constant 1 : index
++  %t_const2 = arith.constant 3 : index
++  %t_const3 = arith.constant 2 : index
++  %t_alloc0 = memref.alloc() : memref<1xi32> // 0
++  %t_alloc1 = memref.alloc() : memref<1xi32> // 1
++  %t_alloc2 = memref.alloc() : memref<1xi32> // 2
++  affine.for %index0 = 0 to 32 step 32 {
++    affine.for %index1 = 0 to 4096 step 128 {
++      affine.vector_store %v0, %Y_buffer[0, 0] : memref<32x128xf32, 1>, vector<32xf32>
++      affine.for %index2 = 0 to 4096 step 256 {
++        %apply0 = affine.apply #t_map1(%index0, %index2)
++        memref.dma_start %X[%apply0], %X_buffer[%t_const0, %t_const0], %t_const3, %t_alloc1[%t_const0], %t_const1, %t_const1 : memref<131072xf32>, memref<32x256xf32, 1>, memref<1xi32> {dram_stride = [4096, 1], sram_stride = [1, 32], padding = 0, subtile_size = [32, 256], async = 1 : i64}
++        %apply1 = affine.apply #t_map0(%index2, %index1)
++        memref.dma_start %W[%apply1], %W_buffer[%t_const0, %t_const0], %t_const3, %t_alloc2[%t_const0], %t_const1, %t_const1 : memref<16777216xf32>, memref<256x128xf32, 1>, memref<1xi32> {dram_stride = [4096, 1], sram_stride = [1, 256], padding = 0, subtile_size = [256, 128], async = 1 : i64}
++        linalg.matmul { pytorchsim.operation_origin = "gemm" } ins(%X_buffer, %W_buffer : memref<32x256xf32, 1>, memref<256x128xf32, 1>)
++                outs(%Y_buffer : memref<32x128xf32, 1>)
++      } { accumulation_loop=true, subtile_loop="k" }
++      affine.for %compute_idx = 0 to 1 step 1
++      {
++      } {inner_loop=false}
++      %epilogue_apply0 = affine.apply #t_map0(%index0, %index1)
++      memref.dma_start %Y_buffer[%t_const0, %t_const0], %Y[%epilogue_apply0], %t_const2, %t_alloc0[%t_const0], %t_const1, %t_const1 : memref<32x128xf32, 1>, memref<131072xf32>, memref<1xi32> {dram_stride = [4096, 1], sram_stride = [1, 32], padding = 0}
++    } { outer_loop=true, subtile_loop="n"  }
++  } { outer_loop=true, subtile_loop="m" }
++  return
++}

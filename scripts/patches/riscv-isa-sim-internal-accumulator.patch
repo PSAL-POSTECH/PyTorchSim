@@ -1,0 +1,117 @@
+diff --git a/riscv/insns/torchsim_vpop.h b/riscv/insns/torchsim_vpop.h
+index 5f96104..eba1f2a 100644
+--- a/riscv/insns/torchsim_vpop.h
++++ b/riscv/insns/torchsim_vpop.h
+@@ -12,12 +12,12 @@ for (reg_t vu_idx=0; vu_idx<n_vu; vu_idx++) {
+         printf("[VPOP] lane[%ld]", vu_idx);
+     }
+     for (reg_t i = 0; i < vl; ++i) {
+-        if (P.SA->deserializer[vu_idx]->empty())
++        if (P.SA->accumulator.empty())
+             break;
+ 
+         VI_STRIP(i);
+         P.VU.vstart->write(i);
+-        float val = P.SA->deserializer_pop(vu_idx);
++        float val = P.SA->accumulator_pop(vu_idx);
+         switch (P.VU.vsew) {
+           case e8:
+             P.VU.elt<int8_t>(vd, vreg_inx, vu_idx, true) = static_cast<int8_t>(val);
+@@ -44,4 +44,4 @@ for (reg_t vu_idx=0; vu_idx<n_vu; vu_idx++) {
+     }
+ }
+ P.VU.vstart->write(0);
+-P.SA->n_output -= vl;
+\ No newline at end of file
++P.SA->finish_vpop(vl);
+\ No newline at end of file
+diff --git a/riscv/systolic_array.cc b/riscv/systolic_array.cc
+index b5b903d..9697d1a 100644
+--- a/riscv/systolic_array.cc
++++ b/riscv/systolic_array.cc
+@@ -16,6 +16,10 @@ void systolicArray_t::reset() {
+       delete deserializer[dim_idx];
+     delete[] deserializer;
+   }
++  accumulator.clear();
++  accumulator_read.clear();
++  n_input = 0;
++  n_output = 0;
+   i_serializer = new std::queue<float>*[sa_dim];
+   w_serializer = new std::queue<float>*[sa_dim];
+   deserializer = new std::queue<float>*[sa_dim];
+@@ -83,7 +87,16 @@ void systolicArray_t::compute() {
+         output_vector[j] += input_vector[k] * iter;
+         k++;
+       }
+-      deserializer_push(j, output_vector[j]);
++      if (accumulator.empty()) {
++        accumulator.resize(sa_dim);
++        accumulator_read.assign(sa_dim, 0);
++        for (uint32_t lane = 0; lane < sa_dim; ++lane)
++          accumulator[lane].assign(n_input, 0.0f);
++      } else {
++        assert(accumulator.size() == sa_dim);
++        assert(accumulator[j].size() == n_input);
++      }
++      accumulator[j][i] += output_vector[j];
+     }
+ 
+     if (debug_flag) {
+@@ -93,6 +106,6 @@ void systolicArray_t::compute() {
+       printf("\n\n");
+     }
+   }
+-  n_output += n_input;
++  n_output = n_input;
+   n_input = 0;
+ }
+\ No newline at end of file
+diff --git a/riscv/systolic_array.h b/riscv/systolic_array.h
+index c735b18..58d1fb4 100644
+--- a/riscv/systolic_array.h
++++ b/riscv/systolic_array.h
+@@ -21,6 +21,10 @@ public:
+   float **output;
+   std::vector<std::deque<float> *> *weight;
+ 
++  // Retain one output microtile while successive K tiles are computed.
++  std::vector<std::vector<float>> accumulator;
++  std::vector<reg_t> accumulator_read;
++
+   reg_t n_input;
+   reg_t n_weight;
+   reg_t n_output;
+@@ -54,6 +58,8 @@ public:
+                                                 input(0),
+                                                 output(0),
+                                                 weight(0),
++                                                accumulator(),
++                                                accumulator_read(),
+                                                 n_input(0),
+                                                 n_weight(0),
+                                                 n_output(0),
+@@ -141,6 +147,23 @@ public:
+     return val;
+   }
+ 
++  float accumulator_pop(uint32_t dim_idx)
++  {
++    assert(dim_idx < accumulator.size());
++    assert(accumulator_read[dim_idx] < accumulator[dim_idx].size());
++    return accumulator[dim_idx][accumulator_read[dim_idx]++];
++  }
++
++  void finish_vpop(reg_t vl)
++  {
++    assert(n_output >= vl);
++    n_output -= vl;
++    if (n_output == 0) {
++      accumulator.clear();
++      accumulator_read.clear();
++    }
++  }
++
+   uint32_t get_sa_dim()
+   {
+     return sa_dim;

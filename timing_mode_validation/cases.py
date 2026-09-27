@@ -19,7 +19,9 @@ def load_op(op):
         f"tmv_case_{os.path.basename(path)[:-3]}", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    mod.OP = os.path.basename(path)[:-3]
+    #: A generated file may name a bench op other than its own filename, so a
+    #: hand-written case file for that op keeps its own name and its own writer.
+    mod.OP = getattr(mod, "OP", None) or os.path.basename(path)[:-3]
     return mod
 
 

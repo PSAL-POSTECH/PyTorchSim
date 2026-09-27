@@ -292,6 +292,75 @@ def attn_block(S, hidden, heads, kv_heads, dt):
                 _rand(hidden, hidden, dtype=dt)]
 
 
+def ffn_gated(S, hidden, interm, dt):
+    """The decoder FFN as silicon ran it: gate and up are ONE [h, 2*interm] weight.
+
+    Not mlp_swiglu, which keeps them as two GEMMs -- the measured program
+    (tpuv6e_validation code/harness/tpu_lut_sweep_v2.py, op `ffn`) multiplies once
+    and slices, so its second GEMM waits on a slice rather than on its own matmul.
+    """
+    def fn(x, wgu, wd):
+        gu = torch.matmul(x, wgu)
+        g, u = gu[:, :interm], gu[:, interm:]
+        return torch.matmul(torch.nn.functional.silu(g) * u, wd)
+    return fn, [_rand(S, hidden, dtype=dt), _rand(hidden, 2 * interm, dtype=dt),
+                _rand(interm, hidden, dtype=dt)]
+
+
+def ffn_erf(S, hidden, interm, dt):
+    """The encoder FFN that represents serving: two GEMMs with bias, erf GELU between.
+
+    erf, not tanh: on silicon the two lowerings differ by 2.1-3.3x because
+    `gelu(approximate=False)` expands chlo.erfc into ~66 ops per element while the
+    erf form lowers natively (gate g4 in the measurement tree).
+    """
+    def fn(x, w1, b1, w2, b2):
+        y = torch.matmul(x, w1) + b1
+        return torch.matmul(0.5 * y * (1 + torch.erf(y / math.sqrt(2))), w2) + b2
+    return fn, [_rand(S, hidden, dtype=dt), _rand(hidden, interm, dtype=dt),
+                _rand(interm, dtype=dt), _rand(interm, hidden, dtype=dt),
+                _rand(hidden, dtype=dt)]
+
+
+def attn_enc_full(Hq, S, D, dt):
+    """Encoder self-attention as silicon ran it: non-causal, materialised scores.
+
+    This is XLA's own path, not a flash kernel: splash needs d%128==0 and q>=128, and
+    the measured encoders are d=64/32, so the whole [H, S, S] score tensor is built.
+    """
+    def fn(q, k, v):
+        s = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(D)
+        return torch.matmul(s.softmax(dim=-1), v)
+    return fn, [_rand(Hq, S, D, dtype=dt), _rand(Hq, S, D, dtype=dt),
+                _rand(Hq, S, D, dtype=dt)]
+
+
+def attn_dec_gqa(Hq, Hkv, q_len, kv_len, D, dt):
+    """The OPERATION ragged_paged_attention performs, written plainly.
+
+    GQA over a KV cache with the q block at the LAST q_len positions of kv. Silicon
+    runs it as a paged kernel with online softmax; this materialises the scores, so a
+    comparison prices two algorithms for one operation and has to say so.
+    """
+    n_rep = Hq // Hkv
+
+    def fn(q, k, v, *rest):
+        k2 = k.repeat_interleave(n_rep, dim=0)
+        v2 = v.repeat_interleave(n_rep, dim=0)
+        s = torch.matmul(q, k2.transpose(-2, -1)) / math.sqrt(D)
+        if rest:
+            s = s + rest[0]
+        return torch.matmul(s.softmax(dim=-1), v2)
+
+    t = [_rand(Hq, q_len, D, dtype=dt), _rand(Hkv, kv_len, D, dtype=dt),
+         _rand(Hkv, kv_len, D, dtype=dt)]
+    if q_len > 1:            # at q_len 1 the query sees all of kv, so there is no mask
+        qi = torch.arange(q_len).unsqueeze(1) + (kv_len - q_len)
+        kj = torch.arange(kv_len).unsqueeze(0)
+        t.append(torch.where(qi >= kj, 0.0, float("-inf")).to(dt))
+    return fn, t
+
+
 OPS = {
     "gemm": gemm, "gemm_bias": gemm_bias, "bmm": bmm,
     "attn_qk": attn_qk, "attn_pv": attn_pv, "attention": attention,
@@ -304,6 +373,8 @@ OPS = {
     "conv": conv, "dwconv": dwconv, "pwconv": pwconv, "patch_embed": patch_embed,
     "conv1d_causal": conv1d_causal, "convtranspose": convtranspose, "maxpool": maxpool,
     "mlp_swiglu": mlp_swiglu, "attn_block": attn_block,
+    "ffn_gated": ffn_gated, "ffn_erf": ffn_erf,
+    "attn_enc_full": attn_enc_full, "attn_dec_gqa": attn_dec_gqa,
 }
 
 

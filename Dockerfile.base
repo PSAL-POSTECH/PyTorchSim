@@ -165,6 +165,12 @@ RUN python3.11 -m pip install --no-cache-dir triton==3.6.0
 # above with the backend work each needs. 4.57.6 remains the cheaper target on
 # dependencies and is what to fall back to if hub 1.x proves expensive; it is
 # NOT what this tree runs.
+# nanobind builds the torchsim dialect's Python extension (pytorchsim-triton-opt's
+# dialect/, which the codegen route loads to register `torchsim.*` ops). The range is
+# MLIR's own (mlir/python/requirements.txt) -- the extension is compiled against the
+# same bindings, so a 3.x here would not be the nanobind those bindings expect.
+RUN python3.11 -m pip install --no-cache-dir "nanobind>=2.9,<3.0"
+
 RUN python3.11 -m pip install --no-cache-dir \
     numpy==2.4.6 onnx matplotlib scikit-learn pydot tabulate \
     transformers==5.15.0 diffusers==0.34.0 \

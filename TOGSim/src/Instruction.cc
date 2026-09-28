@@ -108,7 +108,10 @@ std::shared_ptr<std::set<addr_type>> Instruction::get_dram_address(addr_type dra
                               dim1*tile_stride.at(tile_stride.size() - 3) + \
                               dim2*tile_stride.at(tile_stride.size() - 2) + \
                               dim3*tile_stride.at(tile_stride.size() - 1);
-          address = dram_addr + (address * _elem_bits + 7) >> 3;
+                // dram_addr is written in Byte
+                // Original Code also shifts the base address 
+                // address = dram_addr + (address * _elem_bits + 7) >> 3;
+            address = dram_addr + ((address * _elem_bits + 7) >> 3);
           if (indirect_index != NULL) {
             uint64_t index_val = indirect_index[index_count++];
             address += (index_val * _elem_bits + 7) >> 3;

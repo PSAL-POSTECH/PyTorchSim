@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 env:
-  BASE_IMAGE_REPO: ghcr.io/psal-postech/torchsim_base
+  BASE_IMAGE_REPO: ghcr.io/monoletp/torchsim_base
   # PR: head commit; otherwise workflow_dispatch uses the branch SHA
   SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
@@ -111,14 +111,14 @@ jobs:
           no-cache: true
           build-args: |
             BASE_IMAGE=${{ needs.ensure-base.outputs.base_image }}
-          tags: ghcr.io/psal-postech/torchsim-test:${{ env.SOURCE_SHA }}
+          tags: ghcr.io/monoletp/torchsim-test:${{ env.SOURCE_SHA }}
 
       # Do not use GITHUB_SHA here: on pull_request it is the merge commit, while the image tag uses SOURCE_SHA (PR head).
       - name: Wait for GHCR propagation
         env:
           IMAGE_SHA: ${{ env.SOURCE_SHA }}
         run: |
-          IMG="ghcr.io/psal-postech/torchsim-test:${IMAGE_SHA}"
+          IMG="ghcr.io/monoletp/torchsim-test:${IMAGE_SHA}"
           echo "Verifying tag matches push: ${IMAGE_SHA}"
           for i in $(seq 1 30); do
             echo "Checking if image exists in GHCR (attempt $i)..."
@@ -140,7 +140,7 @@ jobs:
     needs: build-and-test
     uses: ./.github/workflows/pytorchsim_test.yml
     with:
-      image_name: ghcr.io/psal-postech/torchsim-test:${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+      image_name: ghcr.io/monoletp/torchsim-test:${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
       togsim_config: /workspace/PyTorchSim/configs/systolic_ws_128x128_c1_simple_noc_tpuv3.yml
       run_accuracy: true
 
@@ -148,7 +148,7 @@ jobs:
     needs: build-and-test
     uses: ./.github/workflows/pytorchsim_test.yml
     with:
-      image_name: ghcr.io/psal-postech/torchsim-test:${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+      image_name: ghcr.io/monoletp/torchsim-test:${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
       togsim_config: /workspace/PyTorchSim/configs/systolic_ws_32x32_c1_simple_noc_tpuv3.yml
       run_accuracy: false
 
@@ -156,6 +156,6 @@ jobs:
     needs: build-and-test
     uses: ./.github/workflows/pytorchsim_test.yml
     with:
-      image_name: ghcr.io/psal-postech/torchsim-test:${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+      image_name: ghcr.io/monoletp/torchsim-test:${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
       togsim_config: /workspace/PyTorchSim/configs/systolic_ws_8x8_c1_simple_noc_tpuv3.yml
       run_accuracy: false

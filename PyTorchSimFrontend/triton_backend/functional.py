@@ -25,6 +25,12 @@ class ShapeMismatch(RuntimeError):
 #: carries their bytes instead. The .raw file holds the ORIGINAL bits either
 #: way -- the view is a reinterpretation, never a conversion. Same table as the
 #: compiler's contract/kernel_object.py NP_DTYPE.
+#:
+#: bfloat16 IS UNREACHABLE and is here for the day it is not. Its bytes would
+#: ride correctly, but nothing downstream computes in it: spike has no Zvfbfmin,
+#: so vfadd.vv at e16 is IEEE-half addition whatever the bits meant. Measured
+#: 2026-09-30: a bf16 argument widened to f32 in the kernel comes back wrong.
+#: The compiler pins that wall in ops_bf16_matmul.py (expect="blocked").
 _NP_CARRIER = {"float8_e5m2": "uint8", "float8_e4m3fn": "uint8",
                "bfloat16": "uint16"}
 

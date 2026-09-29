@@ -16,6 +16,7 @@ _PARALLEL_PREFIXES = ("z", "y", "x")
 _REDUCTION_LIVE_TILES = 12
 
 _DTYPE_BITS = {"float64": 64, "float32": 32, "float16": 16, "bfloat16": 16,
+               "float8_e5m2": 8, "float8_e4m3fn": 8,
                "int64": 64, "int32": 32, "int16": 16, "int8": 8,
                "uint64": 64, "uint32": 32, "uint16": 16, "uint8": 8,
                "bool": 8}

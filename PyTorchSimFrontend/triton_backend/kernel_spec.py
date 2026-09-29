@@ -22,6 +22,9 @@ logger = extension_config.setup_logger()
 _DTYPE = {
     "*fp64": "float64", "*fp32": "float32", "*fp16": "float16",
     "*bf16": "bfloat16",
+    # fp8 has no numpy or C scalar: it rides as uint8 and is viewed back at the
+    # ends, the way bf16 rides as uint16. See functional.py's _np_dtype.
+    "*fp8e5": "float8_e5m2", "*fp8e4nv": "float8_e4m3fn",
     "*i64": "int64", "*i32": "int32", "*i16": "int16", "*i8": "int8",
     "*u64": "uint64", "*u32": "uint32", "*u16": "uint16", "*u8": "uint8",
     "*i1": "bool",
@@ -216,6 +219,7 @@ def _dtype_tokens():
             torch.float16: "*fp16", torch.bfloat16: "*bf16",
             torch.int64: "*i64", torch.int32: "*i32", torch.int16: "*i16",
             torch.int8: "*i8", torch.uint8: "*u8", torch.bool: "*i1",
+            torch.float8_e5m2: "*fp8e5", torch.float8_e4m3fn: "*fp8e4nv",
         }
     return _TORCH_DTYPE_TOKEN
 

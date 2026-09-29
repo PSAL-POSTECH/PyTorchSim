@@ -249,6 +249,7 @@ tests/ops/attention/test_gqa.py
 tests/ops/elementwise/test_activation.py
 tests/ops/elementwise/test_add.py
 tests/ops/elementwise/test_exponent.py
+tests/ops/elementwise/test_fp8.py
 tests/ops/elementwise/test_transcendental.py
 tests/ops/fusion/test_addmm_residual.py
 tests/ops/fusion/test_matmul_scalar.py

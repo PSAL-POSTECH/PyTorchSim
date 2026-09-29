@@ -21,9 +21,27 @@ class ShapeMismatch(RuntimeError):
     """The launch does not match the shapes the binary was compiled for."""
 
 
+#: Dtypes numpy cannot name, and the unsigned int of the same width that
+#: carries their bytes instead. The .raw file holds the ORIGINAL bits either
+#: way -- the view is a reinterpretation, never a conversion. Same table as the
+#: compiler's contract/kernel_object.py NP_DTYPE.
+_NP_CARRIER = {"float8_e5m2": "uint8", "float8_e4m3fn": "uint8",
+               "bfloat16": "uint16"}
+
+
 def _np_dtype(name):
     import numpy as np
-    return np.dtype("bool" if name == "bool" else name)
+    if name == "bool":
+        return np.dtype("bool")
+    return np.dtype(_NP_CARRIER.get(name, name))
+
+
+def _as_carrier(t):
+    """`t` retyped to whatever numpy can hold, bit for bit."""
+    import torch
+
+    carrier = _NP_CARRIER.get(str(t.dtype).removeprefix("torch."))
+    return t.view(getattr(torch, carrier)) if carrier else t
 
 
 def tensor_args(meta, args):
@@ -98,7 +116,7 @@ def write_inputs(workdir, meta, args):
                 shape.pop(i)
                 strides.pop(i)
         flat.as_strided(shape, strides).copy_(src)
-        flat.numpy().tofile(path)
+        _as_carrier(flat).numpy().tofile(path)
     return runtime
 
 
@@ -122,8 +140,12 @@ def read_outputs(workdir, meta, args):
             raise RuntimeError(
                 f"{path} holds {flat.size} element(s), expected {m['numel']} "
                 f"-- Spike did not write the whole tensor")
-        stored = torch.from_numpy(flat).as_strided(t.shape, t.stride())
-        t.copy_(stored.to(t.dtype))
+        # view, not .to(): the carrier holds the output's own bits, and a
+        # conversion here would read an fp8 byte as the integer 60.
+        stored = torch.from_numpy(flat)
+        if stored.dtype != t.dtype:
+            stored = stored.view(t.dtype)
+        t.copy_(stored.as_strided(t.shape, t.stride()))
         written.append(m["name"])
     return written
 

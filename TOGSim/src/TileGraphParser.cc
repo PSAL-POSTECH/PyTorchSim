@@ -355,6 +355,9 @@ std::vector<std::shared_ptr<Tile>> TileLoopNode::get_tiles_from_iter(TileGraphPa
       int64_t base_addr_id = tog_parser->register_addr_name(base_addr_name);
       addr_type base_addr = tog_parser->lookup(base_addr_name);
       addr_type offset = std::inner_product(iter_list.begin(), iter_list.end(), mem_node->get_loop_stride_list().begin(), 0);
+      // offset in unit of element，base_addr in unit of byte 
+      // conver offset to offset_bytes
+      const addr_type offset_bytes = (offset * mem_node->get_elem_bits()) / 8;
 
       std::vector<int64_t> tag_list;
       std::vector<int64_t> accum_tag_list;
@@ -421,7 +424,7 @@ std::vector<std::shared_ptr<Tile>> TileLoopNode::get_tiles_from_iter(TileGraphPa
              fmt::join(tag_stride_list, ", "));
       std::shared_ptr<Instruction> inst = std::make_shared<Instruction>(
         Opcode::MOVIN, 0,
-        0, base_addr+offset,
+        0, base_addr+ offset_bytes, //bytes
         mem_node->get_tile_size(), mem_node->get_tile_stride(), mem_node->get_elem_bits(),
         tag_list, tag_stride_list, accum_tag_list
       );
@@ -468,6 +471,9 @@ std::vector<std::shared_ptr<Tile>> TileLoopNode::get_tiles_from_iter(TileGraphPa
       int64_t base_addr_id = tog_parser->register_addr_name(base_addr_name);
       addr_type base_addr = tog_parser->lookup(base_addr_name);
       addr_type offset = std::inner_product(iter_list.begin(), iter_list.end(), mem_node->get_loop_stride_list().begin(), 0);
+      // offset in unit of element，base_addr in unit of byte
+      // conver offset to offset_bytes
+      const addr_type offset_bytes = (offset * mem_node->get_elem_bits()) / 8;
 
       /* Calc numa id */
       int numa_id = 0;
@@ -481,7 +487,7 @@ std::vector<std::shared_ptr<Tile>> TileLoopNode::get_tiles_from_iter(TileGraphPa
       printIndexMap("[TOGParser] Store Node " + mem_node->get_base_addr_name() + " Numa_id: " + std::to_string(numa_id), iter);
       std::shared_ptr<Instruction> inst = std::make_shared<Instruction>(
         Opcode::MOVOUT, 0,
-        0, base_addr+offset,
+        0, base_addr + offset_bytes,// bytes
         mem_node->get_tile_size(), mem_node->get_tile_stride(), mem_node->get_elem_bits(),
         std::vector<int64_t>(1, 0), mem_node->get_tag_stride_list(), std::vector<int64_t>()
       );

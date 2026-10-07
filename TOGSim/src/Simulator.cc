@@ -292,4 +292,11 @@ void Simulator::print_core_stat()
     _cores[core_id]->print_stats();
   }
   spdlog::info("Total execution cycles: {}", _core_cycles);
+  if (!_unit_table) return;
+  std::vector<std::vector<uint64_t>> per_core;
+  for (auto& core : _cores) per_core.push_back(core->get_unit_admitted());
+  if (!_unit_table->report(per_core, _core_cycles)) {
+    spdlog::error("[TOGSim] --unit_table: a port admitted more than its capacity allows");
+    exit(EXIT_FAILURE);
+  }
 }

@@ -433,6 +433,7 @@ void SparseCore::finish_instruction(std::shared_ptr<Instruction>& inst, InstFini
     exit(EXIT_FAILURE);
   }
   inst->finish_instruction();
+  count_unit_admitted(inst);
   static_cast<Tile*>(inst->get_owner())->inc_finished_inst();
   const char* trace_tag = (tag == InstFinishTraceTag::DmaIssueComplete)
                               ? TraceLogTag::kAsyncDmaAllRequestsIssued

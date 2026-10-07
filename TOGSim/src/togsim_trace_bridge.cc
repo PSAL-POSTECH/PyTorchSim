@@ -2,6 +2,7 @@
 #include "togsim_trace_bridge.h"
 
 #include <algorithm>
+#include <filesystem>
 #include <map>
 #include <set>
 #include <utility>
@@ -100,6 +101,8 @@ struct BuildState {
            std::pair<int64_t, std::shared_ptr<Instruction>>> bar_for_load;
   int64_t next_tag = 0;
   int cur_tile_group = -1;
+  std::string indirect_dir;               // where the functional run left its index dumps
+  size_t indirect_found = 0, indirect_missing = 0;
   std::set<int64_t> cur_tile_bufs;
   size_t cur_tile_footprint = 0;
 
@@ -113,10 +116,32 @@ struct BuildState {
   std::vector<std::pair<size_t, size_t>> last_reader;   // version -> (work-item, record)
   size_t item = 0, rec = 0;               // position of the record being fed
 
-  static size_t rec_bytes(const togsim::TraceRec& t) {   // single source of the tile footprint
+  static size_t rec_numel(const togsim::TraceRec& t) {
     size_t numel = 1;
     for (auto d : t.dims) numel *= (size_t)d;
-    return numel * (t.elem_bits / 8);
+    return numel;
+  }
+  static size_t rec_bytes(const togsim::TraceRec& t) {   // single source of the tile footprint
+    return rec_numel(t) * (t.elem_bits / 8);
+  }
+
+  // Point an indirect dma at its index dump, indirect_index_<key>_<seq>.raw (the vcix
+  // tpu model's dma_index_key naming): one uint64 element offset per tile element.
+  // A dump that is absent or of another size leaves the dma dense, and is counted.
+  void attach_indices(const togsim::TraceRec& t, Instruction& inst) {
+    const std::string path = indirect_dir + "/indirect_index_" + std::to_string((uint64_t)t.index_key) +
+                             "_" + std::to_string(t.index_seq) + ".raw";
+    std::error_code ec;
+    const auto bytes = std::filesystem::file_size(path, ec);
+    if (!ec && bytes == rec_numel(t) * sizeof(uint64_t)) {
+      inst.set_indirect_index_path(path);
+      indirect_found++;
+      return;
+    }
+    if (!indirect_missing++)
+      spdlog::warn("[TOGSim-trace] indirect dma without its index dump ({}: {}); modeled as a dense tile",
+                   path, ec ? "absent" : std::to_string(bytes) + " bytes for " +
+                                             std::to_string(rec_numel(t)) + " elements");
   }
 
   // ---- index + footprint --------------------------------------------------
@@ -332,6 +357,7 @@ struct BuildState {
       int64_t uniq = next_tag++;                         // fresh Core tag key per dma record
       auto inst = make_dma(t, uniq);
       inst->set_tile_group(cur_tile_group);
+      if (t.indirect) attach_indices(t, *inst);
       tile->inc_required_sram_size(rec_bytes(t));         // SRAM footprint (ready-tile ordering)
       note_bufs(t.read_bufs); note_bufs(t.write_bufs);   // distinct-buffer footprint for 1- vs 2-dispatch
       if (t.dir == 1) {                                  // STORE
@@ -385,7 +411,13 @@ struct BuildState {
   // Returns the work-item `next`'s subgraph; nullptr once the producer is
   // exhausted. Called from the TileGraph's tile source, on demand.
   std::shared_ptr<TileSubGraph> build_one_tile() {
-    if (next >= prod.num_items()) return nullptr;
+    if (next >= prod.num_items()) {
+      if (indirect_found + indirect_missing)
+        spdlog::info("[TOGSim-trace] indirect dmas: {} with their index dump, {} without",
+                     indirect_found, indirect_missing);
+      indirect_found = indirect_missing = 0;
+      return nullptr;
+    }
     item = next; rec = 0;
     for (const togsim::TraceRec& t : prod.run_item(next++)) feed(t);
     auto out = std::move(sg_out);
@@ -401,9 +433,10 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(
     const uint64_t* tensor_base, int32_t n_tensors,
     const int64_t* cyc, const int64_t* ovl, int32_t n_tiles,
     const int32_t* partition_cores, int32_t n_partition_cores,
-    const std::string& name) {
+    const std::string& indirect_dir, const std::string& name) {
   using togsim::TraceRec;
   auto S = std::make_shared<BuildState>();
+  S->indirect_dir = indirect_dir;
 
   // Index the dispatches (records each work-item's fn/iv/core) and collect each
   // buffer's spad size. Builds no Instruction.

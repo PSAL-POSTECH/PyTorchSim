@@ -18,7 +18,7 @@ namespace po = boost::program_options;
 
 // Run a kernel's compiled trace producer (.so) and bridge it to a TileGraph for
 // `partition_id`, whose cores its work-items round-robin over. The cycle-table TSV
-// gives per-tile latency (a flat stub if absent). nullptr if the producer fails.
+// gives per-tile latency; index dumps are read from runtime/indirect_access beside it.
 std::unique_ptr<TileGraph> build_trace_tilegraph(Simulator* simulator,
                                                  const std::string& trace_so_path,
                                                  const std::string& cycle_table_path,
@@ -55,6 +55,7 @@ std::unique_ptr<TileGraph> build_trace_tilegraph(Simulator* simulator,
                             bases.data(), (int)bases.size(),
                             cyc.data(), ovl.data(), (int)cyc.size(),
                             partition_cores.data(), (int32_t)partition_cores.size(),
+                            (fs::path(trace_so_path).parent_path() / "runtime" / "indirect_access").string(),
                             "trace_kernel");
 }
 

@@ -11,7 +11,7 @@ extern "C" {
 
 // Producer/runtime ABI version. TOGSim refuses to load a producer whose
 // embedded togsim_abi_version() does not match TOGSIM_ABI_VERSION.
-#define TOGSIM_ABI_VERSION 12
+#define TOGSIM_ABI_VERSION 13
 int32_t togsim_abi_version(void);
 
 // Opaque per-invocation context owned by TOGSim. Holds the recorded trace and
@@ -27,17 +27,21 @@ typedef enum {
 // Emit a DMA (sec 5.4). `offset` is an ELEMENT offset into tensor `arg_id`; null
 // `strides` => contiguous. `is_async` => it finishes at ISSUE, so the barrier keyed
 // by `(tag_id, tag_slot)` gates consumers. `read_bufs`/`write_bufs` -> sec 10.
+// `indirect` => each element also moves by what its index added in the functional
+// run: dump indirect_index_<key>_<n>.raw, key = the work-item's togsim_dispatch key,
+// n = this dma's rank among the work-item's indirect dmas.
 
 // --- BEGIN trace-producer call formats (copied verbatim into generated trace.cpp) ---
 // Each togsim_* call below lowers 1:1 to one of these free functions. Arg formats:
 //   togsim_dma(ctx, dir, arg_id, offset, ndim, dims[], strides[], elem_bits,
-//              is_async, tag_id, tag_slot, read_bufs[], n_read, write_bufs[], n_write)
-//              dir: 0=load (MOVIN), 1=store (MOVOUT)
+//              is_async, tag_id, tag_slot, read_bufs[], n_read, write_bufs[], n_write,
+//              indirect)
+//              dir: 0=load (MOVIN), 1=store (MOVOUT); indirect: 0 or 1
 //   togsim_compute(ctx, tile_id, compute_type, ndim, dims[], read_bufs[], n_read,
 //                  write_bufs[], n_write)   compute_type: 0=vector, 1=matmul, 2=preload,
 //                                          3=cross-lane
 //   togsim_memory_barrier(ctx, tag_id, tag_slot, write_bufs[], n_write)
-//   togsim_dispatch(ctx, tile_fn, iv[], n_iv)        // run one work-item
+//   togsim_dispatch(ctx, tile_fn, iv[], n_iv, key)   // run one work-item
 //   togsim_kernel(ctx, shape_args[], n_shape_args)   // producer entry point
 // --- END trace-producer call formats ---
 void togsim_dma(EmitCtx* ctx, int32_t dir, int32_t arg_id,
@@ -45,7 +49,8 @@ void togsim_dma(EmitCtx* ctx, int32_t dir, int32_t arg_id,
                 const int64_t* strides, int32_t elem_bits,
                 int32_t is_async, int32_t tag_id, uint64_t tag_slot,
                 const int64_t* read_bufs, int32_t n_read,
-                const int64_t* write_bufs, int32_t n_write);
+                const int64_t* write_bufs, int32_t n_write,
+                int32_t indirect);
 
 // Emit a fixed-size tile compute. Cost comes from the tile_id->cycle table (sec 6),
 // not from `dims`. `compute_type` (0 vector / 1 matmul / 2 preload / 3 cross-lane) routes
@@ -68,9 +73,10 @@ typedef void (*togsim_tile_fn)(EmitCtx* ctx, int64_t* iv, int32_t n_iv);
 
 // Dispatch one work-item (sec 9.3): round-robin a core, bracket `fn` with
 // TILE_BEGIN/TILE_END, and invoke it -- so the work-item scope IS the call. Core
-// choice is runtime-owned; the producer never names num_cores or a core.
+// choice is runtime-owned; the producer never names num_cores or a core. `key` is
+// the work-item's dma_index_key in the functional run, naming its index dumps.
 void togsim_dispatch(EmitCtx* ctx, togsim_tile_fn fn,
-                     int64_t* iv, int32_t n_iv);
+                     int64_t* iv, int32_t n_iv, int64_t key);
 
 // Entry point the loader resolves in the producer `.so`. `shape_args` carries
 // the runtime values for the kernel's symbolic dimensions (in a kernel-specific

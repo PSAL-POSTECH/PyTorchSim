@@ -27,6 +27,9 @@ struct TraceRec {
   std::vector<int64_t> strides;  // tile strides (DMA)
   std::vector<int64_t> read_bufs;   // SRAM buffer ids read  (sec 10 dependency model)
   std::vector<int64_t> write_bufs;  // SRAM buffer ids written (MEMORY_BAR: released bufs)
+  int32_t  indirect;      // DMA: its elements also move by the functional run's indices
+  int64_t  index_key;     // DMA, indirect: the work-item's key ...
+  int64_t  index_seq;     // ... and this dma's rank among its indirect dmas
   // COMPUTE
   uint64_t tile_id;
   int32_t  compute_type;  // 0 vector / 1 matmul / 2 preload / 3 cross-lane (Core unit enum)
@@ -41,6 +44,7 @@ struct WorkItem {
   void* fn = nullptr;           // togsim_tile_fn
   std::vector<int64_t> iv;      // the enclosing parallel loop indices
   int32_t core = 0;             // round-robin binding, fixed when it is registered
+  int64_t key = 0;              // names the work-item's index dumps (togsim_dispatch)
 };
 
 class LazyProducer {

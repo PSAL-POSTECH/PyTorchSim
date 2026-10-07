@@ -103,6 +103,17 @@ def __getattr__(name):
         return bool(config_yaml.get('pytorchsim_functional_verify_per_kernel', False)) \
             and bool(config_yaml['pytorchsim_functional_mode'])
 
+    # Tile mapping (develop's keys): "autotune" times the top-k template tiles and keeps
+    # the fastest; a tile that does not compile counts as never finishing.
+    if name == "codegen_mapping_strategy":
+        return config_yaml.get("codegen_mapping_strategy", "heuristic")
+    if name == "codegen_autotune_template_topk":
+        return int(config_yaml.get("codegen_autotune_template_topk", 4))
+    if name == "codegen_external_mapping_file":
+        return config_yaml.get("codegen_external_mapping_file", "")
+    if name == "codegen_autotune_wall_slack_sec":
+        return float(config_yaml.get("codegen_autotune_wall_slack_sec", 15))
+
     if name == "CONFIG_TOGSIM_DEBUG_LEVEL":
         return os.environ.get("TOGSIM_DEBUG_LEVEL", "")
     if name == "CONFIG_TORCHSIM_LOG_PATH":

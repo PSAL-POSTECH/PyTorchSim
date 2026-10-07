@@ -13,8 +13,6 @@ from PyTorchSimFrontend import extension_config
 
 logger = extension_config.setup_logger()
 
-_MIN_BLOCK = 16
-
 _conv_groups = None
 
 _NPU_CHOICES = None
@@ -59,58 +57,24 @@ def _is_npu(obj):
     return getattr(dev, "type", None) == "npu"
 
 
-def _power_of_two(n):
-    return n >= 1 and (n & (n - 1)) == 0
+def _gemm_tiles(m, n, k, dtype_size, out_size=None):
+    """This machine's mm tiles for [m, k] @ [k, n], best first: develop's select_tile.
 
-
-def _round_up_pow2(n):
-    """The smallest legal Triton block extent that covers `n`."""
-    v = _MIN_BLOCK
-    while v < n:
-        v *= 2
-    return v
-
-
-def _gemm_tiles(m, n, k, dtype_size):
-    """This machine's mm tiles for [m, k] @ [k, n], best first.
-
-    `gemm_tile_candidates` enumerates and ranks every tile that fits half the
-    scratchpad. Torch's generic set is appended after, never before.
+    `gemm_tile_candidates` (develop's gemm_combination_mapping) enumerates every tile that
+    fits half the scratchpad -- the other half is the next work-item's double buffer -- and
+    ranks them by the scratchpad they use. Torch's generic set is appended after.
+    `out_size`: the bytes C is stored at when it is wider than the inputs (a fused cast) --
+    develop counts that as C once more per fused node, and with a widening cast it is the same.
     """
     from torch._inductor.template_heuristics.triton import GemmConfig
 
     from .hardware import HardwareInfo
 
-    tiles = HardwareInfo().gemm_tile_candidates(
-        _round_up_pow2(int(m)), _round_up_pow2(int(n)), _round_up_pow2(int(k)),
-        precision_bytes=int(dtype_size),
-        n_prologue_node=2, n_prologue_extra_read=4, n_extra_node=2,
-        budget_divisor=2)
-
-    out = []
-    for tile_m, tile_n, tile_k in tiles:
-        if not all(_power_of_two(b) and b >= _MIN_BLOCK
-                   for b in (tile_m, tile_n, tile_k)):
-            continue
-        out.append((tile_m, tile_n, tile_k))
-
-    #: FILL THE CORES FIRST, THEN TAKE THE BIGGEST TILE. The enumeration above
-    #: ranks by scratchpad and knows nothing about how many cores will share the
-    #: work; a tile whose output grid does not reach the cores, or does not
-    #: divide among them, leaves one idle for a whole kernel. STABLE, so the
-    #: scratchpad order survives inside each group -- and on a one-core machine
-    #: every grid divides by 1, which returns the list untouched.
-    cores = _num_cores()
-    if cores > 1:
-        mm, nn = int(m), int(n)
-
-        def _idle_cores(tile):
-            grid = (-(-mm // tile[0])) * (-(-nn // tile[1]))
-            return 0 if grid >= cores and grid % cores == 0 else 1
-
-        out.sort(key=_idle_cores)
-
-    return [GemmConfig(tm, tn, tk, 1, 4) for tm, tn, tk in out]
+    size = int(dtype_size)
+    extra = max(int(out_size or size) // size - 1, 0)
+    tiles = HardwareInfo().gemm_tile_candidates(int(m), int(n), int(k), n_extra_node=extra,
+                                                precision_bytes=size)
+    return [GemmConfig(tm, tn, tk, 1, 4) for tm, tn, tk in tiles]
 
 
 def _register_template_heuristics():

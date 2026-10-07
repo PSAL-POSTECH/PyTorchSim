@@ -1,18 +1,14 @@
-name: Triton codegen route (pytorchsim-triton-opt)
+name: Triton codegen route (PyTorchSim-Triton-Backend)
 
 # Exercises the Triton codegen route: Inductor's own Triton backend produces the
-# kernel and pytorchsim-triton-opt lowers it to a RISC-V ELF.
+# kernel and PyTorchSim-Triton-Backend lowers it to a RISC-V ELF.
 # (PyTorchSimFrontend/triton_backend/README.md)
 #
-# Separate from the main CI on purpose. The route is WIP, and its toolchain layer
-# is ~1.8 GiB that no other job needs, so it neither gates PRs nor slows them
-# down. Promote the jobs into pytorchsim_test.yml once the route runs end to end.
+# Separate from the main CI on purpose: it runs when the compiler pin moves, and
+# its sweep reports rather than gates.
 #
-# The secret keeps its old name on purpose: GitHub cannot rename a secret, and
-# an existing one's value is not readable, so re-creating it would mean issuing a
-# new PAT to buy nothing a person ever sees. Everything downstream is PSTO_.
-# Needs secrets.TNPU_TOKEN: a PAT that can read PSAL-POSTECH/pytorchsim-triton-opt and its
-# toolchain-llvm23 release. The repo is private and the default Actions token is
+# Needs secrets.TNPU_TOKEN: a PAT that can read PSAL-POSTECH/PyTorchSim-Triton-Backend
+# and its vcix-accelerator submodule. Both are private and the default Actions token is
 # scoped to this repository. preflight checks it before the docker build.
 
 on:
@@ -21,22 +17,22 @@ on:
     paths:
       - 'PyTorchSimFrontend/triton_backend/**'
       - 'PyTorchSimFrontend/tog/**'
-      - 'thirdparty/pytorchsim-triton-opt.json'
-      - 'Dockerfile.psto'
-      - 'scripts/ci/psto_base_pin.sh'
+      - 'thirdparty/pytorchsim-triton-backend.json'
+      - 'Dockerfile.ptb'
+      - 'scripts/ci/ptb_base_pin.sh'
       - 'scripts/ci/triton_route_passing.txt'
-      - '.github/workflows/triton_npu.yml'
+      - '.github/workflows/pytorchsim_triton_backend.yml'
   workflow_dispatch:
 
 env:
   BASE_IMAGE_REPO: ghcr.io/psal-postech/torchsim_base
-  PSTO_IMAGE_REPO: ghcr.io/psal-postech/torchsim_psto_base
-  APP_IMAGE_REPO: ghcr.io/psal-postech/torchsim_psto
+  PTB_IMAGE_REPO: ghcr.io/psal-postech/torchsim_ptb_base
+  APP_IMAGE_REPO: ghcr.io/psal-postech/torchsim_ptb
   SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
 jobs:
   preflight:
-    name: Check psto access
+    name: Check PTB access
     runs-on: [self-hosted, slurm, x86_64]
     outputs:
       ready: ${{ steps.check.outputs.ready }}
@@ -46,35 +42,30 @@ jobs:
           ref: ${{ env.SOURCE_SHA }}
           persist-credentials: false
 
-      - name: Token and release present
+      - name: Token can read the pin
         id: check
         env:
-          PSTO_TOKEN: ${{ secrets.TNPU_TOKEN }}
+          PTB_TOKEN: ${{ secrets.TNPU_TOKEN }}
         run: |
-          if [ -z "${PSTO_TOKEN}" ]; then
-            echo "::error::secrets.TNPU_TOKEN is not set. PSAL-POSTECH/pytorchsim-triton-opt is private and the default Actions token cannot read it."
+          if [ -z "${PTB_TOKEN}" ]; then
+            echo "::error::secrets.TNPU_TOKEN is not set. PSAL-POSTECH/PyTorchSim-Triton-Backend is private and the default Actions token cannot read it."
             echo "ready=false" >> "$GITHUB_OUTPUT"; exit 1
           fi
-          REPO=$(jq -r '.pytorchsim_triton_opt.repository' thirdparty/pytorchsim-triton-opt.json)
-          TAG=$(jq -r '.pytorchsim_triton_opt.release_tag' thirdparty/pytorchsim-triton-opt.json)
-          if ! curl -fsS -H "Authorization: Bearer ${PSTO_TOKEN}" \
-               "https://api.github.com/repos/${REPO}" -o /dev/null; then
-            echo "::error::PSTO_TOKEN cannot read ${REPO}."
-            echo "ready=false" >> "$GITHUB_OUTPUT"; exit 1
-          fi
-          if ! curl -fsS -H "Authorization: Bearer ${PSTO_TOKEN}" \
-               "https://api.github.com/repos/${REPO}/releases/tags/${TAG}" -o /dev/null; then
-            echo "::error::${REPO} has no release tagged '${TAG}'. Mirror the toolchain assets there (see thirdparty/pytorchsim-triton-opt.json)."
+          REPO=$(jq -r '.pytorchsim_triton_backend.repository' thirdparty/pytorchsim-triton-backend.json)
+          REF=$(jq -r '.pytorchsim_triton_backend.ref' thirdparty/pytorchsim-triton-backend.json)
+          if ! curl -fsS -H "Authorization: Bearer ${PTB_TOKEN}" \
+               "https://api.github.com/repos/${REPO}/commits/${REF}" -o /dev/null; then
+            echo "::error::PTB_TOKEN cannot read ${REPO} at ${REF}."
             echo "ready=false" >> "$GITHUB_OUTPUT"; exit 1
           fi
           echo "ready=true" >> "$GITHUB_OUTPUT"
 
-  ensure-psto-base:
-    name: Build psto toolchain image
+  ensure-ptb-base:
+    name: Build PTB toolchain image
     needs: preflight
     runs-on: [self-hosted, slurm, big, x86_64]
     outputs:
-      psto_image: ${{ steps.pin.outputs.psto_image }}
+      ptb_image: ${{ steps.pin.outputs.ptb_image }}
     permissions:
       contents: read
       packages: write
@@ -95,39 +86,39 @@ jobs:
         id: pin
         run: |
           BASE_PIN="$(bash scripts/ci/thirdparty_base_pin.sh)"
-          PSTO_PIN="$(bash scripts/ci/psto_base_pin.sh)"
+          PTB_PIN="$(bash scripts/ci/ptb_base_pin.sh)"
           echo "BASE_IMAGE=${BASE_IMAGE_REPO}:thirdparty-${BASE_PIN}" >> "$GITHUB_ENV"
-          # The psto layer sits on a specific base, so its tag carries both pins.
-          echo "PSTO_IMAGE=${PSTO_IMAGE_REPO}:psto-${PSTO_PIN}-base-${BASE_PIN}" >> "$GITHUB_ENV"
-          echo "psto_image=${PSTO_IMAGE_REPO}:psto-${PSTO_PIN}-base-${BASE_PIN}" >> "$GITHUB_OUTPUT"
-          echo "PSTO_REF=$(jq -r '.pytorchsim_triton_opt.ref' thirdparty/pytorchsim-triton-opt.json)" >> "$GITHUB_ENV"
+          # The PTB layer sits on a specific base, so its tag carries both pins.
+          echo "PTB_IMAGE=${PTB_IMAGE_REPO}:ptb-${PTB_PIN}-base-${BASE_PIN}" >> "$GITHUB_ENV"
+          echo "ptb_image=${PTB_IMAGE_REPO}:ptb-${PTB_PIN}-base-${BASE_PIN}" >> "$GITHUB_OUTPUT"
+          echo "PTB_REF=$(jq -r '.pytorchsim_triton_backend.ref' thirdparty/pytorchsim-triton-backend.json)" >> "$GITHUB_ENV"
 
-      - name: Check psto image exists
+      - name: Check PTB image exists
         id: exists
         run: |
-          if docker manifest inspect "${PSTO_IMAGE}" > /dev/null 2>&1; then
+          if docker manifest inspect "${PTB_IMAGE}" > /dev/null 2>&1; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
             echo "ok=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build and push psto toolchain image
+      - name: Build and push PTB toolchain image
         if: steps.exists.outputs.ok != 'true'
         uses: docker/build-push-action@v4
         with:
           context: .
-          file: ./Dockerfile.psto
+          file: ./Dockerfile.ptb
           push: true
           build-args: |
             BASE_IMAGE=${{ env.BASE_IMAGE }}
-            PSTO_REF=${{ env.PSTO_REF }}
+            PTB_REF=${{ env.PTB_REF }}
           secrets: |
-            psto_token=${{ secrets.TNPU_TOKEN }}
-          tags: ${{ env.PSTO_IMAGE }}
+            ptb_token=${{ secrets.TNPU_TOKEN }}
+          tags: ${{ env.PTB_IMAGE }}
 
   build-app:
-    name: Build app image on psto base
-    needs: ensure-psto-base
+    name: Build app image on PTB base
+    needs: ensure-ptb-base
     runs-on: [self-hosted, slurm, big, x86_64]
     outputs:
       app_image: ${{ steps.name.outputs.app_image }}
@@ -158,11 +149,11 @@ jobs:
           file: ./Dockerfile
           push: true
           build-args: |
-            BASE_IMAGE=${{ needs.ensure-psto-base.outputs.psto_image }}
+            BASE_IMAGE=${{ needs.ensure-ptb-base.outputs.ptb_image }}
           tags: ${{ steps.name.outputs.app_image }}
 
-  psto-baselines:
-    name: pytorchsim-triton-opt baselines
+  ptb-baselines:
+    name: PyTorchSim-Triton-Backend baselines
     needs: build-app
     runs-on: [self-hosted, slurm, x86_64]
     steps:
@@ -174,7 +165,6 @@ jobs:
 
       # The harness's own kernels, end to end through Spike. This is the gate on
       # the toolchain itself: if these regress, nothing downstream is meaningful.
-      # gemm/bmm need TORCHSIM_COMPILE_VCIX_MATMUL=1 to reach the systolic array.
       #
       # tests/torchsim-compile and NOT pytorchsim-triton-compiler: the compiler driver stops at
       # the kernel object, so it would compile these and never run one. The
@@ -182,7 +172,7 @@ jobs:
       # numbers, which is the whole point of a smoke test.
       - name: doctor + add / mul / relu / gemm / bmm
         run: |
-          docker run --rm -e TORCHSIM_COMPILE_VCIX_MATMUL=1 \
+          docker run --rm \
             ${{ needs.build-app.outputs.app_image }} bash -lc '
               cd /workspace/pytorchsim-triton-compiler &&
               python3 tests/torchsim-compile doctor &&

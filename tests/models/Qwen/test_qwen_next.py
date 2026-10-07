@@ -61,7 +61,7 @@ THE AUDIO PATH IS NOT GATED YET, and the reason is a pin rather than a result.
 Its `..._eq_masked_scatter_unsqueeze_22` needs triton-npu's
 `fix/p14-cross-loop-registers` -- the pass there sized a loop from its own body
 while a value held across it kept registers llc then had to spill, which spike's
-sp remap cannot store.  Gating this before `thirdparty/pytorchsim-triton-opt.json` carries
+sp remap cannot store.  Gating this before the compiler pin carries
 that commit turns CI red on a fix that has landed nowhere it can see.
 
 qwen3_vl_moe and qwen3_5_moe lower their `torch.sort` the way Inductor does, to

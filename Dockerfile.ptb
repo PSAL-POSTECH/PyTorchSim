@@ -1,0 +1,38 @@
+# The PyTorchSim-Triton-Backend layer the codegen route lowers through, at the commit
+# thirdparty/pytorchsim-triton-backend.json pins: the compiler, its LLVM and Triton, the
+# torchsim extension and dialect, and the vcix-accelerator environment -- RISC-V toolchain, pk,
+# Spike and gem5 -- with the accelerator model they load. The final image adds PyTorchSim's
+# TOGSim and device on top.
+ARG BASE_IMAGE=ghcr.io/psal-postech/torchsim_base:latest
+FROM ${BASE_IMAGE}
+
+ARG PTB_REPO=PSAL-POSTECH/PyTorchSim-Triton-Backend
+ARG PTB_REF=main
+ARG JOBS=16
+
+WORKDIR /workspace
+
+RUN --mount=type=secret,id=ptb_token \
+    TOKEN="$(cat /run/secrets/ptb_token)" && \
+    git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/" && \
+    git clone "https://github.com/${PTB_REPO}.git" /workspace/pytorchsim-triton-compiler && \
+    git -C /workspace/pytorchsim-triton-compiler checkout -q "${PTB_REF}" && \
+    git -C /workspace/pytorchsim-triton-compiler submodule update -q --init third_party/vcix-accelerator && \
+    git config --global --unset url."https://x-access-token:${TOKEN}@github.com/".insteadOf
+
+ENV TORCHSIM_PREFIX=/workspace \
+    VCIX_ENV_ROOT=/workspace/vcix-env
+RUN env -u CC -u CXX /workspace/pytorchsim-triton-compiler/setup/toolchain.sh -j ${JOBS} \
+      llvm triton vcixenv vcix dialect ext
+
+ENV TORCHSIM_COMPILE_DIR=/workspace/pytorchsim-triton-compiler \
+    TORCHSIM_COMPILE_TARGET=/workspace/pytorchsim-triton-compiler/tests/targets/tpuv6e.json \
+    TORCHSIM_COMPILE_TRITON_SRC=/workspace/triton-src/python \
+    TRITON_BACKENDS_IN_TREE=1 \
+    TRITON_PLUGIN_PATHS=/workspace/torchsim-triton-ext-build/libtorchsim_triton_ext.so \
+    PYTHONPATH=/workspace/triton-src/python \
+    GEM5_PATH=/workspace/vcix-env/gem5/build/RISCV/gem5.opt \
+    RISCV=/workspace/vcix-env/riscv \
+    PATH=/workspace/pytorchsim-triton-compiler:/workspace/vcix-env/riscv/bin:${PATH}
+
+RUN python3 /workspace/pytorchsim-triton-compiler/pytorchsim-triton-compiler doctor

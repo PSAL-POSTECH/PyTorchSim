@@ -119,9 +119,8 @@ Shared (container-dedicated, set the same in every `.envrc`):
 
 | Var | Value |
 |---|---|
-| `GEM5_PATH` | `/gem5/release/gem5.opt` |
-| `TORCHSIM_LLVM_PATH` | `/workspace/LLVM_DIR/llvm-project/build/install/bin` (LLVM 23, the one triton-npu prints its IR with) |
-| `RISCV` | `/workspace/riscv` |
+| `GEM5_PATH` | `/workspace/vcix-env/gem5/build/RISCV/gem5.opt` |
+| `RISCV` | `/workspace/vcix-env/riscv` |
 
 ## Cleanup
 

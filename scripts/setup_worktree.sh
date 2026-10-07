@@ -107,8 +107,8 @@ unset _v6e
 export PYTHONPATH="$_self/PyTorchSimDevice:$_self:${PYTHONPATH:-}"
 
 # Container-dedicated shared binaries.
-export GEM5_PATH="/gem5/release/gem5.opt"
-export RISCV="/workspace/riscv"
+export GEM5_PATH="/workspace/vcix-env/gem5/build/RISCV/gem5.opt"
+export RISCV="/workspace/vcix-env/riscv"
 
 # Prompt hint so you do not lose track of which worktree this shell is on.
 export PS1="[torchsim:$(basename "$_self")] ${PS1:-\\w\\$ }"

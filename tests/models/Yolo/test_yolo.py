@@ -233,7 +233,7 @@ them were the same stop:
     of 32 over tolerance at 5.5e-04 relative; by the outputs that has become
     0.57.
 
-    THE PIN NOW CARRIES IT.  ``thirdparty/pytorchsim-triton-opt.json`` moved from 2988424
+    THE PIN NOW CARRIES IT.  The compiler pin moved from 2988424
     to 98744f7, which is triton-npu develop MERGED with the p09 unit-axis line
     2988424 sat on.  The merge was needed rather than a bump: 2988424 is not an
     ancestor of develop -- it carries five commits that never landed there --

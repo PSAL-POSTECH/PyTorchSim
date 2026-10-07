@@ -21,7 +21,7 @@ on:
 #   python scripts/ci/triton_route_sweep.py --all --update-allowlist
 # and mirror it here; a test absent from both is not gated anywhere.
 #
-# Runner policy: every job is self-hosted. The image carries the pytorchsim-triton-opt
+# Runner policy: every job is self-hosted. The image carries the PyTorchSim-Triton-Backend
 # toolchain layer (~1.8 GiB on top of the base), which is more than a
 # GitHub-hosted runner should pull once per test.
 jobs:

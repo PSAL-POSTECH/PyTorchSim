@@ -1,52 +1,22 @@
 #!/usr/bin/env bash
-# Build Gem5 / Spike from source.
-#
-# Versions are pinned in thirdparty/github-releases.json - the same manifest
-# the CI docker image (ghcr.io/psal-postech/torchsim-ci) is built against.
-# Cloning untagged HEADs has caused mlir-opt option-name drift in the past
-# (e.g. test-tile-operation-graph's `sample-mode` <-> `tls_mode` rename), so
-# always honor the pinned release_tag for a known-good Python<->mlir-opt pair.
+# Build the compiler and the simulators it runs (RISC-V toolchain, pk, Spike, gem5) from source,
+# at the PyTorchSim-Triton-Backend commit pinned in thirdparty/pytorchsim-triton-backend.json --
+# the same pin the CI docker image (Dockerfile.ptb) is built from. TOGSim is built from this repo.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MANIFEST="${ROOT}/thirdparty/github-releases.json"
-home="/workspace"
+PIN="${ROOT}/thirdparty/pytorchsim-triton-backend.json"
+PREFIX="${TORCHSIM_PREFIX:-/workspace}"
+DEST="${TORCHSIM_COMPILE_DIR:-${PREFIX}/pytorchsim-triton-compiler}"
 
-if [ ! -f "$MANIFEST" ]; then
-    echo "error: pin manifest not found at $MANIFEST" >&2
-    exit 1
-fi
-if ! command -v jq >/dev/null 2>&1; then
-    echo "jq not found, installing..."
-    apt -y update && apt -y install jq
-fi
+REPO=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['pytorchsim_triton_backend']['repository'])" "$PIN")
+REF=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['pytorchsim_triton_backend']['ref'])" "$PIN")
+echo "PyTorchSim-Triton-Backend = ${REPO} @ ${REF} -> ${DEST}"
 
-read_pin() {
-    # $1 = key (gem5 / llvm_project / spike), echoes "<repo> <tag>"
-    jq -r --arg k "$1" '.[$k] | "\(.repository) \(.release_tag)"' "$MANIFEST"
-}
+[ -d "$DEST/.git" ] || git clone "https://github.com/${REPO}.git" "$DEST"
+git -C "$DEST" fetch -q origin "$REF"
+git -C "$DEST" checkout -q "$REF"
+git -C "$DEST" submodule update -q --init third_party/vcix-accelerator
 
-read GEM5_REPO  GEM5_TAG  <<< "$(read_pin gem5)"
-read SPIKE_REPO SPIKE_TAG <<< "$(read_pin spike)"
-
-echo "Building from source using pins in $MANIFEST:"
-echo "  gem5  = ${GEM5_REPO} @ ${GEM5_TAG}"
-echo "  spike = ${SPIKE_REPO} @ ${SPIKE_TAG}"
-
-cd "$home"
-
-# Gem5
-apt -y update && apt -y upgrade && apt -y install scons
-git clone --depth 1 --branch "$GEM5_TAG" "https://github.com/${GEM5_REPO}.git"
-cd gem5 && scons build/RISCV/gem5.opt -j "$(nproc)"
-export GEM5_PATH="$home/gem5/build/RISCV/gem5.opt"
-cd "$home"
-
-# No LLVM step: tog moved to the compiler, which brings its own.
-cd "$home"
-
-# Spike Simulator
-git clone --depth 1 --branch "$SPIKE_TAG" "https://github.com/${SPIKE_REPO}.git"
-cd riscv-isa-sim && mkdir -p build && cd build && \
-    ../configure --prefix="$RISCV" && make -j && make install
-cd "$home"
+TORCHSIM_PREFIX="$PREFIX" VCIX_ENV_ROOT="${VCIX_ENV_ROOT:-${PREFIX}/vcix-env}" \
+  env -u CC -u CXX "$DEST/setup/toolchain.sh" -j "$(nproc)" llvm triton vcixenv vcix dialect ext

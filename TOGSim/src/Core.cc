@@ -433,6 +433,7 @@ void Core::cycle() {
             release_sram(inst);   // free the tiles it read (before the skip path)
             if (inst->get_compute_cycle() == 0) {
               inst->finish_instruction();
+              count_unit_admitted(inst);
               static_cast<Tile*>(inst->get_owner())->inc_finished_inst();
               _stat_tot_skipped_inst.at(static_cast<size_t>(inst->get_opcode()))++;
               if (_tiles[i]->is_scan_cursor(it)) _tiles[i]->drop_scan_cursor();
@@ -544,6 +545,7 @@ void Core::finish_instruction(std::shared_ptr<Instruction>& inst, InstFinishTrac
     exit(EXIT_FAILURE);
   }
   inst->finish_instruction();
+  count_unit_admitted(inst);
   static_cast<Tile*>(inst->get_owner())->inc_finished_inst();
   const char* trace_tag = (tag == InstFinishTraceTag::DmaIssueComplete)
                               ? TraceLogTag::kAsyncDmaAllRequestsIssued

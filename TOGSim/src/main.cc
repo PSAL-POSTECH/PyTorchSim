@@ -171,6 +171,10 @@ int main(int argc, char** argv) {
   cmd_parser.add_command_line_option<std::string>(
       "cycle_table", "Path to a 'cycle<TAB>overlapping' per-tile_id sidecar (TSV) "
                      "for --trace_so; falls back to a flat stub if omitted");
+  cmd_parser.add_command_line_option<std::string>(
+      "unit_table", "Path to a per-tile Port admission table (TSV: tile_id unit port primary "
+                    "unit_of_work capacity_per_cycle admitted) for --trace_so; prints per-unit "
+                    "Port utilization");
   try {
     cmd_parser.parse(argc, argv);
   } catch (const CommandLineParser::ParsingError& e) {
@@ -223,6 +227,9 @@ int main(int argc, char** argv) {
     // round-robin over partition 0's cores only; see build_trace_tilegraph).
     std::string cycle_table_path;
     cmd_parser.set_if_defined("cycle_table", &cycle_table_path);
+    std::string unit_table_path;
+    cmd_parser.set_if_defined("unit_table", &unit_table_path);
+    if (!unit_table_path.empty()) simulator->set_unit_table(UnitTable::load(unit_table_path));
     auto tg = build_trace_tilegraph(simulator, trace_so_path, cycle_table_path, 0);
     if (!tg) { spdlog::error("[TOGSim] trace producer run failed"); exit(1); }
     tg->set_arrival_time(simulator->get_core_cycle());
@@ -237,6 +244,12 @@ int main(int argc, char** argv) {
 
   // Get trace file path
   cmd_parser.set_if_defined("models_list", &trace_file_path);
+  std::string unit_table_path;
+  cmd_parser.set_if_defined("unit_table", &unit_table_path);
+  if (!unit_table_path.empty()) {
+    spdlog::error("[TOGSim] --unit_table is keyed by one producer's tile_ids; use it with --trace_so");
+    exit(1);
+  }
 
   if (!trace_file_path.empty()) {
     // Process trace file (unified mode: supports both FIFO and regular file)

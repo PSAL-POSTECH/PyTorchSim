@@ -40,6 +40,11 @@ class Simulator {
   int get_partition_id(int core_id) { return _config.partiton_map[core_id]; }
   std::unique_ptr<Scheduler>& get_partition_scheduler(int core_id) { return _partition_scheduler.at(get_partition_id(core_id)); }
   void print_core_stat();
+  // --unit_table: every core sums its compute completions into `t` (owned here).
+  void set_unit_table(std::unique_ptr<UnitTable> t) {
+    _unit_table = std::move(t);
+    for (auto& core : _cores) core->set_unit_table(_unit_table.get());
+  }
   void cycle();
   const SimulationConfig& get_config() const { return _config; }
   const YAML::Node& get_hardware_config_yaml() const { return _hardware_config_yaml; }
@@ -65,6 +70,7 @@ class Simulator {
 
   // Components
   std::vector<std::unique_ptr<Core>> _cores;
+  std::unique_ptr<UnitTable> _unit_table;
   std::unique_ptr<Interconnect> _icnt;
   std::unique_ptr<Dram> _dram;
   std::vector<std::unique_ptr<Scheduler>> _partition_scheduler;

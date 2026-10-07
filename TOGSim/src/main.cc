@@ -172,9 +172,9 @@ int main(int argc, char** argv) {
       "cycle_table", "Path to a 'cycle<TAB>overlapping' per-tile_id sidecar (TSV) "
                      "for --trace_so; falls back to a flat stub if omitted");
   cmd_parser.add_command_line_option<std::string>(
-      "unit_table", "Path to a per-tile Port admission table (TSV: tile_id unit port primary "
-                    "unit_of_work capacity_per_cycle admitted) for --trace_so; prints per-unit "
-                    "Port utilization");
+      "unit_table", "Path to a per-tile unit admission table (TSV: tile_id unit unit_of_work "
+                    "capacity_per_cycle admitted) for --trace_so; prints each unit's utilization "
+                    "in place of the systolic array and cross-lane lines");
   try {
     cmd_parser.parse(argc, argv);
   } catch (const CommandLineParser::ParsingError& e) {

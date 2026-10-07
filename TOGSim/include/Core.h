@@ -52,9 +52,14 @@ class Core {
   void check_tag() { _dma.check_table(); }
   void inc_numa_local_access() { _stat_numa_local_access++; }
   void inc_numa_remote_access() { _stat_numa_remote_access++; }
-  // --unit_table: sum each completed compute's per-port admissions on this core.
-  void set_unit_table(const UnitTable* t) { _unit_table = t; _stat_unit_admitted.assign(t->num_ports(), 0); }
-  const std::vector<uint64_t>& get_unit_admitted() const { return _stat_unit_admitted; }
+  // --unit_table: sum each completed compute's per-unit admissions on this core.
+  void set_unit_table(const UnitTable* t) {
+    _unit_table = t;
+    _stat_unit_admitted.assign(t->num_units(), 0);
+    _stat_tot_unit_admitted.assign(t->num_units(), 0);
+  }
+  const std::vector<uint64_t>& get_tot_unit_admitted() const { return _stat_tot_unit_admitted; }
+  cycle_type get_core_cycle() const { return _core_cycle; }
 
   std::queue<std::shared_ptr<Instruction>>& get_compute_pipeline(int compute_type);
   enum {
@@ -122,6 +127,7 @@ class Core {
   uint64_t _stat_numa_remote_access = 0;
   const UnitTable* _unit_table = nullptr;
   std::vector<uint64_t> _stat_unit_admitted;
+  std::vector<uint64_t> _stat_tot_unit_admitted;
 
   cycle_type _stat_vu_compute_cycle = 0;
   std::vector<cycle_type> _stat_sa_compute_cycle;

@@ -1,13 +1,12 @@
 #include "UnitTable.h"
 
-#include <algorithm>
 #include <charconv>
+#include <cmath>
 #include <cstdlib>
 #include <fstream>
 #include <map>
 #include <set>
 #include <sstream>
-#include <tuple>
 #include <spdlog/spdlog.h>
 
 namespace {
@@ -30,11 +29,9 @@ std::unique_ptr<UnitTable> UnitTable::load(const std::string& path) {
     spdlog::error("[TOGSim] --unit_table {}: cannot open", path);
     exit(EXIT_FAILURE);
   }
-  struct Row { uint64_t tile; size_t port; uint64_t admitted; };
-  std::vector<Port> seen;
-  std::map<std::pair<std::string, std::string>, std::pair<size_t, size_t>> index;
-  std::vector<Row> rows;
-  std::set<std::tuple<uint64_t, size_t>> tile_port;
+  auto table = std::make_unique<UnitTable>();
+  std::map<std::string, std::pair<size_t, size_t>> index;
+  std::set<std::pair<uint64_t, size_t>> tile_unit;
   std::string line;
   size_t lineno = 0;
   while (std::getline(in, line)) {
@@ -45,79 +42,45 @@ std::unique_ptr<UnitTable> UnitTable::load(const std::string& path) {
     std::string tok;
     while (std::getline(ss, tok, '\t')) f.push_back(tok);
     if (line.back() == '\t') f.push_back("");
-    if (f.size() != 7)
-      reject(path, lineno, fmt::format("expected 7 tab-separated fields "
-             "(tile_id unit port primary unit_of_work capacity_per_cycle admitted), got {}", f.size()));
-    for (int k : {1, 2, 4})
+    if (f.size() != 5)
+      reject(path, lineno, fmt::format("expected 5 tab-separated fields "
+             "(tile_id unit unit_of_work capacity_per_cycle admitted), got {}", f.size()));
+    for (int k : {1, 2})
       if (f[k].empty() || f[k].find_first_of(" \t\r\v\f") != std::string::npos)
         reject(path, lineno, fmt::format("field {} '{}' must be a non-empty name without whitespace", k + 1, f[k]));
-    uint64_t tile, primary, capacity, admitted;
+    uint64_t tile, capacity, admitted;
     if (!parse_u64(f[0], tile)) reject(path, lineno, fmt::format("tile_id '{}' is not a non-negative integer", f[0]));
-    if (!parse_u64(f[3], primary) || primary > 1) reject(path, lineno, fmt::format("primary '{}' must be 0 or 1", f[3]));
-    if (!parse_u64(f[5], capacity)) reject(path, lineno, fmt::format("capacity_per_cycle '{}' is not a non-negative integer", f[5]));
+    if (!parse_u64(f[3], capacity)) reject(path, lineno, fmt::format("capacity_per_cycle '{}' is not a non-negative integer", f[3]));
     if (capacity == 0) reject(path, lineno, "capacity_per_cycle must be > 0");
-    if (!parse_u64(f[6], admitted)) reject(path, lineno, fmt::format("admitted '{}' is not a non-negative integer", f[6]));
-    Port p{f[1], f[2], primary == 1, f[4], capacity};
-    auto key = std::make_pair(p.unit, p.port);
-    auto it = index.find(key);
+    if (!parse_u64(f[4], admitted)) reject(path, lineno, fmt::format("admitted '{}' is not a non-negative integer", f[4]));
+    auto it = index.find(f[1]);
     if (it == index.end()) {
-      it = index.emplace(key, std::make_pair(seen.size(), lineno)).first;
-      seen.push_back(p);
+      it = index.emplace(f[1], std::make_pair(table->_units.size(), lineno)).first;
+      table->_units.push_back({f[1], f[2], capacity});
     } else {
-      const Port& q = seen[it->second.first];
-      if (q.primary != p.primary || q.unit_of_work != p.unit_of_work || q.capacity != p.capacity)
-        reject(path, lineno, fmt::format("unit {} port {} disagrees with line {} on primary/unit_of_work/capacity",
-               p.unit, p.port, it->second.second));
+      const Unit& q = table->_units[it->second.first];
+      if (q.unit_of_work != f[2] || q.capacity != capacity)
+        reject(path, lineno, fmt::format("unit {} disagrees with line {} on unit_of_work/capacity",
+               f[1], it->second.second));
     }
-    if (!tile_port.emplace(tile, it->second.first).second)
-      reject(path, lineno, fmt::format("second row for tile {} unit {} port {}", tile, p.unit, p.port));
-    rows.push_back({tile, it->second.first, admitted});
-  }
-  std::map<std::string, std::pair<int, size_t>> primaries;
-  for (auto& [key, at] : index) {
-    auto& u = primaries.try_emplace(key.first, 0, at.second).first->second;
-    u.first += seen[at.first].primary;
-    u.second = std::min(u.second, at.second);
-  }
-  for (auto& [unit, u] : primaries)
-    if (u.first != 1)
-      reject(path, u.second, fmt::format("unit {} (first seen here) has {} primary ports; exactly one is required",
-             unit, u.first));
-
-  auto table = std::make_unique<UnitTable>();
-  std::vector<size_t> order(seen.size());
-  for (bool want : {true, false})
-    for (size_t i = 0; i < seen.size(); i++)
-      if (seen[i].primary == want) { order[i] = table->_ports.size(); table->_ports.push_back(seen[i]); }
-  for (auto& r : rows) {
-    if (r.tile >= table->_rows.size()) table->_rows.resize(r.tile + 1);
-    table->_rows[r.tile].emplace_back(order[r.port], r.admitted);
+    const size_t u = it->second.first;
+    if (!tile_unit.emplace(tile, u).second)
+      reject(path, lineno, fmt::format("second row for tile {} unit {}", tile, f[1]));
+    if (tile >= table->_rows.size()) table->_rows.resize(tile + 1);
+    table->_rows[tile].emplace_back(u, admitted);
   }
   return table;
 }
 
-bool UnitTable::report(const std::vector<std::vector<uint64_t>>& per_core, uint64_t cycles) const {
-  bool ok = true;
-  auto line = [&](const std::string& who, const Port& p, uint64_t admitted, unsigned __int128 budget) {
-    double pct = budget ? 100.0 * (double)admitted / (double)budget : 0.0;
-    spdlog::info("{} : Unit {} port {} utilization(%): {:.2f}, admitted: {} {}, capacity: {} per cycle, primary: {}",
-                 who, p.unit, p.port, pct, admitted, p.unit_of_work, p.capacity, p.primary ? 1 : 0);
-    if ((unsigned __int128)admitted > budget) {
-      spdlog::error("{} : Unit {} port {} admitted {} {} exceeds capacity {} per cycle x {} cycles",
-                    who, p.unit, p.port, admitted, p.unit_of_work, p.capacity,
-                    (uint64_t)(budget / p.capacity));
-      ok = false;
-    }
-  };
-  for (size_t c = 0; c < per_core.size(); c++)
-    for (size_t i = 0; i < _ports.size(); i++)
-      line(fmt::format("Core [{}]", c), _ports[i], per_core[c][i],
-           (unsigned __int128)_ports[i].capacity * cycles);
-  for (size_t i = 0; i < _ports.size(); i++) {
-    uint64_t total = 0;
-    for (auto& acc : per_core) total += acc[i];
-    line("Total", _ports[i], total,
-         (unsigned __int128)_ports[i].capacity * cycles * per_core.size());
-  }
-  return ok;
+bool UnitTable::print(const std::string& who, size_t u, uint64_t admitted, uint64_t cycles, bool check) const {
+  const Unit& unit = _units[u];
+  const double utilized = (double)admitted / (double)unit.capacity;
+  const double pct = cycles ? 100.0 * utilized / (double)cycles : 0.0;
+  const int64_t active = std::llround(utilized);
+  spdlog::info("{} : {} utilization(%): {:.2f}, active_cycles: {}, idle_cycles: {}",
+               who, unit.name, pct, active, (int64_t)cycles - active);
+  if (!check || (unsigned __int128)admitted <= (unsigned __int128)unit.capacity * cycles) return true;
+  spdlog::error("{} : {} admitted {} {} exceeds capacity {} per cycle x {} cycles",
+                who, unit.name, admitted, unit.unit_of_work, unit.capacity, cycles);
+  return false;
 }

@@ -116,7 +116,8 @@ def _run(cmd, cwd, log):
 def launch(obj_dir, manifest, runtime, raw_paths, log, jobs=None):
     """Run the whole launch grid, leaving each written argument in its .raw."""
     elf = artifact(obj_dir, manifest, "elf")
-    os.makedirs(os.path.join(runtime, "indirect_access"), exist_ok=True)
+    shutil.rmtree(os.path.join(runtime, "indirect_access"), ignore_errors=True)
+    os.makedirs(os.path.join(runtime, "indirect_access"))
     os.makedirs(os.path.join(runtime, "dma_access"), exist_ok=True)
 
     argv_paths = [os.path.basename(raw_paths[n]) for n in argv_order(manifest)]
@@ -248,7 +249,8 @@ def _merge_outputs(manifest, raw_paths, workers):
 
 
 def _merge_traces(runtime, workers):
-    """Reassemble spike's per-DMA index dumps in program order."""
+    """Gather the workers' index dumps: keyed ones (indirect_index_<key>_<n>) by name,
+    since the key names the program; unkeyed ones renumbered in program order."""
     dst = os.path.join(runtime, "indirect_access")
     shutil.rmtree(dst, ignore_errors=True)
     os.makedirs(dst)
@@ -256,8 +258,13 @@ def _merge_traces(runtime, workers):
     n = 0
     for d in workers:
         src = os.path.join(d, "indirect_access")
-        for name in sorted(os.listdir(src),
-                           key=lambda f: int(re.findall(r"\d+", f)[-1])):
+        names = os.listdir(src)
+        unkeyed = sorted((f for f in names if re.fullmatch(r"indirect_index\d+\.raw", f)),
+                         key=lambda f: int(re.findall(r"\d+", f)[-1]))
+        for name in names:
+            if name not in unkeyed:
+                os.replace(os.path.join(src, name), os.path.join(dst, name))
+        for name in unkeyed:
             os.replace(os.path.join(src, name),
                        os.path.join(dst, f"indirect_index{n}.raw"))
             n += 1

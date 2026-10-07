@@ -23,6 +23,8 @@ struct EmitCtx {
   // mutable run state
   int32_t  rr = 0;            // round-robin cursor into `cores`
   int32_t  cur_core = -1;     // core of the work-item being replayed
+  int64_t  cur_key = 0;       // key of the work-item being replayed
+  int64_t  indirect_seq = 0;  // indirect dmas it has emitted so far
   std::vector<togsim::WorkItem> items;   // every dispatch, recorded by togsim_kernel
   std::vector<togsim::TraceRec> trace;   // records of the work-item being replayed
 };
@@ -44,7 +46,8 @@ extern "C" {
 
 int32_t togsim_abi_version(void) { return TOGSIM_ABI_VERSION; }
 
-void togsim_dispatch(EmitCtx* ctx, togsim_tile_fn fn, int64_t* iv, int32_t n_iv) {
+void togsim_dispatch(EmitCtx* ctx, togsim_tile_fn fn, int64_t* iv, int32_t n_iv,
+                     int64_t key) {
   // Register the work-item; LazyProducer::run_item runs its body later, on demand.
   // Round-robin over THIS partition's cores only -- a work-item on another
   // partition's core would sit in this partition's scheduler forever.
@@ -52,6 +55,7 @@ void togsim_dispatch(EmitCtx* ctx, togsim_tile_fn fn, int64_t* iv, int32_t n_iv)
   w.fn = (void*)fn;
   w.core = ctx->cores.empty() ? 0 : ctx->cores[ctx->rr++ % (int32_t)ctx->cores.size()];
   if (iv && n_iv > 0) w.iv.assign(iv, iv + n_iv);
+  w.key = key;
   ctx->items.push_back(std::move(w));
 }
 
@@ -60,13 +64,16 @@ void togsim_dma(EmitCtx* ctx, int32_t dir, int32_t arg_id,
                 const int64_t* strides, int32_t elem_bits,
                 int32_t is_async, int32_t tag_id, uint64_t tag_slot,
                 const int64_t* read_bufs, int32_t n_read,
-                const int64_t* write_bufs, int32_t n_write) {
+                const int64_t* write_bufs, int32_t n_write,
+                int32_t indirect) {
   uint64_t base = (arg_id >= 0 && arg_id < ctx->n_tensors)
                       ? ctx->tensor_base[arg_id] : 0;
   uint64_t addr = base + offset * (uint64_t)(elem_bits / 8);
   togsim::TraceRec r = blank(togsim::TraceRec::DMA, ctx->cur_core);
   r.dir = dir; r.arg_id = arg_id; r.elem_bits = elem_bits;
   r.is_async = is_async; r.addr = addr; r.tag_id = tag_id; r.tag_slot = tag_slot;
+  r.indirect = indirect != 0;
+  if (r.indirect) { r.index_key = ctx->cur_key; r.index_seq = ctx->indirect_seq++; }
   if (dims) r.dims.reserve(ndim);
   if (strides) r.strides.reserve(ndim);
   r.read_bufs.reserve(n_read);
@@ -159,6 +166,8 @@ const std::vector<TraceRec>& LazyProducer::run_item(size_t i) {
   if (i >= _ctx->items.size()) return _ctx->trace;
   WorkItem& w = _ctx->items[i];
   _ctx->cur_core = w.core;                     // the binding fixed when registered
+  _ctx->cur_key = w.key;
+  _ctx->indirect_seq = 0;
   emit_rec(_ctx, blank(TraceRec::TILE_BEGIN, w.core));
   ((togsim_tile_fn)w.fn)(_ctx, w.iv.empty() ? nullptr : w.iv.data(), (int32_t)w.iv.size());
   emit_rec(_ctx, blank(TraceRec::TILE_END, w.core));

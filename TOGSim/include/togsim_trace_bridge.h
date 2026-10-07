@@ -12,10 +12,11 @@
 // memory is O(tiles in flight), not O(dispatches). Sound because a tile is
 // dependency-closed; SRAM buffer VERSIONS do cross tiles though.
 //
-// `name` labels the graph. Returns nullptr if the producer fails to load or run.
+// `indirect_dir` holds the functional run's index dumps an indirect dma reads (see
+// togsim_runtime.h). `name` labels the graph. nullptr if the producer fails to load or run.
 std::unique_ptr<TileGraph> trace_to_tilegraph(
     const char* so_path, const int64_t* shape_args, int32_t n_shape,
     const uint64_t* tensor_base, int32_t n_tensors,
     const int64_t* cyc, const int64_t* ovl, int32_t n_tiles,
     const int32_t* partition_cores, int32_t n_partition_cores,
-    const std::string& name);
+    const std::string& indirect_dir, const std::string& name);

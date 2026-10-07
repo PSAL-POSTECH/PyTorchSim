@@ -115,7 +115,7 @@ class Instruction : public std::enable_shared_from_this<Instruction> {
   void print();
   std::shared_ptr<std::set<addr_type>> get_dram_address(addr_type dram_req_size);
   std::vector<addr_type> get_trace_address() { return _trace_address; }
-  bool load_indirect_index(const std::string& path, uint64_t*& indirect_index, const std::vector<uint64_t>& tile_size);
+  bool load_indirect_index(const std::string& path, std::vector<uint64_t>& indirect_index, const std::vector<uint64_t>& tile_size);
   void set_trace_address(std::vector<addr_type>& trace_address) { _trace_address = trace_address; }
   addr_type get_base_dram_address() { return dram_addr; }
   void* get_owner() { return _owner; }

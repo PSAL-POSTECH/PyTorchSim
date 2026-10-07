@@ -26,15 +26,16 @@
 # CPU-only base. PyTorchSim never executes CUDA: the npu PrivateUse1 backend
 # (third_party/openreg) simulates CUDA behavior on the CPU and forces math-only
 # SDPA, so no GPU libraries are needed at build or run time. We stay on
-# ubuntu:22.04 (matching the prebuilt gem5/llvm/spike release ABIs: libpython3.11,
-# libprotobuf.so.23) and install the CPU PyTorch wheels.
+# ubuntu:22.04 (the vcix-accelerator environment's prebuilt gem5 and toolchain are built
+# for it) and install the CPU PyTorch wheels. The RISC-V toolchain, pk, Spike and gem5
+# come from the PyTorchSim-Triton-Backend layer (Dockerfile.ptb), not from here.
 ARG PYTORCH_IMAGE=ubuntu:22.04
 FROM ${PYTORCH_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive
 WORKDIR /workspace
 
-# System dependencies (gem5 / TOGSim build + runtime) and Python 3.11 (deadsnakes).
+# System dependencies (TOGSim and the PTB layer's build + runtime) and Python 3.11 (deadsnakes).
 # Copied/adapted from the Gem5 Docker file.
 RUN apt-get -y update && \
     apt-get -y install software-properties-common ca-certificates gnupg && \
@@ -52,8 +53,8 @@ RUN apt-get -y update && \
 
 # CPU PyTorch (no CUDA wheels). torchvision is required by the vision model tests.
 # torch 2.10 is pinned for the Triton codegen route: it is the first release whose
-# Inductor targets triton 3.6, which is the version triton-npu is built against
-# (triton 3.6 pins LLVM 23, and both sides of triton-npu's textual IR seam must be
+# Inductor targets triton 3.6, which is the version PyTorchSim-Triton-Backend is built against
+# (triton 3.6 pins LLVM 23, and both sides of the compiler's textual IR seam must be
 # the same LLVM). On 2.8 the frontend had to be shimmed onto a triton it did not
 # expect; on 2.10 the versions simply agree.
 RUN python3.11 -m pip install --no-cache-dir \
@@ -61,7 +62,7 @@ RUN python3.11 -m pip install --no-cache-dir \
 
 # Triton, for the Inductor Triton codegen route (PyTorchSimFrontend/triton_backend).
 # Inductor imports triton while GENERATING a kernel, so it is needed even though
-# nothing here compiles or launches through triton's own runtime -- triton-npu
+# nothing here compiles or launches through triton's own runtime -- the PTB layer
 # compiles the kernel ahead of time to a RISC-V ELF using its own triton build.
 # Not a dependency of the CPU torch wheels, hence installed explicitly.
 RUN python3.11 -m pip install --no-cache-dir triton==3.6.0
@@ -165,7 +166,7 @@ RUN python3.11 -m pip install --no-cache-dir triton==3.6.0
 # above with the backend work each needs. 4.57.6 remains the cheaper target on
 # dependencies and is what to fall back to if hub 1.x proves expensive; it is
 # NOT what this tree runs.
-# nanobind builds the torchsim dialect's Python extension (pytorchsim-triton-opt's
+# nanobind builds the torchsim dialect's Python extension (PyTorchSim-Triton-Backend's
 # dialect/, which the codegen route loads to register `torchsim.*` ops). The range is
 # MLIR's own (mlir/python/requirements.txt) -- the extension is compiled against the
 # same bindings, so a 3.x here would not be the nanobind those bindings expect.
@@ -179,39 +180,6 @@ RUN python3.11 -m pip install --no-cache-dir \
     python3.11 -m pip install --no-cache-dir opencv-python-headless pandas seaborn \
     psutil pyyaml requests tqdm py-cpuinfo
 
-# Download RISC-V tool chain (elf toolchain is the one used to build riscv-pk).
-RUN wget -q https://github.com/riscv-collab/riscv-gnu-toolchain/releases/download/2023.12.14/riscv64-elf-ubuntu-20.04-llvm-nightly-2023.12.14-nightly.tar.gz && \
-    tar -zxf riscv64-elf-ubuntu-20.04-llvm-nightly-2023.12.14-nightly.tar.gz && \
-    rm riscv64-elf-ubuntu-20.04-llvm-nightly-2023.12.14-nightly.tar.gz
-
-ENV RISCV=/workspace/riscv
-ENV PATH=$RISCV/bin:$PATH
-
-ARG GEM5_ASSET_ID
-ARG SPIKE_ASSET_ID
 ENV PATH=$PATH:/root/.local/bin
 ENV LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
-
-# Download GEM5 for torchsim
-RUN curl -L -H "Accept: application/octet-stream" https://api.github.com/repos/PSAL-POSTECH/gem5/releases/assets/${GEM5_ASSET_ID} -o /tmp/gem5-release.tar.gz && \
-    mkdir -p /gem5 && \
-    tar -xzf /tmp/gem5-release.tar.gz -C /gem5 && \
-    rm /tmp/gem5-release.tar.gz
-ENV GEM5_PATH=/gem5/release/gem5.opt
-
-# No LLVM: tog moved to the compiler and nothing here imports mlir.
 ENV TORCHSIM_DIR=/workspace/PyTorchSim
-
-# Download Spike simulator
-RUN curl -L -H "Accept: application/octet-stream" https://api.github.com/repos/PSAL-POSTECH/riscv-isa-sim/releases/assets/${SPIKE_ASSET_ID} -o /tmp/spike-release.tar.gz && \
-    tar -xzf /tmp/spike-release.tar.gz -C / && rm /tmp/spike-release.tar.gz
-
-# Store SPIKE for TorchSim
-ENV PATH="/release/bin:${PATH}"
-ENV LD_LIBRARY_PATH="/release/lib:${LD_LIBRARY_PATH}"
-ENV C_INCLUDE_PATH="/release/include:${C_INCLUDE_PATH}"
-
-# Install Proxy kernel
-RUN git clone https://github.com/riscv-software-src/riscv-pk.git && \
-     cd riscv-pk && git checkout 4f3debe4d04f56d31089c1c716a27e2d5245e9a1 && mkdir build && cd build && \
-    ../configure --prefix=$RISCV --host=riscv64-unknown-elf && make -j && make install

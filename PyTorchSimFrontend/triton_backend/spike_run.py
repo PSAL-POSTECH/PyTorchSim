@@ -11,13 +11,13 @@ import re
 import shutil
 import subprocess
 
-SPIKE = os.environ.get("TORCHSIM_SPIKE",
-                       os.environ.get("TORCHSIM_COMPILE_SPIKE",
-                                      "/workspace/riscv-isa-sim/install/bin/spike"))
-PK = os.environ.get("TORCHSIM_PK",
-                    os.environ.get("TORCHSIM_COMPILE_PK", "/workspace/riscv-pk/build/pk"))
+_VCIX_ENV = os.environ.get("VCIX_ENV_ROOT", "/opt/vcix-env")
+SPIKE = os.environ.get("TORCHSIM_SPIKE", os.environ.get(
+    "TORCHSIM_COMPILE_SPIKE", os.path.join(_VCIX_ENV, "spike", "bin", "spike")))
+PK = os.environ.get("TORCHSIM_PK", os.environ.get(
+    "TORCHSIM_COMPILE_PK", os.path.join(_VCIX_ENV, "pk", "riscv64-unknown-elf", "bin", "pk")))
 SPIKE_ISA = os.environ.get("TORCHSIM_SPIKE_ISA",
-                           os.environ.get("TORCHSIM_COMPILE_SPIKE_ISA", "rv64gcv_zfh"))
+                           os.environ.get("TORCHSIM_COMPILE_SPIKE_ISA", "rv64gcv_zfh_xvcixaccel"))
 
 #: Second copy of the compiler's contract/kernel_object.py ITEMSIZE. The two
 #: describe the same .raw files, so an entry added to one belongs in both.
@@ -75,6 +75,19 @@ def nbytes(arg):
     return n * ITEMSIZE[arg["dtype"]]
 
 
+def _write_machine_yaml(t, path):
+    """The machine in the spelling the vcix accelerator model reads (--machine-config)."""
+    kb, rem = divmod(t["spad_size"], 1024)
+    if rem:
+        raise SpikeError(f"scratchpad {t['spad_size']} B is not whole kilobytes")
+    with open(path, "w") as f:
+        f.write(f"vpu_num_lanes: {t['vector_lanes']}\n"
+                f"vpu_spad_size_kb_per_lane: {kb}\n"
+                f"vpu_spad_base_vaddr: 0x{t['spad_vaddr']:x}\n"
+                f"vpu_vector_length_bits: {t['vlen_bits']}\n")
+    return path
+
+
 def _machine(manifest):
     """The target fields this launch needs, as ints."""
     t = dict(manifest["target"])
@@ -110,16 +123,15 @@ def launch(obj_dir, manifest, runtime, raw_paths, log, jobs=None):
     t = _machine(manifest)
     spad_bytes = t["spad_size"] * t["vector_lanes"]
     lo, hi = manifest["abi"]["kernel_addr"]
+    from PyTorchSimFrontend import extension_config
+    yml = _write_machine_yaml(t, os.path.join(runtime, "machine.yml"))
     cmd = [
         SPIKE,
         "--isa", SPIKE_ISA,
-        f"--varch=vlen:{t['vlen_bits']},elen:64",
-        f"--vectorlane-size={t['vector_lanes']}",
+        f"--extlib={extension_config.CONFIG_VCIX_MODEL}",
         "-m" + f"0x{t['dram_base']:x}:0x{t['dram_size']:x},"
                f"0x{t['spad_paddr']:x}:0x{spad_bytes:x}",
-        f"--scratchpad-base-paddr={t['spad_paddr']}",
-        f"--scratchpad-base-vaddr={t['spad_vaddr']}",
-        f"--scratchpad-size={t['spad_size']}",
+        f"--machine-config={yml}",
         f"--kernel-addr={lo:x}:{hi:x}",
         f"--base-path={runtime}",
         PK, elf, *argv_paths,

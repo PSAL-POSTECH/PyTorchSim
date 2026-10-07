@@ -1,0 +1,7 @@
+{
+  "description": "Pin for the PyTorchSim-Triton-Backend layer: the compiler the codegen route lowers through, its LLVM and Triton, and the vcix-accelerator environment (RISC-V toolchain, pk, Spike, gem5) with the accelerator model. Kept out of github-releases.json so the main torchsim_base image is not rebuilt when this moves. CI builds ghcr.io/.../torchsim_ptb_base:ptb-<12 hex>-base-<12 hex> when missing, pin = sha256 of this file plus Dockerfile.ptb. ref is a commit. The repository is private: the workflow needs a PAT in secrets.TNPU_TOKEN that can read it and its vcix-accelerator submodule.",
+  "pytorchsim_triton_backend": {
+    "repository": "PSAL-POSTECH/PyTorchSim-Triton-Backend",
+    "ref": "62b7cc32ba86992686a7645b24cb0ac3f06ae570"
+  }
+}

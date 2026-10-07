@@ -1,8 +1,0 @@
-{
-  "description": "Pin for the pytorchsim-triton-opt toolchain layer, which the codegen route lowers through. Kept out of github-releases.json so the main torchsim_base image is not rebuilt when this moves. CI builds ghcr.io/.../torchsim_psto_base:psto-<12 hex> when missing, pin = sha256 of this file plus Dockerfile.psto. `ref` is a commit, not a branch, so any upstream change -- including the toolchain release its setup/versions.env points at -- moves the pin. The repository is private: the workflow needs a PAT in secrets.PSTO_TOKEN, since the default Actions token is scoped to this repository.",
-  "pytorchsim_triton_opt": {
-    "repository": "PSAL-POSTECH/pytorchsim-triton-opt",
-    "ref": "6aec52f89595698baac75a693e1e9ed851702a11",
-    "release_tag": "toolchain-llvm23"
-  }
-}

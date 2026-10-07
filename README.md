@@ -104,11 +104,11 @@ To download the latest Docker image and set up the environment, use the followin
 docker run -it --ipc=host --name torchsim -w /workspace/PyTorchSim ghcr.io/psal-postech/torchsim-ci:v1.1.0 bash
 ```
 ### Manual Setting (Optional)
-This script builds [Gem5](https://github.com/PSAL-POSTECH/gem5.git), [LLVM](https://github.com/PSAL-POSTECH/llvm-project.git), and [Spike](https://github.com/PSAL-POSTECH/riscv-isa-sim.git) from source for advanced users.
+This script builds PyTorchSim-Triton-Backend -- the compiler, its LLVM and Triton, and the vcix-accelerator environment (RISC-V toolchain, pk, Spike, gem5) -- from source for advanced users.
 ```bash
 bash scripts/build_from_source.sh
 ```
-The script clones each dep at the tag pinned in [`thirdparty/github-releases.json`](thirdparty/github-releases.json), the same manifest the CI docker image uses, so a from-source build matches the docker env.
+The script checks out the commit pinned in [`thirdparty/pytorchsim-triton-backend.json`](thirdparty/pytorchsim-triton-backend.json), the same pin the CI docker image uses, so a from-source build matches the docker env.
 ### Run Examples
 The `tests` directory contains several AI workload examples.
 ```bash

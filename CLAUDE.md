@@ -95,9 +95,9 @@ python tests/system/test_eager.py      # eager-fallback registration
 
 Run a model from `tests/models/Llama/`, `tests/models/DeepSeek/`, etc. similarly.
 
-**CI coverage:** `.github/workflows/docker-image.yml` is the PR gate. It builds the base image, then the triton-npu toolchain layer (`Dockerfile.psto`, pinned by `thirdparty/pytorchsim-triton-opt.json`), then the app image, and calls `.github/workflows/pytorchsim_test.yml` once per hardware config. That workflow is a **matrix over `scripts/ci/triton_route_passing.txt`**, one Docker container per test — so adding a test file gates PRs only once it is in that allowlist. Regenerate the allowlist with `python scripts/ci/triton_route_sweep.py --all --update-allowlist` and mirror it into the workflow.
+**CI coverage:** `.github/workflows/docker-image.yml` is the PR gate. It builds the base image, then the PyTorchSim-Triton-Backend layer (`Dockerfile.ptb`, pinned by `thirdparty/pytorchsim-triton-backend.json`: the compiler plus the vcix-accelerator RISC-V toolchain, pk, Spike and gem5), then the app image, and calls `.github/workflows/pytorchsim_test.yml` once per hardware config. That workflow is a **matrix over `scripts/ci/triton_route_passing.txt`**, one Docker container per test — so adding a test file gates PRs only once it is in that allowlist. Regenerate the allowlist with `python scripts/ci/triton_route_sweep.py --all --update-allowlist` and mirror it into the workflow.
 
-`.github/workflows/triton_npu.yml` runs when the toolchain pin itself moves: triton-npu's own kernels end to end, plus the full coverage sweep (allowlist *and* the rest, reported not gated). Both workflows need `secrets.PSTO_TOKEN` — `PSAL-POSTECH/pytorchsim-triton-opt` is private. See `PyTorchSimFrontend/triton_backend/README.md`.
+`.github/workflows/pytorchsim_triton_backend.yml` runs when the compiler pin itself moves: the compiler's own smoke kernels end to end, plus the full coverage sweep (allowlist *and* the rest, reported not gated). Both workflows need `secrets.TNPU_TOKEN` — `PSAL-POSTECH/PyTorchSim-Triton-Backend` is private. See `PyTorchSimFrontend/triton_backend/README.md`.
 
 **For fast iteration** (skip functional check):
 ```bash
@@ -124,7 +124,7 @@ Read in `PyTorchSimFrontend/extension_config.py`:
 | `TORCHSIM_DIR` | `/workspace/PyTorchSim` | repo root |
 | `TOGSIM_CONFIG` | `configs/systolic_ws_256x256_c1_simple_noc_tpuv6e_functional_only.yml` | TOGSim hardware YAML |
 | `TORCHSIM_TIMING_MODE` | unset | overrides the config's `pytorchsim_timing_mode` for one run (`1` to time, `0` not to) |
-| `GEM5_PATH` | `/workspace/gem5/build/RISCV/gem5.opt` | gem5 binary |
+| `GEM5_PATH` | `$VCIX_ENV_ROOT/gem5/build/RISCV/gem5.opt` | gem5 binary (vcix-accelerator environment) |
 | `TORCHSIM_LOG_PATH` | `$TORCHSIM_DIR/togsim_results` | where TOGSim logs go |
 | `TORCHSIM_DUMP_PATH` | `$TORCHSIM_DIR` | misc dumps |
 | `TORCHSIM_DEBUG_MODE` | `0` | extra debug |
@@ -168,13 +168,13 @@ with TOGSimulator(config_path=...):
 - **Docker (recommended):** `docker run -it --ipc=host --name torchsim -w /workspace/PyTorchSim ghcr.io/psal-postech/torchsim-ci:v1.0.1 bash`
 - **TOGSim from source:** `cd TOGSim && mkdir -p build && cd build && conan install .. --build=missing && cmake .. && make -j$(nproc)`
 - **PyTorchSimDevice (Python package):** `cd PyTorchSimDevice && python -m pip install --no-build-isolation -e .`
-- **gem5 / Spike from source:** `bash scripts/build_from_source.sh` (clones to `/workspace/{gem5,riscv-isa-sim}` at the tags pinned in `thirdparty/github-releases.json`, same manifest as the CI docker image). No LLVM: nothing here reads one.
+- **Compiler + Spike / gem5 from source:** `bash scripts/build_from_source.sh` (checks out PyTorchSim-Triton-Backend at the commit pinned in `thirdparty/pytorchsim-triton-backend.json`, the same pin as the CI docker image, and runs its `setup/toolchain.sh`; Spike, pk and gem5 land in `$VCIX_ENV_ROOT`).
 
 Conan deps for TOGSim: `boost/1.79.0`, `robin-hood-hashing/3.11.5`, `spdlog/1.11.0`, `yaml-cpp/0.8.0`.
 
 ## Where to look for X
 
-- **Adding a new op:** nothing here, usually — Inductor's own Triton lowerings emit the kernel and `triton-npu` lowers it. What lives here is the device-level rewrites: `extension_decomposition.py` (ops with no `npu` kernel), `extension_complex_to_real.py`. GEMM/BMM tile selection: `triton_backend/inductor_templates.py` + `triton_backend/hardware.py`. Kernel source fixups before tnpu sees them: `triton_backend/source_rewrite.py`.
+- **Adding a new op:** nothing here, usually — Inductor's own Triton lowerings emit the kernel and PyTorchSim-Triton-Backend lowers it. What lives here is the device-level rewrites: `extension_decomposition.py` (ops with no `npu` kernel), `extension_complex_to_real.py`. GEMM/BMM tile selection: `triton_backend/inductor_templates.py` + `triton_backend/hardware.py`. Kernel source fixups before tnpu sees them: `triton_backend/source_rewrite.py`.
 - **Adding a PyTorch device op:** `PyTorchSimDevice/csrc/aten/native/*` (Minimal/Extra split mirrors `torch_openreg`).
 - **TOGSim hardware model changes:** `TOGSim/src/{Core,Dram,Interconnect,L2Cache,Tile,TileGraph}.cc` + matching `include/*.h`.
 - **TOG generation:** the compiler emits the trace producer as C++ and the compute type of each tile (`pytorchsim_triton_compiler/trace/`, `trace_cpp` and `tile_types` in `kernel.json`); this repo measures the tiles under gem5, compiles the C++ to `trace.so` and writes `trace_cycles.tsv` (`triton_backend/trace_build.py`, driven from `triton_backend/timing.py`); TOGSim turns them into a TileGraph via `trace_to_tilegraph`. `AsmParser/tog_generator.py` + `onnx_utility.py` (the legacy ONNX TOG) remain only for the **STONNE sparse path** (`extension_op.py`).
@@ -185,8 +185,8 @@ Conan deps for TOGSim: `boost/1.79.0`, `robin-hood-hashing/3.11.5`, `spdlog/1.11
 
 ## Gotchas / things I've already learned
 
-- The repo expects `python` to be a Python 3.10+ binary with `torch==2.10.0` (torchvision `0.25.0`, triton `3.6.0`). The frontend extends the PyTorch 2 Inductor stack — pin to this version. 2.10 specifically: it is the first release whose Inductor targets triton 3.6, the version triton-npu is built against. The pins live in `Dockerfile.base`, and editing that file changes the base-image tag automatically (the tag is `thirdparty-<sha256 of thirdparty/github-releases.json + Dockerfile.base>`, see `scripts/ci/thirdparty_base_pin.sh`).
-- The default Gem5 path is hard-coded to `/workspace/gem5/build/RISCV/gem5.opt`. Override with `GEM5_PATH` if you build elsewhere.
+- The repo expects `python` to be a Python 3.10+ binary with `torch==2.10.0` (torchvision `0.25.0`, triton `3.6.0`). The frontend extends the PyTorch 2 Inductor stack — pin to this version. 2.10 specifically: it is the first release whose Inductor targets triton 3.6, the version PyTorchSim-Triton-Backend is built against. The pins live in `Dockerfile.base`, and editing that file changes the base-image tag automatically (the tag is `thirdparty-<sha256 of thirdparty/github-releases.json + Dockerfile.base>`, see `scripts/ci/thirdparty_base_pin.sh`).
+- gem5 and Spike are the vcix-accelerator environment's, found through `VCIX_ENV_ROOT`; both load the accelerator model `TORCHSIM_COMPILE_VCIX_MODEL` (default `$TORCHSIM_PREFIX/vcix-build/libtpu.so`). Override with `GEM5_PATH` / `TORCHSIM_SPIKE` if you build elsewhere.
 - `_C.cpython-311-*.so` and `torch_openreg/lib/` are build artifacts — already in `.gitignore`, don't commit.
 - **Parallel runs sharing a `TORCHSIM_DUMP_PATH`** share every per-kernel workdir, and that is deliberate: the workdir holds what compiling produced, which is a function of the source and the machine. A **launch** is not, so each process gets `<workdir>/launch-<pid>/` (`triton_backend/session.py`) holding its own `runtime/*.raw`, its own `trace_shape.txt` and symlinks to the shared trace — TOGSim resolves the cycle table and the shape from the directory of the trace it is handed, so linking is enough. What is left locked is only *building* the shared thing, once: `.compile.lock` (tnpu compile) and `.timing.lock` (trace.so + its gem5 cycle table). Launches take no lock. Measured on a warm cache, two `test_add.py` in parallel: 40s when launches were locked, **31s** now, against 30s for one run alone.
 - TOGSim creates a per-PID FIFO under `/tmp/togsim_fifo_<pid>` for command/event comm; if a previous run crashed and left stale FIFOs, they get cleaned up on the next start, but watch for orphaned processes if you Ctrl-C mid-run.

@@ -56,6 +56,7 @@ std::shared_ptr<Instruction> make_compute(const togsim::TraceRec& t) {
       std::vector<int64_t>{}, std::vector<int64_t>{}, std::vector<int64_t>{});
   inst->set_overlapping_cycle((cycle_type)t.overlapping);
   inst->set_compute_type(t.compute_type);  // route to VPU, systolic array or cross-lane unit
+  inst->set_tile_id((int64_t)t.tile_id);
   return inst;
 }
 

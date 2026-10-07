@@ -1,7 +1,7 @@
 """The timing half of the Triton route: the compiler IR -> trace.so -> TOGSim.
 
     run(workdir, meta, args)    emit if needed, then simulate, under the lock
-    emit_trace(workdir, meta)   *-custom.mlir -> trace.so + trace_cycles.tsv
+    emit_trace(workdir, meta)   the compiler's trace.so + gem5 cycles -> trace_cycles.tsv
     run_togsim(workdir, ...)    hand them to TOGSim, return its parsed result
 """
 
@@ -22,9 +22,6 @@ META_JSON = "meta.json"
 
 PLACEHOLDER_CYCLE = 1
 
-SAMPLE_MLIR = "04-sample.mlir"
-CYCLE_BIN = "cycle_bin"
-
 AXES_TXT = "trace_axes.txt"
 
 LOCK_NAME = ".timing.lock"
@@ -33,33 +30,20 @@ LOCK_TIMEOUT = 1800
 
 
 def measure_tile_cycles(workdir, meta):
-    """Per-compute-node cycle counts for ONE tile, measured under gem5.
-
-    The compiler builds the sample binary; None on any failure, and the caller
-    then uses the placeholder table.
-    """
-    from . import compiler_bridge
+    """Per-compute-node cycle counts for ONE tile: the compiler's cycle ELF, measured under gem5.
+    None on any failure."""
+    from .compiler_bridge import artifact
+    from .gem5 import CycleSimulator
 
     kernel_name = meta["kernel_name"]
-    spec = os.path.join(workdir, f"{kernel_name}_spec.py")
-    if not os.path.isfile(spec):
-        logger.warning("[Gem5] %s not found; cannot sample cycles", spec)
+    elf = artifact(workdir, "cycle_elf")
+    if elf is None:
+        logger.warning("[Gem5] %s has no cycle_elf; it was compiled without --tog", workdir)
         return None
-
-    with breakdown.span(breakdown.GEM5_BUILD, kernel_name):
-        rc, output = compiler_bridge.run_module(f"{compiler_bridge.COMPILER_PKG}.trace.emit_gem5_binary", spec, workdir)
-    breakdown.ingest_compile(workdir, kernel_name, kind="cycle",
-                          name="timing-cycle.json")
-    if rc != 0:
-        logger.warning("[Gem5] cycle binary build failed:\n%s", output[-2000:])
-        return None
-
-    from .gem5 import CycleSimulator
     try:
         with breakdown.span(breakdown.GEM5_RUN, kernel_name):
             return CycleSimulator().compile_and_simulate(
-                os.path.join(workdir, CYCLE_BIN),
-                int(extension_config.vpu_num_lanes), silent_mode=True)
+                elf, int(extension_config.vpu_num_lanes), silent_mode=True)
     except Exception as e:
         logger.warning("[Gem5] sampling failed: %s", e)
         return None
@@ -116,41 +100,28 @@ def emit_trace(workdir, meta):
     """
     import json
 
-    from . import compiler_bridge, trace_build
+    from . import trace_build
     from .compiler_bridge import artifact
 
     kernel = meta["kernel_name"]
-    spec = os.path.join(workdir, f"{kernel}_spec.py")
-    if not os.path.isfile(spec):
-        raise FileNotFoundError(f"{spec} not found; cannot build the trace")
-
-    with breakdown.span(breakdown.GEM5_BUILD, kernel):
-        rc, output = compiler_bridge.run_module(
-            f"{compiler_bridge.COMPILER_PKG}.trace.emit_togsim_so", spec, workdir)
-    if rc != 0:
-        raise RuntimeError(f"the compiler could not emit a trace producer for "
-                           f"{kernel}:\n{output[-2000:]}")
-
     so_path = artifact(workdir, "trace_so")
     types_path = artifact(workdir, "tile_types")
     if so_path is None or types_path is None:
         raise FileNotFoundError(
             f"{workdir} has no trace_so/tile_types -- the compiler must reach "
-            f"the trace step, which is what builds the producer")
+            f"the tog step (--tog), which is what builds the producer")
     with open(types_path) as fh:
         tiles = json.load(fh)
-    compute_types = tiles["compute_types"]
+    offsets = tiles["overlap_offset"]
     axes = tiles["parallel_axes"]
-    n_tiles = len(compute_types)
+    n_tiles = len(offsets)
 
     cycles = measure_tile_cycles(workdir, meta)
     if cycles is None:
         raise RuntimeError(
             f"[Gem5] sampling failed for {kernel}, so compute latency would "
             f"not be modelled at all")
-    lanes = int(extension_config.vpu_num_lanes)
-    table = trace_build.cycle_table(compute_types, list(cycles),
-                                    x_offset=lanes, w_offset=0)
+    table = trace_build.cycle_table(offsets, list(cycles))
 
     if os.path.abspath(so_path) != os.path.abspath(os.path.join(workdir, TRACE_SO)):
         shutil.copyfile(so_path, os.path.join(workdir, TRACE_SO))
@@ -172,9 +143,9 @@ def run_togsim(workdir, meta, args=()):
 
     from Simulator.simulator import TOGSimulator
 
-    so = os.path.join(workdir, TRACE_SO)
-    if not os.path.isfile(so):
-        raise FileNotFoundError(f"{so} not found -- call emit_trace first")
+    for need in (TRACE_SO, CYCLE_TSV):
+        if not os.path.isfile(os.path.join(workdir, need)):
+            raise FileNotFoundError(f"{os.path.join(workdir, need)} not found -- call emit_trace first")
     mine = session.link_shared(workdir, (TRACE_SO, CYCLE_TSV))
     write_shape(workdir, meta, args)
 
@@ -188,7 +159,8 @@ def run_togsim(workdir, meta, args=()):
 
 
 def run(workdir, meta, args=()):
-    """Emit the trace if it is missing, then simulate. Returns TOGSim's result.
+    """Measure the tiles and write the cycle table if it is missing, then simulate. Returns
+    TOGSim's result.
 
     Only the build is locked, and only against a second build of the same
     trace; simulating is per launch and runs concurrently.
@@ -196,9 +168,9 @@ def run(workdir, meta, args=()):
     from filelock import FileLock
 
     kernel = meta["kernel_name"]
-    if not os.path.isfile(os.path.join(workdir, TRACE_SO)):
+    if not os.path.isfile(os.path.join(workdir, CYCLE_TSV)):
         with FileLock(os.path.join(workdir, LOCK_NAME), timeout=LOCK_TIMEOUT):
-            if not os.path.isfile(os.path.join(workdir, TRACE_SO)):
+            if not os.path.isfile(os.path.join(workdir, CYCLE_TSV)):
                 with breakdown.span(breakdown.TOGSIM_TRACE, kernel):
                     emit_trace(workdir, meta)
     with breakdown.span(breakdown.TOGSIM_RUN, kernel):

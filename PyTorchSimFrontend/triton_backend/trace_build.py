@@ -5,40 +5,17 @@ The producer itself is the compiler's, C++ and .so both.
 import os
 
 
-VECTOR_COMPUTE = 0
-MATMUL_COMPUTE = 1
-MATMUL_PRELOAD = 2
-CROSS_LANE_COMPUTE = 3
-
-
-def overlapping_cycle(cycle, compute_type, x_offset, w_offset):
-    """The pipeline-overlapped portion of cycle, by compute type."""
-    if compute_type <= VECTOR_COMPUTE:
-        return 0
-    # NOTHING OF THE CROSS-LANE UNIT OVERLAPS A MATMUL'S OPERAND FEED. `x_offset`
-    # and `w_offset` are the systolic array's -- falling through to them would
-    # charge a transpose an overlap it never had, and the number would be wrong
-    # rather than absent.
-    if compute_type == CROSS_LANE_COMPUTE:
-        return 0
-    offset = w_offset if compute_type == MATMUL_PRELOAD else x_offset
-    return max(int(cycle) - int(offset), 0)
-
-
-def cycle_table(compute_types, cycle_list, x_offset, w_offset):
-    """[(cycle, overlapping_cycle), ...] indexed by tile_id.
-
-    compute_types comes from the compiler, cycle_list from gem5; both are in
-    tile_id order.
-    """
-    if len(cycle_list) != len(compute_types):
+def cycle_table(overlap_offsets, cycle_list):
+    """[(cycle, overlapping_cycle), ...] indexed by tile_id. The compiler states each tile's
+    overlap offset (None where nothing of it overlaps); gem5 gives the cycles."""
+    if len(cycle_list) != len(overlap_offsets):
         raise ValueError(
             f"gem5 returned {len(cycle_list)} cycle sample(s) for "
-            f"{len(compute_types)} compute tile(s): a marker fired a different "
+            f"{len(overlap_offsets)} compute tile(s): a marker fired a different "
             f"number of times than there are tiles, so the table would be keyed "
             f"by the wrong samples")
-    return [(int(c), overlapping_cycle(c, t, x_offset, w_offset))
-            for c, t in zip(cycle_list, compute_types)]
+    return [(int(c), 0 if off is None else max(int(c) - int(off), 0))
+            for c, off in zip(cycle_list, overlap_offsets)]
 
 
 def dump_cycle_table_tsv(table, path, origins=None):

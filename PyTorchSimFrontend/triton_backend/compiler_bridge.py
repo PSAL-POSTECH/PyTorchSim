@@ -107,20 +107,8 @@ def doctor():
     return proc.returncode == 0, proc.stdout + proc.stderr
 
 
-def run_module(module, *args, timeout=None):
-    """Run `python -m <module> <args>` inside the compiler's checkout. (rc, output).
 
-    Reaching the compiler means the compiler's interpreter, the compiler's cwd and `tnpu_env` -- one
-    fact. What to do when it fails differs per caller and stays with them.
-    """
-    proc = subprocess.run(
-        [extension_config.CONFIG_TORCHSIM_COMPILE_PYTHON, "-m", module, *args],
-        capture_output=True, text=True, cwd=tnpu_dir(), env=tnpu_env(),
-        timeout=timeout)
-    return proc.returncode, proc.stdout + proc.stderr
-
-
-def run_pipeline(spec_path, workdir, to_stage="torchsim-compile", timeout=1800):
+def run_pipeline(spec_path, workdir, to_stage="torchsim-compile", tog=False, timeout=1800):
     """Drive the compiler's stages over `spec_path`, writing artifacts into `workdir`.
 
     Stops at `to_stage`, by default `torchsim-compile` -- the ELF: spike and verify
@@ -128,7 +116,7 @@ def run_pipeline(spec_path, workdir, to_stage="torchsim-compile", timeout=1800):
     """
     cmd = [extension_config.CONFIG_TORCHSIM_COMPILE_PYTHON,
            os.path.join(tnpu_dir(), "pytorchsim-triton-compiler"), spec_path,
-           "--from", "triton-compile", "--to", to_stage, "--workdir", workdir]
+           "--from", "triton-compile", "--to", to_stage, "--workdir", workdir] + (["--tog"] if tog else [])
 
     proc = subprocess.run(cmd, capture_output=True, text=True,
                           cwd=tnpu_dir(), env=tnpu_env(), timeout=timeout)

@@ -137,8 +137,9 @@ def triton_npu_compile(src_code, meta, kernel_name):
                                             compiler_bridge.tnpu_dir())
                 try:
                     with breakdown.span(breakdown.TORCHSIM_COMPILE, kernel_name):
-                        compiler_bridge.run_pipeline(spec_path, write_path,
-                                                 to_stage="torchsim-compile")
+                        compiler_bridge.run_pipeline(
+                            spec_path, write_path, to_stage="torchsim-compile",
+                            tog=bool(extension_config.pytorchsim_timing_mode))
                     breakdown.ingest_compile(write_path, kernel_name)
                     break
                 except compiler_bridge.CompilerError as exc:

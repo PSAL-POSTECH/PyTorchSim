@@ -667,15 +667,12 @@ void Core::print_stats() {
   }
   float dram_bw = _config.dram_req_size * _stat_tot_mem_response * _config.core_freq_mhz / (_core_cycle * 1000); // B/cycle
   spdlog::info("Core [{}] : DMA active_cycles: {}, DMA idle_cycles: {}, DRAM BW: {:.3f} GB/s ({} responses)", _id, _stat_tot_dma_cycle, _stat_tot_dma_idle_cycle, dram_bw, _stat_tot_mem_response);
-  if (_unit_table)
-    spdlog::info("Core [{}] : Core occupancy(%): {:.2f}, active_cycles: {}, idle_cycles: {}", _id,
-      static_cast<float>(_stat_tot_vu_compute_cycle * 100) / _core_cycle, _stat_tot_vu_compute_cycle, _stat_tot_vu_compute_idle_cycle);
-  else
+  if (!_unit_table) {
     spdlog::info("Core [{}] : Vector unit utilization(%): {:.2f}, active cycle: {}, idle_cycle: {}", _id,
       static_cast<float>(_stat_tot_vu_compute_cycle * 100) / _core_cycle, _stat_tot_vu_compute_cycle, _stat_tot_vu_compute_idle_cycle);
-  if (!_unit_table)
     spdlog::info("Core [{}] : Cross-lane unit utilization(%): {:.2f}, active cycle: {}, idle_cycle: {}", _id,
       static_cast<float>(_stat_tot_xlu_compute_cycle * 100) / _core_cycle, _stat_tot_xlu_compute_cycle, _stat_tot_xlu_compute_idle_cycle);
+  }
   spdlog::info("Core [{}] : NUMA local memory: {} requests, remote memory: {} requests", _id, _stat_numa_local_access, _stat_numa_remote_access);
   spdlog::info("Core [{}] : Total_cycles: {}", _id, _core_cycle);
   if (!units_ok) {
@@ -746,15 +743,12 @@ void Core::print_current_stats() {
         _stat_sa_compute_cycle.at(i), _stat_sa_compute_idle_cycle.at(i));
   }
   spdlog::info("Core [{}] : DMA active_cycles: {}, DMA idle_cycles: {}, DRAM BW: {:.3f} GB/s ({} responses)", _id, _stat_dma_cycle, _stat_dma_idle_cycle, dram_bw, _stat_mem_response);
-  if (_unit_table)
-    spdlog::info("Core [{}] : Core occupancy(%): {:.2f}, active_cycles: {}, idle_cycles: {}", _id,
-      static_cast<float>(_stat_vu_compute_cycle * 100) / _config.core_print_interval, _stat_vu_compute_cycle, _stat_vu_compute_idle_cycle);
-  else
+  if (!_unit_table) {
     spdlog::info("Core [{}] : Vector unit Utilization(%): {:.2f}, active_cycles: {}, idle_cycles: {}", _id,
       static_cast<float>(_stat_vu_compute_cycle * 100) / _config.core_print_interval, _stat_vu_compute_cycle, _stat_vu_compute_idle_cycle);
-  if (!_unit_table)
     spdlog::info("Core [{}] : Cross-lane unit Utilization(%): {:.2f}, active_cycles: {}, idle_cycles: {}", _id,
       static_cast<float>(_stat_xlu_compute_cycle * 100) / _config.core_print_interval, _stat_xlu_compute_cycle, _stat_xlu_compute_idle_cycle);
+  }
   spdlog::info("Core [{}] : Total_cycles: {}", _id, _core_cycle);
   update_stats();
   if (!spread_ok) {

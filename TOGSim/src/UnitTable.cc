@@ -1,5 +1,6 @@
 #include "UnitTable.h"
 
+#include <algorithm>
 #include <charconv>
 #include <cmath>
 #include <cstdlib>
@@ -82,5 +83,18 @@ bool UnitTable::print(const std::string& who, size_t u, uint64_t admitted, uint6
   if (!check || (unsigned __int128)admitted <= (unsigned __int128)unit.capacity * cycles) return true;
   spdlog::error("{} : {} admitted {} {} exceeds capacity {} per cycle x {} cycles",
                 who, unit.name, admitted, unit.unit_of_work, unit.capacity, cycles);
+  return false;
+}
+
+bool UnitTable::print_spread(const std::string& who, size_t u, double admitted, uint64_t cycles) const {
+  const Unit& unit = _units[u];
+  const double utilized = admitted / (double)unit.capacity;
+  const double pct = cycles ? 100.0 * utilized / (double)cycles : 0.0;
+  const int64_t active = std::llround(utilized);
+  spdlog::info("{} : {} utilization(%): {:.2f}, active_cycles: {}, idle_cycles: {}",
+               who, unit.name, pct, active, std::max<int64_t>((int64_t)cycles - active, 0));
+  if (utilized <= (double)cycles * (1.0 + 1e-9)) return true;
+  spdlog::error("{} : {} spread {} {} over {} cycles exceeds capacity {} per cycle",
+                who, unit.name, admitted, unit.unit_of_work, cycles, unit.capacity);
   return false;
 }

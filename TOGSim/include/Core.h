@@ -57,6 +57,8 @@ class Core {
     _unit_table = t;
     _stat_unit_admitted.assign(t->num_units(), 0);
     _stat_tot_unit_admitted.assign(t->num_units(), 0);
+    _stat_unit_spread.assign(t->num_units(), 0.0);
+    _stat_tot_unit_spread.assign(t->num_units(), 0.0);
   }
   const std::vector<uint64_t>& get_tot_unit_admitted() const { return _stat_tot_unit_admitted; }
   cycle_type get_core_cycle() const { return _core_cycle; }
@@ -86,6 +88,12 @@ class Core {
     if (_unit_table && inst->get_opcode() == Opcode::COMP)
       _unit_table->accumulate(inst->get_tile_id(), _stat_unit_admitted);
   }
+  // Periodic --unit_table credit: a compute with unit rows spreads its tile's admissions
+  // evenly over its execution window [finish - compute_cycle, finish); a zero-length
+  // window credits the interval being accumulated now.
+  void record_unit_window(const std::shared_ptr<Instruction>& inst);
+  // Credit every recorded window's share of [lo, hi) into _stat_unit_spread; drop windows ended by hi.
+  void credit_unit_windows(cycle_type lo, cycle_type hi);
   // SRAM-capacity throttle (sec 10.4): a consumer frees the buffer-versions it
   // read (refcount -> 0 releases the spad bytes). Called when COMP/MOVOUT issue.
   void release_sram(const std::shared_ptr<Instruction>& inst);
@@ -128,6 +136,11 @@ class Core {
   const UnitTable* _unit_table = nullptr;
   std::vector<uint64_t> _stat_unit_admitted;
   std::vector<uint64_t> _stat_tot_unit_admitted;
+  struct UnitWindow { cycle_type start, end; int64_t tile_id; };
+  std::vector<UnitWindow> _unit_windows;
+  std::vector<double> _stat_unit_spread;       // this interval's time-spread credit
+  std::vector<double> _stat_tot_unit_spread;   // summed over the printed intervals
+  cycle_type _unit_spread_from = 0;            // start of the interval being accumulated
 
   cycle_type _stat_vu_compute_cycle = 0;
   std::vector<cycle_type> _stat_sa_compute_cycle;

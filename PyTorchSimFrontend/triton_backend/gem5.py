@@ -46,9 +46,9 @@ class CycleSimulator():
 
     def compile_and_simulate(self, target_binary, vectorlane_size, silent_mode=False):
         dir_path = os.path.join(os.path.dirname(target_binary), "m5out")
-        gem5_script_path = os.path.join(extension_config.CONFIG_TORCHSIM_DIR, "gem5_script/script_systolic.py")
-        gem5_cmd = [extension_config.CONFIG_GEM5_PATH, "-r", "--stdout-file=sto.log", "-d", dir_path, gem5_script_path,
-                    "-c", target_binary, "--vlane", str(vectorlane_size),
+        gem5_cmd = [extension_config.CONFIG_GEM5_PATH, "-r", "--stdout-file=sto.log", "-d", dir_path,
+                    extension_config.CONFIG_GEM5_SCRIPT, "-c", target_binary,
+                    "--model", extension_config.CONFIG_VCIX_MODEL, "--vlane", str(vectorlane_size),
                     "--vlen", str(extension_config.vpu_vector_length_bits)]
 
         if not silent_mode:

@@ -5,12 +5,19 @@ import yaml
 import logging
 
 CONFIG_TORCHSIM_DIR = os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim')
-CONFIG_GEM5_PATH = os.environ.get('GEM5_PATH', default="/workspace/gem5/build/RISCV/gem5.opt")
+CONFIG_GEM5_PATH = os.environ.get('GEM5_PATH', default=os.path.join(
+    os.environ.get("VCIX_ENV_ROOT", "/opt/vcix-env"), "gem5", "build", "RISCV", "gem5.opt"))
 # --- Triton codegen route ----------------------------------------------------
 # The pytorchsim-triton-compiler checkout that owns stages 1-5 (ttir -> ttshared -> the compiler passes
 # -> RISC-V ELF). It is a SEPARATE repository, deliberately not vendored.
 CONFIG_TORCHSIM_COMPILE_DIR = os.environ.get(
     "TORCHSIM_COMPILE_DIR", default=os.path.join(CONFIG_TORCHSIM_DIR, "pytorchsim-triton-compiler"))
+# What gem5 runs a sample tile under: the vcix-accelerator script and the accelerator model it loads.
+CONFIG_GEM5_SCRIPT = os.environ.get("TORCHSIM_GEM5_SCRIPT", default=os.path.join(
+    CONFIG_TORCHSIM_COMPILE_DIR, "third_party", "vcix-accelerator", "examples", "tpu", "gem5",
+    "script_systolic.py"))
+CONFIG_VCIX_MODEL = os.environ.get("TORCHSIM_COMPILE_VCIX_MODEL", default=os.path.join(
+    os.environ.get("TORCHSIM_PREFIX", "/workspace"), "vcix-build", "libtpu.so"))
 # the compiler runs in its own process. Both sides now hold the same LLVM 23 bindings,
 # so the seam is a process boundary rather than a version one; `mlir` is a
 # namespace package, and each side still selects its own root explicitly.

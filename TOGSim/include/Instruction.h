@@ -14,6 +14,8 @@
 #include <memory>
 #include <vector>
 
+#include "TensorTiling.h"
+
 // MEMORY_BAR: the DMA/memory barrier (waits a DMA tag in the tag table).
 enum class Opcode { MOVIN, MOVOUT, COMP, MEMORY_BAR, COUNT};
 
@@ -111,6 +113,7 @@ class Instruction : public std::enable_shared_from_this<Instruction> {
   cycle_type get_overlapping_cycle() { return overlapping_cycle; }
   cycle_type get_compute_cycle() { return compute_cycle; }
   void set_compute_cycle(cycle_type cycle) { compute_cycle = cycle; }
+  void set_tensor_tiling(std::shared_ptr<const TensorTiling> t) { _tiling = std::move(t); }
   void set_indirect_index_path(std::string indirect_path) { _is_indirect_mode=true; _indirect_index_path=indirect_path; }
   void print();
   std::shared_ptr<std::set<addr_type>> get_dram_address(addr_type dram_req_size);
@@ -211,6 +214,7 @@ class Instruction : public std::enable_shared_from_this<Instruction> {
   bool _is_async_dma=false;
   bool _is_indirect_mode=false;
   std::string _indirect_index_path="";
+  std::shared_ptr<const TensorTiling> _tiling;   // null = row-major (see set_tensor_tiling)
   // SRAM-capacity model (see the setters above).
   int64_t _sram_alloc_id = -1;
   std::vector<int64_t> _sram_release_allocs;

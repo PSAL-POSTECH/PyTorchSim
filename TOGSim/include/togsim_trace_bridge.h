@@ -3,7 +3,9 @@
 // Simulator/Core can run: one Tile per work-item (a TILE_BEGIN/TILE_END span),
 // dependency edges by last-writer per SRAM buffer (sec 10).
 #include <memory>
+#include <vector>
 
+#include "TensorTiling.h"
 #include "TileGraph.h"
 #include "togsim_loader.h"
 
@@ -19,4 +21,5 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(
     const uint64_t* tensor_base, int32_t n_tensors,
     const int64_t* cyc, const int64_t* ovl, int32_t n_tiles,
     const int32_t* partition_cores, int32_t n_partition_cores,
-    const std::string& indirect_dir, const std::string& name);
+    const std::string& indirect_dir, const std::string& name,
+    const std::vector<std::shared_ptr<const TensorTiling>>& tilings = {});

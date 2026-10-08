@@ -101,6 +101,7 @@ struct BuildState {
   int cur_tile_group = -1;
   std::string indirect_dir;               // where the functional run left its index dumps
   size_t indirect_found = 0, indirect_missing = 0;
+  std::vector<std::shared_ptr<const TensorTiling>> tilings;   // per arg_id; empty = row-major
   std::set<int64_t> cur_tile_bufs;
   size_t cur_tile_footprint = 0;
 
@@ -386,6 +387,7 @@ struct BuildState {
       auto inst = make_dma(t, uniq);
       inst->set_tile_group(cur_tile_group);
       if (t.indirect) attach_indices(t, *inst);
+      if (t.arg_id >= 0 && (size_t)t.arg_id < tilings.size()) inst->set_tensor_tiling(tilings[t.arg_id]);
       tile->inc_required_sram_size(rec_bytes(t));         // SRAM footprint (ready-tile ordering)
       note_bufs(t.read_bufs); note_bufs(t.write_bufs);   // distinct-buffer footprint for 1- vs 2-dispatch
       if (t.dir == 1) {                                  // STORE
@@ -459,10 +461,12 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(
     const uint64_t* tensor_base, int32_t n_tensors,
     const int64_t* cyc, const int64_t* ovl, int32_t n_tiles,
     const int32_t* partition_cores, int32_t n_partition_cores,
-    const std::string& indirect_dir, const std::string& name) {
+    const std::string& indirect_dir, const std::string& name,
+    const std::vector<std::shared_ptr<const TensorTiling>>& tilings) {
   using togsim::TraceRec;
   auto S = std::make_shared<BuildState>();
   S->indirect_dir = indirect_dir;
+  S->tilings = tilings;
 
   // Index the dispatches (records each work-item's fn/iv/core) and collect each
   // buffer's spad size. Builds no Instruction.

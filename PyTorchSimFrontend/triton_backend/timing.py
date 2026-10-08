@@ -18,6 +18,8 @@ logger = extension_config.setup_logger()
 TRACE_SO = "trace.so"
 CYCLE_TSV = "trace_cycles.tsv"
 SHAPE_TXT = "trace_shape.txt"
+TENSORS_TXT = "trace_tensors.txt"
+TENSOR_SHAPES_TXT = "trace_tensor_shapes.txt"
 META_JSON = "meta.json"
 
 PLACEHOLDER_CYCLE = 1
@@ -47,6 +49,26 @@ def measure_tile_cycles(workdir, meta):
     except Exception as e:
         logger.warning("[Gem5] sampling failed: %s", e)
         return None
+
+
+def write_tensors(workdir):
+    """Write each kernel argument's byte size, and its rows cols elem_bytes with every leading
+    axis folded into the rows, in argument order, where TOGSim reads them to lay it out in DRAM."""
+    import math
+
+    import torch
+
+    from .compiler_bridge import kernel_object
+
+    manifest = kernel_object(workdir)
+    if manifest is None:
+        raise FileNotFoundError(f"{workdir} has no kernel.json -- compile the kernel first")
+    args = [(a["shape"], getattr(torch, a["dtype"]).itemsize) for a in manifest["args"]]
+    with open(os.path.join(session.dir_for(workdir), TENSORS_TXT), "w") as f:
+        f.write("".join(f"{math.prod(shape) * elem}\n" for shape, elem in args))
+    with open(os.path.join(session.dir_for(workdir), TENSOR_SHAPES_TXT), "w") as f:
+        f.write("".join(f"{math.prod(shape[:-1])} {shape[-1] if shape else 1} {elem}\n"
+                        for shape, elem in args))
 
 
 def write_shape(workdir, meta, args=()):
@@ -148,6 +170,7 @@ def run_togsim(workdir, meta, args=()):
             raise FileNotFoundError(f"{os.path.join(workdir, need)} not found -- call emit_trace first")
     mine = session.link_shared(workdir, (TRACE_SO, CYCLE_TSV))
     write_shape(workdir, meta, args)
+    write_tensors(workdir)
 
     handle = os.path.join(mine, "tile_graph.onnx")
     attribute = os.path.join(mine, "attribute")

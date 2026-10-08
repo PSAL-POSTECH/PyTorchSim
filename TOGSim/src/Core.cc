@@ -101,7 +101,7 @@ bool Core::can_issue(const std::shared_ptr<Tile>& op) {
    * (unknown) falls back to 2. */
   size_t M = op->get_spad_footprint();
   int max_concurrent = (_sram_capacity && M > _sram_capacity / 2) ? 1 : 2;
-  return (int)_tiles.size() < max_concurrent && !op->is_stonne_tile();
+  return (int)_tiles.size() < max_concurrent;
 }
 
 void Core::issue(std::shared_ptr<Tile> op) {
@@ -331,14 +331,7 @@ void Core::cycle() {
           {
             /* Check another MOVIN with same tag is issued */
             auto& key = inst->get_tag_id();
-            if (inst->is_sparse_inst()) {
-              _dma.register_tag(inst->subgraph_id, key);
-              _dma.set_tag_sparse(inst->subgraph_id, key);
-              finish_instruction(inst);
-              issued = true;
-              _stat_tot_skipped_inst.at(static_cast<size_t>(inst->get_opcode()))++;
-              break;
-            } else if (inst->is_async_dma() && _dma.tag_key_exist(inst->subgraph_id, key)) {
+            if (inst->is_async_dma() && _dma.tag_key_exist(inst->subgraph_id, key)) {
               bool finished = _dma.get_tag_finish(inst->subgraph_id, key);
               if (finished)
                 finish_instruction(inst);

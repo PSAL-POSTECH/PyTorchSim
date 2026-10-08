@@ -12,7 +12,7 @@ void Scheduler::enqueue_graph(std::unique_ptr<TileGraph> tile_graph) {
 const std::shared_ptr<Tile> Scheduler::peek_tile(int core_id, int slot_id, CoreType ctype) {
   if (_tile_graph.empty() || _tile_graph.at(0)->get_arrival_time() > *_core_cycle)
     return std::make_unique<Tile>(Tile(Tile::Status::EMPTY));
-  if ((!_tile_graph.at(0)->StonneGraph && ctype == CoreType::WS_MESH) || (_tile_graph.at(0)->StonneGraph && ctype == CoreType::STONNE))
+  if (ctype == CoreType::WS_MESH)
     return _tile_graph.at(0)->peek_tile(core_id, slot_id);
   return std::make_unique<Tile>(Tile(Tile::Status::EMPTY));
 }

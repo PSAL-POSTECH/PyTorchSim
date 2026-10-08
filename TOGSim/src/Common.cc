@@ -49,8 +49,6 @@ SimulationConfig initialize_config(const YAML::Node& config,
     for (const auto& core_type : core_types) {
       if (core_type == "ws_mesh") {
         parsed_config.core_type.push_back(CoreType::WS_MESH);
-      } else if (core_type == "stonne") {
-        parsed_config.core_type.push_back(CoreType::STONNE);
       } else {
         throw std::runtime_error(fmt::format("Not implemented core type: {}", core_type));
       }
@@ -68,15 +66,7 @@ SimulationConfig initialize_config(const YAML::Node& config,
     parsed_config.core_spad_size_kb = config["core_spad_size_kb"].as<uint32_t>();
   if (config["sa_weight_buffer_depth"])
     parsed_config.sa_weight_buffer_depth = config["sa_weight_buffer_depth"].as<uint32_t>();
-  if (config["num_stonne_per_core"])
-    parsed_config.num_stonne_per_core = config["num_stonne_per_core"].as<uint32_t>();
-  if (config["num_stonne_port"])
-    parsed_config.num_stonne_port = config["num_stonne_port"].as<uint32_t>();
   parsed_config.core_print_interval = get_config_value<uint32_t>(config, "core_stats_print_period_cycles");
-
-  /* Stonne config */
-  if (config["stonne_config_path"])
-    parsed_config.stonne_config_path = config["stonne_config_path"].as<std::string>();
 
   /* DRAM config */
   std::string dram_type_str = get_config_value<std::string>(config, "dram_type");

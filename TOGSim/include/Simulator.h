@@ -6,7 +6,6 @@
 #include <yaml-cpp/yaml.h>
 #include "Common.h"
 #include "Core.h"
-#include "SparseCore.h"
 #include "Dram.h"
 #include "Interconnect.h"
 #include "scheduler/Scheduler.h"

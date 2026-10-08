@@ -32,9 +32,6 @@ Simulator::Simulator(SimulationConfig config, YAML::Node hardware_config_yaml)
       spdlog::info("[Config/Core] Core {}: core_freq_mhz: {}, systolic_arrays_per_core: {}",
                    core_index, config.core_freq_mhz, config.num_systolic_array_per_core);
       _cores.at(core_index) = std::make_unique<Core>(core_index, _config);
-    } else if(config.core_type[core_index] == CoreType::STONNE) {
-      spdlog::info("[Config/Core] Core {}: core_freq_mhz: {}, core_type: Stonne", core_index, config.core_freq_mhz);
-      _cores.at(core_index) = std::make_unique<SparseCore>(core_index, _config);
     } else {
       throw std::runtime_error(fmt::format("Not implemented Core type {} ",
                                           (int)config.core_type[core_index]));

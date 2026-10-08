@@ -144,8 +144,6 @@ class Instruction : public std::enable_shared_from_this<Instruction> {
     if (_wait_keys.empty()) _wait_keys.push_back(_tag_key);
     return _wait_keys;
   }
-  bool is_sparse_inst() { return _is_sparse_inst; }
-  void set_sparse_state(bool state) { _is_sparse_inst = state; }
   uint64_t get_global_inst_id() const { return _global_inst_id; }
 
   // SRAM-capacity model (sec 10.4), filled by the bridge and enforced by Core: a
@@ -212,7 +210,6 @@ class Instruction : public std::enable_shared_from_this<Instruction> {
   int _nr_inner_loop = 0;
   bool _is_async_dma=false;
   bool _is_indirect_mode=false;
-  bool _is_sparse_inst=false;
   std::string _indirect_index_path="";
   // SRAM-capacity model (see the setters above).
   int64_t _sram_alloc_id = -1;

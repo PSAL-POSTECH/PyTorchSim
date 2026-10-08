@@ -84,7 +84,6 @@ class TileGraph {
   void init_cache_plan(IntervalTree<unsigned long long, int>::interval_vector it) {
     _cache_plan = std::make_shared<IntervalTree<unsigned long long, int>>(std::move(it));
   }
-  bool StonneGraph = false;
 
   class Iterator {
    public:

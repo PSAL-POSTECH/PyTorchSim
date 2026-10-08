@@ -259,7 +259,7 @@ import importlib.util
 import os
 import sys
 
-sys.path.insert(0, {tnpu_dir!r})
+sys.path.insert(0, {compiler_dir!r})
 from {spec_module} import KernelSpec, Arg  # noqa: E402
 
 #: The rewritten Triton source, beside this file. It must be a REAL file on
@@ -311,7 +311,7 @@ SPEC = KernelSpec(
 '''
 
 
-def write_spec_file(src_code, meta, path, tnpu_dir):
+def write_spec_file(src_code, meta, path, compiler_dir):
     """Write a compiler kernel file for this Inductor kernel. Returns `path`.
 
     A block Inductor fixed in the kernel BODY rather than taking as a parameter
@@ -346,12 +346,12 @@ def write_spec_file(src_code, meta, path, tnpu_dir):
     triton_module = f"{meta['kernel_name']}_triton.py"
     with open(os.path.join(os.path.dirname(path), triton_module), "w") as f:
         f.write(source_rewrite.clamp_instead_of_wrap(
-            source_rewrite.strip_for_tnpu(src_code), meta["kernel_name"]))
+            source_rewrite.strip_for_compiler(src_code), meta["kernel_name"]))
 
     scalars = scalar_args(meta)
     text = SPEC_TEMPLATE.format(
         kernel_name=meta["kernel_name"],
-        tnpu_dir=tnpu_dir,
+        compiler_dir=compiler_dir,
         spec_module=f"{compiler_bridge.COMPILER_PKG}.contract.kernel_spec",
         triton_module=triton_module,
         signature=signature,

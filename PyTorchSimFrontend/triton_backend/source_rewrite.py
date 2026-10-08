@@ -20,7 +20,7 @@ _DROP_CALL_RE = re.compile(r"^\s*triton_helpers\.set_driver_to_gpu\(\)")
 _HELPER_USE_RE = re.compile(r"\btriton_helpers\.(\w+)")
 
 
-def strip_for_tnpu(src):
+def strip_for_compiler(src):
     """Remove everything the torch-free the compiler venv cannot import.
 
     Drops torch/inductor imports and the @triton_heuristics decorator, then
@@ -62,8 +62,8 @@ def strip_for_tnpu(src):
 
 
 _WRAP_TRIPLES = (("rm", "M", "BLOCK_M"), ("rn", "N", "BLOCK_N"))
-_ROW_MASK = "_tnpu_row_mask"
-_COL_MASK = "_tnpu_col_mask"
+_ROW_MASK = "_torchsim_row_mask"
+_COL_MASK = "_torchsim_col_mask"
 _MASK_FOR = {"A": _ROW_MASK, "B": _COL_MASK}
 
 

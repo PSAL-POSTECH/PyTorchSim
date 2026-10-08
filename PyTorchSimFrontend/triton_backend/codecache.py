@@ -1,6 +1,6 @@
 """Compile cache for the codegen route: one kernel in, one launcher out.
 
-    define_kernel   ->  triton_npu_compile(src, meta, kernel_name)  ->  launcher
+    define_kernel   ->  torchsim_compile(src, meta, kernel_name)  ->  launcher
     call site       ->  launcher(arg0, arg1, ..., xnumel)
 
 One directory per source hash, holding the compiler kernel file and every artifact.
@@ -149,7 +149,7 @@ def _time_tile(src_code, meta, kernel_name, workdir, timeout):
     with open(os.path.join(workdir, "kernel.py"), "w") as f:
         f.write(src_code)
     timing.store_meta(workdir, meta)
-    kernel_spec.write_spec_file(src_code, meta, spec_path, compiler_bridge.tnpu_dir())
+    kernel_spec.write_spec_file(src_code, meta, spec_path, compiler_bridge.compiler_dir())
     try:
         compiler_bridge.run_pipeline(spec_path, workdir, to_stage="torchsim-compile", tog=True)
         timing.emit_trace(workdir, meta)
@@ -222,7 +222,7 @@ def _record_tile(m, n, k, tile):
             json.dump(data, f, indent=2, sort_keys=True)
 
 
-def triton_npu_compile(src_code, meta, kernel_name):
+def torchsim_compile(src_code, meta, kernel_name):
     """Compile one Inductor-generated Triton kernel through the compiler.
 
     Called from the generated wrapper at module import time. Synchronous, on
@@ -256,7 +256,7 @@ def triton_npu_compile(src_code, meta, kernel_name):
             next(tiles)
             while True:
                 kernel_spec.write_spec_file(src_code, meta, spec_path,
-                                            compiler_bridge.tnpu_dir())
+                                            compiler_bridge.compiler_dir())
                 try:
                     with breakdown.span(breakdown.TORCHSIM_COMPILE, kernel_name):
                         compiler_bridge.run_pipeline(

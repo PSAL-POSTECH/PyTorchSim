@@ -67,7 +67,7 @@ def decompose_polar(abs, angle):
     ops this backend compiles and let `view_as_complex` name it, which Inductor
     already treats as a view over real data. DeepSeek-V2's own RoPE proves the
     point -- its `view_as_complex` is fused into ordinary `*fp32` kernels
-    (triton_npu_fused__unsafe_view_split_with_sizes_transpose_view_view_as_complex_5).
+    (pytorchsim_triton_compiler_fused__unsafe_view_split_with_sizes_transpose_view_view_as_complex_5).
 
     `.contiguous()` IS LOAD-BEARING: view_as_complex wants the last dimension
     to have stride 1, and a stack over permuted operands does not

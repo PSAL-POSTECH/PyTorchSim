@@ -40,7 +40,7 @@ BUCKETS = [
     ("triton_helpers", r"triton_helpers"),
     ("wrapper_gap",    r"'TritonNPUWrapperCodegen' object has no attribute"),
     ("spec_incomplete", r"SpecIncomplete"),
-    ("tnpu_stage",     r"CompilerError|the compiler pipeline failed|triton-shared-opt|"
+    ("compiler_stage",     r"CompilerError|the compiler pipeline failed|triton-shared-opt|"
                        r"\[stage\d\]|failed to legalize"),
     ("reduction",      r"lane-aware|linalg\.reduce|no reduction path"),
     ("dynamic_shape",  r"ShapeMismatch|dynamic shape|size_hint returned None"),
@@ -202,7 +202,7 @@ def write_markdown(results, path):
             "triton_helpers": "triton_backend -- needs a vendored copy",
             "wrapper_gap": "triton_backend -- TritonNPUWrapperCodegen incomplete",
             "spec_incomplete": "triton_backend -- kernel_spec cannot describe it",
-            "tnpu_stage": "the compiler lowering passes",
+            "compiler_stage": "the compiler lowering passes",
             "reduction": "the compiler -- no lane-aware reduction",
             "dynamic_shape": "triton_backend -- shape-specialised launch",
             "matmul_timing": "build_tog -- compute node lookup",

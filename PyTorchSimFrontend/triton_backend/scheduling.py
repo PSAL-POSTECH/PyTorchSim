@@ -2,7 +2,7 @@
 
 Keeps ALL of Inductor's Triton codegen and changes only what happens to the
 generated source afterwards: upstream hands it to `async_compile.triton`, this
-hands it to `triton_npu_compile`. Two overrides, and nothing else.
+hands it to `torchsim_compile`. Two overrides, and nothing else.
 """
 
 from torch._inductor.codegen.common import IndentedBuffer
@@ -56,7 +56,7 @@ class TritonNPUScheduling(TritonScheduling):
         kernel_spec.record_roles(kernel_name, meta)
 
         compile_wrapper = IndentedBuffer()
-        compile_wrapper.writeline(f"triton_npu_compile('''{src_code}''',")
+        compile_wrapper.writeline(f"torchsim_compile('''{src_code}''',")
         compile_wrapper.writeline(f"    meta={meta!r},")
         compile_wrapper.writeline(f"    kernel_name={kernel_name!r})")
 

@@ -41,7 +41,7 @@ class CompilerError(RuntimeError):
 COMPILER_PKG = "pytorchsim_triton_compiler"
 
 
-def tnpu_dir():
+def compiler_dir():
     d = extension_config.CONFIG_TORCHSIM_COMPILE_DIR
     if not os.path.isdir(d):
         raise CompilerError(
@@ -83,7 +83,7 @@ def target_path():
     return out
 
 
-def tnpu_env():
+def compiler_env():
     """The environment for a compiler subprocess: this machine, no PYTHONPATH, and
     no device backend autoload.
 
@@ -102,8 +102,8 @@ def doctor():
     """Return (ok, output) for the compiler's own toolchain check."""
     proc = subprocess.run(
         [extension_config.CONFIG_TORCHSIM_COMPILE_PYTHON,
-         os.path.join(tnpu_dir(), "pytorchsim-triton-compiler"), "doctor"],
-        capture_output=True, text=True, cwd=tnpu_dir())
+         os.path.join(compiler_dir(), "pytorchsim-triton-compiler"), "doctor"],
+        capture_output=True, text=True, cwd=compiler_dir())
     return proc.returncode == 0, proc.stdout + proc.stderr
 
 
@@ -115,11 +115,11 @@ def run_pipeline(spec_path, workdir, to_stage="torchsim-compile", tog=False, tim
     want tensors and a per-kernel reference this route has no graph-level answer for.
     """
     cmd = [extension_config.CONFIG_TORCHSIM_COMPILE_PYTHON,
-           os.path.join(tnpu_dir(), "pytorchsim-triton-compiler"), spec_path,
+           os.path.join(compiler_dir(), "pytorchsim-triton-compiler"), spec_path,
            "--from", "triton-compile", "--to", to_stage, "--workdir", workdir] + (["--tog"] if tog else [])
 
     proc = subprocess.run(cmd, capture_output=True, text=True,
-                          cwd=tnpu_dir(), env=tnpu_env(), timeout=timeout)
+                          cwd=compiler_dir(), env=compiler_env(), timeout=timeout)
     output = proc.stdout + proc.stderr
     if proc.returncode != 0:
         log = os.path.join(workdir, "stage.log")

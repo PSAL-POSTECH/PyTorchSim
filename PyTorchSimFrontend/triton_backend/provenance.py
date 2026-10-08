@@ -30,23 +30,23 @@ def _run(cmd, cwd):
     return proc.returncode, proc.stdout if proc.returncode == 0 else proc.stderr
 
 
-def _tnpu_git(tnpu_dir):
+def _compiler_git(compiler_dir):
     """The the compiler checkout's commit, with a digest of any uncommitted change."""
-    rc, head = _run(["git", "rev-parse", "HEAD"], tnpu_dir)
+    rc, head = _run(["git", "rev-parse", "HEAD"], compiler_dir)
     if rc != 0:
         return None
-    rc, diff = _run(["git", "diff", "HEAD"], tnpu_dir)
+    rc, diff = _run(["git", "diff", "HEAD"], compiler_dir)
     dirty = hashlib.sha256(diff.encode()).hexdigest()[:12] if diff.strip() else ""
     return {"commit": head.strip(), "dirty": dirty}
 
 
-def _tool_paths(tnpu_dir):
+def _tool_paths(compiler_dir):
     """The tool paths the compiler itself would resolve, asked in its own interpreter."""
     code = (f"import json; from {compiler_bridge.COMPILER_PKG} import config as c; "
             "print(json.dumps({n: p for n, p, _ in c.CHECKS}))")
     proc = subprocess.run(
         [extension_config.CONFIG_TORCHSIM_COMPILE_PYTHON, "-c", code],
-        capture_output=True, text=True, cwd=tnpu_dir, env=compiler_bridge.tnpu_env())
+        capture_output=True, text=True, cwd=compiler_dir, env=compiler_bridge.compiler_env())
     if proc.returncode != 0:
         return None
     try:
@@ -89,14 +89,14 @@ def current():
     """This process's build identity, computed once and reused."""
     global _current
     if _current is None:
-        tnpu_dir = compiler_bridge.tnpu_dir()
-        paths = _tool_paths(tnpu_dir)
+        compiler_dir = compiler_bridge.compiler_dir()
+        paths = _tool_paths(compiler_dir)
         if paths is None:
             logger.warning(
                 "[provenance] the compiler's toolchain could not be introspected; "
                 "cached kernels are guarded by the compiler commit only")
         _current = {
-            "the compiler": _tnpu_git(tnpu_dir),
+            "the compiler": _compiler_git(compiler_dir),
             "tools": _stat_tools(paths) if paths else None,
             "machine": compiler_bridge.machine(),
             "trace_abi": _trace_abi(),

@@ -19,45 +19,45 @@ import triton
 import triton.language as tl
 
 @triton.jit
-def _tnpu_promote_to_tensor(x):
+def _torchsim_promote_to_tensor(x):
     return x + tl.zeros((1,), tl.int1)
 
 @triton.jit
-def _tnpu_is_floating(x):
-    return _tnpu_promote_to_tensor(x).dtype.is_floating()
+def _torchsim_is_floating(x):
+    return _torchsim_promote_to_tensor(x).dtype.is_floating()
 
 @triton.jit
-def _tnpu_minimum(a, b):
+def _torchsim_minimum(a, b):
     mask = a < b
-    if _tnpu_is_floating(a):
+    if _torchsim_is_floating(a):
         mask |= a != a
     return tl.where(mask, a, b)
 
 @triton.jit
-def _tnpu_maximum(a, b):
+def _torchsim_maximum(a, b):
     mask = a > b
-    if _tnpu_is_floating(a):
+    if _torchsim_is_floating(a):
         mask |= a != a
     return tl.where(mask, a, b)
 
 @triton.jit
-def _tnpu_min2(a, dim):
-    return tl.reduce(a, dim, _tnpu_minimum)
+def _torchsim_min2(a, dim):
+    return tl.reduce(a, dim, _torchsim_minimum)
 
 @triton.jit
-def _tnpu_max2(a, dim):
-    return tl.reduce(a, dim, _tnpu_maximum)
+def _torchsim_max2(a, dim):
+    return tl.reduce(a, dim, _torchsim_maximum)
 
 @triton.jit
-def _tnpu_any_combine(a, b):
+def _torchsim_any_combine(a, b):
     return a | b
 
 @triton.jit
-def _tnpu_any(a, dim):
-    return tl.reduce(a, dim, _tnpu_any_combine)
+def _torchsim_any(a, dim):
+    return tl.reduce(a, dim, _torchsim_any_combine)
 
 @triton.jit
-def _tnpu_welford_reduce(value, mean, m2, weight, first_iteration):
+def _torchsim_welford_reduce(value, mean, m2, weight, first_iteration):
     if first_iteration:
         new_weight = tl.full(weight.shape, 1, weight.dtype)
         new_mean = value
@@ -70,7 +70,7 @@ def _tnpu_welford_reduce(value, mean, m2, weight, first_iteration):
     return new_mean, new_m2, new_weight
 
 @triton.jit
-def _tnpu_welford_combine(mean_1, m2_1, weight_1, mean_2, m2_2, weight_2):
+def _torchsim_welford_combine(mean_1, m2_1, weight_1, mean_2, m2_2, weight_2):
     delta = mean_2 - mean_1
     new_weight = weight_1 + weight_2
     w2_over_w = tl.where(new_weight == 0.0, 0.0, weight_2 / new_weight)
@@ -81,13 +81,13 @@ def _tnpu_welford_combine(mean_1, m2_1, weight_1, mean_2, m2_2, weight_2):
     )
 
 @triton.jit
-def _tnpu_welford(mean, m2, weight, dim):
-    return tl.reduce((mean, m2, weight), dim, _tnpu_welford_combine)
+def _torchsim_welford(mean, m2, weight, dim):
+    return tl.reduce((mean, m2, weight), dim, _torchsim_welford_combine)
 
-from triton.language.standard import _log2 as _tnpu_log2
+from triton.language.standard import _log2 as _torchsim_log2
 
 @triton.jit
-def _tnpu_compare_and_swap_with_index(
+def _torchsim_compare_and_swap_with_index(
     x, idxs, rnumel, flip,
     i: tl.constexpr, n_dims: tl.constexpr,
     stable: tl.constexpr, descending: tl.constexpr,
@@ -132,14 +132,14 @@ def _tnpu_compare_and_swap_with_index(
 
     if descending:
         cond = left < right
-        if _tnpu_is_floating(left):
+        if _torchsim_is_floating(left):
             if not stable:
                 cond = cond | right_isnan
             else:
                 cond = cond | (right_isnan & (~left_isnan))
     else:
         cond = left > right
-        if _tnpu_is_floating(left):
+        if _torchsim_is_floating(left):
             if not stable:
                 cond = cond | left_isnan
             else:
@@ -147,7 +147,7 @@ def _tnpu_compare_and_swap_with_index(
 
     if stable:
         eq = left == right
-        if _tnpu_is_floating(left):
+        if _torchsim_is_floating(left):
             eq = eq | (left_isnan & right_isnan)
         cond = cond | (eq & (left_idx > right_idx))
 
@@ -161,7 +161,7 @@ def _tnpu_compare_and_swap_with_index(
     return ret.to(x.dtype, bitcast=True), new_idxs
 
 @triton.jit
-def _tnpu_bitonic_merge_with_index(
+def _torchsim_bitonic_merge_with_index(
     x, idxs, rnumel,
     stage: tl.constexpr, alternating: tl.constexpr, n_dims: tl.constexpr,
     stable: tl.constexpr, descending: tl.constexpr,
@@ -176,13 +176,13 @@ def _tnpu_bitonic_merge_with_index(
     else:
         flip = False
     for i in tl.static_range(stage):
-        x, idxs = _tnpu_compare_and_swap_with_index(
+        x, idxs = _torchsim_compare_and_swap_with_index(
             x, idxs, rnumel, flip, i + (n_dims - stage), n_dims, stable, descending
         )
     return x, idxs
 
 @triton.jit
-def _tnpu_sort_with_index(
+def _torchsim_sort_with_index(
     x, idxs, rnumel,
     dim: tl.constexpr = None,
     stable: tl.constexpr = tl.constexpr(False),
@@ -193,10 +193,10 @@ def _tnpu_sort_with_index(
     tl.static_assert(
         _dim == len(x.shape) - 1, "only minor dimension is currently supported"
     )
-    n_dims: tl.constexpr = _tnpu_log2(x.shape[_dim])
+    n_dims: tl.constexpr = _torchsim_log2(x.shape[_dim])
 
     for i in tl.static_range(1, n_dims + 1):
-        x, idxs = _tnpu_bitonic_merge_with_index(
+        x, idxs = _torchsim_bitonic_merge_with_index(
             x, idxs, rnumel, i,
             alternating=i < n_dims, n_dims=n_dims,
             stable=stable, descending=descending,
@@ -204,23 +204,23 @@ def _tnpu_sort_with_index(
     return x, idxs
 
 @triton.jit
-def _tnpu_div_floor_integer(a, b):
+def _torchsim_div_floor_integer(a, b):
     quot = a // b
     remainder = a % b
     fixed = tl.where(remainder != 0, quot - 1, quot)
     return tl.where((a < 0) != (b < 0), fixed, quot)
 
 @triton.jit
-def _tnpu_remainder_integer(a, b):
+def _torchsim_remainder_integer(a, b):
     remainder = a % b
     return tl.where((remainder != 0) & ((a < 0) != (b < 0)),
                     remainder + b, remainder)
 
 @triton.jit
-def _tnpu_maximum_with_index(a_value, a_index, b_value, b_index):
+def _torchsim_maximum_with_index(a_value, a_index, b_value, b_index):
     mask = a_value > b_value
     equal = a_value == b_value
-    if _tnpu_is_floating(a_value):
+    if _torchsim_is_floating(a_value):
         a_isnan = a_value != a_value
         b_isnan = b_value != b_value
         mask |= a_isnan & (not b_isnan)
@@ -229,10 +229,10 @@ def _tnpu_maximum_with_index(a_value, a_index, b_value, b_index):
     return tl.where(mask, a_value, b_value), tl.where(mask, a_index, b_index)
 
 @triton.jit
-def _tnpu_minimum_with_index(a_value, a_index, b_value, b_index):
+def _torchsim_minimum_with_index(a_value, a_index, b_value, b_index):
     mask = a_value < b_value
     equal = a_value == b_value
-    if _tnpu_is_floating(a_value):
+    if _torchsim_is_floating(a_value):
         a_isnan = a_value != a_value
         b_isnan = b_value != b_value
         mask |= a_isnan & (not b_isnan)
@@ -241,37 +241,37 @@ def _tnpu_minimum_with_index(a_value, a_index, b_value, b_index):
     return tl.where(mask, a_value, b_value), tl.where(mask, a_index, b_index)
 
 @triton.jit
-def _tnpu_max_with_index(value, index, dim):
-    return tl.reduce((value, index), dim, _tnpu_maximum_with_index)
+def _torchsim_max_with_index(value, index, dim):
+    return tl.reduce((value, index), dim, _torchsim_maximum_with_index)
 
 @triton.jit
-def _tnpu_min_with_index(value, index, dim):
-    return tl.reduce((value, index), dim, _tnpu_minimum_with_index)
+def _torchsim_min_with_index(value, index, dim):
+    return tl.reduce((value, index), dim, _torchsim_minimum_with_index)
 
 @triton.jit
-def _tnpu_select_one(x, mask, dim, keep_dims=False):
+def _torchsim_select_one(x, mask, dim, keep_dims=False):
     idtype = tl.core.get_int_dtype(x.dtype.primitive_bitwidth, signed=False)
     ix = x.to(idtype, bitcast=True)
     iy = tl.sum(ix * mask, dim, keep_dims=keep_dims)
     return iy.to(x.dtype, bitcast=True)
 
 triton_helpers = _types.ModuleType("triton_helpers")
-triton_helpers.any = _tnpu_any
-triton_helpers.welford_reduce = _tnpu_welford_reduce
-triton_helpers.welford_combine = _tnpu_welford_combine
-triton_helpers.welford = _tnpu_welford
-triton_helpers.promote_to_tensor = _tnpu_promote_to_tensor
-triton_helpers.is_floating = _tnpu_is_floating
-triton_helpers.minimum = _tnpu_minimum
-triton_helpers.maximum = _tnpu_maximum
-triton_helpers.min2 = _tnpu_min2
-triton_helpers.max2 = _tnpu_max2
-triton_helpers.sort_with_index = _tnpu_sort_with_index
-triton_helpers.select_one = _tnpu_select_one
-triton_helpers.maximum_with_index = _tnpu_maximum_with_index
-triton_helpers.minimum_with_index = _tnpu_minimum_with_index
-triton_helpers.max_with_index = _tnpu_max_with_index
-triton_helpers.min_with_index = _tnpu_min_with_index
-triton_helpers.div_floor_integer = _tnpu_div_floor_integer
-triton_helpers.remainder_integer = _tnpu_remainder_integer
+triton_helpers.any = _torchsim_any
+triton_helpers.welford_reduce = _torchsim_welford_reduce
+triton_helpers.welford_combine = _torchsim_welford_combine
+triton_helpers.welford = _torchsim_welford
+triton_helpers.promote_to_tensor = _torchsim_promote_to_tensor
+triton_helpers.is_floating = _torchsim_is_floating
+triton_helpers.minimum = _torchsim_minimum
+triton_helpers.maximum = _torchsim_maximum
+triton_helpers.min2 = _torchsim_min2
+triton_helpers.max2 = _torchsim_max2
+triton_helpers.sort_with_index = _torchsim_sort_with_index
+triton_helpers.select_one = _torchsim_select_one
+triton_helpers.maximum_with_index = _torchsim_maximum_with_index
+triton_helpers.minimum_with_index = _torchsim_minimum_with_index
+triton_helpers.max_with_index = _torchsim_max_with_index
+triton_helpers.min_with_index = _torchsim_min_with_index
+triton_helpers.div_floor_integer = _torchsim_div_floor_integer
+triton_helpers.remainder_integer = _torchsim_remainder_integer
 '''

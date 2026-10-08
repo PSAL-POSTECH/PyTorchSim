@@ -1,7 +1,7 @@
 """The `npu` codegen route: Inductor's Triton backend + the compiler's passes.
 
     Inductor -> TritonNPUScheduling.define_kernel   (scheduling.py)
-             -> triton_npu_compile                  (codecache.py, kernel_spec.py)
+             -> torchsim_compile                  (codecache.py, kernel_spec.py)
              -> pytorchsim-triton-compiler, in a subprocess         (compiler_bridge.py)
              -> Spike (functional.py) / TOGSim (timing.py)
 

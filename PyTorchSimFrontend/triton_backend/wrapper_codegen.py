@@ -1,6 +1,6 @@
 """The Python wrapper module Inductor generates around the compiled kernels.
 
-Emits the header the wrapper needs (triton_npu_compile, the SRAM plan hooks,
+Emits the header the wrapper needs (torchsim_compile, the SRAM plan hooks,
 the functional-verify calls) and walks the wrapper IR lines once.
 """
 import contextlib
@@ -36,7 +36,7 @@ def _mutated(line):
     Inductor declines to codegen comes out as a fallback call that mutates its
     first argument in place, and the buffer is only finished after it:
 
-        triton_npu_fused_eq_index_put_view_26(arg0_1, buf0, 1968)
+        pytorchsim_triton_compiler_fused_eq_index_put_view_26(arg0_1, buf0, 1968)
         _fverify.verify_check(buf0, ...)                    <- was here
         aten.index_put_(buf0, [buf1], arg2_1, False)        <- finishes buf0
 
@@ -109,7 +109,7 @@ class TritonNPUWrapperCodegen(wrapper.PythonWrapperCodegen):
                 from PyTorchSimFrontend.extension_op import sparse_mm_dummy_stonne_outer
                 from PyTorchSimFrontend import extension_functional_verify as _fverify
                 from torch._inductor.select_algorithm import extern_kernels
-                from {codecache.__name__} import triton_npu_compile
+                from {codecache.__name__} import torchsim_compile
 
                 # Configure logger for generated wrapper code
                 _logger = setup_logger("PyTorchSimFrontend.triton_backend.generated_wrapper")
@@ -289,9 +289,9 @@ class TritonNPUWrapperCodegen(wrapper.PythonWrapperCodegen):
             measured   DeepSeek-V3's MoE router. `aten.scatter.value` comes out
                        as two kernels sharing one origin node:
 
-                         triton_npu_fused_scatter_zeros_like_38(buf9, 256)
+                         pytorchsim_triton_compiler_fused_scatter_zeros_like_38(buf9, 256)
                          _fverify.verify_check(buf9, ...)        <- here
-                         triton_npu_fused_scatter_zeros_like_39(buf8, buf9, 128)
+                         pytorchsim_triton_compiler_fused_scatter_zeros_like_39(buf8, buf9, 128)
 
                        38 writes the zeros and 39 scatters the ones, so the
                        check saw an all-zero buffer and reported "128/256

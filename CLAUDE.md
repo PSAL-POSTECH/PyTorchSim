@@ -76,6 +76,7 @@ report next to the number it produced — never folded into a pass.
 | `tests/` | Op- and model-level tests organized under `ops/<family>/` (elementwise, reduce, gemm, conv, attention, view, sort, sparsity, misc, fusion), `models/<name>/` (Llama, Mixtral8x7B, DeepSeek, Diffusion, MoE, MLP, MobileNet, Yolov5) plus single-file model tests (test_resnet, test_transformer, test_vit, test_mlp, test_single_perceptron), and `system/` (scheduler, eager, hetro, stonne, vectorops). Shared helper: `tests/_utils.py`. **Which of them pass is `scripts/ci/triton_route_passing.txt`**; the rest are known gaps, swept and reported by `scripts/ci/triton_route_sweep.py --all` |
 | `experiments/artifact/` | Paper reproduction scripts (`cycle_validation/run_cycle.sh`, `speedup/run_speedup.sh`) |
 | `scripts/` | Dev tools (`util_viewer.py`, `trace_timeline.py`, `op_coverage.py`, `clear_codegen_cache.sh`, `setup_worktree.sh`) and CI helpers (`ci/`). `build_from_source.sh` builds the compiler and its simulators through PTB |
+| `gem5_script/` | gem5 hardware model scripts (`script_systolic.py`, `vpu_config.py`: systolic array and VPU functional units) |
 | `tpuv4/` | Example SRAM/L2 buffer plans for TPUv4-style persistent cache |
 | `togsim_results/` | TOGSim log + trace dump directory (per-run) |
 | `outputs/` | Per-run hashed output dirs |
@@ -127,7 +128,7 @@ Read in `PyTorchSimFrontend/extension_config.py`:
 | `TORCHSIM_LOG_PATH` | `$TORCHSIM_DIR/togsim_results` | where TOGSim logs go |
 | `TORCHSIM_DUMP_PATH` | `$TORCHSIM_DIR` | misc dumps |
 | `TORCHSIM_DEBUG_MODE` | `0` | extra debug |
-| `TORCHSIM_BREAKDOWN` | `0` | `1` prints where the run's wall clock went (tnpu compile per stage/pass, Spike, gem5, TOGSim) at exit, and writes `breakdown_<YYYYMMDD_HHMMSS>_<hash>.json` into the dump path — stamped like `togsim_results/`, so parallel runs sharing a dump path each keep their own |
+| `TORCHSIM_BREAKDOWN` | `0` | `1` prints where the run's wall clock went (compile per stage/pass, Spike, gem5, TOGSim) at exit, and writes `breakdown_<YYYYMMDD_HHMMSS>_<hash>.json` into the dump path — stamped like `togsim_results/`, so parallel runs sharing a dump path each keep their own |
 | `TORCHSIM_COMPILE_DIR` | `$TORCHSIM_DIR/pytorchsim-triton-compiler` | compiler checkout (stages 1-6) |
 | `TORCHSIM_COMPILE_PYTHON` | `sys.executable` | interpreter the compiler runs under |
 | `SRAM_BUFFER_PLAN_PATH` | unset | L2/CMEM persistent-cache tensor plan (Python file with `plan = {...}`) |
@@ -173,13 +174,13 @@ Conan deps for TOGSim: `boost/1.79.0`, `robin-hood-hashing/3.11.5`, `spdlog/1.11
 
 ## Where to look for X
 
-- **Adding a new op:** nothing here, usually — Inductor's own Triton lowerings emit the kernel and PyTorchSim-Triton-Backend lowers it. What lives here is the device-level rewrites: `extension_decomposition.py` (ops with no `npu` kernel), `extension_complex_to_real.py`. GEMM/BMM tile selection: `triton_backend/inductor_templates.py` + `triton_backend/hardware.py`. Kernel source fixups before tnpu sees them: `triton_backend/source_rewrite.py`.
+- **Adding a new op:** nothing here, usually — Inductor's own Triton lowerings emit the kernel and PyTorchSim-Triton-Backend lowers it. What lives here is the device-level rewrites: `extension_decomposition.py` (ops with no `npu` kernel), `extension_complex_to_real.py`. GEMM/BMM tile selection: `triton_backend/inductor_templates.py` + `triton_backend/hardware.py`. Kernel source fixups before the compiler sees them: `triton_backend/source_rewrite.py`.
 - **Adding a PyTorch device op:** `PyTorchSimDevice/csrc/aten/native/*` (Minimal/Extra split mirrors `torch_openreg`).
 - **TOGSim hardware model changes:** `TOGSim/src/{Core,Dram,Interconnect,L2Cache,Tile,TileGraph}.cc` + matching `include/*.h`.
 - **TOG generation:** the compiler emits the trace producer as C++ and the compute type of each tile (`pytorchsim_triton_compiler/trace/`, `trace_cpp` and `tile_types` in `kernel.json`); this repo measures the tiles under gem5, compiles the C++ to `trace.so` and writes `trace_cycles.tsv` (`triton_backend/trace_build.py`, driven from `triton_backend/timing.py`); TOGSim turns them into a TileGraph via `trace_to_tilegraph`. `AsmParser/tog_generator.py` + `onnx_utility.py` (the legacy ONNX TOG) remain only for the **STONNE sparse path** (`extension_op.py`).
 - **Eager fallback registration:** `torch.npu.register_eager_to_compile([...])` — see `tests/system/test_eager.py`.
 - **Per-run results:** `togsim_results/<YYYYMMDD_HHMMSS_<hash>>.log` (stats) and `.trace` (instruction trace). The path is also printed at the end of every run.
-- **Utilization of a run:** `python scripts/util_viewer.py togsim_results -o util.html` builds a self-contained page from the info-level logs already on disk (systolic array / vector unit / DMA / DRAM over cycles, per kernel, one lane each so overlap is visible). Add `--timing <dump path>` for the tnpu compile clock (`timing.json`, joined by `triton_<hash>`) and `--breakdown <dump path>` for the whole-run split across tnpu / Spike / gem5 / TOGSim (`breakdown.json`, written by `TORCHSIM_BREAKDOWN=1`). For per-instruction Gantt detail instead, re-run with `TOGSIM_DEBUG_LEVEL=trace` and pipe through `scripts/trace_timeline.py` into Perfetto.
+- **Utilization of a run:** `python scripts/util_viewer.py togsim_results -o util.html` builds a self-contained page from the info-level logs already on disk (systolic array / vector unit / DMA / DRAM over cycles, per kernel, one lane each so overlap is visible). Add `--timing <dump path>` for the compile clock (`timing.json`, joined by `triton_<hash>`) and `--breakdown <dump path>` for the whole-run split across compile / Spike / gem5 / TOGSim (`breakdown.json`, written by `TORCHSIM_BREAKDOWN=1`). For per-instruction Gantt detail instead, re-run with `TOGSIM_DEBUG_LEVEL=trace` and pipe through `scripts/trace_timeline.py` into Perfetto.
 - **Wrapper codegen path:** printed as `Wrapper Codegen Path = /tmp/torchinductor_<user>/<hash>/...py` — useful for inspecting generated kernel code and tensor names for `SRAM_BUFFER_PLAN_PATH`.
 
 ## Gotchas / things I've already learned
@@ -187,12 +188,12 @@ Conan deps for TOGSim: `boost/1.79.0`, `robin-hood-hashing/3.11.5`, `spdlog/1.11
 - The repo expects `python` to be a Python 3.10+ binary with `torch==2.10.0` (torchvision `0.25.0`, triton `3.6.0`). The frontend extends the PyTorch 2 Inductor stack — pin to this version. 2.10 specifically: it is the first release whose Inductor targets triton 3.6, the version PyTorchSim-Triton-Backend is built against. The pins live in `Dockerfile.base`, and editing that file changes the base-image tag automatically (the tag is `thirdparty-<sha256 of thirdparty/github-releases.json + Dockerfile.base>`, see `scripts/ci/thirdparty_base_pin.sh`).
 - gem5 and Spike are the vcix-accelerator environment's, found through `VCIX_ENV_ROOT`; both load the accelerator model `TORCHSIM_COMPILE_VCIX_MODEL` (default `$TORCHSIM_PREFIX/vcix-build/libtpu.so`). Override with `GEM5_PATH` / `TORCHSIM_SPIKE` if you build elsewhere.
 - `_C.cpython-311-*.so` and `torch_openreg/lib/` are build artifacts — already in `.gitignore`, don't commit.
-- **Parallel runs sharing a `TORCHSIM_DUMP_PATH`** share every per-kernel workdir, and that is deliberate: the workdir holds what compiling produced, which is a function of the source and the machine. A **launch** is not, so each process gets `<workdir>/launch-<pid>/` (`triton_backend/session.py`) holding its own `runtime/*.raw`, its own `trace_shape.txt` and symlinks to the shared trace — TOGSim resolves the cycle table and the shape from the directory of the trace it is handed, so linking is enough. What is left locked is only *building* the shared thing, once: `.compile.lock` (tnpu compile) and `.timing.lock` (trace.so + its gem5 cycle table). Launches take no lock. Measured on a warm cache, two `test_add.py` in parallel: 40s when launches were locked, **31s** now, against 30s for one run alone.
+- **Parallel runs sharing a `TORCHSIM_DUMP_PATH`** share every per-kernel workdir, and that is deliberate: the workdir holds what compiling produced, which is a function of the source and the machine. A **launch** is not, so each process gets `<workdir>/launch-<pid>/` (`triton_backend/session.py`) holding its own `runtime/*.raw`, its own `trace_shape.txt` and symlinks to the shared trace — TOGSim resolves the cycle table and the shape from the directory of the trace it is handed, so linking is enough. What is left locked is only *building* the shared thing, once: `.compile.lock` (compile) and `.timing.lock` (trace.so + its gem5 cycle table). Launches take no lock. Measured on a warm cache, two `test_add.py` in parallel: 40s when launches were locked, **31s** now, against 30s for one run alone.
 - TOGSim creates a per-PID FIFO under `/tmp/togsim_fifo_<pid>` for command/event comm; if a previous run crashed and left stale FIFOs, they get cleaned up on the next start, but watch for orphaned processes if you Ctrl-C mid-run.
 - Multi-tenant runs **must** use the `with TOGSimulator(...)` context manager — otherwise compile-time `TOGSIM_CONFIG` and runtime config can diverge.
 - `pytorchsim_functional_mode` exists as both an **env var** and a **YAML key**; the env var path is via `extension_config.py` while the YAML key is read inside the same module. They should agree.
 - "No CUDA runtime is found" warnings on `import torch` are expected — this is a CPU + simulated-NPU environment, not real CUDA.
-- **Codegen changes are sticky across runs because of caches.** When iterating on `PyTorchSimFrontend/triton_backend/*` or the compiler, clear `$TORCHSIM_DUMP_PATH` (default `$TORCHSIM_DIR/outputs/`) before re-running — it holds Inductor's compile cache (`.torchinductor/`, set via `TORCHINDUCTOR_CACHE_DIR` inside `extension_config.get_dump_path()`), the per-source wrapper dirs (`<hash>/`) keyed by `extension_config.get_write_path(src_code)`, and the per-kernel artifacts (`triton_<hash>/`). A tnpu-side fix does NOT move the Inductor hash, so `triton_*` is the one that most often needs deleting; `scripts/clear_codegen_cache.sh` does all three. Otherwise a buggy graph compiled before your fix is replayed verbatim. `togsim_results/` (TOGSim run logs) is cosmetic and not part of the codegen replay path. For parallel worktrees see `docs/worktrees.md`.
+- **Codegen changes are sticky across runs because of caches.** When iterating on `PyTorchSimFrontend/triton_backend/*` or the compiler, clear `$TORCHSIM_DUMP_PATH` (default `$TORCHSIM_DIR/outputs/`) before re-running — it holds Inductor's compile cache (`.torchinductor/`, set via `TORCHINDUCTOR_CACHE_DIR` inside `extension_config.get_dump_path()`), the per-source wrapper dirs (`<hash>/`) keyed by `extension_config.get_write_path(src_code)`, and the per-kernel artifacts (`triton_<hash>/`). A compiler-side fix does NOT move the Inductor hash, so `triton_*` is the one that most often needs deleting; `scripts/clear_codegen_cache.sh` does all three. Otherwise a buggy graph compiled before your fix is replayed verbatim. `togsim_results/` (TOGSim run logs) is cosmetic and not part of the codegen replay path. For parallel worktrees see `docs/worktrees.md`.
 
 ## Comments: a three-line docstring per function, and nothing else
 
@@ -215,10 +216,6 @@ returns, not the one that says why.
 
 **Module docstrings** follow the same bar: a few lines naming what the file is
 for. A diagram of the pipeline is allowed once, in the package `__init__`.
-
-**This is deliberately in tension with `triton-npu`'s rule 3**, which protects
-docstrings and comments as the place that backend's reasoning lives. That rule
-governs `triton-npu`; this one governs here. Do not carry either across.
 
 ## Git workflow (per CONTRIBUTING.md)
 
@@ -245,8 +242,7 @@ git push fork <branch>
 Reading "push" as "push to origin" puts work on the shared upstream, so check the
 remote before pushing rather than trusting whatever `origin` happens to be. A
 change spanning repositories is one commit per repository, each to its own remote
-— never one commit carrying another repository's work. (`triton-npu` has the
-matching rule and the full destination table.)
+— never one commit carrying another repository's work.
 
 **VERIFY FIRST, AND SAY WHAT RAN.** "Verified" means the test was executed, not
 that the code looks right. For the Triton route that means the affected test

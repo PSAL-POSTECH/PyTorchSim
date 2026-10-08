@@ -24,7 +24,7 @@ LOG_DIR = os.path.join(HERE, "logs")
 #: A run that never compiled still prints a cycle line, so the line alone is not
 #: evidence.  These mark the log as a failure; scoring it would report a crash as
 #: a fast kernel (a compile abort reads as 1 cycle, i.e. -100% against any ref).
-FAILED_MARKS = ("InductorError", "TnpuError", "CompilationError", "Traceback (most recent call last)")
+FAILED_MARKS = ("InductorError", "CompilationError", "Traceback (most recent call last)")
 
 
 def cycles_from_log(name, dtype):

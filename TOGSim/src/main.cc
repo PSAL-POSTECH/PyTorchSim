@@ -15,6 +15,24 @@ namespace fs = std::filesystem;
 namespace po = boost::program_options;
 
 
+// The trace tensors back to back in argument order, each start aligned to 16 KiB (XLA's
+// program HBM alignment), from the byte sizes trace_tensors.txt lists beside trace.so.
+std::vector<uint64_t> trace_tensor_bases(const fs::path& dir) {
+  std::ifstream tt(dir / "trace_tensors.txt");
+  if (!tt.is_open()) {
+    spdlog::error("[TOGSim] {} is absent: the trace tensors have no addresses", (dir / "trace_tensors.txt").string());
+    exit(EXIT_FAILURE);
+  }
+  const uint64_t align = 16 * 1024;
+  std::vector<uint64_t> bases;
+  uint64_t at = 0, bytes;
+  while (tt >> bytes) {
+    bases.push_back(at);
+    at = (at + bytes + align - 1) / align * align;
+  }
+  return bases;
+}
+
 // Run a kernel's compiled trace producer (.so) and bridge it to a TileGraph for
 // `partition_id`, whose cores its work-items round-robin over. The cycle-table TSV
 // gives per-tile latency; index dumps are read from runtime/indirect_access beside it.
@@ -28,9 +46,7 @@ std::unique_ptr<TileGraph> build_trace_tilegraph(Simulator* simulator,
   for (int c = 0; c < num_cores; c++)
     if (simulator->get_partition_id(c) == partition_id) partition_cores.push_back(c);
   if (partition_cores.empty()) partition_cores.push_back(0);
-  // First cut: stub tensor bases (real per-tensor addresses come later).
-  std::vector<uint64_t> bases(16);
-  for (size_t i = 0; i < bases.size(); ++i) bases[i] = 0x100000ull * (i + 1);
+  std::vector<uint64_t> bases = trace_tensor_bases(fs::path(trace_so_path).parent_path());
   // Cycle table: load the per-tile_id TSV sidecar if present, else a flat stub.
   std::vector<int64_t> cyc, ovl;
   std::ifstream ct(cycle_table_path);

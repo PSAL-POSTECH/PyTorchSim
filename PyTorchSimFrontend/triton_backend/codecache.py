@@ -155,6 +155,7 @@ def _time_tile(src_code, meta, kernel_name, workdir, timeout):
         timing.emit_trace(workdir, meta)
         mine = session.link_shared(workdir, (timing.TRACE_SO, timing.CYCLE_TSV))
         timing.write_shape(workdir, meta)
+        timing.write_tensors(workdir)
         result = TOGSimulator.run_standalone(os.path.join(mine, "tile_graph.onnx"),
                                              os.path.join(mine, "attribute"),
                                              autotune_mode=True, timeout_sec=timeout)

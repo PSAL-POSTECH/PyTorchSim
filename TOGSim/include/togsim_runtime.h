@@ -12,13 +12,20 @@ extern "C" {
 // Producer/runtime ABI version. A producer TU including this header defines the weak
 // togsim_producer_abi_version it was built against (TOGSim's TUs, TOGSIM_HOST, only
 // declare it); LazyProducer::open refuses a producer that lacks it or differs.
-#define TOGSIM_ABI_VERSION 14
+#define TOGSIM_ABI_VERSION 15
 #ifdef TOGSIM_HOST
 extern const int32_t togsim_producer_abi_version;
 #else
 __attribute__((weak, used, visibility("default")))
 extern const int32_t togsim_producer_abi_version = TOGSIM_ABI_VERSION;
 #endif
+
+// The producer also defines, with external linkage, the byte size of every scratchpad buffer id
+// its read_bufs/write_bufs name: togsim_spad_buffer_bytes[id], 0 for an id that is no spad buffer
+// (a virtual dependency edge), and togsim_spad_buffer_count entries (the array may be absent at
+// 0). A buffer is as large as the compiler allocated it; TOGSim does not infer it from the DMAs.
+//   const int32_t togsim_spad_buffer_count;
+//   const int64_t togsim_spad_buffer_bytes[togsim_spad_buffer_count];
 
 // Opaque per-invocation context owned by TOGSim. Holds the recorded trace and
 // the tile_id->cycle lookup. Never dereferenced by the producer.

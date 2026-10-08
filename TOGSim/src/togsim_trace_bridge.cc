@@ -150,8 +150,8 @@ struct BuildState {
   }
 
   // ---- index + footprint --------------------------------------------------
-  // Open the producer and replay every work-item once to find the DMA'd buffers;
-  // sram_schedule() then sizes each one by the versions it fills.
+  // Open the producer and replay every work-item once to find the DMA'd buffers; each is as
+  // large as the producer states (togsim_spad_buffer_bytes), and one it does not size is refused.
   bool index(const char* so_path, const int64_t* shape_args, int32_t n_shape,
              const uint64_t* tensor_base, int32_t n_tensors,
              const int64_t* cyc, const int64_t* ovl, int32_t n_tiles,
@@ -160,10 +160,17 @@ struct BuildState {
     if (!prod.open(so_path, shape_args, n_shape, tensor_base, n_tensors,
                    cyc, ovl, n_tiles, partition_cores, n_partition_cores))
       return false;
+    const std::vector<int64_t>& stated = prod.spad_buffer_bytes();
     for (size_t i = 0; i < prod.num_items(); i++)
       for (const TraceRec& t : prod.run_item(i)) {
         if (t.kind != TraceRec::DMA) continue;
-        for (int64_t b : moved_bufs(t)) buf_bytes[b] = std::max(buf_bytes[b], rec_bytes(t));
+        for (int64_t b : moved_bufs(t)) {
+          if (b < 0 || (size_t)b >= stated.size() || stated[b] <= 0)
+            throw std::runtime_error(fmt::format(
+                "[TOGSim-trace] spad buffer {} is DMA'd but the producer states no size for it "
+                "(togsim_spad_buffer_bytes has {} entries)", b, stated.size()));
+          buf_bytes[b] = (size_t)stated[b];
+        }
       }
     return true;
   }
@@ -196,15 +203,13 @@ struct BuildState {
   }
 
   // ---- version lifetimes, precomputed (allocates no Instruction) -----------
-  // Per buffer version: whether anything reads it, where its LAST reader sits, and the
-  // bytes the loads filling it (or the stores draining it) sum to; a buffer is its largest.
+  // Per buffer version: whether anything reads it, and where its LAST reader sits.
   void sram_schedule() {
     using togsim::TraceRec;
     int64_t alloc = 0;
     std::map<int64_t, int64_t> cur;    // buf -> current version id
     std::map<int64_t, bool> open;      // buf -> version still accepting writes
     std::vector<int64_t> reads, opens;
-    std::vector<size_t> filled, drained;
 
     for (size_t wi = 0; wi < prod.num_items(); wi++) {
       size_t pos = 0;
@@ -223,18 +228,7 @@ struct BuildState {
             open[b] = true;
             has_readers.push_back(0);
             last_reader.emplace_back((size_t)-1, (size_t)-1);
-            filled.push_back(0);
-            drained.push_back(0);
           }
-        if (t.kind == TraceRec::DMA) {
-          auto& sum = (t.dir == 1) ? drained : filled;
-          for (int64_t b : moved_bufs(t)) {
-            auto f = cur.find(b);
-            if (f == cur.end()) continue;
-            sum[f->second] += rec_bytes(t);
-            buf_bytes[b] = std::max(buf_bytes[b], sum[f->second]);
-          }
-        }
         pos++;
       }
     }

@@ -157,6 +157,14 @@ bool LazyProducer::open(const char* so_path, const int64_t* shape_args, int32_t 
             so_path, (int)*abi, TOGSIM_ABI_VERSION);
     return false;
   }
+  auto n_bufs = (const int32_t*)dlsym(_lib, "togsim_spad_buffer_count");
+  auto bytes = (const int64_t*)dlsym(_lib, "togsim_spad_buffer_bytes");
+  if (!n_bufs || *n_bufs < 0 || (*n_bufs > 0 && !bytes)) {
+    fprintf(stderr, "togsim: refusing producer %s: it states no spad buffer sizes "
+            "(togsim_spad_buffer_count / togsim_spad_buffer_bytes)\n", so_path);
+    return false;
+  }
+  if (bytes) _spad_bytes.assign(bytes, bytes + *n_bufs);
   auto kernel = (void (*)(EmitCtx*, int64_t*, int32_t))dlsym(_lib, "togsim_kernel");
   if (!kernel) { fprintf(stderr, "togsim: dlsym togsim_kernel failed: %s\n", dlerror()); return false; }
 

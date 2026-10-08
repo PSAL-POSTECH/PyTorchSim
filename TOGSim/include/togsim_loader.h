@@ -53,8 +53,8 @@ class LazyProducer {
   LazyProducer(const LazyProducer&) = delete;
   LazyProducer& operator=(const LazyProducer&) = delete;
 
-  // dlopen the .so (refused unless its togsim_producer_abi_version is TOGSIM_ABI_VERSION)
-  // and run togsim_kernel once: each togsim_dispatch only registers its work-item, so
+  // dlopen the .so (refused unless its togsim_producer_abi_version is TOGSIM_ABI_VERSION and
+  // it states its spad buffer sizes) and run togsim_kernel once: each togsim_dispatch only registers its work-item, so
   // num_items() is known before any record is emitted.
   bool open(const char* so_path, const int64_t* shape_args, int32_t n_shape,
             const uint64_t* tensor_base, int32_t n_tensors,
@@ -62,6 +62,8 @@ class LazyProducer {
             const int32_t* partition_cores, int32_t n_partition_cores);
 
   size_t num_items() const;
+  // The producer's togsim_spad_buffer_bytes, indexed by buffer id (0: not a spad buffer).
+  const std::vector<int64_t>& spad_buffer_bytes() const { return _spad_bytes; }
   int64_t item_key(size_t i) const;   // work-item i's togsim_dispatch key
   // Replay work-item `i` and return its record stream (TILE_BEGIN, body,
   // TILE_END). The returned vector is a buffer reused by the next call.
@@ -72,6 +74,7 @@ class LazyProducer {
   void* _lib = nullptr;
   std::vector<uint64_t> _bases;
   std::vector<int64_t> _cyc, _ovl;
+  std::vector<int64_t> _spad_bytes;
 };
 
 }  // namespace togsim

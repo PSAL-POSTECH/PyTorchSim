@@ -24,3 +24,6 @@ extern "C" void togsim_kernel(EmitCtx* ctx, int64_t* shape_args, int32_t n_shape
   int64_t iv[1] = {0};
   togsim_dispatch(ctx, rewait_tile, iv, 1, 0);
 }
+
+extern "C" const int32_t togsim_spad_buffer_count = 3;
+extern "C" const int64_t togsim_spad_buffer_bytes[3] = {0, 8 * 16 * 4, 8 * 16 * 4};

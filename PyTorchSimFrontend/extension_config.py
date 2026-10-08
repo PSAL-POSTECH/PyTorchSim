@@ -68,6 +68,7 @@ def __getattr__(name):
         return {
           "vector_lanes" : config_yaml["vpu_num_lanes"],
           "vlen_bits" : config_yaml["vpu_vector_length_bits"],
+          "systolic_queue_entries" : config_yaml["tpu_systolic_queue_entries"],
           "spad_size" : config_yaml["vpu_spad_size_kb_per_lane"] << 10,
           "spad_vaddr" : 0xD0000000,
           "spad_paddr" : 0x2000000000,

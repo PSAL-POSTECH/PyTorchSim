@@ -1,6 +1,5 @@
 import os
 import sys
-import importlib
 import yaml
 import logging
 
@@ -117,27 +116,6 @@ def __getattr__(name):
         return os.environ.get('TORCHSIM_LOG_PATH', default = os.path.join(CONFIG_TORCHSIM_DIR, "togsim_results"))
 
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-# SRAM Buffer allocation plan
-def load_plan_from_module(module_path):
-    if module_path is None:
-      return None
-
-    try:
-        spec = importlib.util.spec_from_file_location("plan_module", module_path)
-        if spec is None:
-            return None
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        if hasattr(module, 'plan'):
-            return module.plan
-        return None
-    except Exception as e:
-        print(f"[Warning] Failed to load SRAM buffer plan from module: {e}")
-        return None
-
-CONFIG_SRAM_BUFFER_PLAN_PATH = os.environ.get("SRAM_BUFFER_PLAN_PATH", default=None)
-CONFIG_SRAM_BUFFER_PLAN = load_plan_from_module(CONFIG_SRAM_BUFFER_PLAN_PATH)
 
 CONFIG_DEBUG_MODE = int(os.environ.get('TORCHSIM_DEBUG_MODE', default=0))
 

@@ -75,7 +75,6 @@ report next to the number it produced — never folded into a pass.
 | `tests/` | Op- and model-level tests organized under `ops/<family>/` (elementwise, reduce, gemm, conv, attention, view, sort, sparsity, misc, fusion), `models/<name>/` (Llama, Mixtral8x7B, DeepSeek, Diffusion, MoE, MLP, MobileNet, Yolov5) plus single-file model tests (test_resnet, test_transformer, test_vit, test_mlp, test_single_perceptron), and `system/` (scheduler, eager, vectorops). Shared helper: `tests/_utils.py`. **Which of them pass is `scripts/ci/triton_route_passing.txt`**; the rest are known gaps, swept and reported by `scripts/ci/triton_route_sweep.py --all` |
 | `scripts/` | Dev tools (`util_viewer.py`, `trace_timeline.py`, `op_coverage.py`, `clear_codegen_cache.sh`, `setup_worktree.sh`) and CI helpers (`ci/`). `build_from_source.sh` builds the compiler and its simulators through PTB |
 | `gem5_script/` | gem5 hardware model scripts (`script_systolic.py`, `vpu_config.py`: systolic array and VPU functional units) |
-| `tpuv4/` | Example SRAM/L2 buffer plans for TPUv4-style persistent cache |
 | `togsim_results/` | TOGSim log + trace dump directory (per-run) |
 | `outputs/` | Per-run hashed output dirs |
 
@@ -129,7 +128,6 @@ Read in `PyTorchSimFrontend/extension_config.py`:
 | `TORCHSIM_BREAKDOWN` | `0` | `1` prints where the run's wall clock went (compile per stage/pass, Spike, gem5, TOGSim) at exit, and writes `breakdown_<YYYYMMDD_HHMMSS>_<hash>.json` into the dump path — stamped like `togsim_results/`, so parallel runs sharing a dump path each keep their own |
 | `TORCHSIM_COMPILE_DIR` | `$TORCHSIM_DIR/pytorchsim-triton-compiler` | compiler checkout (stages 1-6) |
 | `TORCHSIM_COMPILE_PYTHON` | `sys.executable` | interpreter the compiler runs under |
-| `SRAM_BUFFER_PLAN_PATH` | unset | L2/CMEM persistent-cache tensor plan (Python file with `plan = {...}`) |
 | `TOGSIM_DEBUG_LEVEL` | unset | passed to TOGSim `--log_level` |
 
 Note: `TOGSIM_CONFIG` is **overwritten** while inside a `with TOGSimulator(config_path=...)` block (and restored on exit). Compilation reads the same YAML as TOGSim that way.
@@ -179,7 +177,7 @@ Conan deps for TOGSim: `boost/1.79.0`, `robin-hood-hashing/3.11.5`, `spdlog/1.11
 - **Eager fallback registration:** `torch.npu.register_eager_to_compile([...])` — see `tests/system/test_eager.py`.
 - **Per-run results:** `togsim_results/<YYYYMMDD_HHMMSS_<hash>>.log` (stats) and `.trace` (instruction trace). The path is also printed at the end of every run.
 - **Utilization of a run:** `python scripts/util_viewer.py togsim_results -o util.html` builds a self-contained page from the info-level logs already on disk (systolic array / vector unit / DMA / DRAM over cycles, per kernel, one lane each so overlap is visible). Add `--timing <dump path>` for the compile clock (`timing.json`, joined by `triton_<hash>`) and `--breakdown <dump path>` for the whole-run split across compile / Spike / gem5 / TOGSim (`breakdown.json`, written by `TORCHSIM_BREAKDOWN=1`). For per-instruction Gantt detail instead, re-run with `TOGSIM_DEBUG_LEVEL=trace` and pipe through `scripts/trace_timeline.py` into Perfetto.
-- **Wrapper codegen path:** printed as `Wrapper Codegen Path = /tmp/torchinductor_<user>/<hash>/...py` — useful for inspecting generated kernel code and tensor names for `SRAM_BUFFER_PLAN_PATH`.
+- **Wrapper codegen path:** printed as `Wrapper Codegen Path = /tmp/torchinductor_<user>/<hash>/...py` — useful for inspecting generated kernel code.
 
 ## Gotchas / things I've already learned
 

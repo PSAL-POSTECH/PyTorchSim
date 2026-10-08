@@ -1,15 +1,14 @@
 """The Python wrapper module Inductor generates around the compiled kernels.
 
-Emits the header the wrapper needs (torchsim_compile, the SRAM plan hooks,
+Emits the header the wrapper needs (torchsim_compile,
 the functional-verify calls) and walks the wrapper IR lines once.
 """
 import contextlib
 
-import sympy
 import torch
 from torch._inductor.codegen import wrapper, memory_planning
 from torch._inductor.ir import GraphPartitionSignature
-from torch._inductor.utils import IndentedBuffer, sympy_product
+from torch._inductor.utils import IndentedBuffer
 from torch._inductor.virtualized import V
 from typing import Optional
 
@@ -104,8 +103,7 @@ class TritonNPUWrapperCodegen(wrapper.PythonWrapperCodegen):
                 from torch._inductor.async_compile import AsyncCompile
 
                 from torch import device, empty, empty_strided
-                from PyTorchSimFrontend.extension_config import CONFIG_SRAM_BUFFER_PLAN, setup_logger
-                from Simulator.simulator import TOGSimulator
+                from PyTorchSimFrontend.extension_config import setup_logger
                 from PyTorchSimFrontend import extension_functional_verify as _fverify
                 from torch._inductor.select_algorithm import extern_kernels
                 from {codecache.__name__} import torchsim_compile
@@ -127,22 +125,6 @@ class TritonNPUWrapperCodegen(wrapper.PythonWrapperCodegen):
         )
         self.header.splice(
             """
-            def sram_plan_prefix(buffer_name, buffer):
-                if CONFIG_SRAM_BUFFER_PLAN and (buffer_name not in CONFIG_SRAM_BUFFER_PLAN):
-                    return
-                buffer_size = buffer.untyped_storage().size()
-                start = buffer.data_ptr()
-                end = start + buffer_size
-                TOGSimulator.sram_alloc(buffer_name, [start, end])
-
-            def sram_plan_postfix(buffer_name, buffer):
-                if CONFIG_SRAM_BUFFER_PLAN and (buffer_name not in CONFIG_SRAM_BUFFER_PLAN):
-                    return
-                buffer_size = buffer.untyped_storage().size()
-                start = buffer.data_ptr()
-                end = start + buffer_size
-                TOGSimulator.sram_dealloc(buffer_name, [start, end])
-
             def host2device_memcopy(buffer):
                 pass
 
@@ -177,23 +159,6 @@ class TritonNPUWrapperCodegen(wrapper.PythonWrapperCodegen):
 
             self.codegen_inputs()
             self.codegen_input_size_asserts()
-            self.codegen_sram_plan_prefix()
-
-    def codegen_sram_plan_prefix(self):
-        for name, buf in V.graph.graph_inputs.items():
-            if buf is None:
-                continue
-            if isinstance(buf, sympy.Expr):
-                continue
-            if sympy_product(buf.get_size()) == 0:
-                continue
-            self.prefix.writeline(f"sram_plan_prefix('{name}', {name})")
-
-    def codegen_sram_plan_postfix(self, outputs):
-        for name in outputs:
-            if name is None or name == "None":
-                continue
-            self.wrapper_call.writeline(f"sram_plan_postfix('{name}', {name})")
 
     def _generate_kernel_call_helper(
         self,
@@ -232,13 +197,6 @@ class TritonNPUWrapperCodegen(wrapper.PythonWrapperCodegen):
             self.memory_plan_reuse()
             with self.set_writeline(self.wrapper_call.writeline):
                 for line in self.lines:
-                    # Add buffer plan hook for dealloc
-                    if isinstance(line, memory_planning.DeallocFromPoolLine):
-                        self.wrapper_call.writeline(f"sram_plan_postfix('{line.node.get_name()}', {line.node.get_name()})")
-                    elif isinstance(line, str) and "del" in line:
-                        name = line.split(" ")[1]
-                        self.wrapper_call.writeline(f"sram_plan_postfix('{name}', {name})")
-
                     if isinstance(line, wrapper.MemoryPlanningLine):
                         line.codegen(self.wrapper_call)
                     elif isinstance(line, wrapper.KernelCallLine):
@@ -253,11 +211,7 @@ class TritonNPUWrapperCodegen(wrapper.PythonWrapperCodegen):
                                 self._fverify_emit_mutation_checks(line)
                         else:
                             self.wrapper_call.writeline(line)
-                    # Add buffer plan hook for alloc
-                    if isinstance(line, memory_planning.AllocFromPoolLine) or isinstance(line, wrapper.AllocateLine):
-                        self.wrapper_call.writeline(f"sram_plan_prefix('{line.node.get_name()}', {line.node.get_name()})")
             output_refs = self.get_output_refs()
-            self.codegen_sram_plan_postfix(output_refs)
             self.mark_output_type()
             self.generate_return(output_refs)
 

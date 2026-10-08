@@ -20,7 +20,7 @@ from _pytorchsim_utils import test_result
 #     RecursionError: maximum recursion depth exceeded
 #
 # DeepSeek-V2's RoPE closed that loop, because it multiplies complex tensors.
-# It does not close any more: extension_complex_to_real.py rewrites the complex
+# It does not close any more: rewrite_fx_graph.py rewrites the complex
 # multiply into real arithmetic, so Inductor generates a kernel and no fallback
 # is emitted. This test is that sentence, executable -- it recurses on a tree
 # without that pass and passes with it.

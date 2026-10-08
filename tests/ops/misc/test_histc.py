@@ -22,7 +22,7 @@ def test_histc_integral(device, n=64, bins=8):
     # and "mps", integral otherwise -- so `npu` gets the branch written for
     # CUDA and the fallback then lands on the very kernel the first branch
     # exists to avoid. That is what stopped DeepSeek-V3 under transformers
-    # 5.15.0, and PyTorchSimFrontend/extension_decomposition.py is the answer:
+    # 5.15.0, and PyTorchSimFrontend/rewrite_fx_graph.py is the answer:
     # counting is dtype-blind, so it casts in and back out.
     #
     # Both integral widths are here because they take different paths back:

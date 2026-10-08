@@ -7,7 +7,7 @@ from torch._inductor.decomposition import select_decomp_table
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
 from _pytorchsim_utils import test_result
 
-from PyTorchSimFrontend.extension_complex_to_real import ComplexToRealPairs
+from PyTorchSimFrontend.rewrite_fx_graph import ComplexToRealPairs
 
 aten = torch.ops.aten
 
@@ -25,7 +25,7 @@ def _rope(x, a):
 def _trace(fn, *args):
     # WITH INDUCTOR'S DECOMPOSITION TABLE, because that is the graph the pass
     # actually runs on. A bare make_fx keeps aten.polar.default, which this
-    # backend decomposes one stage earlier (extension_decomposition.py) and
+    # backend decomposes one stage earlier (PyTorchSimFrontend/rewrite_fx_graph.py) and
     # which the pass therefore does not handle -- tracing without the table
     # measures a graph the pipeline never produces.
     return make_fx(fn, decomposition_table=select_decomp_table(),

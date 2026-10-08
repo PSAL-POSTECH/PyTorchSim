@@ -50,6 +50,7 @@ class Core {
   virtual mem_fetch* top_memory_request() { return _request_queue.front(); }
   virtual void push_memory_response(mem_fetch* response);
   void check_tag() { _dma.check_table(); }
+  bool bar_released(const std::shared_ptr<Instruction>& bar);
   void inc_numa_local_access() { _stat_numa_local_access++; }
   void inc_numa_remote_access() { _stat_numa_remote_access++; }
   // --unit_table: sum each completed compute's per-unit admissions on this core.

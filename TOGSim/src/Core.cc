@@ -48,10 +48,20 @@ void Core::apply_due(const DueAction& a) {
       break;
     case DueAction::WakeBar: {
       auto bar = a.bar;            // async load data arrived -> fire its MEMORY_BAR
+      if (bar->get_opcode() == Opcode::MEMORY_BAR && !bar_released(bar)) break;
       finish_instruction(bar);
       break;
     }
   }
+}
+
+// A MEMORY_BAR is released once every async load it waits has arrived, and only once:
+// two of its loads arriving in the same cycle each schedule a WakeBar.
+bool Core::bar_released(const std::shared_ptr<Instruction>& bar) {
+  if (bar->finished) return false;
+  for (auto& key : bar->get_wait_keys())
+    if (_dma.get_tag_finish(bar->subgraph_id, key) == 0) return false;
+  return true;
 }
 
 void Core::process_due_events() {
@@ -461,21 +471,26 @@ void Core::cycle() {
           break;
         case Opcode::MEMORY_BAR:
           {
-            auto& key = inst->get_tag_id();
-            uint32_t finished = _dma.get_tag_finish(inst->subgraph_id, key);
-            if (finished == -1) {
+            auto& keys = inst->get_wait_keys();
+            bool sparse = false, pending = false;
+            for (auto& key : keys) {
+              uint32_t finished = _dma.get_tag_finish(inst->subgraph_id, key);
+              sparse |= finished == (uint32_t)-1;
+              pending |= finished == 0;
+            }
+            if (!pending && sparse) {
               for (auto child_inst : inst->get_deps(DepEvent::DONE)) {
                 if (child_inst->get_opcode() == Opcode::COMP && child_inst->get_compute_type() == MATMUL) {
                   child_inst->set_compute_cycle(0);
                 }
               }
-              finish_instruction(inst);
-            } else if (finished != 0) {
-              _dma.mark_tag_used(inst->subgraph_id, key);
-              finish_instruction(inst);
-            } else {
-              _dma.register_tag_waiter(inst->subgraph_id, key, inst);
             }
+            for (auto& key : keys) {
+              uint32_t finished = _dma.get_tag_finish(inst->subgraph_id, key);
+              if (finished == 0) _dma.register_tag_waiter(inst->subgraph_id, key, inst);
+              else if (finished != (uint32_t)-1) _dma.mark_tag_used(inst->subgraph_id, key);
+            }
+            if (!pending) finish_instruction(inst);
             if (core_trace_log::trace_enabled()) core_trace_log::trace_instruction_line(_core_cycle,
                                                      _id,
                                                      TraceLogTag::pad15(

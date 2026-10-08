@@ -138,6 +138,12 @@ class Instruction : public std::enable_shared_from_this<Instruction> {
   int get_nr_inner_loop() { return _nr_inner_loop; }
   void set_is_async(bool is_async) { _is_async_dma = is_async; }
   void prepare_tag_key();
+  // MEMORY_BAR: the async-load tag keys it waits; none added = its own tag key.
+  void add_wait_key(const std::vector<int64_t>& k) { _wait_keys.push_back(k); }
+  std::vector<std::vector<int64_t>>& get_wait_keys() {
+    if (_wait_keys.empty()) _wait_keys.push_back(_tag_key);
+    return _wait_keys;
+  }
   bool is_sparse_inst() { return _is_sparse_inst; }
   void set_sparse_state(bool state) { _is_sparse_inst = state; }
   uint64_t get_global_inst_id() const { return _global_inst_id; }
@@ -198,6 +204,7 @@ class Instruction : public std::enable_shared_from_this<Instruction> {
   std::vector<int64_t> _tag_idx_list;
   std::vector<int64_t> _tag_stride_list;
   std::vector<int64_t> _tag_key;
+  std::vector<std::vector<int64_t>> _wait_keys;
   std::vector<int64_t> _accum_tag_idx_list;
   std::vector<addr_type> _trace_address;
   std::string _addr_name;

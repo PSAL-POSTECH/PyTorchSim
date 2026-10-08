@@ -59,22 +59,21 @@ std::unique_ptr<TileGraph> build_trace_tilegraph(Simulator* simulator,
                             "trace_kernel");
 }
 
+// A kernel dir with a trace.so runs it (a refused or failing producer is an error, never an
+// ONNX fallback); the DEPRECATED legacy ONNX TOG serves a dir without one, or TORCHSIM_LEGACY_TOG=1.
 void launchKernel(Simulator* simulator, unsigned int kernel_id, std::string onnx_path, std::string attribute_path, const YAML::Node& config_yaml, cycle_type request_time=0, int partition_id=0, int device_id=0) {
   std::unique_ptr<TileGraph> tile_graph;
-  std::string tog_path = onnx_path;  // for the log line
-  // The C++ trace path is the supported one: the kernel's trace.so / trace_cycles.tsv
-  // sit next to its tile_graph.onnx (same write_path). The legacy ONNX parser below is
-  // DEPRECATED -- only used via TORCHSIM_LEGACY_TOG=1 or when the .so is absent / fails.
+  std::string tog_path = onnx_path;
   const char* legacy = std::getenv("TORCHSIM_LEGACY_TOG");
   std::string dir = fs::path(onnx_path).parent_path().string();
   std::string trace_so = dir + "/trace.so";
   std::string cycle_tsv = dir + "/trace_cycles.tsv";
   if ((!legacy || std::string(legacy) != "1") && fs::exists(trace_so)) {
     tile_graph = build_trace_tilegraph(simulator, trace_so, cycle_tsv, partition_id);
-    if (tile_graph) tog_path = trace_so;
-    else spdlog::warn("[TOGSim] trace.so run failed for {}; falling back to ONNX", trace_so);
-  }
-  if (!tile_graph) {
+    if (!tile_graph)
+      throw std::runtime_error(fmt::format("[TOGSim] trace producer run failed for {}", trace_so));
+    tog_path = trace_so;
+  } else {
     spdlog::warn("[TOGSim] using the DEPRECATED legacy ONNX TOG path for {}", onnx_path);
     auto graph_praser = TileGraphParser(onnx_path, attribute_path, config_yaml);
     tile_graph = std::move(graph_praser.get_tile_graph());
@@ -141,7 +140,8 @@ void process_trace_file(Simulator* simulator, std::string trace_file_path, const
         spdlog::error("[TOGSim] Unknown command type: {}", command_type);
       }
     } catch (const std::exception& e) {
-      spdlog::error("[TOGSim] Error processing command {} (type: {}): {}", kernel_id, command_type, e.what());
+      throw std::runtime_error(fmt::format("[TOGSim] Error processing command {} (type: {}): {}",
+                                           kernel_id, command_type, e.what()));
     }
   }
   trace_file.close();
@@ -231,12 +231,17 @@ int main(int argc, char** argv) {
     std::string unit_table_path;
     cmd_parser.set_if_defined("unit_table", &unit_table_path);
     if (!unit_table_path.empty()) simulator->set_unit_table(UnitTable::load(unit_table_path));
-    auto tg = build_trace_tilegraph(simulator, trace_so_path, cycle_table_path, 0);
-    if (!tg) { spdlog::error("[TOGSim] trace producer run failed"); exit(1); }
-    tg->set_arrival_time(simulator->get_core_cycle());
-    tg->set_kernel_id(0);
-    simulator->enqueue_graph(0, std::move(tg));
-    simulator->run_simulator();
+    try {
+      auto tg = build_trace_tilegraph(simulator, trace_so_path, cycle_table_path, 0);
+      if (!tg) { spdlog::error("[TOGSim] trace producer run failed"); exit(1); }
+      tg->set_arrival_time(simulator->get_core_cycle());
+      tg->set_kernel_id(0);
+      simulator->enqueue_graph(0, std::move(tg));
+      simulator->run_simulator();
+    } catch (const std::exception& e) {
+      spdlog::error("{}", e.what());
+      exit(1);
+    }
     spdlog::info("[TOGSim-trace] Total cycles: {}", simulator->get_core_cycle());
     spdlog::info("Simulation finished");
     simulator->print_core_stat();
@@ -254,8 +259,12 @@ int main(int argc, char** argv) {
 
   if (!trace_file_path.empty()) {
     // Process trace file (unified mode: supports both FIFO and regular file)
-    process_trace_file(simulator, trace_file_path,
-                       simulator->get_hardware_config_yaml());
+    try {
+      process_trace_file(simulator, trace_file_path, simulator->get_hardware_config_yaml());
+    } catch (const std::exception& e) {
+      spdlog::error("{}", e.what());
+      exit(1);
+    }
     spdlog::info("Simulation finished");
     simulator->print_core_stat();
   } else {

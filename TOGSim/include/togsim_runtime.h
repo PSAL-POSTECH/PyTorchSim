@@ -9,10 +9,16 @@
 extern "C" {
 #endif
 
-// Producer/runtime ABI version. TOGSim refuses to load a producer whose
-// embedded togsim_abi_version() does not match TOGSIM_ABI_VERSION.
-#define TOGSIM_ABI_VERSION 13
-int32_t togsim_abi_version(void);
+// Producer/runtime ABI version. A producer TU including this header defines the weak
+// togsim_producer_abi_version it was built against (TOGSim's TUs, TOGSIM_HOST, only
+// declare it); LazyProducer::open refuses a producer that lacks it or differs.
+#define TOGSIM_ABI_VERSION 14
+#ifdef TOGSIM_HOST
+extern const int32_t togsim_producer_abi_version;
+#else
+__attribute__((weak, used, visibility("default")))
+extern const int32_t togsim_producer_abi_version = TOGSIM_ABI_VERSION;
+#endif
 
 // Opaque per-invocation context owned by TOGSim. Holds the recorded trace and
 // the tile_id->cycle lookup. Never dereferenced by the producer.
@@ -25,8 +31,9 @@ typedef enum {
 } togsim_dma_dir;
 
 // Emit a DMA (sec 5.4). `offset` is an ELEMENT offset into tensor `arg_id`; null
-// `strides` => contiguous. `is_async` => it finishes at ISSUE, so the barrier keyed
-// by `(tag_id, tag_slot)` gates consumers. `read_bufs`/`write_bufs` -> sec 10.
+// `strides` => contiguous. `is_async` => it finishes at ISSUE and signals semaphore
+// `sem` with its element count; the barrier on `sem` gates consumers. `read_bufs`/
+// `write_bufs` -> sec 10. A store's `sem` is ignored (its waits are not lowered).
 // `indirect` => each element also moves by what its index added in the functional
 // run: dump indirect_index_<key>_<n>.raw, key = the work-item's togsim_dispatch key,
 // n = this dma's rank among the work-item's indirect dmas.
@@ -34,20 +41,19 @@ typedef enum {
 // --- BEGIN trace-producer call formats (copied verbatim into generated trace.cpp) ---
 // Each togsim_* call below lowers 1:1 to one of these free functions. Arg formats:
 //   togsim_dma(ctx, dir, arg_id, offset, ndim, dims[], strides[], elem_bits,
-//              is_async, tag_id, tag_slot, read_bufs[], n_read, write_bufs[], n_write,
-//              indirect)
+//              is_async, sem, read_bufs[], n_read, write_bufs[], n_write, indirect)
 //              dir: 0=load (MOVIN), 1=store (MOVOUT); indirect: 0 or 1
 //   togsim_compute(ctx, tile_id, compute_type, ndim, dims[], read_bufs[], n_read,
 //                  write_bufs[], n_write)   compute_type: 0=vector, 1=matmul, 2=preload,
 //                                          3=cross-lane
-//   togsim_memory_barrier(ctx, tag_id, tag_slot, write_bufs[], n_write)
+//   togsim_memory_barrier(ctx, sem, expected)   // expected = elements signaled on sem
 //   togsim_dispatch(ctx, tile_fn, iv[], n_iv, key)   // run one work-item
 //   togsim_kernel(ctx, shape_args[], n_shape_args)   // producer entry point
 // --- END trace-producer call formats ---
 void togsim_dma(EmitCtx* ctx, int32_t dir, int32_t arg_id,
                 uint64_t offset, int32_t ndim, const int64_t* dims,
                 const int64_t* strides, int32_t elem_bits,
-                int32_t is_async, int32_t tag_id, uint64_t tag_slot,
+                int32_t is_async, uint64_t sem,
                 const int64_t* read_bufs, int32_t n_read,
                 const int64_t* write_bufs, int32_t n_write,
                 int32_t indirect);
@@ -60,11 +66,10 @@ void togsim_compute(EmitCtx* ctx, uint64_t tile_id, int32_t compute_type,
                     const int64_t* read_bufs, int32_t n_read,
                     const int64_t* write_bufs, int32_t n_write);
 
-// The explicit async-DMA sync (sec 10.5). Pairs with its async togsim_dma by the
-// runtime `(tag_id, tag_slot)` and becomes the last writer of `write_bufs`, so
-// consumers gate on data arrival. A sync dma blocks to arrival and needs no barrier.
-void togsim_memory_barrier(EmitCtx* ctx, int32_t tag_id, uint64_t tag_slot,
-                           const int64_t* write_bufs, int32_t n_write);
+// The explicit async-DMA sync (sec 10.5): waits every async load signaled on `sem`
+// since its last wait, whose element counts must sum to `expected`, and becomes the
+// last writer of their buffers. A sync dma blocks to arrival and needs no barrier.
+void togsim_memory_barrier(EmitCtx* ctx, uint64_t sem, int64_t expected);
 
 // A parallel work-item body, outlined by the producer (sec 9.3): `iv` holds the
 // packed parallel loop indices (e.g. the (m,n) output-tile indices). One uniform

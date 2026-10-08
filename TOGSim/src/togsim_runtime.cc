@@ -44,8 +44,6 @@ inline void emit_rec(EmitCtx* ctx, const togsim::TraceRec& r) {
 
 extern "C" {
 
-int32_t togsim_abi_version(void) { return TOGSIM_ABI_VERSION; }
-
 void togsim_dispatch(EmitCtx* ctx, togsim_tile_fn fn, int64_t* iv, int32_t n_iv,
                      int64_t key) {
   // Register the work-item; LazyProducer::run_item runs its body later, on demand.
@@ -62,7 +60,7 @@ void togsim_dispatch(EmitCtx* ctx, togsim_tile_fn fn, int64_t* iv, int32_t n_iv,
 void togsim_dma(EmitCtx* ctx, int32_t dir, int32_t arg_id,
                 uint64_t offset, int32_t ndim, const int64_t* dims,
                 const int64_t* strides, int32_t elem_bits,
-                int32_t is_async, int32_t tag_id, uint64_t tag_slot,
+                int32_t is_async, uint64_t sem,
                 const int64_t* read_bufs, int32_t n_read,
                 const int64_t* write_bufs, int32_t n_write,
                 int32_t indirect) {
@@ -71,7 +69,7 @@ void togsim_dma(EmitCtx* ctx, int32_t dir, int32_t arg_id,
   uint64_t addr = base + offset * (uint64_t)(elem_bits / 8);
   togsim::TraceRec r = blank(togsim::TraceRec::DMA, ctx->cur_core);
   r.dir = dir; r.arg_id = arg_id; r.elem_bits = elem_bits;
-  r.is_async = is_async; r.addr = addr; r.tag_id = tag_id; r.tag_slot = tag_slot;
+  r.is_async = is_async; r.addr = addr; r.sem = sem;
   r.indirect = indirect != 0;
   if (r.indirect) { r.index_key = ctx->cur_key; r.index_seq = ctx->indirect_seq++; }
   if (dims) r.dims.reserve(ndim);
@@ -104,12 +102,9 @@ void togsim_compute(EmitCtx* ctx, uint64_t tile_id, int32_t compute_type,
   emit_rec(ctx, r);
 }
 
-void togsim_memory_barrier(EmitCtx* ctx, int32_t tag_id, uint64_t tag_slot,
-                           const int64_t* write_bufs, int32_t n_write) {
+void togsim_memory_barrier(EmitCtx* ctx, uint64_t sem, int64_t expected) {
   togsim::TraceRec r = blank(togsim::TraceRec::MEMORY_BAR, ctx->cur_core);
-  r.tag_id = tag_id; r.tag_slot = tag_slot;
-  r.write_bufs.reserve(n_write);
-  for (int32_t i = 0; i < n_write; ++i) r.write_bufs.push_back(write_bufs[i]);
+  r.sem = sem; r.expected = expected;
   emit_rec(ctx, r);
 }
 
@@ -149,6 +144,19 @@ bool LazyProducer::open(const char* so_path, const int64_t* shape_args, int32_t 
 
   _lib = dlopen(so_path, RTLD_NOW | RTLD_GLOBAL);
   if (!_lib) { fprintf(stderr, "togsim: dlopen failed: %s\n", dlerror()); return false; }
+  auto abi = (const int32_t*)dlsym(_lib, "togsim_producer_abi_version");
+  if (!abi) {
+    fprintf(stderr, "togsim: refusing producer %s: it embeds no togsim_producer_abi_version "
+            "(built without togsim_runtime.h, or before ABI %d); TOGSim expects ABI %d\n",
+            so_path, TOGSIM_ABI_VERSION, TOGSIM_ABI_VERSION);
+    return false;
+  }
+  if (*abi != TOGSIM_ABI_VERSION) {
+    fprintf(stderr, "togsim: refusing producer %s: it was built against trace ABI %d, "
+            "TOGSim expects ABI %d; rebuild the producer\n",
+            so_path, (int)*abi, TOGSIM_ABI_VERSION);
+    return false;
+  }
   auto kernel = (void (*)(EmitCtx*, int64_t*, int32_t))dlsym(_lib, "togsim_kernel");
   if (!kernel) { fprintf(stderr, "togsim: dlsym togsim_kernel failed: %s\n", dlerror()); return false; }
 
@@ -160,6 +168,7 @@ bool LazyProducer::open(const char* so_path, const int64_t* shape_args, int32_t 
 }
 
 size_t LazyProducer::num_items() const { return _ctx->items.size(); }
+int64_t LazyProducer::item_key(size_t i) const { return _ctx->items.at(i).key; }
 
 const std::vector<TraceRec>& LazyProducer::run_item(size_t i) {
   _ctx->trace.clear();

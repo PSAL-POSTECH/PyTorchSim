@@ -17,3 +17,7 @@ add_executable(${LIB_NAME} ${SRC_FILES})
 # producer .so resolves the togsim_* runtime callbacks back into this binary
 # (P3 trace pipeline).
 set_target_properties(${LIB_NAME} PROPERTIES ENABLE_EXPORTS ON)
+
+# TOGSim's TUs only declare togsim_producer_abi_version; a producer TU defines it
+# (togsim_runtime.h), so dlsym on the producer handle finds the producer's own.
+target_compile_definitions(${LIB_NAME} PRIVATE TOGSIM_HOST)

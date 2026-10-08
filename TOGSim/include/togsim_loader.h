@@ -20,13 +20,12 @@ struct TraceRec {
   int32_t  elem_bits;
   int32_t  is_async;
   uint64_t addr;          // resolved DRAM byte address = base[arg_id] + off*bytes
-  int32_t  tag_id;        // DMA/MEMORY_BAR: tag memref identity; with tag_slot the
-                          // runtime pairing key (an async dma <-> its memory_barrier)
-  uint64_t tag_slot;      // SRAM tile slot (double-buffer / capacity model)
+  uint64_t sem;           // DMA/MEMORY_BAR: the semaphore an async load signals / a bar waits
+  int64_t  expected;      // MEMORY_BAR: elements the waited batch must have moved
   std::vector<int64_t> dims;     // tile extents (DMA)
   std::vector<int64_t> strides;  // tile strides (DMA)
   std::vector<int64_t> read_bufs;   // SRAM buffer ids read  (sec 10 dependency model)
-  std::vector<int64_t> write_bufs;  // SRAM buffer ids written (MEMORY_BAR: released bufs)
+  std::vector<int64_t> write_bufs;  // SRAM buffer ids written
   int32_t  indirect;      // DMA: its elements also move by the functional run's indices
   int64_t  index_key;     // DMA, indirect: the work-item's key ...
   int64_t  index_seq;     // ... and this dma's rank among its indirect dmas
@@ -54,15 +53,16 @@ class LazyProducer {
   LazyProducer(const LazyProducer&) = delete;
   LazyProducer& operator=(const LazyProducer&) = delete;
 
-  // dlopen the .so and run togsim_kernel once: every togsim_dispatch registers
-  // its work-item and returns without running the tile body, so num_items() is
-  // known but no record is emitted yet.
+  // dlopen the .so (refused unless its togsim_producer_abi_version is TOGSIM_ABI_VERSION)
+  // and run togsim_kernel once: each togsim_dispatch only registers its work-item, so
+  // num_items() is known before any record is emitted.
   bool open(const char* so_path, const int64_t* shape_args, int32_t n_shape,
             const uint64_t* tensor_base, int32_t n_tensors,
             const int64_t* cyc, const int64_t* ovl, int32_t n_tiles,
             const int32_t* partition_cores, int32_t n_partition_cores);
 
   size_t num_items() const;
+  int64_t item_key(size_t i) const;   // work-item i's togsim_dispatch key
   // Replay work-item `i` and return its record stream (TILE_BEGIN, body,
   // TILE_END). The returned vector is a buffer reused by the next call.
   const std::vector<TraceRec>& run_item(size_t i);

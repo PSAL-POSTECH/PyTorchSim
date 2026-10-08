@@ -33,7 +33,8 @@ typedef enum {
 // Emit a DMA (sec 5.4). `offset` is an ELEMENT offset into tensor `arg_id`; null
 // `strides` => contiguous. `is_async` => it finishes at ISSUE and signals semaphore
 // `sem` with its element count; the barrier on `sem` gates consumers. `read_bufs`/
-// `write_bufs` -> sec 10. A store's `sem` is ignored (its waits are not lowered).
+// `write_bufs` -> sec 10; a store drains read_bufs[0], and an indirect store's index buffer,
+// read for addresses only, follows it. A store's `sem` is ignored (its waits are not lowered).
 // `indirect` => each element also moves by what its index added in the functional
 // run: dump indirect_index_<key>_<n>.raw, key = the work-item's togsim_dispatch key,
 // n = this dma's rank among the work-item's indirect dmas.

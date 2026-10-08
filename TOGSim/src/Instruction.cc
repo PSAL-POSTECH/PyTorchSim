@@ -101,8 +101,9 @@ void Instruction::print() {
   spdlog::info("{}", opcode_to_string(opcode));
 }
 
-// The dram_req_size-aligned requests of the tile, row-major over its (up to 4) dims. An
-// indirect dma adds each element's index dump entry, an element offset, to its address.
+// The dram_req_size-aligned requests of the tile, row-major over its (up to 4) dims. An indirect
+// dma adds each element's index dump entry, an element offset, to its address; a tiled tensor
+// (set_tensor_tiling) then moves each element into its tile before the alignment.
 std::shared_ptr<std::set<addr_type>> Instruction::get_dram_address(addr_type dram_req_size) {
   auto address_set = std::make_shared<std::set<addr_type>>();
   std::vector<uint64_t> indirect_index;
@@ -130,6 +131,7 @@ std::shared_ptr<std::set<addr_type>> Instruction::get_dram_address(addr_type dra
             const int64_t index_val = (int64_t)indirect_index[index_count++];
             address += (addr_type)(index_val * (int64_t)_elem_bits / 8);
           }
+          if (_tiling) address = _tiling->map(address);
           address_set->insert(address - (address & dram_req_size-1));
         }
       }

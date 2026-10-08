@@ -14,10 +14,38 @@
 namespace fs = std::filesystem;
 namespace po = boost::program_options;
 
+// `trace_tensor_tile: [rows, cols]` lays every trace tensor out in tiles of that many 4-byte
+// elements; a tile keeps its bytes, so rows scale by 4/elem (bf16 (16,128), as TPU packs it).
+// Shapes come from trace_tensor_shapes.txt beside the .so: rows cols elem_bytes per argument.
+std::vector<std::shared_ptr<TensorTiling>> trace_tensor_tilings(const YAML::Node& cfg, const fs::path& dir) {
+  std::vector<std::shared_ptr<TensorTiling>> out;
+  if (!cfg["trace_tensor_tile"]) return out;
+  const auto tile = cfg["trace_tensor_tile"].as<std::vector<uint64_t>>();
+  if (tile.size() != 2 || !tile[0] || !tile[1]) {
+    spdlog::error("[TOGSim] trace_tensor_tile wants [rows, cols], both nonzero");
+    exit(EXIT_FAILURE);
+  }
+  std::ifstream sh(dir / "trace_tensor_shapes.txt");
+  if (!sh.is_open()) {
+    spdlog::error("[TOGSim] trace_tensor_tile is set but {} is absent", (dir / "trace_tensor_shapes.txt").string());
+    exit(EXIT_FAILURE);
+  }
+  uint64_t rows, cols, elem;
+  while (sh >> rows >> cols >> elem) {
+    if (!rows || !cols || !elem) {
+      spdlog::error("[TOGSim] trace tensor {} is {}x{}x{}B, which no tile holds", out.size(), rows, cols, elem);
+      exit(EXIT_FAILURE);
+    }
+    out.push_back(std::make_shared<TensorTiling>(
+        TensorTiling{0, rows, cols, elem, std::max<uint64_t>(1, tile[0] * 4 / elem), tile[1]}));
+  }
+  return out;
+}
 
 // The trace tensors back to back in argument order, each start aligned to 16 KiB (XLA's
-// program HBM alignment), from the byte sizes trace_tensors.txt lists beside trace.so.
-std::vector<uint64_t> trace_tensor_bases(const fs::path& dir) {
+// program HBM alignment), from the byte sizes trace_tensors.txt lists beside trace.so; a tiled
+// tensor takes its padded footprint and learns its base.
+std::vector<uint64_t> trace_tensor_bases(const fs::path& dir, const std::vector<std::shared_ptr<TensorTiling>>& tilings) {
   std::ifstream tt(dir / "trace_tensors.txt");
   if (!tt.is_open()) {
     spdlog::error("[TOGSim] {} is absent: the trace tensors have no addresses", (dir / "trace_tensors.txt").string());
@@ -27,8 +55,17 @@ std::vector<uint64_t> trace_tensor_bases(const fs::path& dir) {
   std::vector<uint64_t> bases;
   uint64_t at = 0, bytes;
   while (tt >> bytes) {
+    const size_t i = bases.size();
+    if (!tilings.empty() && i < tilings.size()) {
+      tilings[i]->base = at;
+      bytes = std::max(bytes, tilings[i]->footprint());
+    }
     bases.push_back(at);
     at = (at + bytes + align - 1) / align * align;
+  }
+  if (!tilings.empty() && tilings.size() != bases.size()) {
+    spdlog::error("[TOGSim] trace_tensors.txt lists {} tensors, trace_tensor_shapes.txt {}", bases.size(), tilings.size());
+    exit(EXIT_FAILURE);
   }
   return bases;
 }
@@ -46,7 +83,8 @@ std::unique_ptr<TileGraph> build_trace_tilegraph(Simulator* simulator,
   for (int c = 0; c < num_cores; c++)
     if (simulator->get_partition_id(c) == partition_id) partition_cores.push_back(c);
   if (partition_cores.empty()) partition_cores.push_back(0);
-  std::vector<uint64_t> bases = trace_tensor_bases(fs::path(trace_so_path).parent_path());
+  const auto tilings = trace_tensor_tilings(cfg, fs::path(trace_so_path).parent_path());
+  std::vector<uint64_t> bases = trace_tensor_bases(fs::path(trace_so_path).parent_path(), tilings);
   // Cycle table: load the per-tile_id TSV sidecar if present, else a flat stub.
   std::vector<int64_t> cyc, ovl;
   std::ifstream ct(cycle_table_path);
@@ -71,7 +109,8 @@ std::unique_ptr<TileGraph> build_trace_tilegraph(Simulator* simulator,
                             cyc.data(), ovl.data(), (int)cyc.size(),
                             partition_cores.data(), (int32_t)partition_cores.size(),
                             (fs::path(trace_so_path).parent_path() / "runtime" / "indirect_access").string(),
-                            "trace_kernel");
+                            "trace_kernel",
+                            std::vector<std::shared_ptr<const TensorTiling>>(tilings.begin(), tilings.end()));
 }
 
 void launchKernel(Simulator* simulator, unsigned int kernel_id, std::string onnx_path, std::string attribute_path, const YAML::Node& config_yaml, cycle_type request_time=0, int partition_id=0, int device_id=0) {

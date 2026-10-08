@@ -19,6 +19,7 @@ TRACE_SO = "trace.so"
 CYCLE_TSV = "trace_cycles.tsv"
 SHAPE_TXT = "trace_shape.txt"
 TENSORS_TXT = "trace_tensors.txt"
+TENSOR_SHAPES_TXT = "trace_tensor_shapes.txt"
 META_JSON = "meta.json"
 
 PLACEHOLDER_CYCLE = 1
@@ -51,8 +52,8 @@ def measure_tile_cycles(workdir, meta):
 
 
 def write_tensors(workdir):
-    """Write each kernel argument's byte size, in argument order, where TOGSim reads it to lay
-    the trace tensors out in DRAM."""
+    """Write each kernel argument's byte size, and its rows cols elem_bytes with every leading
+    axis folded into the rows, in argument order, where TOGSim reads them to lay it out in DRAM."""
     import math
 
     import torch
@@ -62,9 +63,12 @@ def write_tensors(workdir):
     manifest = kernel_object(workdir)
     if manifest is None:
         raise FileNotFoundError(f"{workdir} has no kernel.json -- compile the kernel first")
+    args = [(a["shape"], getattr(torch, a["dtype"]).itemsize) for a in manifest["args"]]
     with open(os.path.join(session.dir_for(workdir), TENSORS_TXT), "w") as f:
-        f.write("".join(f"{math.prod(a['shape']) * getattr(torch, a['dtype']).itemsize}\n"
-                        for a in manifest["args"]))
+        f.write("".join(f"{math.prod(shape) * elem}\n" for shape, elem in args))
+    with open(os.path.join(session.dir_for(workdir), TENSOR_SHAPES_TXT), "w") as f:
+        f.write("".join(f"{math.prod(shape[:-1])} {shape[-1] if shape else 1} {elem}\n"
+                        for shape, elem in args))
 
 
 def write_shape(workdir, meta, args=()):

@@ -241,6 +241,11 @@ def triton_npu_compile(src_code, meta, kernel_name):
                 "or machine identity, rebuilding", kernel_name)
             provenance.clear_stale(write_path)
             elf = None
+        if (elf is not None and extension_config.pytorchsim_timing_mode
+                and compiler_bridge.artifact(write_path, "trace_so") is None):
+            logger.info("[torchsim-compile] %s: cached without --tog, rebuilding for timing",
+                        kernel_name)
+            elf = None
         if elf is None:
             src_code, tuned = _autotune_template(src_code, meta, kernel_name, write_path)
             meta.update(tuned)

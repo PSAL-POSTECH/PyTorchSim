@@ -10,6 +10,7 @@ INC="${2:-$HERE/../../include}"
 CFG="$HERE/../../../configs/systolic_ws_256x256_c1_simple_noc_tpuv6e.yml"
 OUT="$(mktemp -d)"
 echo "200 0" > "$OUT/cyc.tsv"
+printf "1048576\n%.0s" 1 2 3 > "$OUT/trace_tensors.txt"   # tensors 1 MiB apart, as before packed layouts
 fail=0
 
 run_case() {
@@ -34,12 +35,17 @@ print("K1 PASS")
 PY
 
 abi=$(grep -o "define TOGSIM_ABI_VERSION [0-9]*" "$INC/togsim_runtime.h" | grep -o "[0-9]*$")
+# Each refused case names the refusal it must get: any other one means the case lost its scenario.
+refused() {   # refused <label> <log> <rc> <expected substring>
+  local msg; msg=$(grep -o "\[TOGSim-trace\] [a-z].*" "$2" | head -1)
+  if [ "$3" -ne 0 ] && [[ "$msg" == *"$4"* ]]; then echo "$1 refused (rc=$3): $msg"
+  else echo "$1 FAIL: rc=$3, wanted \"$4\", got: ${msg:-no refusal message}"; fail=1; fi
+}
 [ "$abi" -ge 14 ] && cases="1 2 3" || cases=""
+want=("" "wait expects another element count" "wait on a semaphore never signaled" "unwaited load batch")
 for c in $cases; do
   run_case $c; rc=$?
-  msg=$(grep -o "\[TOGSim-trace\] [a-z].*" "$OUT/k1_$c.log" | head -1)
-  if [ "$rc" -ne 0 ] && [ -n "$msg" ]; then echo "K1 case $c refused (rc=$rc): $msg"
-  else echo "K1 case $c FAIL: rc=$rc, no refusal message"; fail=1; fi
+  refused "K1 case $c" "$OUT/k1_$c.log" $rc "${want[$c]}"
 done
 
 run_rewait() {
@@ -63,9 +69,7 @@ if g_issue < f_done: sys.exit(f"rewait FAIL: the reader issued @{g_issue} before
 print("rewait PASS")
 PY
   run_rewait 1; rc=$?
-  msg=$(grep -o "\[TOGSim-trace\] [a-z].*" "$OUT/rewait_1.log" | head -1)
-  if [ "$rc" -ne 0 ] && [ -n "$msg" ]; then echo "rewait case 1 refused (rc=$rc): $msg"
-  else echo "rewait case 1 FAIL: rc=$rc, no refusal message"; fail=1; fi
+  refused "rewait case 1" "$OUT/rewait_1.log" $rc "re-wait expects another element count"
 fi
 
 echo "logs: $OUT"

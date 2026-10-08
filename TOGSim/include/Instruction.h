@@ -172,7 +172,8 @@ class Instruction : public std::enable_shared_from_this<Instruction> {
   }
 
   cycle_type finish_cycle = 0;
-  cycle_type bubble_cycle=0;
+  bool held_for_core = false;   // counted once in Core's compute-hold statistic
+  uint32_t array_split = 1;     // N_eff: the arrays systolic_array_split spread it over
 
   bool finished=false;
   int subgraph_id = 0;

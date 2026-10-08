@@ -28,6 +28,31 @@ Core::Core(uint32_t id, SimulationConfig config)
   _weight_free = _num_systolic_array_per_core * (int)_weight_slot_depth;
 }
 
+// B_sys = array-unit rows / capacity, N_eff = min(N, max(1, ceil(rows / vpu_num_lanes))); the
+// window keeps cc - B_sys and runs the longest of B_sys / N_eff and every other unit's B_u, never
+// longer than cc. Without the split, or with N_eff 1, cc as is.
+cycle_type Core::split_compute_cycles(const std::shared_ptr<Instruction>& inst) const {
+  const cycle_type cc = inst->get_compute_cycle();
+  if (!_config.systolic_array_split || !_unit_table || cc == 0) return cc;
+  const auto& rows = _unit_table->rows(inst->get_tile_id());
+  const int64_t array = _unit_table->array_unit();
+  uint64_t sys_rows = 0;
+  for (auto& [u, admitted] : rows)
+    if ((int64_t)u == array) sys_rows = admitted;
+  const uint64_t subtiles = (sys_rows + _config.vpu_num_lanes - 1) / _config.vpu_num_lanes;
+  const uint64_t n_eff = std::min<uint64_t>(_num_systolic_array_per_core, std::max<uint64_t>(1, subtiles));
+  inst->array_split = (uint32_t)n_eff;
+  if (n_eff <= 1) return cc;
+  double b_sys = 0, longest = 0;
+  for (auto& [u, admitted] : rows) {
+    const double b = (double)admitted / (double)_unit_table->capacity(u);
+    if ((int64_t)u == array) b_sys = b;
+    longest = std::max(longest, (int64_t)u == array ? b / (double)n_eff : b);
+  }
+  const double shortened = std::ceil((double)cc - b_sys + longest);
+  return (cycle_type)std::clamp(shortened, 1.0, (double)cc);
+}
+
 // Round-robin a systolic array that still has a free weight slot; -1 if all full
 // (the preload must stall). Advances _systolic_array_rr past the chosen SA.
 int Core::pick_free_weight_sa() {
@@ -45,6 +70,9 @@ void Core::apply_due(const DueAction& a) {
   switch (a.kind) {
     case DueAction::FreeWeightSlot:
       if (--a.token->refcount <= 0) { _weight_slots_used[a.token->sa]--; _weight_free++; _issue_dirty = true; }  // weight slot freed -> re-arm
+      break;
+    case DueAction::ComputeFree:
+      _issue_dirty = true;
       break;
     case DueAction::WakeBar: {
       auto bar = a.bar;            // async load data arrived -> fire its MEMORY_BAR
@@ -152,9 +180,6 @@ void Core::vu_cycle() {
     if (!_vu_compute_pipeline.empty()) {
       _stat_vu_compute_cycle++;
       if(_vu_compute_pipeline.front()->finish_cycle <= _core_cycle) {
-        cycle_type bubble = _vu_compute_pipeline.front()->bubble_cycle;
-        _stat_vu_compute_idle_cycle += bubble;
-        _stat_vu_compute_cycle = (bubble < _stat_vu_compute_cycle) ? (_stat_vu_compute_cycle - bubble) : 0;
         finish_instruction(_vu_compute_pipeline.front());
         _vu_compute_pipeline.pop();
       } else {
@@ -173,9 +198,6 @@ void Core::xlu_cycle() {
     if (!_xlu_compute_pipeline.empty()) {
       _stat_xlu_compute_cycle++;
       if(_xlu_compute_pipeline.front()->finish_cycle <= _core_cycle) {
-        cycle_type bubble = _xlu_compute_pipeline.front()->bubble_cycle;
-        _stat_xlu_compute_idle_cycle += bubble;
-        _stat_xlu_compute_cycle = (bubble < _stat_xlu_compute_cycle) ? (_stat_xlu_compute_cycle - bubble) : 0;
         finish_instruction(_xlu_compute_pipeline.front());
         _xlu_compute_pipeline.pop();
       } else {
@@ -194,10 +216,6 @@ void Core::sa_cycle() {
     while (retry) {
       if (!_sa_compute_pipeline.at(i).empty()) {
         if(_sa_compute_pipeline.at(i).front()->finish_cycle <= _core_cycle) {
-          cycle_type bubble = _sa_compute_pipeline.at(i).front()->bubble_cycle;
-          _stat_sa_compute_idle_cycle.at(i) += bubble;
-          cycle_type& stat = _stat_sa_compute_cycle.at(i);
-          stat = (bubble < stat) ? (stat - bubble) : 0;
           finish_instruction(_sa_compute_pipeline.at(i).front());
           _sa_compute_pipeline.at(i).pop();
         } else {
@@ -321,6 +339,7 @@ void Core::cycle() {
   _issue_dirty = false;
 
   for (int i=0; i<_tiles.size() && !issued; i++) {
+    bool held_compute = false;
     auto& instructions = _tiles[i]->get_ready_instructions();
     // Resume after the prefix already known to be blocked (Tile::scan_from).
     for (auto it=_tiles[i]->scan_from(_sram_used, _weight_free); it!=instructions.end();) {
@@ -377,6 +396,12 @@ void Core::cycle() {
         case Opcode::COMP:
           {
             const int ct = inst->get_compute_type();
+            if (inst->get_compute_cycle() > 0 && _core_cycle < _compute_busy_until) {
+              held_compute = true;
+              if (!inst->held_for_core) _stat_compute_stalls++;
+              inst->held_for_core = true;
+              break;
+            }
             // a fresh-output compute occupies its spad bytes on issue; stall if full.
             if (!try_occupy_sram(inst)) break;
             // SA selection (sec 10.4): a preload picks an SA with a free weight slot
@@ -411,29 +436,23 @@ void Core::cycle() {
               }
               inst->set_assigned_sa(sa_idx);         // record the SA actually used (for the trace)
             }
+            inst->set_compute_cycle(split_compute_cycles(inst));
             auto& target_pipeline = (sa_idx >= 0) ? _sa_compute_pipeline.at(sa_idx)
                                                   : get_compute_pipeline(ct);
-            if (target_pipeline.empty()) {
-              inst->finish_cycle = _core_cycle + inst->get_compute_cycle();
-              inst->bubble_cycle = inst->get_overlapping_cycle();
-            } else {
-              int overlapped_cycle = std::min(target_pipeline.back()->finish_cycle - _core_cycle, inst->get_overlapping_cycle());
-              int bubble_cycle = inst->get_overlapping_cycle() - overlapped_cycle;
-              inst->finish_cycle = target_pipeline.back()->finish_cycle + inst->get_compute_cycle() - overlapped_cycle;
-              inst->bubble_cycle = bubble_cycle;
+            if (inst->get_compute_cycle() > 0 && !target_pipeline.empty()
+                && target_pipeline.back()->finish_cycle > _core_cycle) {
+              spdlog::error("[TOGSim] Core {} issued a compute at {} into a pipeline busy until {}",
+                            _id, _core_cycle, target_pipeline.back()->finish_cycle);
+              exit(EXIT_FAILURE);
             }
+            inst->finish_cycle = _core_cycle + inst->get_compute_cycle();
             record_unit_window(inst);
             // release the occupancy (ISSUE) dependents so a successor overlaps this op.
             inst->fire(DepEvent::ISSUE);
 
-            // Release this matmul's weight slot at its streaming-end (finish -
-            // overlapping), not at full finish (the drain tail does not read it).
-            if (ct == MATMUL && inst->get_weight_token()) {
-              cycle_type rel = inst->finish_cycle > inst->get_overlapping_cycle()
-                                 ? inst->finish_cycle - inst->get_overlapping_cycle() : _core_cycle;
-              _due_events.emplace(rel, DueAction{DueAction::FreeWeightSlot,
-                                                 inst->get_weight_token(), nullptr});
-            }
+            if (ct == MATMUL && inst->get_weight_token())
+              _due_events.emplace(inst->finish_cycle, DueAction{DueAction::FreeWeightSlot,
+                                                                inst->get_weight_token(), nullptr});
 
             release_sram(inst);   // free the tiles it read (before the skip path)
             if (inst->get_compute_cycle() == 0) {
@@ -454,6 +473,8 @@ void Core::cycle() {
                                                        core_trace_log::format_instruction_detail_line(
                                                            *inst));
               target_pipeline.push(inst);
+              _compute_busy_until = inst->finish_cycle;
+              _due_events.emplace(inst->finish_cycle, DueAction{DueAction::ComputeFree, nullptr, nullptr});
               issued = true;
               if (inst->get_compute_type() == MATMUL || inst->get_compute_type() == PRELOAD)
                 _stat_gemm_inst++;
@@ -509,6 +530,7 @@ void Core::cycle() {
       _tiles[i]->note_blocked(it, _sram_used, _weight_free);
       it++;
     }
+    if (held_compute) _tiles[i]->drop_scan_cursor();
   }
 
   // Keep dirty after an issue: the scan breaks at the first issue (!issued loop
@@ -572,6 +594,7 @@ bool Core::has_inflight() {
   // finish event on its own (so the sim is NOT frozen). If this is false but
   // tiles remain, only stalled ready instructions are left.
   if (!_vu_compute_pipeline.empty()) return true;
+  if (!_xlu_compute_pipeline.empty()) return true;
   for (int i = 0; i < _num_systolic_array_per_core; i++)
     if (!_sa_compute_pipeline.at(i).empty()) return true;
   if (!_dma_waiting_queue.empty() || !_dma_finished_queue.empty()) return true;
@@ -584,6 +607,7 @@ bool Core::running() {
   bool running = false;
   running = running || _tiles.size() > 0;
   running = running || !_vu_compute_pipeline.empty();
+  running = running || !_xlu_compute_pipeline.empty();
   for (int i=0; i<_num_systolic_array_per_core;i++)
     running = running || !_sa_compute_pipeline.at(i).empty();
   running = running || !_dma_waiting_queue.empty() || !_dma_finished_queue.empty();
@@ -667,7 +691,10 @@ void Core::print_stats() {
   bool units_ok = true;
   if (_unit_table) {
     for (size_t u = 0; u < _unit_table->num_units(); u++)
-      units_ok = _unit_table->print(fmt::format("Core [{}]", _id), u, _stat_tot_unit_admitted.at(u), _core_cycle, true) && units_ok;
+      units_ok = ((int64_t)u == _unit_table->array_unit()
+                    ? _unit_table->print_spread(fmt::format("Core [{}]", _id), u, _stat_tot_unit_credit.at(u), _core_cycle)
+                    : _unit_table->print(fmt::format("Core [{}]", _id), u, _stat_tot_unit_admitted.at(u), _core_cycle, true))
+                 && units_ok;
   } else {
     for (int i=0; i<_num_systolic_array_per_core; i++)
       spdlog::info("Core [{}] : Systolic array [{}] utilization(%): {:.2f}, active_cycles: {}, idle_cycles: {}", _id, i, sa_utilization.at(i),
@@ -683,6 +710,7 @@ void Core::print_stats() {
   }
   spdlog::info("Core [{}] : NUMA local memory: {} requests, remote memory: {} requests", _id, _stat_numa_local_access, _stat_numa_remote_access);
   spdlog::info("Core [{}] : Total_cycles: {}", _id, _core_cycle);
+  spdlog::info("Core [{}] : computes held at least once by the core's compute in flight: {}", _id, _stat_compute_stalls);
   if (!units_ok) {
     spdlog::error("[TOGSim] --unit_table: a unit admitted more than its capacity allows");
     exit(EXIT_FAILURE);
@@ -694,7 +722,7 @@ void Core::print_stats() {
       spdlog::error("Core [{}] : {} compute windows end after the run's {} cycles", _id, _unit_windows.size(), _core_cycle);
     for (size_t u = 0; u < _unit_table->num_units(); u++) {
       const double spread = _stat_tot_unit_spread.at(u) + _stat_unit_spread.at(u);
-      const double admitted = (double)_stat_tot_unit_admitted.at(u);
+      const double admitted = _stat_tot_unit_credit.at(u);
       if (std::fabs(spread - admitted) <= 1e-6 * std::max(1.0, admitted)) continue;
       spdlog::error("Core [{}] : {} periodic credit sums to {} but the run admitted {}", _id, _unit_table->unit_name(u), spread, admitted);
       spread_ok = false;
@@ -710,16 +738,16 @@ void Core::record_unit_window(const std::shared_ptr<Instruction>& inst) {
   if (!_unit_table || !_config.core_print_interval || !_unit_table->has_rows(inst->get_tile_id())) return;
   const cycle_type cc = inst->get_compute_cycle();
   if (cc == 0) {
-    _unit_table->accumulate(inst->get_tile_id(), 1.0, _stat_unit_spread);
+    _unit_table->accumulate(inst->get_tile_id(), 1.0, _stat_unit_spread, inst->array_split);
     return;
   }
-  _unit_windows.push_back({inst->finish_cycle - cc, inst->finish_cycle, inst->get_tile_id()});
+  _unit_windows.push_back({inst->finish_cycle - cc, inst->finish_cycle, inst->get_tile_id(), inst->array_split});
 }
 
 void Core::credit_unit_windows(cycle_type lo, cycle_type hi) {
   for (const auto& w : _unit_windows) {
     const cycle_type a = std::max(w.start, lo), b = std::min(w.end, hi);
-    if (b > a) _unit_table->accumulate(w.tile_id, (double)(b - a) / (double)(w.end - w.start), _stat_unit_spread);
+    if (b > a) _unit_table->accumulate(w.tile_id, (double)(b - a) / (double)(w.end - w.start), _stat_unit_spread, w.n_eff);
   }
   _unit_windows.erase(std::remove_if(_unit_windows.begin(), _unit_windows.end(),
                                      [hi](const UnitWindow& w) { return w.end <= hi; }),

@@ -47,6 +47,8 @@ std::shared_ptr<Instruction> make_mem_bar(const std::vector<std::shared_ptr<Inst
   return bar;
 }
 
+// The cycle table's overlapping column is DEPRECATED (kept for the ABI): it reaches the trace log
+// only. A core runs one compute at a time (Core::_compute_busy_until), which no overlap shortens.
 std::shared_ptr<Instruction> make_compute(const togsim::TraceRec& t) {
   auto inst = std::make_shared<Instruction>(
       Opcode::COMP, /*compute_cycle=*/(cycle_type)t.cycle, /*num_parents=*/0,

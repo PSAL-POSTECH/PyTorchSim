@@ -292,11 +292,14 @@ void Simulator::print_core_stat()
     bool ok = true;
     for (size_t u = 0; u < _unit_table->num_units(); u++) {
       uint64_t admitted = 0, cycles = 0;
+      double credit = 0;
       for (auto& core : _cores) {
         admitted += core->get_tot_unit_admitted().at(u);
+        credit += core->get_tot_unit_credit().at(u);
         cycles += core->get_core_cycle();
       }
-      ok = _unit_table->print("Total", u, admitted, cycles, true) && ok;
+      ok = ((int64_t)u == _unit_table->array_unit() ? _unit_table->print_spread("Total", u, credit, cycles)
+                                                    : _unit_table->print("Total", u, admitted, cycles, true)) && ok;
     }
     if (!ok) {
       spdlog::error("[TOGSim] --unit_table: a unit admitted more than its capacity allows");

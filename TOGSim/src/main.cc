@@ -278,6 +278,10 @@ int main(int argc, char** argv) {
     std::string unit_table_path;
     cmd_parser.set_if_defined("unit_table", &unit_table_path);
     if (!unit_table_path.empty()) simulator->set_unit_table(UnitTable::load(unit_table_path));
+    if (simulator->get_config().systolic_array_split && unit_table_path.empty()) {
+      spdlog::error("[TOGSim] systolic_array_split reads each tile's Systolic rows; give --unit_table");
+      exit(EXIT_FAILURE);
+    }
     try {
       auto tg = build_trace_tilegraph(simulator, trace_so_path, cycle_table_path, 0);
       if (!tg) { spdlog::error("[TOGSim] trace producer run failed"); exit(1); }

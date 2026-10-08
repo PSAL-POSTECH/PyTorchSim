@@ -39,9 +39,18 @@ class Simulator {
   int get_partition_id(int core_id) { return _config.partiton_map[core_id]; }
   std::unique_ptr<Scheduler>& get_partition_scheduler(int core_id) { return _partition_scheduler.at(get_partition_id(core_id)); }
   void print_core_stat();
-  // --unit_table: every core sums its compute completions into `t` (owned here).
+  // --unit_table: every core sums its compute completions into `t` (owned here). Under
+  // systolic_array_split the array unit is credited per array (UnitTable::accumulate); a table without it exits.
   void set_unit_table(std::unique_ptr<UnitTable> t) {
     _unit_table = std::move(t);
+    if (_config.systolic_array_split) {
+      const int64_t u = _unit_table->find(_config.systolic_array_unit);
+      if (u < 0) {
+        spdlog::error("[TOGSim] systolic_array_split: the unit table has no array unit {}", _config.systolic_array_unit);
+        exit(EXIT_FAILURE);
+      }
+      _unit_table->set_array_unit((size_t)u);
+    }
     for (auto& core : _cores) core->set_unit_table(_unit_table.get());
   }
   void cycle();

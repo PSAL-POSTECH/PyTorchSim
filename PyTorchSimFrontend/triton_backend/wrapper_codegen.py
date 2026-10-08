@@ -106,7 +106,6 @@ class TritonNPUWrapperCodegen(wrapper.PythonWrapperCodegen):
                 from torch import device, empty, empty_strided
                 from PyTorchSimFrontend.extension_config import CONFIG_SRAM_BUFFER_PLAN, setup_logger
                 from Simulator.simulator import TOGSimulator
-                from PyTorchSimFrontend.extension_op import sparse_mm_dummy_stonne_outer
                 from PyTorchSimFrontend import extension_functional_verify as _fverify
                 from torch._inductor.select_algorithm import extern_kernels
                 from {codecache.__name__} import torchsim_compile

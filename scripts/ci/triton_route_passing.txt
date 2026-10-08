@@ -266,4 +266,3 @@ tests/ops/reduce/test_batchnorm.py
 tests/ops/view/test_view3D_2D.py
 tests/system/test_eager.py
 tests/system/test_patch_scope.py
-tests/system/test_stonne.py

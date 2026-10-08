@@ -70,7 +70,6 @@ jobs:
           - tests/ops/view/test_view3D_2D.py
           - tests/system/test_eager.py
           - tests/system/test_patch_scope.py
-          - tests/system/test_stonne.py
     steps:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3

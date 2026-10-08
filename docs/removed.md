@@ -41,3 +41,13 @@ git checkout "$c^" -- <path>
 | `timing_mode_validation/` | TPU v6e timing validation harness and its measured reference (`ref_v6e.csv`); kept locally, not in the repository |
 
 The accuracy/speedup job in `pytorchsim_test.yml` ran `experiments/artifact/` and went with it.
+
+## STONNE sparse path
+
+| Path | Why |
+|---|---|
+| `PyTorchSimFrontend/extension_op.py` | the `extension_op._sparse_mm` op; nothing routes `torch.sparse.mm` to it on the Triton route, which runs `aten._sparse_addmm` eagerly instead |
+| `AsmParser/` | the ONNX TOG generator only that op used |
+| `tests/system/test_stonne.py`, `tests/system/test_hetro.py`, `tests/ops/sparsity/test_sparse_core.py` | exercised that path; test_stonne's result check was commented out, so it passed without reaching STONNE |
+
+The `stonne_*` configs and TOGSim's stonneCore and legacy ONNX parser stay.

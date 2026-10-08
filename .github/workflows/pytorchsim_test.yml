@@ -10,11 +10,6 @@ on:
         description: "TOGSim hardware config YAML (single source of truth; drives both codegen and the cycle sim)"
         required: true
         type: string
-      run_accuracy:
-        description: "Run the accuracy + speedup artifact job (only meaningful for the 128x128 config)"
-        required: false
-        default: false
-        type: boolean
 
 # The list below IS scripts/ci/triton_route_passing.txt, one container per test.
 # Regenerate that file with
@@ -90,62 +85,3 @@ jobs:
             -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
             -e TORCHSIM_TIMING_MODE=0 \
             ${{ inputs.image_name }} python3 "PyTorchSim/${{ matrix.test }}"
-
-  test_accuracy:
-    name: Run test_accuracy and test_speedup
-    # Accuracy + speedup runs many model simulations end to end; it is the most
-    # time- and memory-intensive job, so keep it on a self-hosted runner.
-    runs-on: [self-hosted, slurm, big, x86_64]
-    if: inputs.run_accuracy
-    # NOT A GATE YET. The paper artifact drives experiments/*.py, which is a set
-    # the Triton route's allowlist does not cover, so it has not been shown to
-    # pass here. It reports; promote it back to a gate once it does.
-    continue-on-error: true
-    steps:
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: run_cycle, accuracy summary, run_speedup
-        env:
-          ART_DIR: ${{ runner.temp }}/pt_sim_cycle_and_speedup
-        run: |
-          set -e
-          set -u
-          set -o pipefail
-          mkdir -p "$ART_DIR"
-          docker run --rm \
-            -e TOGSIM_CONFIG="${{ inputs.togsim_config }}" \
-            -e TORCHSIM_TIMING_MODE=1 \
-            -e SKIP_ILS=1 \
-            -e SPEEDUP_ITERS=2 \
-            -v "$ART_DIR:/artifacts" \
-            ${{ inputs.image_name }} bash -c 'set -eu -o pipefail; cd /workspace; export TORCHSIM_DIR="${TORCHSIM_DIR:-/workspace/PyTorchSim}"; \
-            PyTorchSim/experiments/artifact/cycle_validation/run_cycle.sh >/dev/null 2>&1; \
-            cp "$TORCHSIM_DIR/experiments/artifact/cycle_validation/summary_cycle.out" /artifacts/summary_cycle.out; \
-            PyTorchSim/experiments/artifact/speedup/run_speedup.sh; \
-            bash PyTorchSim/experiments/artifact/speedup/check_speedup_smoke.sh; \
-            cp "$TORCHSIM_DIR/experiments/artifact/speedup/summary_speedup.log" /artifacts/summary_speedup.log' \
-            2>&1 | tee speedup_smoke.log
-          # Same layout as the old split job (root for accuracy artifact, both logs for speedup)
-          cp -f "$ART_DIR/summary_cycle.out" summary_cycle.out
-          cp -f "$ART_DIR/summary_speedup.log" summary_speedup.log
-
-      - name: Upload Accuracy Report Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: accuracy-report
-          path: summary_cycle.out
-          if-no-files-found: error
-
-      - name: Upload speedup smoke log
-        uses: actions/upload-artifact@v4
-        with:
-          name: speedup-smoke
-          path: |
-            speedup_smoke.log
-            summary_speedup.log
-          if-no-files-found: error

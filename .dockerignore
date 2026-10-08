@@ -15,7 +15,6 @@ PyTorchSimDevice/torch_openreg/_C.cpython-*.so
 
 outputs/
 togsim_results/
-experiments/artifact/logs/
 
 *.pt
 *.pth

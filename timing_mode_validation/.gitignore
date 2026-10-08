@@ -1,5 +1,0 @@
-# Run output, not source: logs/ is what a sweep produced on one machine and
-# timing_summary.csv is what summary.py derived from it. Both are regenerated
-# by running, like outputs/ and togsim_results/ at the repo root.
-logs/
-timing_summary.csv

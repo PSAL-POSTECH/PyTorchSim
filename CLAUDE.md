@@ -68,9 +68,9 @@ report next to the number it produced — never folded into a pass.
 |---|---|
 | `PyTorchSimFrontend/` | Python compiler stack (Inductor backend). `extension_config.py` is the central settings reader; `triton_backend/` is the `npu` codegen route (Inductor's Triton backend, the compiler bridge, and `trace_build.py` -- the gem5/g++ half of the TOGSim trace) |
 | `PyTorchSimDevice/` | C++ PyTorch backend registering the `npu` device. Built as a pip-installed package via `setup.py`. Based on `torch_openreg` (PrivateUse1 example). Produces `_C.cpython-*.so` |
-| `Simulator/simulator.py` | Python drivers: `CycleSimulator` (Gem5), `TOGSimulator` (the cycle-accurate one + multi-tenant context manager). Spike is driven by `triton_backend/functional.py` |
+| `Simulator/simulator.py` | `TOGSimulator`: the TOGSim process driver and multi-tenant context manager. gem5 is driven by `triton_backend/gem5.py` (`CycleSimulator`), Spike by `triton_backend/spike_run.py` |
 | `Scheduler/scheduler.py` | Poisson arrival generator + scheduling utilities for multi-tenant runs |
-| `TOGSim/` | C++ TOGSim source. `src/Simulator.cc`, `Core.cc`, `Dram.cc`, `Interconnect.cc`, `L2Cache.cc`, `Tile.cc`, `TileGraph.cc` are the core models. Externals: ramulator2, booksim, stonneCore, onnx, protobuf, spdlog, yaml-cpp |
+| `TOGSim/` | C++ TOGSim source. `src/Simulator.cc`, `Core.cc`, `Dram.cc`, `Interconnect.cc`, `L2Cache.cc`, `Tile.cc`, `TileGraph.cc` are the core models. Externals: ramulator2, booksim, spdlog, yaml-cpp |
 | `configs/` | TOGSim hardware configs (YAML). The default is `systolic_ws_256x256_c1_simple_noc_tpuv6e_functional_only.yml` -- the same machine as `..._tpuv6e.yml` and one line apart, `pytorchsim_timing_mode: 0`. Naming pattern: `systolic_ws_<size>_c<cores>_<noc>_<target>.yml` |
 | `tests/` | Op- and model-level tests organized under `ops/<family>/` (elementwise, reduce, gemm, conv, attention, view, sort, sparsity, misc, fusion), `models/<name>/` (Llama, Mixtral8x7B, DeepSeek, Diffusion, MoE, MLP, MobileNet, Yolov5) plus single-file model tests (test_resnet, test_transformer, test_vit, test_mlp, test_single_perceptron), and `system/` (scheduler, eager, vectorops). Shared helper: `tests/_utils.py`. **Which of them pass is `scripts/ci/triton_route_passing.txt`**; the rest are known gaps, swept and reported by `scripts/ci/triton_route_sweep.py --all` |
 | `experiments/artifact/` | Paper reproduction scripts (`cycle_validation/run_cycle.sh`, `speedup/run_speedup.sh`) |
@@ -94,7 +94,7 @@ Run a model from `tests/models/Llama/`, `tests/models/DeepSeek/`, etc. similarly
 
 **CI coverage:** `.github/workflows/docker-image.yml` is the PR gate. It builds the base image, then the PyTorchSim-Triton-Backend layer (`Dockerfile.ptb`, pinned by `thirdparty/pytorchsim-triton-backend.json`: the compiler plus the vcix-accelerator RISC-V toolchain, pk, Spike and gem5), then the app image, and calls `.github/workflows/pytorchsim_test.yml` once per hardware config. That workflow is a **matrix over `scripts/ci/triton_route_passing.txt`**, one Docker container per test — so adding a test file gates PRs only once it is in that allowlist. Regenerate the allowlist with `python scripts/ci/triton_route_sweep.py --all --update-allowlist` and mirror it into the workflow.
 
-`.github/workflows/pytorchsim_triton_backend.yml` runs when the compiler pin itself moves: the compiler's own smoke kernels end to end, plus the full coverage sweep (allowlist *and* the rest, reported not gated). Both workflows need `secrets.TNPU_TOKEN` — `PSAL-POSTECH/PyTorchSim-Triton-Backend` is private. See `PyTorchSimFrontend/triton_backend/README.md`.
+`.github/workflows/pytorchsim_triton_backend.yml` runs when the compiler pin itself moves: the compiler's own smoke kernels end to end, plus the full coverage sweep (allowlist *and* the rest, reported not gated). Both workflows need `secrets.TNPU_TOKEN` — `PSAL-POSTECH/PyTorchSim-Triton-Backend` is private.
 
 **For fast iteration** (skip functional check):
 ```bash

@@ -17,9 +17,7 @@ CONFIG_GEM5_SCRIPT = os.environ.get("TORCHSIM_GEM5_SCRIPT", default=os.path.join
     "script_systolic.py"))
 CONFIG_VCIX_MODEL = os.environ.get("TORCHSIM_COMPILE_VCIX_MODEL", default=os.path.join(
     os.environ.get("TORCHSIM_PREFIX", "/workspace"), "vcix-build", "libtpu.so"))
-# the compiler runs in its own process. Both sides now hold the same LLVM 23 bindings,
-# so the seam is a process boundary rather than a version one; `mlir` is a
-# namespace package, and each side still selects its own root explicitly.
+# the compiler runs in its own process, under this interpreter unless overridden.
 CONFIG_TORCHSIM_COMPILE_PYTHON = os.environ.get("TORCHSIM_COMPILE_PYTHON", default=sys.executable)
 
 

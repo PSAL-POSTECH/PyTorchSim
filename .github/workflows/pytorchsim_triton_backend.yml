@@ -2,7 +2,6 @@ name: Triton codegen route (PyTorchSim-Triton-Backend)
 
 # Exercises the Triton codegen route: Inductor's own Triton backend produces the
 # kernel and PyTorchSim-Triton-Backend lowers it to a RISC-V ELF.
-# (PyTorchSimFrontend/triton_backend/README.md)
 #
 # Separate from the main CI on purpose: it runs when the compiler pin moves, and
 # its sweep reports rather than gates.

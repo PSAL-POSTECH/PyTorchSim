@@ -27,10 +27,7 @@ CONFIG_TORCHSIM_COMPILE_PYTHON = os.environ.get("TORCHSIM_COMPILE_PYTHON", defau
 def get_dump_path():
     """Resolve TORCHSIM_DUMP_PATH and re-point Inductor's cache dir at it.
 
-    Side-effect by design: tutorials under ``tutorial/session*/`` mutate
-    ``os.environ['TORCHSIM_DUMP_PATH']`` between cells to redirect both
-    codegen output and Inductor's compile cache. Codegen call sites use
-    this helper so both stay in sync as the env var changes mid-session.
+    Read on every call, so a TORCHSIM_DUMP_PATH changed mid-session moves both together.
     """
     dump_path = os.environ.get(
         "TORCHSIM_DUMP_PATH",

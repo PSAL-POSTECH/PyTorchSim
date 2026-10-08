@@ -16,10 +16,6 @@ PyTorchSimDevice/torch_openreg/_C.cpython-*.so
 outputs/
 togsim_results/
 experiments/artifact/logs/
-tutorial/session1/fused/
-tutorial/session1/togsim_results/
-tutorial/session2/togsim_results/
-tutorial/session2/fx_graph.svg
 
 *.pt
 *.pth

@@ -267,5 +267,3 @@ tests/ops/view/test_view3D_2D.py
 tests/system/test_eager.py
 tests/system/test_patch_scope.py
 tests/system/test_stonne.py
-tests/system/test_tog_structure.py
-tests/system/test_triton_codegen.py

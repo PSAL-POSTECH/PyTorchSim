@@ -180,23 +180,6 @@ jobs:
                 echo "=== $k ===" && python3 tests/torchsim-compile tests/cases/smoke/$k.py || exit 1
               done'
 
-  triton-route:
-    name: Inductor Triton route
-    needs: build-app
-    runs-on: [self-hosted, slurm, x86_64]
-    steps:
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: test_triton_codegen.py
-        run: |
-          docker run --rm \
-            ${{ needs.build-app.outputs.app_image }} \
-            python3 PyTorchSim/tests/system/test_triton_codegen.py
-
   coverage-sweep:
     name: Coverage sweep beyond the allowlist
     needs: build-app

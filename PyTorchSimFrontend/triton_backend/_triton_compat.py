@@ -17,8 +17,7 @@ _installed = False
 def triton_src_dir():
     """Where the compiler's triton checkout lives (its editable install points here).
 
-    Read out of the compiler's setup/versions.env, where TRITON_ROOT is the checkout
-    and HEXAGON_MLIR_ROOT was its parent (an older compiler has only that key).
+    Read out of the compiler's setup/versions.env, where TRITON_ROOT is the checkout.
     """
     from PyTorchSimFrontend import extension_config
     override = os.environ.get("TORCHSIM_COMPILE_TRITON_SRC")
@@ -31,9 +30,6 @@ def triton_src_dir():
             for line in f:
                 if line.startswith("TRITON_ROOT="):
                     return os.path.join(line.split("=", 1)[1].strip(), "python")
-                if line.startswith("HEXAGON_MLIR_ROOT="):
-                    return os.path.join(
-                        line.split("=", 1)[1].strip(), "triton", "python")
     except OSError:
         pass
     return "/workspace/triton-src/python"

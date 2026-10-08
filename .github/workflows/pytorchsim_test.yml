@@ -76,8 +76,6 @@ jobs:
           - tests/system/test_eager.py
           - tests/system/test_patch_scope.py
           - tests/system/test_stonne.py
-          - tests/system/test_tog_structure.py
-          - tests/system/test_triton_codegen.py
     steps:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3

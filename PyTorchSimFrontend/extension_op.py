@@ -57,10 +57,6 @@ graph_template = {
     }
 }
 
-class MLIRExternKernelChoice(ExternKernelChoice):
-    def call_name(self):
-        return f"torch.ops.extension_op.{self.name}"
-
 custom_lib = torch.library.Library("extension_op", "DEF")
 
 def calculate_sparsity(tensor):

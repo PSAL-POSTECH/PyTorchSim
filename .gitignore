@@ -5,6 +5,7 @@ TOGSim/build/
 output
 togsim_results/*
 outputs/*
+experiments/artifact/logs/*
 
 # tutorial generated artifacts
 

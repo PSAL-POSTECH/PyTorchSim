@@ -75,12 +75,13 @@ std::unique_ptr<UnitTable> UnitTable::load(const std::string& path) {
 
 bool UnitTable::print(const std::string& who, size_t u, uint64_t admitted, uint64_t cycles, bool check) const {
   const Unit& unit = _units[u];
-  const double utilized = (double)admitted / (double)unit.capacity;
+  const uint64_t cap = unit.capacity;
+  const double utilized = (double)admitted / (double)cap;
   const double pct = cycles ? 100.0 * utilized / (double)cycles : 0.0;
   const int64_t active = std::llround(utilized);
   spdlog::info("{} : {} utilization(%): {:.2f}, active_cycles: {}, idle_cycles: {}",
                who, unit.name, pct, active, (int64_t)cycles - active);
-  if (!check || (unsigned __int128)admitted <= (unsigned __int128)unit.capacity * cycles) return true;
+  if (!check || (unsigned __int128)admitted <= (unsigned __int128)cap * cycles) return true;
   spdlog::error("{} : {} admitted {} {} exceeds capacity {} per cycle x {} cycles",
                 who, unit.name, admitted, unit.unit_of_work, unit.capacity, cycles);
   return false;

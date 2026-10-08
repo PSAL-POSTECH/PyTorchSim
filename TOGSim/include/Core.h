@@ -21,9 +21,9 @@ enum class InstFinishTraceTag {
   DmaRespComplete,
 };
 
-// A timed effect due at a cycle: free a weight slot, or wake a MEMORY_BAR.
+// A timed effect due at a cycle: free a weight slot, wake a MEMORY_BAR, or free the core's compute.
 struct DueAction {
-  enum Kind { FreeWeightSlot, WakeBar } kind;
+  enum Kind { FreeWeightSlot, WakeBar, ComputeFree } kind;
   std::shared_ptr<WeightToken> token;
   std::shared_ptr<Instruction> bar;
 };
@@ -60,8 +60,10 @@ class Core {
     _stat_tot_unit_admitted.assign(t->num_units(), 0);
     _stat_unit_spread.assign(t->num_units(), 0.0);
     _stat_tot_unit_spread.assign(t->num_units(), 0.0);
+    _stat_tot_unit_credit.assign(t->num_units(), 0.0);
   }
   const std::vector<uint64_t>& get_tot_unit_admitted() const { return _stat_tot_unit_admitted; }
+  const std::vector<double>& get_tot_unit_credit() const { return _stat_tot_unit_credit; }
   cycle_type get_core_cycle() const { return _core_cycle; }
 
   std::queue<std::shared_ptr<Instruction>>& get_compute_pipeline(int compute_type);
@@ -84,10 +86,12 @@ class Core {
   void xlu_cycle();
   bool can_issue_compute(std::shared_ptr<Instruction>& inst);
   void update_stats();
-  // Called once per finished instruction; counts a compute's tile into the unit table.
+  // Called once per finished instruction; counts a compute's tile into the unit table, and its
+  // per-array credit (the array unit over the compute's N_eff) into _stat_tot_unit_credit.
   void count_unit_admitted(const std::shared_ptr<Instruction>& inst) {
-    if (_unit_table && inst->get_opcode() == Opcode::COMP)
-      _unit_table->accumulate(inst->get_tile_id(), _stat_unit_admitted);
+    if (!_unit_table || inst->get_opcode() != Opcode::COMP) return;
+    _unit_table->accumulate(inst->get_tile_id(), _stat_unit_admitted);
+    _unit_table->accumulate(inst->get_tile_id(), 1.0, _stat_tot_unit_credit, inst->array_split);
   }
   // Periodic --unit_table credit: a compute with unit rows spreads its tile's admissions
   // evenly over its execution window [finish - compute_cycle, finish); a zero-length
@@ -104,6 +108,9 @@ class Core {
   // SA weight-buffer throttle (sec 10.4): pick a systolic array that has a free
   // weight slot (round-robin among free); -1 if all full -> the preload stalls.
   int pick_free_weight_sa();
+  // The cycles a compute runs: its table cycles, shortened under systolic_array_split by
+  // spreading its array unit's rows over the arrays (see SimulationConfig::systolic_array_split).
+  cycle_type split_compute_cycles(const std::shared_ptr<Instruction>& inst) const;
   void process_due_events();   // drain _due_events due this cycle
   void apply_due(const DueAction& a);
 
@@ -131,13 +138,15 @@ class Core {
   uint64_t _stat_tot_mem_response = 0;
   uint64_t _stat_gemm_inst = 0;
   uint64_t _stat_xlu_inst = 0;
+  uint64_t _stat_compute_stalls = 0;   // computes held at least once by the compute in flight
   uint64_t _stat_skip_dma = 0;
   uint64_t _stat_numa_local_access = 0;
   uint64_t _stat_numa_remote_access = 0;
   const UnitTable* _unit_table = nullptr;
   std::vector<uint64_t> _stat_unit_admitted;
   std::vector<uint64_t> _stat_tot_unit_admitted;
-  struct UnitWindow { cycle_type start, end; int64_t tile_id; };
+  struct UnitWindow { cycle_type start, end; int64_t tile_id; uint32_t n_eff; };
+  std::vector<double> _stat_tot_unit_credit;   // per-array admissions of the finished computes
   std::vector<UnitWindow> _unit_windows;
   std::vector<double> _stat_unit_spread;       // this interval's time-spread credit
   std::vector<double> _stat_tot_unit_spread;   // summed over the printed intervals
@@ -160,6 +169,11 @@ class Core {
   // EVERY event that can make a stalled instruction issuable must set it -- a new
   // issue-gating throttle that forgets to will make cycle() skip the scan forever.
   bool _issue_dirty = true;
+
+  // One compute at a time per core: a compute with cycles is held until the previous one finished
+  // (gem5 issues in order; a pop waits for its row). The tile drops its scan cursor; ComputeFree
+  // at finish re-arms the scan. cc==0 computes are exempt; DMA is not serialized, by design.
+  cycle_type _compute_busy_until = 0;
 
   std::queue<std::shared_ptr<Instruction>> _vu_compute_pipeline;
   std::queue<std::shared_ptr<Instruction>> _xlu_compute_pipeline;

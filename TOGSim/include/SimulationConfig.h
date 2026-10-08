@@ -32,6 +32,13 @@ struct SimulationConfig {
   // preload stalls until a slot frees (its matmuls finished). 2 = weight
   // double-buffer (convention default, tunable). 0 = disabled.
   uint32_t sa_weight_buffer_depth = 2;
+  // systolic_array_split: round_robin -- a compute's array-unit rows spread over
+  // min(N, ceil(rows / vpu_num_lanes)) arrays (needs --unit_table); none (default) ignores N.
+  bool systolic_array_split = false;
+  // systolic_array_unit: the unit table's array unit, Systolic or its variant Msa (one per machine).
+  // The default is the only place TOGSim names a unit: gem5's tpu model calls its array Systolic.
+  std::string systolic_array_unit = "Systolic";
+  uint32_t vpu_num_lanes = 0;
 
   /* DRAM config */
   DramType dram_type;

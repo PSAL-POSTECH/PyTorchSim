@@ -67,6 +67,22 @@ SimulationConfig initialize_config(const YAML::Node& config,
   if (config["sa_weight_buffer_depth"])
     parsed_config.sa_weight_buffer_depth = config["sa_weight_buffer_depth"].as<uint32_t>();
   parsed_config.core_print_interval = get_config_value<uint32_t>(config, "core_stats_print_period_cycles");
+  if (config["systolic_array_split"]) {
+    const std::string split = config["systolic_array_split"].as<std::string>();
+    if (split != "none" && split != "round_robin")
+      throw std::runtime_error(fmt::format("systolic_array_split: {} (none | round_robin)", split));
+    parsed_config.systolic_array_split = split == "round_robin";
+  }
+  if (config["systolic_array_unit"]) {
+    parsed_config.systolic_array_unit = config["systolic_array_unit"].as<std::string>();
+    if (!parsed_config.systolic_array_split)
+      throw std::runtime_error(fmt::format("systolic_array_unit: {} is ignored without systolic_array_split: "
+                                           "round_robin", parsed_config.systolic_array_unit));
+  }
+  if (config["vpu_num_lanes"])
+    parsed_config.vpu_num_lanes = config["vpu_num_lanes"].as<uint32_t>();
+  if (parsed_config.systolic_array_split && parsed_config.vpu_num_lanes == 0)
+    throw std::runtime_error("systolic_array_split: round_robin needs vpu_num_lanes");
 
   /* DRAM config */
   std::string dram_type_str = get_config_value<std::string>(config, "dram_type");

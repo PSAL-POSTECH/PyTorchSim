@@ -67,8 +67,6 @@ class Tile : public std::enable_shared_from_this<Tile> {
   bool all_insts_finshed() { return _nr_insts == _nr_finished_insts; }
   void* get_custom_data() { return _custom_data; }
   void set_custom_data(void* custom_data ) { _custom_data = custom_data; }
-  void set_stonne_tile(bool stonne_tile) { _stonne_tile = stonne_tile; }
-  bool is_stonne_tile() { return _stonne_tile; }
   
  protected:
   std::shared_ptr<TileSubGraph> _onwer_graph;
@@ -88,7 +86,6 @@ class Tile : public std::enable_shared_from_this<Tile> {
   int _scan_weight_free = 0;
   std::vector<std::shared_ptr<Tile>> _child_tiles;
   void *_custom_data=NULL;
-  bool _stonne_tile=false;
 };
 
 #endif

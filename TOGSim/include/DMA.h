@@ -39,13 +39,6 @@ class DMA {
     tag_table[subgraph_id][key] = 1;
   }
 
-  void set_tag_sparse(int subgraph_id, std::vector<int64_t>& key) {
-    if (tag_table.find(subgraph_id) == tag_table.end()) {
-      throw std::runtime_error("Subgraph does not exist in tag_table");
-    }
-    tag_table[subgraph_id][key] = -1;
-  }
-
   void mark_tag_used(int subgraph_id, std::vector<int64_t>& key) {
     if (tag_table.find(subgraph_id) == tag_table.end()) {
       throw std::runtime_error("Subgraph does not exist in tag_table");

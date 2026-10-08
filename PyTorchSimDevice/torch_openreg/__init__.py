@@ -30,7 +30,7 @@ import PyTorchSimFrontend.extension_complex_to_real  # noqa: F401
 
 # The `npu` codegen route: Inductor's own Triton codegen, lowered by the
 # compiler passes. Registered here because Inductor registers a backend per
-# device, once. See PyTorchSimFrontend/triton_backend/README.md.
+# device, once.
 from PyTorchSimFrontend.triton_backend import (
     TritonNPUScheduling, TritonNPUWrapperCodegen)
 torch._inductor.codegen.common.register_backend_for_device(

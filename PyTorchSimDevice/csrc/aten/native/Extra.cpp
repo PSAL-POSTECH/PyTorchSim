@@ -27,30 +27,6 @@ int64_t _fused_sdp_choice(
     return static_cast<int64_t>(sdp::SDPBackend::error);
   }
 
-  // q: (B, Hq, L, E)   k/v: (B, H, S, E)
-  const int64_t Hq = query.size(-3);
-  const int64_t H  = key.size(-3);
-  const int64_t L  = query.size(-2);  // query sequence length
-  const int64_t S  = key.size(-2);    // key/value sequence length
-
-  // Conditions required by the MLIR FlashSDPA kernel:
-  // Prefill only  : L == S  (decode has L == 1, not supported)
-  // Non-GQA       : Hq == H (equal query and KV heads)
-  // No dropout    : template has no dropout implementation
-  // Dense tensors : no nested tensor support
-  const bool can_use_mlir_flash =
-      (L == S) &&
-      (Hq == H) && !enable_gqa &&
-      sdp::check_for_dropout(params, /*debug=*/false) &&
-      sdp::check_nested_tensor(params, /*debug=*/false);
-
-  const bool ctx_flash        = at::globalContext().userEnabledFlashSDP();
-  const bool ctx_math         = at::globalContext().userEnabledMathSDP();
-
-  if (ctx_flash && can_use_mlir_flash) {
-    return static_cast<int64_t>(sdp::SDPBackend::overrideable);
-  }
-
   return static_cast<int64_t>(sdp::SDPBackend::math);
 }
 

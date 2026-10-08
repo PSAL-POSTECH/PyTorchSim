@@ -13,7 +13,6 @@ list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/extern)
 
 # C++ setttings
 set(CMAKE_CXX_STANDARD 17)
-set(ONNX_ML 1)
 set(JSON_BuildTests OFF CACHE INTERNAL "")
 set(EXECUTABLE_OUTPUT_PATH "${CMAKE_SOURCE_DIR}/build/bin")
 set(LIBRARY_OUTPUT_PATH "${CMAKE_SOURCE_DIR}/build/lib")
@@ -35,24 +34,7 @@ include_directories("${PROJECT_SOURCE_DIR}/extern/ramulator2/resources/wrappers"
 # Add libaray booksim
 add_subdirectory("${PROJECT_SOURCE_DIR}/extern/booksim")
 
-# Add libary protobuf
-add_subdirectory("${PROJECT_SOURCE_DIR}/extern/protobuf/cmake" EXCLUDE_FROM_ALL)
-set_target_properties(libprotoc PROPERTIES FOLDER "external/protobuf")
-set_target_properties(protoc PROPERTIES FOLDER "external/protobuf")
-
-# Add libaray stonne core
-add_subdirectory("${PROJECT_SOURCE_DIR}/extern/stonneCore")
-
-# Add libaray onnx
-add_definitions("-DONNX_NAMESPACE=onnx")
-add_subdirectory("${PROJECT_SOURCE_DIR}/extern/onnx" EXCLUDE_FROM_ALL)
-set_target_properties(onnx PROPERTIES FOLDER "extern/onnx")
-set_target_properties(onnx_proto PROPERTIES FOLDER "extern/onnx")
-
-target_include_directories(Simulator PUBLIC ${PROJECT_SOURCE_DIR}/extern/stonneCore/include)
 target_include_directories(Simulator PUBLIC ${PROJECT_SOURCE_DIR}/include)
 target_include_directories(Simulator PUBLIC ${PROJECT_SOURCE_DIR}/include/scheduler)
 target_include_directories(Simulator PUBLIC ${PROJECT_SOURCE_DIR}/src)
-target_include_directories(Simulator PUBLIC ${ONNX_INCLUDE_DIRS})
-target_link_libraries(Simulator booksim2 ramulator sstStonne)
-target_link_libraries(Simulator ${PROTOBUF_LIB} onnx_proto sstStonne ${CONAN_LIBS} stdc++fs)
+target_link_libraries(Simulator booksim2 ramulator ${CONAN_LIBS} stdc++fs)

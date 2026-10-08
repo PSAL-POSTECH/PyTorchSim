@@ -1,8 +1,6 @@
-"""Run pytorchsim-triton-compiler, out of process.
+"""Run pytorchsim-triton-compiler in its own process and read the kernel object it leaves.
 
-the compiler's passes run on LLVM 23's MLIR python bindings and this process holds LLVM
-20's. `mlir` is a NAMESPACE package, so two LLVMs in one interpreter merge
-silently; the seam between them is a file, which is measured to work.
+The seam is kernel.json in the kernel's workdir; nothing here imports the compiler.
 """
 
 import json

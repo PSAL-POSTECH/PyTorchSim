@@ -1,14 +1,14 @@
 """Inductor's Triton source -> source the compiler venv can compile.
 
-Two rewrites: drop what a torch-free venv cannot import, and replace the mm/bmm
-templates' modulo wrap with a load mask so the operand stays a descriptor.
+Two rewrites: drop what a torch-free venv cannot import (adding torch's triton_helpers back as
+source), and replace the mm/bmm templates' modulo wrap with a load mask so the operand stays a descriptor.
 """
 
+import inspect
 import re
 
 from PyTorchSimFrontend import config
 
-from . import triton_helpers_src
 from .errors import SpecIncomplete
 
 logger = config.setup_logger()
@@ -21,16 +21,16 @@ _HELPER_USE_RE = re.compile(r"\btriton_helpers\.(\w+)")
 
 
 def strip_for_compiler(src):
-    """Remove everything the torch-free the compiler venv cannot import.
+    """Remove everything the torch-free compiler venv cannot import.
 
     Drops torch/inductor imports and the @triton_heuristics decorator, then
-    re-adds the imports and vendored helpers the stripped body still needs.
+    re-adds the imports and torch's triton_helpers the stripped body still needs.
     """
     lines = src.splitlines()
     out, i = [], 0
     while i < len(lines):
         line = lines[i]
-        if _HEURISTIC_RE.match(line.strip()) or _HEURISTIC_RE.match(line):
+        if _HEURISTIC_RE.match(line.strip()):
             while i < len(lines) and lines[i].strip() != "@triton.jit":
                 i += 1
             continue
@@ -42,12 +42,6 @@ def strip_for_compiler(src):
     body = "\n".join(out)
 
     used = sorted(set(_HELPER_USE_RE.findall(body)))
-    unvendored = [h for h in used if h not in triton_helpers_src.VENDORED]
-    if unvendored:
-        raise SpecIncomplete(
-            f"kernel uses triton_helpers.{{{','.join(unvendored)}}}, which lives "
-            f"in torch and the compiler venv has no torch. Add it to "
-            f"triton_helpers_src if it is pure triton, or lower it another way.")
 
     prefix = ""
     if "import triton.language as tl" not in body:
@@ -57,8 +51,78 @@ def strip_for_compiler(src):
     if re.search(r"\blibdevice\.", body):
         prefix += "from triton.language.extra import libdevice\n"
     if used:
-        prefix += triton_helpers_src.SRC
+        prefix += _helper_source(used)
     return prefix + body
+
+
+_PREAMBLE = """import types as _types
+import math as _torchsim_pymath
+import triton
+import triton.language as tl
+from triton.language import math
+from triton.language.extra import libdevice
+from triton.language.standard import _log2
+_LOG_2_E: tl.constexpr = tl.constexpr(_torchsim_pymath.log2(_torchsim_pymath.e))
+"""
+_PREAMBLE_NAMES = {"triton", "tl", "math", "libdevice", "_log2", "_LOG_2_E", "pymath"}
+
+
+def _helpers_module():
+    """torch._inductor.runtime.triton_helpers."""
+    from torch._inductor.runtime import triton_helpers
+    return triton_helpers
+
+
+def _jit_helpers(mod):
+    """{name: source} of every @triton.jit function the module itself defines."""
+    out = {}
+    for name, obj in vars(mod).items():
+        fn = getattr(obj, "fn", None)
+        if fn is not None and getattr(fn, "__module__", None) == mod.__name__:
+            out[name] = inspect.getsource(fn)
+    return out
+
+
+def _names(src):
+    """Bare (non-attribute) identifiers a source refers to."""
+    return set(re.findall(r"(?<![\w.])([A-Za-z_]\w*)\b", src))
+
+
+def _helper_source(used):
+    """Source defining the `triton_helpers` module object for the helpers `used`.
+
+    Raises SpecIncomplete for a name that is no @triton.jit helper or needs a global this cannot supply.
+    """
+    mod = _helpers_module()
+    helpers = _jit_helpers(mod)
+    missing = sorted(set(used) - set(helpers))
+    if missing:
+        raise SpecIncomplete(
+            f"kernel uses triton_helpers.{{{','.join(missing)}}}, which is not a "
+            f"@triton.jit helper in torch's triton_helpers")
+
+    need, todo = set(), list(used)
+    while todo:
+        name = todo.pop()
+        if name in need:
+            continue
+        need.add(name)
+        todo.extend(n for n in _names(helpers[name]) if n in helpers and n not in need)
+
+    module_globals = set(vars(mod)) - set(helpers) - _PREAMBLE_NAMES
+    for name in sorted(need):
+        unknown = sorted(_names(helpers[name]) & module_globals)
+        if unknown:
+            raise SpecIncomplete(
+                f"triton_helpers.{name} needs {unknown} from torch, which the "
+                f"compiler venv has no copy of")
+
+    rename = re.compile(r"(?<![\w.])(" + "|".join(sorted(need, key=len, reverse=True)) + r")\b")
+    body = "\n".join(rename.sub(r"_torchsim_\1", helpers[n].replace("pymath.", "_torchsim_pymath."))
+                     for n in sorted(need))
+    binds = "\n".join(f"triton_helpers.{n} = _torchsim_{n}" for n in sorted(used))
+    return (f"\n{_PREAMBLE}\n{body}\n"
+            f"triton_helpers = _types.ModuleType('triton_helpers')\n{binds}\n")
 
 
 _WRAP_TRIPLES = (("rm", "M", "BLOCK_M"), ("rn", "N", "BLOCK_N"))
@@ -137,16 +201,17 @@ def clamp_instead_of_wrap(body, kernel_name=""):
             return body
 
         pad = " " * (len(lines[anchor]) - len(lines[anchor].lstrip()))
-        inserted, applied = [], {}
+        inserted, masks, applied = [], set(), {}
         for idx, dim, _block in _WRAP_TRIPLES:
             if not needs.get(idx):
                 continue
             name = _ROW_MASK if idx == "rm" else _COL_MASK
             slice_ = "[:, None]" if idx == "rm" else "[None, :]"
             inserted.append(f"{pad}{name} = {idx}{slice_} < {dim}")
+            masks.add(name)
         lines[anchor + 1:anchor + 1] = inserted
         for ptr, name in _MASK_FOR.items():
-            if name in "".join(inserted):
+            if name in masks:
                 applied[ptr] = _add_mask_to_loads(lines, ptr, name)
         if any(v == 0 for v in applied.values()):
             logger.warning(
@@ -155,7 +220,7 @@ def clamp_instead_of_wrap(body, kernel_name=""):
             return body
 
     body = "\n".join(lines)
-    for idx, dim, block in _WRAP_TRIPLES:
+    for idx, dim, _block in _WRAP_TRIPLES:
         if idx not in needs:
             continue
         body, n = re.subn(rf"\b{idx}\s*%\s*{dim}\b", idx, body)

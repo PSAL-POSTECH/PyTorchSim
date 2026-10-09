@@ -1,11 +1,8 @@
-"""Let Inductor's mm/conv Triton templates reach this backend.
+"""Our patches to Inductor so its Triton codegen serves npu.
 
-Without this they go to `extern_kernels.*`, which on npu either raises
-`convolution_overrideable not implemented` or falls back to eager and simulates
-nothing. The templates are not GPU-specific; `use_triton_template` is.
+npu counts as a Triton GPU, mm/bmm/conv go to the Triton templates with this machine's tiles,
+every kernel's blocks are pinned (NPUChoices), and selection skips benchmarking.
 """
-
-import os
 
 import torch
 
@@ -21,6 +18,7 @@ _installed = False
 
 
 def _register_npu_as_gpu():
+    """Add npu to Inductor's GPU_TYPES, so Triton codegen is chosen for it."""
     import torch._inductor.utils as inductor_utils
 
     if "npu" not in inductor_utils.GPU_TYPES:
@@ -28,11 +26,26 @@ def _register_npu_as_gpu():
 
 
 def _claim_triton_present():
-    """has_triton() asks whether a supported DEVICE is available, not whether
-    triton is installed. The missing piece is a driver we never use."""
+    """Make has_triton() true and triton_hash_with_backend() driver-free: npu never uses a GPU driver.
+
+    Triton itself must already be importable, from PYTHONPATH, before torch first imports it.
+    """
+    import functools
+    import hashlib
+
     import torch._inductor.scheduler as scheduler
     import torch.utils._triton as triton_utils
 
+    try:
+        import triton
+    except ModuleNotFoundError as e:
+        raise ModuleNotFoundError(
+            "Inductor's Triton codegen needs `triton` importable: put the compiler's "
+            "checkout ($TORCHSIM_PREFIX/triton-src/python) on PYTHONPATH") from e
+
+    key = f"pytorchsim-torchsim-compile-{triton.__version__}"
+    backend_hash = hashlib.sha256(key.encode("utf-8")).hexdigest().upper()
+    triton_utils.triton_hash_with_backend = functools.cache(lambda: backend_hash)
     triton_utils.has_triton = lambda: True
     if hasattr(scheduler, "has_triton"):
         scheduler.has_triton = lambda: True
@@ -44,7 +57,7 @@ def _lowering_npu():
 
     try:
         return V.graph.get_current_device_or_throw().type == "npu"
-    except Exception:  # noqa: BLE001 - no graph in scope is not npu
+    except Exception:  # noqa: BLE001
         return False
 
 
@@ -58,26 +71,59 @@ def _is_npu(obj):
 
 
 def _gemm_tiles(m, n, k, dtype_size, out_size=None):
-    """This machine's mm tiles for [m, k] @ [k, n], best first: develop's select_tile.
+    """This machine's mm tiles for [m, k] @ [k, n], best first, as GemmConfigs.
 
-    `gemm_tile_candidates` (develop's gemm_combination_mapping) enumerates every tile that
-    fits half the scratchpad -- the other half is the next work-item's double buffer -- and
-    ranks them by the scratchpad they use. Torch's generic set is appended after.
-    `out_size`: the bytes C is stored at when it is wider than the inputs (a fused cast) --
-    develop counts that as C once more per fused node, and with a widening cast it is the same.
+    `out_size` is C's element size when a fused cast stores it wider than the inputs.
     """
     from torch._inductor.template_heuristics.triton import GemmConfig
 
-    from .hardware import HardwareInfo
-
     size = int(dtype_size)
     extra = max(int(out_size or size) // size - 1, 0)
-    tiles = HardwareInfo().gemm_tile_candidates(int(m), int(n), int(k), n_extra_node=extra,
-                                                precision_bytes=size)
+    tiles = _gemm_tile_candidates(int(m), int(n), int(k), extra, size)
     return [GemmConfig(tm, tn, tk, 1, 4) for tm, tn, tk in tiles]
 
 
+def _gemm_tile_candidates(M, N, K, n_extra_node, precision_bytes):
+    """Every (tile_M, tile_N, tile_K) whose A, B and C fit half the scratchpad, largest first.
+
+    Each side is a lane multiple times a power of two (TTGIR's layouts need them), the tail masked.
+    """
+    lanes = int(config.vpu_num_lanes)
+    spad_per_lane = config.CONFIG_SPAD_INFO["spad_size"]
+    max_spad = spad_per_lane * lanes // 2
+    max_spad_per_lane = spad_per_lane // 2
+
+    def per_lane(rows, cols):
+        return max(rows * ((cols + lanes - 1) // lanes), 2)
+
+    def sides(dim):
+        pad = lanes if dim > lanes else 8
+        top = _pow2_ceil((dim + pad - 1) // pad * pad)
+        if dim <= lanes:
+            return [top]
+        return [lanes << i for i in range((top // lanes).bit_length())]
+
+    out = 1 + n_extra_node
+    tiles = []
+    for tk in sides(max(K, 8)):
+        for tm in sides(M):
+            for tn in sides(N):
+                used = (tm * tk + tk * tn + tm * tn * out) * precision_bytes
+                used_per_lane = (per_lane(tk, tn) + per_lane(tm, tk)
+                                 + per_lane(tm * out, tn)) * precision_bytes
+                if used < max_spad and used_per_lane < max_spad_per_lane:
+                    tiles.append((used, (tm, tn, tk)))
+    tiles.sort(key=lambda x: x[0], reverse=True)
+    return [t for _, t in tiles]
+
+
+def _pow2_ceil(v):
+    """The smallest power of two at or above v."""
+    return 1 << (int(v) - 1).bit_length()
+
+
 def _register_template_heuristics():
+    """Register npu's mm/bmm/addmm/baddbmm tile heuristics: this machine's tiles, then the generic set."""
     from torch._inductor.kernel.bmm import bmm_template
     from torch._inductor.kernel.mm import mm_template
     from torch._inductor.template_heuristics.registry import (
@@ -89,11 +135,7 @@ def _register_template_heuristics():
     @register_template_heuristic(bmm_template.uid, "npu")
     class NPUMMTemplateConfigHeuristic(MMTemplateConfigMixin, BaseConfigHeuristic):
         def _get_config_generator(self):
-            """The hook the mixin documents for exactly this.
-
-            It is the one place the shape is known, and a tile mapping blind to
-            M, N and K is not one. _finalize_mm_configs still dedupes and clamps.
-            """
+            """Configs for one m, n, k: _gemm_tiles first, then the generic set."""
             generic = super()._get_config_generator()
 
             def configs(m, n, k, **kwargs):
@@ -121,53 +163,18 @@ def _register_template_heuristics():
 
 
 def _groups_now():
+    """The groups of the convolution being lowered right now (1 outside one)."""
     return getattr(_conv_groups, "value", 1) or 1
 
 
-def _clamp_conv_block_n():
-    """Tell the conv heuristic how many channels a GROUP has.
+def _wrap_convolution_lowering():
+    """Wrap aten.convolution's lowering: record its groups, and lower a transposed one as direct.
 
-    `preprocess_mm_configs` narrows BLOCK_N to the extent it is handed, which for
-    a grouped conv is all groups at once: mobilenet got 128 against GROUP_OUT_C 1.
+    The groups narrow the conv heuristic's BLOCK_N to one group's channels.
     """
     import functools
     import inspect
     import threading
-
-    global _conv_groups
-    from torch._inductor import lowering as inductor_lowering
-    from torch._inductor.kernel import conv as conv_kernel
-
-    _conv_groups = threading.local()
-    sig = inspect.signature(conv_kernel.convolution)
-
-    def wrap(inner):
-        @functools.wraps(inner)
-        def convolution(*args, **kwargs):
-            try:
-                groups = sig.bind(*args, **kwargs).arguments.get("groups", 1)
-            except TypeError:
-                groups = 1
-            prev = getattr(_conv_groups, "value", 1)
-            _conv_groups.value = groups if isinstance(groups, int) else 1
-            try:
-                return inner(*args, **kwargs)
-            finally:
-                _conv_groups.value = prev
-
-        return convolution
-
-    packet = torch.ops.aten.convolution
-    for key in [packet] + [getattr(packet, o) for o in packet.overloads()]:
-        inner = inductor_lowering.lowerings.get(key)
-        if inner is not None:
-            inductor_lowering.lowerings[key] = wrap(inner)
-
-
-def _lower_transposed_conv_as_a_direct_one():
-    """Give a transposed convolution to the Triton template, as a direct one."""
-    import functools
-    import inspect
 
     from torch._inductor import ir
     from torch._inductor import lowering as inductor_lowering
@@ -175,6 +182,8 @@ def _lower_transposed_conv_as_a_direct_one():
     from torch._inductor.lowering import lowerings as L
     from torch._inductor.virtualized import V
 
+    global _conv_groups
+    _conv_groups = threading.local()
     aten = torch.ops.aten
     prims = torch.ops.prims
     sig = inspect.signature(conv_kernel.convolution)
@@ -236,6 +245,25 @@ def _lower_transposed_conv_as_a_direct_one():
 
         return y, w, [1] * n_sp, [0] * n_sp, [1] * n_sp, [0] * n_sp
 
+    def lower(inner, a, args, kwargs):
+        """The lowering itself: a transposed npu conv as its direct equivalent, else inner."""
+        if a is None:
+            return inner(*args, **kwargs)
+        x, weight = a["x"], a["weight"]
+        if not a["transposed"] or ir.get_device_type(x) != "npu":
+            return inner(*args, **kwargs)
+
+        batchless = len(x.get_size()) == len(weight.get_size()) - 1
+        if batchless:
+            x = L[aten.expand](x, [1, *x.get_size()])
+
+        y, w, stride, padding, dilation, output_padding = _rewrite(
+            x, weight, a["stride"], a["padding"], a["dilation"],
+            a["output_padding"], a["groups"])
+        out = inner(y, w, a["bias"], stride, padding, dilation, False,
+                    output_padding, a["groups"])
+        return L[aten.squeeze](out, dim=0) if batchless else out
+
     def wrap(inner):
         @functools.wraps(inner)
         def convolution(*args, **kwargs):
@@ -243,23 +271,15 @@ def _lower_transposed_conv_as_a_direct_one():
                 bound = sig.bind(*args, **kwargs)
                 bound.apply_defaults()
                 a = bound.arguments
+                groups = a.get("groups", 1)
             except TypeError:
-                return inner(*args, **kwargs)
-
-            x, weight = a["x"], a["weight"]
-            if not a["transposed"] or ir.get_device_type(x) != "npu":
-                return inner(*args, **kwargs)
-
-            batchless = len(x.get_size()) == len(weight.get_size()) - 1
-            if batchless:
-                x = L[aten.expand](x, [1, *x.get_size()])
-
-            y, w, stride, padding, dilation, output_padding = _rewrite(
-                x, weight, a["stride"], a["padding"], a["dilation"],
-                a["output_padding"], a["groups"])
-            out = inner(y, w, a["bias"], stride, padding, dilation, False,
-                        output_padding, a["groups"])
-            return L[aten.squeeze](out, dim=0) if batchless else out
+                a, groups = None, 1
+            prev = getattr(_conv_groups, "value", 1)
+            _conv_groups.value = groups if isinstance(groups, int) else 1
+            try:
+                return lower(inner, a, args, kwargs)
+            finally:
+                _conv_groups.value = prev
 
         return convolution
 
@@ -271,11 +291,7 @@ def _lower_transposed_conv_as_a_direct_one():
 
 
 def _size_conv_blocks_from_the_machine():
-    """Offer conv tiles this machine has lanes for.
-
-    `get_config_heuristics` has no registry lookup, so npu took a GPU's table.
-    BLOCK_N is the lane count; M and K cost scratchpad and are offered ascending.
-    """
+    """Give npu its own conv tile table: BLOCK_N is the lane count, per group."""
     from torch._inductor.choices import InductorChoices
     from torch._inductor.template_heuristics.triton import (
         BaseConfigHeuristic, ConvConfig)
@@ -314,11 +330,7 @@ def _size_conv_blocks_from_the_machine():
 
 
 def _size_grouped_conv_grid_per_group():
-    """Launch a grouped convolution over the channels a GROUP has.
-
-    Inductor grids cdiv(OUT_C, BLOCK_N) on an axis the kernel masks against
-    GROUP_OUT_C; the programs dropped are those whose stores were fully masked.
-    """
+    """Grid a grouped convolution over one group's channels, not all of them."""
     from torch._inductor.kernel import conv as conv_kernel
     from torch._inductor.select_algorithm import SymbolicGridFn
 
@@ -356,9 +368,7 @@ def _size_grouped_conv_grid_per_group():
 
 
 def pick_config(choices):
-    """Stand in for benchmarking: there is no device to time on, so the offered
-    order wins. Extern ranks last, present only so a device with no registered
-    heuristic (cpu) still has a choice."""
+    """Timings in place of benchmarking: the offered order wins, extern last."""
     from torch._inductor.select_algorithm import ExternKernelCaller
 
     return {c: (1e3 if isinstance(c, ExternKernelCaller) else 1.0) + i * 1e-3
@@ -366,9 +376,7 @@ def pick_config(choices):
 
 
 def _short_circuit_degenerate_gemms():
-    """A zero-length axis has no tile, so the heuristics offer no config and
-    the empty choice list raises. A MoE expert routing no tokens gives
-    [0, K] @ [K, N]."""
+    """Lower an npu mm/bmm/addmm/baddbmm with a zero-length M or N (or K, unbiased) as zeros."""
     from torch._inductor.kernel.mm_common import mm_args
     from torch._inductor.lowering import full, lowerings
     from torch._inductor.virtualized import V
@@ -400,15 +408,15 @@ def _short_circuit_degenerate_gemms():
 
 
 def _num_cores():
-    """This machine's core count. The frontend has it and nobody read it."""
-    from .hardware import HardwareInfo
+    """This machine's core count, from the TOGSim config."""
     try:
-        return max(1, int(HardwareInfo().num_cores))
-    except Exception:
+        return max(1, int(config.CONFIG_NUM_CORES))
+    except Exception:  # noqa: BLE001
         return 1
 
 
 def _npu_choices_class():
+    """NPUChoices, built once: InductorChoices with this machine's blocks and reduction policy."""
     global _NPU_CHOICES
     if _NPU_CHOICES is not None:
         return _NPU_CHOICES
@@ -422,13 +430,9 @@ def _npu_choices_class():
 
     class NPUChoices(InductorChoices):
         def triton_kernel_kwargs(self, kernel_cls, features, groups, kernel_kwargs):
-            """Pin this machine's blocks INSIDE Inductor, the hook upstream
-            documents for exactly this ("used to apply fixed configurations").
+            """Pin this machine's blocks as a FixedTritonConfig, before the kernel is generated.
 
-            It runs before the TritonKernel is built, so the source is generated
-            knowing the block: measured, a numel the block divides loses its mask
-            entirely (`xmask = xindex < xnumel` -> `tl.full(...)`, loads lose the
-            mask operand), and one it does not keeps it.
+            The numels come from `groups`; the dtype width from the widest scheduled node.
             """
             kw = super().triton_kernel_kwargs(kernel_cls, features, groups,
                                               kernel_kwargs)
@@ -436,8 +440,6 @@ def _npu_choices_class():
                 return kw
             from torch._inductor.codegen.triton import FixedTritonConfig
 
-            from . import launch
-            #: THE NUMELS ARE IN `groups`, one dict per tiling ({'x': 1024, 'r0_': 1}).
             numels = {}
             for g in (groups or []):
                 try:
@@ -451,8 +453,6 @@ def _npu_choices_class():
                         pass
             if not numels:
                 return kw
-            #: WIDEST ELEMENT, the same question `launch._element_bits` asks of
-            #: the spec's args -- asked here of the nodes, which is what exists.
             bits = []
             for nd in features.scheduler_nodes():
                 try:
@@ -465,7 +465,7 @@ def _npu_choices_class():
                                   "numels": numels})()
             try:
                 cfg = launch.fixed_config_for(shim, numels, args) or {}
-            except Exception as e:                       # noqa: BLE001
+            except Exception as e:  # noqa: BLE001
                 logger.info("[torchsim-compile] no fixed_config for this kernel: %s", e)
                 return kw
             cfg = {k: int(v) for k, v in cfg.items()
@@ -478,6 +478,7 @@ def _npu_choices_class():
 
         @staticmethod
         def should_use_persistent_reduction(features, cooperative_reduction):
+            """Persistent only when the whole reduction fits this machine's reduction block."""
             base = InductorChoices.should_use_persistent_reduction(
                 features, cooperative_reduction)
             if not base or not _lowering_npu():
@@ -494,36 +495,22 @@ def _npu_choices_class():
         @staticmethod
         def reduction_split_factor(device, reduction_numel_hint, numel_hint,
                                    inner_reduction):
-            """Split a reduction only when a core would otherwise sit idle.
+            """Split a reduction only when a core would otherwise sit idle, and at most cores ways.
 
-            Splitting costs a DRAM round trip for the partials and buys
-            parallelism across work-items that run AT THE SAME TIME. Two things
-            have to hold: the machine must have more than one core, and the
-            parallel axis must not already fill them. Upstream writes the kernel
-            that combines the partials, so nothing here has to.
+            One core, or a parallel axis that already fills the cores, means no split.
             """
             if getattr(device, "type", device) != "npu":
                 return InductorChoices.reduction_split_factor(
                     device, reduction_numel_hint, numel_hint, inner_reduction)
-            #: THE DEVICE IS THE ARGUMENT HERE, and the guard above already
-            #: settled it. `_lowering_npu()` asks V.graph, which has no current
-            #: device yet during lowering -- it answers False and the whole
-            #: branch never runs.
             cores = _num_cores()
             if cores > 1:
                 want = InductorChoices.reduction_split_factor(
                     device, reduction_numel_hint, numel_hint, inner_reduction)
-                #: ENOUGH PARALLEL WORK ALREADY. `numel_hint` is the output
-                #: count, i.e. the work-items the parallel axis alone gives; if
-                #: that reaches the cores, splitting adds traffic and no overlap.
                 try:
                     if int(numel_hint) >= cores:
                         return 1
                 except (TypeError, ValueError):
                     return 1
-                #: AND NO MORE THAN THE CORES. Upstream sizes the split for a GPU
-                #: whose blocks number in the hundreds; here every split past the
-                #: core count is a partial written and read for nothing.
                 split = min(int(want), cores)
                 if split > 1:
                     logger.info(
@@ -532,14 +519,6 @@ def _npu_choices_class():
                         reduction_numel_hint, split, cores, want)
                     return split
                 return 1
-            if os.environ.get("TORCHSIM_LOG_SPLIT"):
-                would = InductorChoices.reduction_split_factor(
-                    device, reduction_numel_hint, numel_hint, inner_reduction)
-                if would != 1:
-                    logger.info(
-                        "[torchsim-compile] declined a %s-way split of %s elements "
-                        "into %s outputs (inner=%s)",
-                        would, reduction_numel_hint, numel_hint, inner_reduction)
             return 1
 
     NPUChoices.__module__ = __name__
@@ -558,31 +537,9 @@ def _install_npu_choices():
 
 
 def _lower_conv1d_as_conv2d():
-    """Send a 1-D convolution through the 2-D template instead of to aten.
+    """Register torch's unregistered conv1d_to_conv2d for npu, so a Conv1d reaches the 2-D template.
 
-    Inductor ships ONE conv template and gates it on `ndim == 2`
-    (`torch/_inductor/kernel/conv.py`), so a Conv1d has no Triton choice to
-    append and falls to `extern_kernels.convolution` -- which on npu raises
-    `convolution_overrideable not implemented`. That is what stops
-    RecurrentGemma's Griffin block, whose temporal conv is an `nn.Conv1d`.
-
-    The rewrite itself is torch's own: `conv1d_to_conv2d` sits in
-    `torch/_inductor/decomposition.py` under the comment "intentionally not
-    regiestered" [sic], fully written and simply never registered. It adds a
-    length-1 spatial axis, calls conv2d, and squeezes it back -- exact, not an
-    approximation. We register it rather than writing our own.
-
-    Registering a decomposition is the supported extension point, unlike the
-    two patches above it in `install()`, which exist only because GPU_TYPES and
-    has_triton are hardcoded lists with no hook.
-
-    Guards, in order of what each prevents:
-      * device -- the decomposition table is global, and a cpu graph in the
-        same process must keep the lowering Inductor chose for it.
-      * len(stride) != 1 -- this is what makes it a 1-D conv, AND what stops
-        the recursion: the conv2d we emit comes back through here with a 2-D
-        stride and declines.
-      * transposed / output_padding -- conv1d_to_conv2d models neither.
+    Declines non-npu inputs, 2-D strides (which also ends the recursion), transposed and output_padding.
     """
     from torch._inductor.decomposition import conv1d_to_conv2d, register_decomposition
 
@@ -601,6 +558,7 @@ def _lower_conv1d_as_conv2d():
 
 
 def _install_selection():
+    """Patch algorithm selection for npu choices: no precompile, no benchmark, allocate-only examples."""
     from torch._inductor.select_algorithm import AlgorithmSelectorCache
 
     orig_benchmark = AlgorithmSelectorCache.__dict__["benchmark_choices"].__func__
@@ -641,23 +599,18 @@ def _install_selection():
 
 
 def install():
-    """On by default; TORCHSIM_TRITON_TEMPLATES=0 opts out.
-
-    Sending mm to aten simulates nothing, so a test that stops inside the compiler says
-    more than one that passes without running the op.
-    """
+    """Apply every patch here once, and turn on Inductor's mm/conv template autotune."""
     global _installed
-    if _installed or os.environ.get("TORCHSIM_TRITON_TEMPLATES", "1") == "0":
+    if _installed:
         return
     from torch._inductor import config as inductor_config
 
     _register_npu_as_gpu()
     _claim_triton_present()
     _register_template_heuristics()
-    _lower_transposed_conv_as_a_direct_one()
+    _wrap_convolution_lowering()
     _size_conv_blocks_from_the_machine()
     _size_grouped_conv_grid_per_group()
-    _clamp_conv_block_n()
     _short_circuit_degenerate_gemms()
     _install_npu_choices()
     _lower_conv1d_as_conv2d()

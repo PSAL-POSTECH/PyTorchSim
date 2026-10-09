@@ -67,7 +67,7 @@ report next to the number it produced — never folded into a pass.
 | Path | Purpose |
 |---|---|
 | `PyTorchSimFrontend/` | The graph side: `config.py` (the central settings reader) and `rewrite_fx_graph.py` (our FX graph rewrites, so ops with no `npu` kernel stay on the device) |
-| `PyTorchSimCodegen/` | The `npu` codegen route: Inductor's Triton codegen for `npu` (`scheduling.py`, `wrapper_codegen.py`, `inductor_templates.py`), the kernel spec and source fixups, and the bridge that runs PyTorchSim-Triton-Backend and caches its kernel objects (`compiler_bridge.py`, `codecache.py`) |
+| `PyTorchSimCodegen/` | The `npu` codegen route: Inductor's Triton codegen for `npu` (`scheduling.py`, `wrapper_codegen.py`, `inductor_patches.py`), the kernel spec and source fixups, and the bridge that runs PyTorchSim-Triton-Backend and caches its kernel objects (`compiler_bridge.py`, `codecache.py`) |
 | `PyTorchSimDevice/` | C++ PyTorch backend registering the `npu` device. Built as a pip-installed package via `setup.py`. Based on `torch_openreg` (PrivateUse1 example). Produces `_C.cpython-*.so` |
 | `Simulator/` | What runs a kernel object: Spike (`functional.py`, `spike_run.py`, and `functional_verify.py`, the per-kernel CPU cross-check), gem5 (`gem5.py`, `trace_build.py`), TOGSim (`timing.py`, and `simulator.py`'s `TOGSimulator`: the process driver and multi-tenant context manager) |
 | `Scheduler/scheduler.py` | Poisson arrival generator + scheduling utilities for multi-tenant runs |
@@ -171,7 +171,7 @@ Conan deps for TOGSim: `boost/1.79.0`, `robin-hood-hashing/3.11.5`, `spdlog/1.11
 
 ## Where to look for X
 
-- **Adding a new op:** nothing here, usually — Inductor's own Triton lowerings emit the kernel and PyTorchSim-Triton-Backend lowers it. What lives here is our FX graph rewrites, `rewrite_fx_graph.py`: decompositions and post-grad passes for ops with no `npu` kernel (histc, polar, topk, transformers' grouped_mm, complex arithmetic). GEMM/BMM tile selection: `PyTorchSimCodegen/inductor_templates.py` + `PyTorchSimCodegen/hardware.py`. Kernel source fixups before the compiler sees them: `PyTorchSimCodegen/source_rewrite.py`.
+- **Adding a new op:** nothing here, usually — Inductor's own Triton lowerings emit the kernel and PyTorchSim-Triton-Backend lowers it. What lives here is our FX graph rewrites, `rewrite_fx_graph.py`: decompositions and post-grad passes for ops with no `npu` kernel (histc, polar, topk, transformers' grouped_mm, complex arithmetic). GEMM/BMM tile selection: `PyTorchSimCodegen/inductor_patches.py` (`_gemm_tile_candidates`). Kernel source fixups before the compiler sees them: `PyTorchSimCodegen/source_rewrite.py`.
 - **Adding a PyTorch device op:** `PyTorchSimDevice/csrc/aten/native/*` (Minimal/Extra split mirrors `torch_openreg`).
 - **TOGSim hardware model changes:** `TOGSim/src/{Core,Dram,Interconnect,L2Cache,Tile,TileGraph}.cc` + matching `include/*.h`.
 - **TOG generation:** the compiler emits the trace producer as C++ and the compute type of each tile (`pytorchsim_triton_compiler/trace/`, `trace_cpp` and `tile_types` in `kernel.json`); this repo measures the tiles under gem5, compiles the C++ to `trace.so` and writes `trace_cycles.tsv` (`Simulator/trace_build.py`, driven from `Simulator/timing.py`); TOGSim turns them into a TileGraph via `trace_to_tilegraph`.

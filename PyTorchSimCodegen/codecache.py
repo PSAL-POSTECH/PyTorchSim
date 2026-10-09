@@ -174,7 +174,7 @@ def _autotune_template(src_code, meta, kernel_name, write_path):
     shape = _mm_template(src_code, meta)
     if shape is None:
         return src_code, meta
-    from .inductor_templates import _gemm_tiles
+    from .inductor_patches import _gemm_tiles
     m, n, k, size, out_size = shape
     strategy = config.codegen_mapping_strategy
     known = _recorded_tile(m, n, k) if "external" in strategy else None

@@ -174,7 +174,7 @@
 #                 alias key covers PrivateUse1, so the CPU fallback never gets
 #                 a turn, and a kernel would run the convolution on the host
 #                 and simulate nothing. Fixed by not emitting it:
-#                 triton_backend/inductor_templates.py rewrites a transposed
+#                 PyTorchSimCodegen/inductor_patches.py rewrites a transposed
 #                 convolution as the direct one it is, wrapped around the
 #                 convolution lowering. OUT OF THE GATE ON RUNTIME -- 498s
 #                 would take the gate to about 1600s against an 1800s budget

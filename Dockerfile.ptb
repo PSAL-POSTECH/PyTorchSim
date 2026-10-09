@@ -27,7 +27,6 @@ RUN env -u CC -u CXX /workspace/pytorchsim-triton-compiler/setup/toolchain.sh -j
 
 ENV TORCHSIM_COMPILE_DIR=/workspace/pytorchsim-triton-compiler \
     TORCHSIM_COMPILE_TARGET=/workspace/pytorchsim-triton-compiler/tests/targets/tpuv6e.json \
-    TORCHSIM_COMPILE_TRITON_SRC=/workspace/triton-src/python \
     TRITON_BACKENDS_IN_TREE=1 \
     TRITON_PLUGIN_PATHS=/workspace/torchsim-triton-ext-build/libtorchsim_triton_ext.so \
     PYTHONPATH=/workspace/triton-src/python \

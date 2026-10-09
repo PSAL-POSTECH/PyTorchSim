@@ -75,7 +75,7 @@ def write_tensors(workdir):
 def write_shape(workdir, meta, args=()):
     """Write the grid extents the trace producer reads as shape_args.
 
-    The trailing integers of `args` are the parallel numels, in meta order. A
+    The parallel numels are read off `args` by the kernel's parameter names. A
     template's trailing arguments ARE its grid, so its extents are used as is.
     """
     numels = dict(meta["numels"])
@@ -85,10 +85,16 @@ def write_shape(workdir, meta, args=()):
         return grid
 
     passed = [k for k in numels if not k.startswith("r")]
-    trailing = [a for a in args if isinstance(a, int) and not isinstance(a, bool)]
-    if passed and len(trailing) >= len(passed):
-        for key, val in zip(passed, trailing[-len(passed):]):
-            numels[key] = val
+    bound = dict(zip(meta.get("call_params", ()), args))
+    if bound:
+        for key in passed:
+            if isinstance(bound.get(key), int) and not isinstance(bound[key], bool):
+                numels[key] = bound[key]
+    else:
+        trailing = [a for a in args if isinstance(a, int) and not isinstance(a, bool)]
+        if passed and len(trailing) >= len(passed):
+            for key, val in zip(passed, trailing[-len(passed):]):
+                numels[key] = val
 
     grid = list(launch.grid_of({**meta, "numels": numels}))
     _write_extents(workdir, grid, "grid")

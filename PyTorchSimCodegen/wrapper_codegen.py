@@ -61,11 +61,6 @@ class TritonNPUWrapperCodegen(wrapper.PythonWrapperCodegen):
             )
         return cls()
 
-    def wrap_kernel_call(self, name, call_args):
-        """The kernel call line, with sympy call args rendered as strings first."""
-        return super().wrap_kernel_call(
-            name, self.prepare_triton_kernel_call(call_args))
-
     def write_header(self):
         """Inductor's own header, then the names the npu wrapper adds: torchsim_compile, verify, the log line."""
         super().write_header()
@@ -91,8 +86,15 @@ class TritonNPUWrapperCodegen(wrapper.PythonWrapperCodegen):
             self.prefix.writeline(
                 f"_fverify.verify_init({gid}, [{', '.join(V.graph.graph_inputs.keys())}])")
 
-    def _generate_kernel_call_helper(self, kernel_name, call_args, **kwargs):
-        """A kernel call is a plain function call; grid, stream and autotune do not apply."""
+    def _generate_kernel_call_helper(self, kernel_name, call_args, *, triton=True, **kwargs):
+        """An npu kernel call is a plain function call with Triton's argument rendering (a 0-d
+        input unwrapped to its value); grid, stream and autotune do not apply. A C++ kernel, a
+        CPU island's, keeps Inductor's own call."""
+        if triton:
+            call_args = self.prepare_triton_kernel_call(call_args)
+        else:
+            call_args = [a if isinstance(a, str) else str(a) if isinstance(a, (int, float, bool))
+                         else wrapper.pexpr(V.graph.sizevars.simplify(a)) for a in call_args]
         self.writeline(self.wrap_kernel_call(kernel_name, call_args))
 
     def run_wrapper_ir_passes(self, is_inference):

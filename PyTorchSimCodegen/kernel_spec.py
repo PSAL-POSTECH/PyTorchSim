@@ -148,11 +148,12 @@ def collect_meta(kernel, kernel_name):
     if not signature:
         signature = _signature_from_argdefs(arg_defs, arg_types)
 
+    call_params = [getattr(a, "name", str(a)) for a in arg_defs]
     args = []
     for a in arg_defs:
         name = getattr(a, "name", str(a))
         role, buf = roles.get(name, (None, None))
-        if role is None:
+        if role is None or not signature.get(name, "*").startswith("*"):
             continue
         args.append({
             "name": name,
@@ -174,6 +175,7 @@ def collect_meta(kernel, kernel_name):
         "signature": {str(k): str(v) for k, v in signature.items()},
         "constants": {str(k): v for k, v in constants.items()},
         "args": args,
+        "call_params": call_params,
         "numels": numels,
         "inside_reduction": bool(getattr(kernel, "inside_reduction", False)),
         "fixed_config": launch.fixed_config_for(kernel, numels, args),
@@ -225,10 +227,10 @@ def _dtype_tokens():
 
 
 def scalar_args(meta):
-    """User scalar parameters, in kernel order, as [(name, c_type, value)].
+    """Scalar parameters in kernel order, as [(name, c_type, default)].
 
-    the linalg lowering keeps these ahead of its own six grid/pid arguments, so the
-    wrapper must pass them or every later argument lands one slot early.
+    A numel's value is known at codegen; an input Inductor unwrapped to a scalar (a 0-d CPU
+    tensor, Adam's step) only at launch, so its default is None and the launch passes it.
     """
     numels = meta["numels"]
     out = []
@@ -240,11 +242,8 @@ def scalar_args(meta):
             raise SpecIncomplete(
                 f"{meta['kernel_name']}: scalar '{name}' has type {token!r}, "
                 f"which has no C mapping in _C_TYPE")
-        if numels.get(name) is None:
-            raise SpecIncomplete(
-                f"{meta['kernel_name']}: no value for scalar '{name}' -- "
-                f"collect_meta resolves these from kernel.numels")
-        out.append((name, ctype, int(numels[name])))
+        v = numels.get(name)
+        out.append((name, ctype, None if v is None else int(v)))
     return out
 
 
@@ -361,7 +360,7 @@ def write_spec_file(src_code, meta, path, compiler_dir):
         grid=launch.grid_xyz(meta),
         parallel_axes=tuple(launch.launch_axes(meta)),
         scalar_decls=[(n, c) for n, c, _ in scalars],
-        scalar_values={n: v for n, _, v in scalars},
+        scalar_values={n: v for n, _, v in scalars if v is not None},
     )
     with open(path, "w") as f:
         f.write(text)

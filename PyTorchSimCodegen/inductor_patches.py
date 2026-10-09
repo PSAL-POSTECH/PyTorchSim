@@ -560,22 +560,6 @@ def _lower_conv1d_as_conv2d():
         return conv1d_to_conv2d(input, weight, bias, stride, padding, dilation, groups)
 
 
-def _keep_zero_dim_inputs_as_pointers():
-    """On npu, a 0-d CPU input (Adam's step) stays a tensor the kernel loads, not a scalar.
-
-    The compiler bakes scalars into the ELF, and this one changes on every call.
-    """
-    from torch._inductor.codegen import triton, triton_utils, wrapper
-
-    orig = triton_utils.should_unwrap_unspec_arg
-
-    def should_unwrap_unspec_arg(name):
-        return not _lowering_npu() and orig(name)
-
-    for mod in (triton_utils, triton, wrapper):
-        mod.should_unwrap_unspec_arg = should_unwrap_unspec_arg
-
-
 def _install_selection():
     """Patch algorithm selection for npu choices: no precompile, no benchmark, allocate-only examples."""
     from torch._inductor.select_algorithm import AlgorithmSelectorCache
@@ -633,7 +617,6 @@ def install():
     _short_circuit_degenerate_gemms()
     _install_npu_choices()
     _lower_conv1d_as_conv2d()
-    _keep_zero_dim_inputs_as_pointers()
     _install_selection()
 
     inductor_config.max_autotune_gemm = True

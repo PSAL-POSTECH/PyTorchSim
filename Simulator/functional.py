@@ -84,11 +84,11 @@ def _check(meta, pairs):
                 f"{meta['kernel_name']}: '{m['name']}' spans "
                 f"{_storage_numel(t)} element(s) of storage, but the binary was "
                 f"compiled for {m['numel']}. "
-                f"the compiler bakes the extents, the grid and the scalar values into "
-                f"the kernel, so a dynamic-shape graph reuses an ELF that does "
-                f"not fit. The timing path does handle this (it takes the grid "
-                f"at run time); set pytorchsim_functional_mode: False to study "
-                f"cycles alone, or keep shapes static to check values.")
+                f"the compiler bakes the extents and the grid into the kernel, so a "
+                f"dynamic-shape graph reuses an ELF that does not fit. The timing "
+                f"path does handle this (it takes the grid at run time); set "
+                f"pytorchsim_functional_mode: False to study cycles alone, or keep "
+                f"shapes static to check values.")
         if str(t.dtype).removeprefix("torch.") != m["dtype"]:
             raise ShapeMismatch(
                 f"{meta['kernel_name']}: '{m['name']}' is {t.dtype}, but the "
@@ -244,8 +244,9 @@ def run(workdir, meta, args):
             f"{workdir} has no kernel.json -- compile the kernel first")
     raw_paths = {a["name"]: os.path.join(runtime, f"{a['name']}.raw")
                  for a in manifest["args"]}
+    scalars = spike_run.argv_scalars(manifest, dict(zip(meta.get("call_params", ()), args)))
     try:
-        spike_run.launch(workdir, manifest, runtime, raw_paths, logger.debug)
+        spike_run.launch(workdir, manifest, runtime, raw_paths, logger.debug, scalars=scalars)
     except spike_run.SpikeError as e:
         raise RuntimeError(f"[Spike] {meta['kernel_name']} failed:\n{e}") from None
 

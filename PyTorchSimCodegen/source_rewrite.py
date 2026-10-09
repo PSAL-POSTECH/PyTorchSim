@@ -9,7 +9,6 @@ import re
 from PyTorchSimFrontend import config
 
 from . import triton_helpers_src
-from .errors import SpecIncomplete
 
 logger = config.setup_logger()
 
@@ -24,7 +23,7 @@ def strip_for_compiler(src):
     """Remove everything the torch-free compiler venv cannot import.
 
     Drops torch/inductor imports and the @triton_heuristics decorator, then
-    re-adds the imports and vendored helpers the stripped body still needs.
+    re-adds the imports and torch's triton_helpers the stripped body still needs.
     """
     lines = src.splitlines()
     out, i = [], 0
@@ -42,12 +41,6 @@ def strip_for_compiler(src):
     body = "\n".join(out)
 
     used = sorted(set(_HELPER_USE_RE.findall(body)))
-    unvendored = [h for h in used if h not in triton_helpers_src.VENDORED]
-    if unvendored:
-        raise SpecIncomplete(
-            f"kernel uses triton_helpers.{{{','.join(unvendored)}}}, which lives "
-            f"in torch and the compiler venv has no torch. Add it to "
-            f"triton_helpers_src if it is pure triton, or lower it another way.")
 
     prefix = ""
     if "import triton.language as tl" not in body:
@@ -57,7 +50,7 @@ def strip_for_compiler(src):
     if re.search(r"\blibdevice\.", body):
         prefix += "from triton.language.extra import libdevice\n"
     if used:
-        prefix += triton_helpers_src.SRC
+        prefix += triton_helpers_src.helper_source(used)
     return prefix + body
 
 

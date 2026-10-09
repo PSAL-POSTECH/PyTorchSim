@@ -17,7 +17,7 @@ torch._register_device_module("npu", torch_openreg.openreg)
 torch.utils.generate_methods_for_privateuse1_backend(for_storage=True)
 
 sys.path.append(os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim'))
-import PyTorchSimFrontend.extension_config  # noqa: F401
+import PyTorchSimFrontend.config  # noqa: F401
 from PyTorchSimFrontend import rewrite_fx_graph as _rewrite_fx_graph
 
 _rewrite_fx_graph.install()

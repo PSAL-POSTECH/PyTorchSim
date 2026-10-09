@@ -28,8 +28,8 @@ import os
 
 import torch
 
-from PyTorchSimFrontend import extension_config
-from PyTorchSimFrontend.extension_config import setup_logger
+from PyTorchSimFrontend import config
+from PyTorchSimFrontend.config import setup_logger
 
 logger = setup_logger(__name__)
 
@@ -56,7 +56,7 @@ def enabled():
     block); the config accessor already AND-gates this with functional mode.
     """
     try:
-        return bool(extension_config.pytorchsim_functional_verify_per_kernel)
+        return bool(config.pytorchsim_functional_verify_per_kernel)
     except Exception:
         return False
 

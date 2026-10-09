@@ -11,11 +11,11 @@ import os
 import shutil
 import subprocess
 
-from PyTorchSimFrontend import extension_config
+from PyTorchSimFrontend import config
 
 from . import compiler_bridge
 
-logger = extension_config.setup_logger()
+logger = config.setup_logger()
 
 STAMP_NAME = "provenance.json"
 
@@ -45,7 +45,7 @@ def _tool_paths(compiler_dir):
     code = (f"import json; from {compiler_bridge.COMPILER_PKG} import config as c; "
             "print(json.dumps({n: p for n, p, _ in c.CHECKS}))")
     proc = subprocess.run(
-        [extension_config.CONFIG_TORCHSIM_COMPILE_PYTHON, "-c", code],
+        [config.CONFIG_TORCHSIM_COMPILE_PYTHON, "-c", code],
         capture_output=True, text=True, cwd=compiler_dir, env=compiler_bridge.compiler_env())
     if proc.returncode != 0:
         return None

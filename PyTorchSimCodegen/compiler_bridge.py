@@ -8,9 +8,9 @@ import os
 import re
 import subprocess
 
-from PyTorchSimFrontend import extension_config
+from PyTorchSimFrontend import config
 
-logger = extension_config.setup_logger()
+logger = config.setup_logger()
 
 
 class CompilerError(RuntimeError):
@@ -40,7 +40,7 @@ COMPILER_PKG = "pytorchsim_triton_compiler"
 
 
 def compiler_dir():
-    d = extension_config.CONFIG_TORCHSIM_COMPILE_DIR
+    d = config.CONFIG_TORCHSIM_COMPILE_DIR
     if not os.path.isdir(d):
         raise CompilerError(
             f"pytorchsim-triton-compiler checkout not found at {d}. It is a separate repository "
@@ -53,7 +53,7 @@ def machine():
 
     The YAML is the hardware description and therefore the authority.
     """
-    return dict(extension_config.CONFIG_MACHINE)
+    return dict(config.CONFIG_MACHINE)
 
 
 def target_path():
@@ -68,10 +68,10 @@ def target_path():
     m = machine()
     name = os.path.splitext(os.path.basename(
         os.environ.get("TOGSIM_CONFIG", "togsim")))[0]
-    out = os.path.join(extension_config.get_dump_path(), f"target-{name}.json")
+    out = os.path.join(config.get_dump_path(), f"target-{name}.json")
     doc = dict(m, name=name,
                provenance={"togsim_config": os.environ.get("TOGSIM_CONFIG", ""),
-                           "address_map": "PyTorchSimFrontend/extension_config.py"})
+                           "address_map": "PyTorchSimFrontend/config.py"})
     body = json.dumps(doc, indent=2) + "\n"
     if not os.path.isfile(out) or open(out).read() != body:
         tmp = f"{out}.{os.getpid()}"
@@ -99,7 +99,7 @@ def compiler_env():
 def doctor():
     """Return (ok, output) for the compiler's own toolchain check."""
     proc = subprocess.run(
-        [extension_config.CONFIG_TORCHSIM_COMPILE_PYTHON,
+        [config.CONFIG_TORCHSIM_COMPILE_PYTHON,
          os.path.join(compiler_dir(), "pytorchsim-triton-compiler"), "doctor"],
         capture_output=True, text=True, cwd=compiler_dir())
     return proc.returncode == 0, proc.stdout + proc.stderr
@@ -112,7 +112,7 @@ def run_pipeline(spec_path, workdir, to_stage="torchsim-compile", tog=False, tim
     Stops at `to_stage`, by default `torchsim-compile` -- the ELF: spike and verify
     want tensors and a per-kernel reference this route has no graph-level answer for.
     """
-    cmd = [extension_config.CONFIG_TORCHSIM_COMPILE_PYTHON,
+    cmd = [config.CONFIG_TORCHSIM_COMPILE_PYTHON,
            os.path.join(compiler_dir(), "pytorchsim-triton-compiler"), spec_path,
            "--from", "triton-compile", "--to", to_stage, "--workdir", workdir] + (["--tog"] if tog else [])
 

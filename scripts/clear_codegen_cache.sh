@@ -9,10 +9,10 @@
 # Wipes:
 #   $TORCHSIM_DUMP_PATH/.torchinductor      (Inductor compile cache, points
 #                                            here via TORCHINDUCTOR_CACHE_DIR
-#                                            set in extension_config.py)
+#                                            set in config.py)
 #   $TORCHSIM_DUMP_PATH/<11-char-hash>/     (per-source wrapper dirs, keyed by
 #                                            hash_prefix(src) in
-#                                            extension_config.py)
+#                                            config.py)
 #   $TORCHSIM_DUMP_PATH/triton_<hash>/      (per-kernel artifacts: spec,
 #                                            staged IR, ELF, trace.so)
 #
@@ -43,7 +43,7 @@ echo "Clearing $DUMP_PATH/.torchinductor, per-source-hash and triton_* dirs"
 rm -rf "$DUMP_PATH/.torchinductor"
 
 # Per-source-hash dirs are an 11-char alphanumeric prefix
-# (extension_config.hash_prefix). Match by length+charset so we don't
+# (config.hash_prefix). Match by length+charset so we don't
 # touch anything else a developer may have parked under outputs/.
 find "$DUMP_PATH" -mindepth 1 -maxdepth 1 -type d \
     -regextype posix-egrep -regex '.*/[a-z0-9]{11}$' \

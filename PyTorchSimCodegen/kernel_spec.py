@@ -11,13 +11,13 @@ import re
 
 from torch._inductor.virtualized import V
 
-from PyTorchSimFrontend import extension_config
+from PyTorchSimFrontend import config
 
 from . import compiler_bridge  # noqa: F401
 from . import layout, launch, source_rewrite
 from .errors import SpecIncomplete
 
-logger = extension_config.setup_logger()
+logger = config.setup_logger()
 
 _DTYPE = {
     "*fp64": "float64", "*fp32": "float32", "*fp16": "float16",

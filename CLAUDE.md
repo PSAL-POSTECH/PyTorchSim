@@ -66,10 +66,10 @@ report next to the number it produced — never folded into a pass.
 
 | Path | Purpose |
 |---|---|
-| `PyTorchSimFrontend/` | The graph side: `extension_config.py` (the central settings reader) and `rewrite_fx_graph.py` (our FX graph rewrites, so ops with no `npu` kernel stay on the device) |
+| `PyTorchSimFrontend/` | The graph side: `config.py` (the central settings reader) and `rewrite_fx_graph.py` (our FX graph rewrites, so ops with no `npu` kernel stay on the device) |
 | `PyTorchSimCodegen/` | The `npu` codegen route: Inductor's Triton codegen for `npu` (`scheduling.py`, `wrapper_codegen.py`, `inductor_templates.py`), the kernel spec and source fixups, and the bridge that runs PyTorchSim-Triton-Backend and caches its kernel objects (`compiler_bridge.py`, `codecache.py`) |
 | `PyTorchSimDevice/` | C++ PyTorch backend registering the `npu` device. Built as a pip-installed package via `setup.py`. Based on `torch_openreg` (PrivateUse1 example). Produces `_C.cpython-*.so` |
-| `Simulator/` | What runs a kernel object: Spike (`functional.py`, `spike_run.py`), gem5 (`gem5.py`, `trace_build.py`), TOGSim (`timing.py`, and `simulator.py`'s `TOGSimulator`: the process driver and multi-tenant context manager) |
+| `Simulator/` | What runs a kernel object: Spike (`functional.py`, `spike_run.py`, and `functional_verify.py`, the per-kernel CPU cross-check), gem5 (`gem5.py`, `trace_build.py`), TOGSim (`timing.py`, and `simulator.py`'s `TOGSimulator`: the process driver and multi-tenant context manager) |
 | `Scheduler/scheduler.py` | Poisson arrival generator + scheduling utilities for multi-tenant runs |
 | `TOGSim/` | C++ TOGSim source. `src/Simulator.cc`, `Core.cc`, `Dram.cc`, `Interconnect.cc`, `L2Cache.cc`, `Tile.cc`, `TileGraph.cc` are the core models. Externals: ramulator2, booksim, spdlog, yaml-cpp |
 | `configs/` | TOGSim hardware configs (YAML). The default is `systolic_ws_256x256_c1_simple_noc_tpuv6e_functional_only.yml` -- the same machine as `..._tpuv6e.yml` and one line apart, `pytorchsim_timing_mode: 0`. Naming pattern: `systolic_ws_<size>_c<cores>_<noc>_<target>.yml` |
@@ -108,14 +108,14 @@ export pytorchsim_functional_mode=False   # skips Spike
 reach is the one that owns it.
 
 **To find which op a wrong result first diverges at** (per-kernel CPU cross-check;
-sub-option of functional mode). Set `pytorchsim_functional_verify_per_kernel: 1`
+sub-option of functional mode, `Simulator/functional_verify.py`). Set `pytorchsim_functional_verify_per_kernel: 1`
 in the config YAML, clear the codegen cache, and re-run: each compiled kernel's
 output is compared to a CPU golden and the run stops at the first divergent
 kernel, naming the op and offending indices.
 
 ## Key environment variables
 
-Read in `PyTorchSimFrontend/extension_config.py`:
+Read in `PyTorchSimFrontend/config.py`:
 
 | Var | Default | Purpose |
 |---|---|---|
@@ -188,9 +188,9 @@ Conan deps for TOGSim: `boost/1.79.0`, `robin-hood-hashing/3.11.5`, `spdlog/1.11
 - **Parallel runs sharing a `TORCHSIM_DUMP_PATH`** share every per-kernel workdir, and that is deliberate: the workdir holds what compiling produced, which is a function of the source and the machine. A **launch** is not, so each process gets `<workdir>/launch-<pid>/` (`Simulator/session.py`) holding its own `runtime/*.raw`, its own `trace_shape.txt` and symlinks to the shared trace — TOGSim resolves the cycle table and the shape from the directory of the trace it is handed, so linking is enough. What is left locked is only *building* the shared thing, once: `.compile.lock` (compile) and `.timing.lock` (trace.so + its gem5 cycle table). Launches take no lock. Measured on a warm cache, two `test_add.py` in parallel: 40s when launches were locked, **31s** now, against 30s for one run alone.
 - TOGSim creates a per-PID FIFO under `/tmp/togsim_fifo_<pid>` for command/event comm; if a previous run crashed and left stale FIFOs, they get cleaned up on the next start, but watch for orphaned processes if you Ctrl-C mid-run.
 - Multi-tenant runs **must** use the `with TOGSimulator(...)` context manager — otherwise compile-time `TOGSIM_CONFIG` and runtime config can diverge.
-- `pytorchsim_functional_mode` exists as both an **env var** and a **YAML key**; the env var path is via `extension_config.py` while the YAML key is read inside the same module. They should agree.
+- `pytorchsim_functional_mode` exists as both an **env var** and a **YAML key**; the env var path is via `config.py` while the YAML key is read inside the same module. They should agree.
 - "No CUDA runtime is found" warnings on `import torch` are expected — this is a CPU + simulated-NPU environment, not real CUDA.
-- **Codegen changes are sticky across runs because of caches.** When iterating on `PyTorchSimCodegen/*`, `Simulator/*` or the compiler, clear `$TORCHSIM_DUMP_PATH` (default `$TORCHSIM_DIR/outputs/`) before re-running — it holds Inductor's compile cache (`.torchinductor/`, set via `TORCHINDUCTOR_CACHE_DIR` inside `extension_config.get_dump_path()`), the per-source wrapper dirs (`<hash>/`) keyed by `extension_config.get_write_path(src_code)`, and the per-kernel artifacts (`triton_<hash>/`). A compiler-side fix does NOT move the Inductor hash, so `triton_*` is the one that most often needs deleting; `scripts/clear_codegen_cache.sh` does all three. Otherwise a buggy graph compiled before your fix is replayed verbatim. `togsim_results/` (TOGSim run logs) is cosmetic and not part of the codegen replay path. For parallel worktrees see `docs/worktrees.md`.
+- **Codegen changes are sticky across runs because of caches.** When iterating on `PyTorchSimCodegen/*`, `Simulator/*` or the compiler, clear `$TORCHSIM_DUMP_PATH` (default `$TORCHSIM_DIR/outputs/`) before re-running — it holds Inductor's compile cache (`.torchinductor/`, set via `TORCHINDUCTOR_CACHE_DIR` inside `config.get_dump_path()`), the per-source wrapper dirs (`<hash>/`) keyed by `config.get_write_path(src_code)`, and the per-kernel artifacts (`triton_<hash>/`). A compiler-side fix does NOT move the Inductor hash, so `triton_*` is the one that most often needs deleting; `scripts/clear_codegen_cache.sh` does all three. Otherwise a buggy graph compiled before your fix is replayed verbatim. `togsim_results/` (TOGSim run logs) is cosmetic and not part of the codegen replay path. For parallel worktrees see `docs/worktrees.md`.
 
 ## Comments: a three-line docstring per function, and nothing else
 

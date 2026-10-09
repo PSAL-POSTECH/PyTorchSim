@@ -16,12 +16,12 @@ import time
 from filelock import FileLock
 from torch._inductor.codecache import get_hash
 
-from PyTorchSimFrontend import extension_config
+from PyTorchSimFrontend import config
 
 from . import kernel_spec, provenance, compiler_bridge
 from Simulator import breakdown, functional, session, timing
 
-logger = extension_config.setup_logger()
+logger = config.setup_logger()
 
 LOCK_TIMEOUT = 600
 
@@ -32,7 +32,7 @@ _SPAD_OVERFLOW_RE = re.compile(r"torchsim-spad-overflow: usage=(\d+) budget=(\d+
 
 
 def _write_path(src_code):
-    return os.path.join(extension_config.get_dump_path(),
+    return os.path.join(config.get_dump_path(),
                         "triton_" + get_hash(src_code.strip())[1:12])
 
 
@@ -48,7 +48,7 @@ class TritonNPULauncher:
         self.meta = meta
 
     def __call__(self, *args):
-        if extension_config.pytorchsim_functional_mode:
+        if config.pytorchsim_functional_mode:
             with breakdown.span(breakdown.SPIKE, self.kernel_name):
                 written = functional.run(self.workdir, self.meta, args)
             logger.info("[Spike] %s wrote %s", self.kernel_name, written)
@@ -57,7 +57,7 @@ class TritonNPULauncher:
                 "[Spike] %s: functional mode is off, so the output tensors keep "
                 "whatever they held", self.kernel_name)
 
-        if not extension_config.pytorchsim_timing_mode:
+        if not config.pytorchsim_timing_mode:
             logger.warning(
                 "[timing] %s: timing mode is off, so no cycles are reported",
                 self.kernel_name)
@@ -176,16 +176,16 @@ def _autotune_template(src_code, meta, kernel_name, write_path):
         return src_code, meta
     from .inductor_templates import _gemm_tiles
     m, n, k, size, out_size = shape
-    strategy = extension_config.codegen_mapping_strategy
+    strategy = config.codegen_mapping_strategy
     known = _recorded_tile(m, n, k) if "external" in strategy else None
     if known is not None:
         logger.info("[autotune] %s BLOCK_M/N/K=%s: from %s", kernel_name, known,
-                    extension_config.codegen_external_mapping_file)
+                    config.codegen_external_mapping_file)
         return _retile(src_code, meta, (m, n, k), known)
     if "autotune" not in strategy:
         return src_code, meta
     tiles = [(c.block_m, c.block_n, c.block_k) for c in _gemm_tiles(m, n, k, size, out_size)]
-    tiles = tiles[:extension_config.codegen_autotune_template_topk]
+    tiles = tiles[:config.codegen_autotune_template_topk]
     best, timeout = (float("inf"), src_code, meta, None), None
     for tile in tiles:
         s, mt = _retile(src_code, meta, (m, n, k), tile)
@@ -193,7 +193,7 @@ def _autotune_template(src_code, meta, kernel_name, write_path):
         cycles = _time_tile(s, mt, kernel_name,
                             os.path.join(write_path, "autotune", "x".join(map(str, tile))), timeout)
         if cycles != float("inf") and timeout is None:
-            timeout = time.perf_counter() - t0 + extension_config.codegen_autotune_wall_slack_sec
+            timeout = time.perf_counter() - t0 + config.codegen_autotune_wall_slack_sec
         logger.info("[autotune] %s BLOCK_M/N/K=%s: %s cycles", kernel_name, tile, cycles)
         if cycles < best[0]:
             best = (cycles, s, mt, tile)
@@ -204,7 +204,7 @@ def _autotune_template(src_code, meta, kernel_name, write_path):
 
 def _recorded_tile(m, n, k):
     """develop's external mapping: `{"M_N_K": {"TILE_M", "TILE_N", "TILE_K"}}`, else None."""
-    path = extension_config.codegen_external_mapping_file
+    path = config.codegen_external_mapping_file
     if not path or not os.path.isfile(path):
         return None
     with open(path) as f:
@@ -214,7 +214,7 @@ def _recorded_tile(m, n, k):
 
 def _record_tile(m, n, k, tile):
     """Add an autotuned tile to the external mapping file, so the next compile reads it."""
-    path = extension_config.codegen_external_mapping_file
+    path = config.codegen_external_mapping_file
     if not path:
         return
     with FileLock(path + ".lock", timeout=LOCK_TIMEOUT):
@@ -243,7 +243,7 @@ def torchsim_compile(src_code, meta, kernel_name):
                 "or machine identity, rebuilding", kernel_name)
             provenance.clear_stale(write_path)
             elf = None
-        if (elf is not None and extension_config.pytorchsim_timing_mode
+        if (elf is not None and config.pytorchsim_timing_mode
                 and compiler_bridge.artifact(write_path, "trace_so") is None):
             logger.info("[torchsim-compile] %s: cached without --tog, rebuilding for timing",
                         kernel_name)
@@ -263,7 +263,7 @@ def torchsim_compile(src_code, meta, kernel_name):
                     with breakdown.span(breakdown.TORCHSIM_COMPILE, kernel_name):
                         compiler_bridge.run_pipeline(
                             spec_path, write_path, to_stage="torchsim-compile",
-                            tog=bool(extension_config.pytorchsim_timing_mode))
+                            tog=bool(config.pytorchsim_timing_mode))
                     breakdown.ingest_compile(write_path, kernel_name)
                     break
                 except compiler_bridge.CompilerError as exc:

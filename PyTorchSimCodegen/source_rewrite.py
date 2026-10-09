@@ -6,12 +6,12 @@ templates' modulo wrap with a load mask so the operand stays a descriptor.
 
 import re
 
-from PyTorchSimFrontend import extension_config
+from PyTorchSimFrontend import config
 
 from . import triton_helpers_src
 from .errors import SpecIncomplete
 
-logger = extension_config.setup_logger()
+logger = config.setup_logger()
 
 _HEURISTIC_RE = re.compile(r"^@triton_heuristics\.")
 _DROP_IMPORT_RE = re.compile(

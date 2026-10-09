@@ -12,7 +12,7 @@ from torch._inductor.utils import IndentedBuffer
 from torch._inductor.virtualized import V
 from typing import Optional
 
-from PyTorchSimFrontend import extension_functional_verify as _func_verify
+from Simulator import functional_verify as _func_verify
 
 from . import codecache, kernel_spec
 
@@ -104,7 +104,7 @@ class TritonNPUWrapperCodegen(wrapper.PythonWrapperCodegen):
 
                 from torch import device, empty, empty_strided
                 from PyTorchSimFrontend.extension_config import setup_logger
-                from PyTorchSimFrontend import extension_functional_verify as _fverify
+                from Simulator import functional_verify as _fverify
                 from torch._inductor.select_algorithm import extern_kernels
                 from {codecache.__name__} import torchsim_compile
 

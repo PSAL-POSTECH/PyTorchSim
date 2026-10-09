@@ -69,7 +69,7 @@ report next to the number it produced — never folded into a pass.
 | `PyTorchSimFrontend/` | The graph side: `extension_config.py` (the central settings reader) and `rewrite_fx_graph.py` (our FX graph rewrites, so ops with no `npu` kernel stay on the device) |
 | `PyTorchSimCodegen/` | The `npu` codegen route: Inductor's Triton codegen for `npu` (`scheduling.py`, `wrapper_codegen.py`, `inductor_templates.py`), the kernel spec and source fixups, and the bridge that runs PyTorchSim-Triton-Backend and caches its kernel objects (`compiler_bridge.py`, `codecache.py`) |
 | `PyTorchSimDevice/` | C++ PyTorch backend registering the `npu` device. Built as a pip-installed package via `setup.py`. Based on `torch_openreg` (PrivateUse1 example). Produces `_C.cpython-*.so` |
-| `Simulator/` | What runs a kernel object: Spike (`functional.py`, `spike_run.py`), gem5 (`gem5.py`, `trace_build.py`), TOGSim (`timing.py`, and `simulator.py`'s `TOGSimulator`: the process driver and multi-tenant context manager) |
+| `Simulator/` | What runs a kernel object: Spike (`functional.py`, `spike_run.py`, and `functional_verify.py`, the per-kernel CPU cross-check), gem5 (`gem5.py`, `trace_build.py`), TOGSim (`timing.py`, and `simulator.py`'s `TOGSimulator`: the process driver and multi-tenant context manager) |
 | `Scheduler/scheduler.py` | Poisson arrival generator + scheduling utilities for multi-tenant runs |
 | `TOGSim/` | C++ TOGSim source. `src/Simulator.cc`, `Core.cc`, `Dram.cc`, `Interconnect.cc`, `L2Cache.cc`, `Tile.cc`, `TileGraph.cc` are the core models. Externals: ramulator2, booksim, spdlog, yaml-cpp |
 | `configs/` | TOGSim hardware configs (YAML). The default is `systolic_ws_256x256_c1_simple_noc_tpuv6e_functional_only.yml` -- the same machine as `..._tpuv6e.yml` and one line apart, `pytorchsim_timing_mode: 0`. Naming pattern: `systolic_ws_<size>_c<cores>_<noc>_<target>.yml` |
@@ -108,7 +108,7 @@ export pytorchsim_functional_mode=False   # skips Spike
 reach is the one that owns it.
 
 **To find which op a wrong result first diverges at** (per-kernel CPU cross-check;
-sub-option of functional mode). Set `pytorchsim_functional_verify_per_kernel: 1`
+sub-option of functional mode, `Simulator/functional_verify.py`). Set `pytorchsim_functional_verify_per_kernel: 1`
 in the config YAML, clear the codegen cache, and re-run: each compiled kernel's
 output is compared to a CPU golden and the run stops at the first divergent
 kernel, naming the op and offending indices.

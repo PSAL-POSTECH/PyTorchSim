@@ -127,6 +127,6 @@ echo "  cd $WT_DIR"
 echo "  source .envrc"
 echo "  (cd PyTorchSimDevice && python setup.py build_ext --inplace)   # build the .so once"
 echo
-echo "When iterating on PyTorchSimFrontend/triton_backend/* or tog/* in this worktree,"
+echo "When iterating on PyTorchSimCodegen/* or Simulator/* in this worktree,"
 echo "run scripts/clear_codegen_cache.sh between runs so the cached compile does not"
 echo "shadow your changes."

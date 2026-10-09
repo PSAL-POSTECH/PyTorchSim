@@ -43,7 +43,7 @@ def test_device_predicate_reads_every_spelling():
     A predicate that answers only torch.device sends the string form to
     upstream, whose operand is sampled -- one silent CPU fallback per call.
     """
-    from PyTorchSimFrontend.triton_backend.inductor_templates import _is_npu
+    from PyTorchSimCodegen.inductor_templates import _is_npu
 
     spellings = ("npu", "npu:0", torch.device("npu"), torch.device("npu:0"),
                  "cpu", "cuda", torch.device("cpu"), None)

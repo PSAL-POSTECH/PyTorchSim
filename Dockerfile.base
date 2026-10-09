@@ -60,7 +60,7 @@ RUN apt-get -y update && \
 RUN python3.11 -m pip install --no-cache-dir \
     torch==2.10.0 torchvision==0.25.0 --index-url https://download.pytorch.org/whl/cpu
 
-# Triton, for the Inductor Triton codegen route (PyTorchSimFrontend/triton_backend).
+# Triton, for the Inductor Triton codegen route (PyTorchSimCodegen).
 # Inductor imports triton while GENERATING a kernel, so it is needed even though
 # nothing here compiles or launches through triton's own runtime -- the PTB layer
 # compiles the kernel ahead of time to a RISC-V ELF using its own triton build.

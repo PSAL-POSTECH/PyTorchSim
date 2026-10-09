@@ -25,7 +25,7 @@ _rewrite_fx_graph.install()
 # The `npu` codegen route: Inductor's own Triton codegen, lowered by the
 # compiler passes. Registered here because Inductor registers a backend per
 # device, once.
-from PyTorchSimFrontend.triton_backend import (
+from PyTorchSimCodegen import (
     TritonNPUScheduling, TritonNPUWrapperCodegen)
 torch._inductor.codegen.common.register_backend_for_device(
     "npu",

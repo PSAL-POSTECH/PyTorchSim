@@ -83,6 +83,17 @@ def _spad_overflow(exc):
     return (int(m.group(1)), int(m.group(2))) if m else None
 
 
+def _too_big(exc):
+    """Why this failure means the tile is too big, else None: the scratchpad budget it broke,
+    or the register file (llc spilled, which the compiler's ELF refuses)."""
+    over = _spad_overflow(exc)
+    if over is not None:
+        return "%d bytes/lane over a budget of %d" % over
+    if "spill not allowed" in (getattr(exc, "output", None) or str(exc)):
+        return "the vector register file spills"
+    return None
+
+
 def _get_tile_candidates(meta):
     """Every tile the search may try, LARGEST FIRST: each block the kernel takes as
     an argument halves down to 2, never 1. Equal sizes go to the larger reduction
@@ -167,25 +178,55 @@ def _time_tile(src_code, meta, kernel_name, workdir, timeout):
         return float("inf")
 
 
+def _template_tiles(src_code, meta):
+    """Every mapped tile of an mm template kernel, best first, as (M, N, K) blocks; [] for
+    any other kernel."""
+    shape = _mm_template(src_code, meta)
+    if shape is None:
+        return []
+    from .inductor_patches import _gemm_tiles
+    m, n, k, size, out_size = shape
+    return [(c.block_m, c.block_n, c.block_k) for c in _gemm_tiles(m, n, k, size, out_size)]
+
+
+def _smaller_tiles(src_code, meta):
+    """(tile, source, meta) to retry with after a scratchpad overflow, in order: the other
+    mapped tiles of an mm template, else each smaller fixed_config tile."""
+    shape = _mm_template(src_code, meta)
+    if shape is not None:
+        mnk = shape[:3]
+        now = tuple(int(_TILE_RE[k].search(src_code).group(2))
+                    for k in ("BLOCK_M", "BLOCK_N", "BLOCK_K"))
+        for tile in _template_tiles(src_code, meta):
+            if tile != now:
+                yield (dict(zip(("BLOCK_M", "BLOCK_N", "BLOCK_K"), tile)),
+                       *_retile(src_code, meta, mnk, tile))
+        return
+    tiles = iter(_get_tile_candidates(meta))
+    next(tiles, None)
+    for tile in tiles:
+        meta = copy.deepcopy(meta)
+        meta["fixed_config"].update(tile)
+        yield {k: v for k, v in tile.items() if k.endswith("BLOCK")}, src_code, meta
+
+
 def _autotune_template(src_code, meta, kernel_name, write_path):
     """develop's template autotune: the top-k mapped tiles, each compiled with what is fused
-    into it and simulated alone; the fewest cycles wins. The first tile to finish sets the
-    others' time limit (its wall time plus codegen_autotune_wall_slack_sec)."""
+    into it and simulated alone; the fewest cycles wins. Only in timing mode, since cycles
+    are what it ranks by; the first tile to finish limits the others' wall time."""
     shape = _mm_template(src_code, meta)
     if shape is None:
         return src_code, meta
-    from .inductor_patches import _gemm_tiles
-    m, n, k, size, out_size = shape
+    m, n, k = shape[:3]
     strategy = config.codegen_mapping_strategy
     known = _recorded_tile(m, n, k) if "external" in strategy else None
     if known is not None:
         logger.info("[autotune] %s BLOCK_M/N/K=%s: from %s", kernel_name, known,
                     config.codegen_external_mapping_file)
         return _retile(src_code, meta, (m, n, k), known)
-    if "autotune" not in strategy:
+    if "autotune" not in strategy or not config.pytorchsim_timing_mode:
         return src_code, meta
-    tiles = [(c.block_m, c.block_n, c.block_k) for c in _gemm_tiles(m, n, k, size, out_size)]
-    tiles = tiles[:config.codegen_autotune_template_topk]
+    tiles = _template_tiles(src_code, meta)[:config.codegen_autotune_template_topk]
     best, timeout = (float("inf"), src_code, meta, None), None
     for tile in tiles:
         s, mt = _retile(src_code, meta, (m, n, k), tile)
@@ -254,8 +295,7 @@ def torchsim_compile(src_code, meta, kernel_name):
             with open(os.path.join(write_path, "kernel.py"), "w") as f:
                 f.write(src_code)
             timing.store_meta(write_path, meta)
-            tiles = iter(_get_tile_candidates(meta))
-            next(tiles)
+            retries = _smaller_tiles(src_code, meta)
             while True:
                 kernel_spec.write_spec_file(src_code, meta, spec_path,
                                             compiler_bridge.compiler_dir())
@@ -267,22 +307,19 @@ def torchsim_compile(src_code, meta, kernel_name):
                     breakdown.ingest_compile(write_path, kernel_name)
                     break
                 except compiler_bridge.CompilerError as exc:
-                    over = _spad_overflow(exc)
-                    if over is None:
+                    why = _too_big(exc)
+                    if why is None:
                         raise
-                    tile = next(tiles, None)
-                    if tile is None:
-                        logger.warning(
-                            "[torchsim-compile] %s: %d bytes/lane over a budget of %d, and "
-                            "no tile with every block >= 2 is left to try",
-                            kernel_name, over[0], over[1])
+                    retry = next(retries, None)
+                    if retry is None:
+                        logger.warning("[torchsim-compile] %s: %s, and no smaller tile is "
+                                       "left to try", kernel_name, why)
                         raise
-                    meta["fixed_config"].update(tile)
-                    logger.info(
-                        "[torchsim-compile] %s: %d bytes/lane over a budget of %d, trying "
-                        "%s", kernel_name, over[0], over[1],
-                        {k: v for k, v in meta["fixed_config"].items()
-                         if k.endswith("BLOCK")})
+                    tile, src_code, tuned = retry
+                    meta.update(tuned)
+                    logger.info("[torchsim-compile] %s: %s, trying %s", kernel_name, why, tile)
+            with open(os.path.join(write_path, "kernel.py"), "w") as f:
+                f.write(src_code)
             timing.store_meta(write_path, meta)
             provenance.store(write_path)
         else:

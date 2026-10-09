@@ -61,13 +61,49 @@ def _gemm_tiles(m, n, k, dtype_size, out_size=None):
     """
     from torch._inductor.template_heuristics.triton import GemmConfig
 
-    from .hardware import HardwareInfo
-
     size = int(dtype_size)
     extra = max(int(out_size or size) // size - 1, 0)
-    tiles = HardwareInfo().gemm_tile_candidates(int(m), int(n), int(k), n_extra_node=extra,
-                                                precision_bytes=size)
+    tiles = _gemm_tile_candidates(int(m), int(n), int(k), extra, size)
     return [GemmConfig(tm, tn, tk, 1, 4) for tm, tn, tk in tiles]
+
+
+def _gemm_tile_candidates(M, N, K, n_extra_node, precision_bytes):
+    """Every (tile_M, tile_N, tile_K) whose A, B and C fit half the scratchpad, largest first.
+
+    Each side is a lane multiple times a power of two (TTGIR's layouts need them), the tail masked.
+    """
+    lanes = int(config.vpu_num_lanes)
+    spad_per_lane = config.CONFIG_SPAD_INFO["spad_size"]
+    max_spad = spad_per_lane * lanes // 2
+    max_spad_per_lane = spad_per_lane // 2
+
+    def per_lane(rows, cols):
+        return max(rows * ((cols + lanes - 1) // lanes), 2)
+
+    def sides(dim):
+        pad = lanes if dim > lanes else 8
+        top = _pow2_ceil((dim + pad - 1) // pad * pad)
+        if dim <= lanes:
+            return [top]
+        return [lanes << i for i in range((top // lanes).bit_length())]
+
+    out = 1 + n_extra_node
+    tiles = []
+    for tk in sides(max(K, 8)):
+        for tm in sides(M):
+            for tn in sides(N):
+                used = (tm * tk + tk * tn + tm * tn * out) * precision_bytes
+                used_per_lane = (per_lane(tk, tn) + per_lane(tm, tk)
+                                 + per_lane(tm * out, tn)) * precision_bytes
+                if used < max_spad and used_per_lane < max_spad_per_lane:
+                    tiles.append((used, (tm, tn, tk)))
+    tiles.sort(key=lambda x: x[0], reverse=True)
+    return [t for _, t in tiles]
+
+
+def _pow2_ceil(v):
+    """The smallest power of two at or above v."""
+    return 1 << (int(v) - 1).bit_length()
 
 
 def _register_template_heuristics():
@@ -357,10 +393,9 @@ def _short_circuit_degenerate_gemms():
 
 def _num_cores():
     """This machine's core count, from the TOGSim config."""
-    from .hardware import HardwareInfo
     try:
-        return max(1, int(HardwareInfo().num_cores))
-    except Exception:
+        return max(1, int(config.CONFIG_NUM_CORES))
+    except Exception:  # noqa: BLE001
         return 1
 
 

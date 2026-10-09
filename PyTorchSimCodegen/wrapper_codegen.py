@@ -3,6 +3,7 @@
 Emits the header the wrapper needs (torchsim_compile,
 the functional-verify calls) and walks the wrapper IR lines once.
 """
+import contextlib
 import dataclasses
 
 import torch
@@ -86,12 +87,16 @@ class TritonNPUWrapperCodegen(wrapper.PythonWrapperCodegen):
             self.prefix.writeline(
                 f"_fverify.verify_init({gid}, [{', '.join(V.graph.graph_inputs.keys())}])")
 
-    def _generate_kernel_call_helper(self, kernel_name, call_args, *, triton=True, **kwargs):
+    def _generate_kernel_call_helper(self, kernel_name, call_args, *, device=None, triton=True,
+                                     **kwargs):
         """An npu kernel call is a plain function call with Triton's argument rendering (a 0-d
-        input unwrapped to its value); grid, stream and autotune do not apply. A C++ kernel, a
-        CPU island's, keeps Inductor's own call."""
+        input unwrapped to its value, decided for the kernel's device, since this line is rendered
+        after the CPU island's); grid, stream and autotune do not apply. A C++ kernel keeps
+        Inductor's own call."""
         if triton:
-            call_args = self.prepare_triton_kernel_call(call_args)
+            with (V.graph.set_current_device(device) if device is not None
+                  else contextlib.nullcontext()):
+                call_args = self.prepare_triton_kernel_call(call_args)
         else:
             call_args = [a if isinstance(a, str) else str(a) if isinstance(a, (int, float, bool))
                          else wrapper.pexpr(V.graph.sizevars.simplify(a)) for a in call_args]

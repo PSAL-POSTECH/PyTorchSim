@@ -6,7 +6,7 @@ hands it to `torchsim_compile`. Two overrides, and nothing else.
 """
 
 from torch._inductor.codecache import get_hash
-from torch._inductor.codegen.common import IndentedBuffer
+from torch._inductor.codegen.common import BackendFeature, IndentedBuffer
 from torch._inductor.codegen.triton import TritonKernel, TritonScheduling
 from torch._inductor.utils import Placeholder, get_fused_kernel_name
 from torch._inductor.virtualized import V
@@ -24,11 +24,18 @@ class TritonNPUKernel(TritonKernel):
         wrapper = V.graph.wrapper_code
         _, call_args, _, arg_types = self.args.python_argdefs()
         self.add_numel_to_call_args(name, call_args, arg_types)
-        wrapper.generate_kernel_call(name, call_args, triton=False)
+        wrapper.generate_kernel_call(name, call_args, triton=True)
 
 
 class TritonNPUScheduling(TritonScheduling):
     kernel_type = TritonNPUKernel
+
+    @classmethod
+    def get_backend_features(cls, device):
+        """Triton's features without FOREACH: a foreach op is one kernel per tensor here. The
+        machine has no launch to amortise, and a combo kernel picks its tensors by program id,
+        a branch the TOG cannot time."""
+        return super().get_backend_features(device) - {BackendFeature.FOREACH}
 
     def define_kernel(self, src_code, node_schedule, kernel):
         """Name the kernel by its source, capture its metadata, and emit our compile call.

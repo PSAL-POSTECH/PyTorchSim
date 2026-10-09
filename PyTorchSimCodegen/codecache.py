@@ -18,7 +18,8 @@ from torch._inductor.codecache import get_hash
 
 from PyTorchSimFrontend import extension_config
 
-from . import breakdown, functional, kernel_spec, provenance, session, timing, compiler_bridge
+from . import kernel_spec, provenance, compiler_bridge
+from Simulator import breakdown, functional, session, timing
 
 logger = extension_config.setup_logger()
 

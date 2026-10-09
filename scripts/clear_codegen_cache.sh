@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Clear PyTorchSim's codegen caches so the next torch.compile run regenerates
 # the wrapper Python and the per-kernel artifacts. Run this whenever you edit
-# anything that affects codegen (PyTorchSimFrontend/triton_backend/*,
+# anything that affects codegen (PyTorchSimCodegen/*,
 # PyTorchSimFrontend/tog/*, or pytorchsim-triton-compiler) -- otherwise the previous compile is
 # replayed byte-for-byte from $TORCHSIM_DUMP_PATH and your change appears not
 # to take.

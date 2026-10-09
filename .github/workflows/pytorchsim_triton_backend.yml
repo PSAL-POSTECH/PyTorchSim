@@ -14,8 +14,9 @@ on:
   pull_request:
     branches: [ "master", "develop" ]
     paths:
-      - 'PyTorchSimFrontend/triton_backend/**'
-      - 'PyTorchSimFrontend/tog/**'
+      - 'PyTorchSimCodegen/**'
+      - 'Simulator/**'
+      - 'PyTorchSimFrontend/**'
       - 'thirdparty/pytorchsim-triton-backend.json'
       - 'Dockerfile.ptb'
       - 'scripts/ci/ptb_base_pin.sh'

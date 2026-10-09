@@ -84,7 +84,7 @@ the CLAUDE.md "Build" section.
 `.envrc` gives each worktree its own `$TORCHSIM_DUMP_PATH=$_self/outputs`,
 so parallel worktrees do not share caches. But within a worktree, after
 editing anything that affects emitted MLIR or wrapper code
-(`PyTorchSimFrontend/triton_backend/*`, `PyTorchSimFrontend/tog/*`), the next
+(`PyTorchSimCodegen/*`, `Simulator/*`), the next
 `torch.compile` will replay the previously cached compile from
 `outputs/<hash>/` and your change silently does not take. Run:
 

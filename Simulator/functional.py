@@ -10,7 +10,8 @@ import os
 
 from PyTorchSimFrontend import extension_config
 
-from . import layout, session
+from . import session
+from PyTorchSimCodegen import layout
 
 logger = extension_config.setup_logger()
 
@@ -224,7 +225,8 @@ def run(workdir, meta, args):
     Replay is OFF by default -- a result out of a file is not one the simulator
     produced today; it is for the inner loop, not for reporting.
     """
-    from . import compiler_bridge, spike_run
+    from . import spike_run
+    from PyTorchSimCodegen import compiler_bridge
 
     runtime = write_inputs(workdir, meta, args)
 

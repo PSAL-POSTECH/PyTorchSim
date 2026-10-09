@@ -20,7 +20,7 @@ WHERE IT COMES FROM. Inductor plans this as two kernels and its plan is right:
         inductor_meta: mutated_arg_names: ['out_ptr0']
 
 The second kernel MUTATES buf0. `mutated_arg_names` is where Inductor says so,
-and `triton_backend/kernel_spec.py` deliberately does not read it -- it decides
+and `PyTorchSimCodegen/kernel_spec.py` deliberately does not read it -- it decides
 each argument's role from the stores in the source instead, because the table
 overstates on SD1.5 (two kernels list an `in_out_ptr0` they never write, and
 believing it produced eight divergence reports about values nothing

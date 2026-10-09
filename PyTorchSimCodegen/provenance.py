@@ -75,7 +75,7 @@ def _trace_abi():
     not check; making the header part of the artifact's identity gets the same
     protection as a cache miss rather than a load-time refusal.
     """
-    from .trace_build import default_include_dir
+    from Simulator.trace_build import default_include_dir
 
     path = os.path.join(default_include_dir(), "togsim_runtime.h")
     try:

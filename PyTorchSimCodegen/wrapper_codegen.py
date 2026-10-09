@@ -109,7 +109,7 @@ class TritonNPUWrapperCodegen(wrapper.PythonWrapperCodegen):
                 from {codecache.__name__} import torchsim_compile
 
                 # Configure logger for generated wrapper code
-                _logger = setup_logger("PyTorchSimFrontend.triton_backend.generated_wrapper")
+                _logger = setup_logger("PyTorchSimCodegen.generated_wrapper")
 
                 aten = torch.ops.aten
                 inductor_ops = torch.ops.inductor

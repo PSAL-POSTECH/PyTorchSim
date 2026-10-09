@@ -11,7 +11,8 @@ import shutil
 
 from PyTorchSimFrontend import extension_config
 
-from . import breakdown, launch, session
+from . import breakdown, session
+from PyTorchSimCodegen import launch
 
 logger = extension_config.setup_logger()
 
@@ -34,7 +35,7 @@ LOCK_TIMEOUT = 1800
 def measure_tile_cycles(workdir, meta):
     """Per-compute-node cycle counts for ONE tile: the compiler's cycle ELF, measured under gem5.
     None on any failure."""
-    from .compiler_bridge import artifact
+    from PyTorchSimCodegen.compiler_bridge import artifact
     from .gem5 import CycleSimulator
 
     kernel_name = meta["kernel_name"]
@@ -58,7 +59,7 @@ def write_tensors(workdir):
 
     import torch
 
-    from .compiler_bridge import kernel_object
+    from PyTorchSimCodegen.compiler_bridge import kernel_object
 
     manifest = kernel_object(workdir)
     if manifest is None:
@@ -123,7 +124,7 @@ def emit_trace(workdir, meta):
     import json
 
     from . import trace_build
-    from .compiler_bridge import artifact
+    from PyTorchSimCodegen.compiler_bridge import artifact
 
     kernel = meta["kernel_name"]
     so_path = artifact(workdir, "trace_so")

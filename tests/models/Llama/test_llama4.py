@@ -39,7 +39,7 @@ MEASURED 2026-08-14 on transformers 5.15.0, tnpu 983eee4, --preset small:
 
 Fifteen ops run eager: 11 `fill_` and 4 `topk`. The complex arithmetic used to
 be the bulk of that list -- 7 `view_as_complex`, 7 `mul.out`, 6 `view_as_real`,
-twenty calls leaving the simulator -- and `extension_complex_to_real` (84ad277)
+twenty calls leaving the simulator -- and `rewrite_fx_graph` (84ad277)
 now keeps all of it in the graph. That pass was written and measured against
 DeepSeek-V2's rope, and it covers this one unchanged: Llama 4's complex path
 uses no op outside the set it already knew. The kernel count went 30 -> 31 as

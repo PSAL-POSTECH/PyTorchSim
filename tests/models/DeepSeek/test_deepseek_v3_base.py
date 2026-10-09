@@ -53,7 +53,7 @@ torch.npu.register_eager_to_compile([
     #     RecursionError: maximum recursion depth exceeded
     #
     # DeepSeek-V2's complex RoPE closed that loop. It no longer does:
-    # extension_complex_to_real.py rewrites the complex multiply into real
+    # rewrite_fx_graph.py rewrites the complex multiply into real
     # arithmetic, Inductor generates a kernel, and no fallback is emitted.
     # Measured both ways, and pinned by
     # tests/ops/misc/test_eager_to_compile_recursion.py.

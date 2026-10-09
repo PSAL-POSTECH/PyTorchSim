@@ -50,7 +50,7 @@ and same device, two transformers:
 5.x rewrote the MoE block to remove the graph breaks (12 graphs -> 1), and paid
 for it in fallbacks. The wrong number came with them.
 
-**WHAT TO DO INSTEAD.** A decomposition in `PyTorchSimFrontend/extension_decomposition.py`,
+**WHAT TO DO INSTEAD.** A rewrite in `PyTorchSimFrontend/rewrite_fx_graph.py`,
 written in aten ops the backend already lowers, so the work stays in the graph.
 That file exists for exactly this and says so. Note that casting an operand until
 the CPU kernel accepts it is only half the job: the histc decomposition there
@@ -170,7 +170,7 @@ Conan deps for TOGSim: `boost/1.79.0`, `robin-hood-hashing/3.11.5`, `spdlog/1.11
 
 ## Where to look for X
 
-- **Adding a new op:** nothing here, usually — Inductor's own Triton lowerings emit the kernel and PyTorchSim-Triton-Backend lowers it. What lives here is the device-level rewrites: `extension_decomposition.py` (ops with no `npu` kernel), `extension_complex_to_real.py`. GEMM/BMM tile selection: `triton_backend/inductor_templates.py` + `triton_backend/hardware.py`. Kernel source fixups before the compiler sees them: `triton_backend/source_rewrite.py`.
+- **Adding a new op:** nothing here, usually — Inductor's own Triton lowerings emit the kernel and PyTorchSim-Triton-Backend lowers it. What lives here is our FX graph rewrites, `rewrite_fx_graph.py`: decompositions and post-grad passes for ops with no `npu` kernel (histc, polar, topk, transformers' grouped_mm, complex arithmetic). GEMM/BMM tile selection: `triton_backend/inductor_templates.py` + `triton_backend/hardware.py`. Kernel source fixups before the compiler sees them: `triton_backend/source_rewrite.py`.
 - **Adding a PyTorch device op:** `PyTorchSimDevice/csrc/aten/native/*` (Minimal/Extra split mirrors `torch_openreg`).
 - **TOGSim hardware model changes:** `TOGSim/src/{Core,Dram,Interconnect,L2Cache,Tile,TileGraph}.cc` + matching `include/*.h`.
 - **TOG generation:** the compiler emits the trace producer as C++ and the compute type of each tile (`pytorchsim_triton_compiler/trace/`, `trace_cpp` and `tile_types` in `kernel.json`); this repo measures the tiles under gem5, compiles the C++ to `trace.so` and writes `trace_cycles.tsv` (`triton_backend/trace_build.py`, driven from `triton_backend/timing.py`); TOGSim turns them into a TileGraph via `trace_to_tilegraph`.
@@ -227,18 +227,11 @@ either; this rule is the permission.
 
     implement  ->  verify  ->  commit  ->  push
 
-**WHERE IT GOES.** `origin` is `PSAL-POSTECH/PyTorchSim`, the upstream everyone
-shares, and it is **not** our destination. Push to the fork:
-
-```bash
-git remote add fork git@github.com:student-Jungmin/PyTorchSim.git   # once
-git push fork <branch>
-```
-
-Reading "push" as "push to origin" puts work on the shared upstream, so check the
-remote before pushing rather than trusting whatever `origin` happens to be. A
-change spanning repositories is one commit per repository, each to its own remote
-— never one commit carrying another repository's work.
+**WHERE IT GOES.** `origin` is `PSAL-POSTECH/PyTorchSim`; the line everyone shares is
+its `pytorchsim-triton-backend` branch, which PyTorchSim-Triton-Backend pins. Push a
+new branch to origin and open a PR into `pytorchsim-triton-backend`; never push to
+that branch directly. A change spanning repositories is one commit per repository,
+each to its own remote -- never one commit carrying another repository's work.
 
 **VERIFY FIRST, AND SAY WHAT RAN.** "Verified" means the test was executed, not
 that the code looks right. For the Triton route that means the affected test

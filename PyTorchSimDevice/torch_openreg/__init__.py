@@ -18,15 +18,9 @@ torch.utils.generate_methods_for_privateuse1_backend(for_storage=True)
 
 sys.path.append(os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim'))
 import PyTorchSimFrontend.extension_config  # noqa: F401
-# What an op falls back TO is the CPU, and Inductor refuses to generate code for
-# complex operators, so neither of these is about codegen.
-import PyTorchSimFrontend.extension_decomposition  # noqa: F401
-from PyTorchSimFrontend import extension_grouped_mm as _grouped_mm
-from PyTorchSimFrontend import extension_topk as _topk
+from PyTorchSimFrontend import rewrite_fx_graph as _rewrite_fx_graph
 
-_grouped_mm.install()
-_topk.install()
-import PyTorchSimFrontend.extension_complex_to_real  # noqa: F401
+_rewrite_fx_graph.install()
 
 # The `npu` codegen route: Inductor's own Triton codegen, lowered by the
 # compiler passes. Registered here because Inductor registers a backend per

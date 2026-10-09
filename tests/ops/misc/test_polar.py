@@ -26,7 +26,7 @@ def test_polar_on_transposed(device, n=32):
     #                        'torch.ops.aten.polar.default')
     #     AssertionError: expected size 32==32, stride 32==1 at dim=1
     #
-    # PyTorchSimFrontend/extension_decomposition.py takes the extern call out
+    # PyTorchSimFrontend/rewrite_fx_graph.py takes the extern call out
     # instead of arguing about the layout: the pair is built with ops this
     # backend compiles and view_as_complex names it, which Inductor already
     # treats as a view over real data.

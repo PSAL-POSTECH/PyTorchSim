@@ -40,6 +40,8 @@ at::Tensor _copy_from(
     bool non_blocking);
 
 at::Tensor _copy_from_and_resize(const at::Tensor& self, const at::Tensor& dst);
+at::Tensor& fill_(at::Tensor& self, const at::Scalar& value);
+at::Tensor& zero_(at::Tensor& self);
 
 at::Scalar _local_scalar_dense(const at::Tensor& self);
 

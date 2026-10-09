@@ -128,6 +128,28 @@ at::Tensor _copy_from(
   return dst;
 }
 
+at::Tensor& fill_(at::Tensor& self, const at::Scalar& value) {
+  MemoryGuard guard(self);
+  at::Tensor self_as_cpu = at::from_blob(
+      self.data_ptr(),
+      self.sizes(),
+      self.strides(),
+      self.options().device(at::kCPU));
+  self_as_cpu.fill_(value);
+  return self;
+}
+
+at::Tensor& zero_(at::Tensor& self) {
+  MemoryGuard guard(self);
+  at::Tensor self_as_cpu = at::from_blob(
+      self.data_ptr(),
+      self.sizes(),
+      self.strides(),
+      self.options().device(at::kCPU));
+  self_as_cpu.zero_();
+  return self;
+}
+
 at::Tensor _copy_from_and_resize(
     const at::Tensor& self,
     const at::Tensor& dst) {

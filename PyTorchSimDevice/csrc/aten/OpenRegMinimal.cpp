@@ -77,6 +77,14 @@ at::Tensor wrapper__copy_from_and_resize(
   return at::native::openreg::_copy_from_and_resize(self, dst);
 }
 
+at::Tensor& wrapper_fill__Scalar(at::Tensor& self, const at::Scalar& value) {
+  return at::native::openreg::fill_(self, value);
+}
+
+at::Tensor& wrapper_zero_(at::Tensor& self) {
+  return at::native::openreg::zero_(self);
+}
+
 at::Scalar wrapper__local_scalar_densor(const at::Tensor& self) {
   return at::native::openreg::_local_scalar_dense(self);
 }
@@ -141,6 +149,8 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("_reshape_alias", wrapper__reshape_alias);
   m.impl("_copy_from", wrapper__copy_from);
   m.impl("_copy_from_and_resize", wrapper__copy_from_and_resize);
+  m.impl("fill_.Scalar", wrapper_fill__Scalar);
+  m.impl("zero_", wrapper_zero_);
   m.impl("_local_scalar_dense", wrapper__local_scalar_densor);
   m.impl("set_.source_Tensor", wrapper_set_source_Tensor_);
   m.impl("set_.source_Storage", wrapper_set_source_Storage_);

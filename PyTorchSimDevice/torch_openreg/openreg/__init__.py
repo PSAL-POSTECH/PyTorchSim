@@ -18,8 +18,6 @@ _eager_compiled = set()  # op names already given an eager_to_compile wrapper
 # Ops with no npu kernel that Inductor can codegen. Registering them here rather
 # than per test is what keeps `every operation runs on the NPU` true by default.
 DEFAULT_EAGER_TO_COMPILE = (
-    "aten::fill_.Scalar",
-    "aten::zero_",
     "aten::cat.out",
     "aten::mm.out",
     "aten::max_pool2d_with_indices.out",
@@ -407,15 +405,11 @@ def eager_to_compile(op_name):
         def dummy_graph(*args, **kwargs):
             return op(*args, **kwargs)
 
-        from torch._dynamo.variables.torch_function import (
-            torch_function_mode_stack_state_mgr as modes)
-        outer = modes.stack
         in_flight.busy = True
         try:
             return dummy_graph(*args, **kwargs)
         finally:
             in_flight.busy = False
-            modes.stack = outer
 
     if op_name in _eager_compiled:
         return

@@ -335,15 +335,17 @@ def _run_on_cpu(op, args, kwargs):
     cpu_kwargs = {k: _tree_to(v, "cpu") for k, v in kwargs.items()}
     result = op(*cpu_args, **cpu_kwargs)
 
-    out = kwargs.get("out")
-    if out is not None:
-        # An out= variant must write the caller's tensor and return it, not a
-        # copy of it: the graph that called it already holds that buffer.
+    schema = getattr(op, "_schema", None)
+    outs = [kwargs[a.name] for a in (schema.arguments if schema else ())
+            if a.is_out and a.name in kwargs]
+    if not outs and kwargs.get("out") is not None:
+        out = kwargs["out"]
         outs = [out] if isinstance(out, torch.Tensor) else list(out)
+    if outs:
         srcs = [result] if isinstance(result, torch.Tensor) else list(result)
         for dst, src in zip(outs, srcs):
             dst.copy_(src)
-        return out
+        return outs[0] if len(outs) == 1 else tuple(outs)
 
     device = None
     for x in list(args) + list(kwargs.values()):
@@ -397,6 +399,7 @@ def eager_to_compile(op_name):
     """
     in_flight = threading.local()
 
+    @torch.compiler.disable
     def wrapper(*args, **kwargs):
         # Convert "aten::mul.Tensor" -> torch.ops.aten.mul.Tensor
         namespace, op_path = op_name.split("::", 1)

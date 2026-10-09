@@ -5,6 +5,7 @@ generated source afterwards: upstream hands it to `async_compile.triton`, this
 hands it to `torchsim_compile`. Two overrides, and nothing else.
 """
 
+from torch._inductor.codecache import get_hash
 from torch._inductor.codegen.common import IndentedBuffer
 from torch._inductor.codegen.triton import TritonKernel, TritonScheduling
 from torch._inductor.utils import Placeholder, get_fused_kernel_name
@@ -29,13 +30,10 @@ class TritonNPUKernel(TritonKernel):
 class TritonNPUScheduling(TritonScheduling):
     kernel_type = TritonNPUKernel
 
-    count = 0
-
     def define_kernel(self, src_code, node_schedule, kernel):
-        """Name the kernel, capture its metadata, and emit our compile call.
+        """Name the kernel by its source, capture its metadata, and emit our compile call.
 
-        The placeholders upstream substitutes inside define_kernel are resolved
-        here first, because the compiler side parses the source.
+        The name is resolved into the source here, because the compiler side parses it.
         """
         wrapper = V.graph.wrapper_code
         if src_code in wrapper.src_to_kernel:
@@ -43,9 +41,8 @@ class TritonNPUScheduling(TritonScheduling):
 
         fused_name = get_fused_kernel_name(node_schedule, "original_aten")
         kernel_name = "_".join(
-            x for x in ("pytorchsim_triton_compiler", fused_name, str(TritonNPUScheduling.count)) if x
+            x for x in ("pytorchsim_triton_compiler", fused_name, get_hash(src_code.strip())[1:9]) if x
         )
-        TritonNPUScheduling.count += 1
         wrapper.src_to_kernel[src_code] = kernel_name
 
         src_code = src_code.replace(str(Placeholder.DESCRIPTIVE_NAME), kernel_name)

@@ -100,6 +100,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Remove this repository's older images from the runner
+        run: |
+          keep='${{ needs.ensure-base.outputs.base_image }}'
+          for repo in ghcr.io/psal-postech/torchsim-test ghcr.io/psal-postech/torchsim_base; do
+            docker images --format '{{.Repository}}:{{.Tag}}' "$repo"
+          done | grep -v -x -F "$keep" | xargs -r docker rmi > /dev/null 2>&1 || true
+          docker image prune -f > /dev/null 2>&1 || true
+          df -h / | tail -1
+
       - name: Build and Push Docker Image
         uses: docker/build-push-action@v6
         with:

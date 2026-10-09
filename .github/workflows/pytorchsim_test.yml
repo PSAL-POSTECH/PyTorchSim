@@ -83,6 +83,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Remove this repository's older images from the runner
+        run: |
+          keep='${{ inputs.image_name }}'
+          for repo in ghcr.io/psal-postech/torchsim-test ghcr.io/psal-postech/torchsim_base; do
+            docker images --format '{{.Repository}}:{{.Tag}}' "$repo"
+          done | grep -v -x -F "$keep" | xargs -r docker rmi > /dev/null 2>&1 || true
+          docker image prune -f > /dev/null 2>&1 || true
+          df -h / | tail -1
+
       - name: Run ${{ matrix.test }}
         run: |
           docker run --rm \
@@ -107,6 +116,15 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Remove this repository's older images from the runner
+        run: |
+          keep='${{ inputs.image_name }}'
+          for repo in ghcr.io/psal-postech/torchsim-test ghcr.io/psal-postech/torchsim_base; do
+            docker images --format '{{.Repository}}:{{.Tag}}' "$repo"
+          done | grep -v -x -F "$keep" | xargs -r docker rmi > /dev/null 2>&1 || true
+          docker image prune -f > /dev/null 2>&1 || true
+          df -h / | tail -1
 
       - name: run_cycle, accuracy summary, run_speedup
         env:

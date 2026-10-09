@@ -407,11 +407,15 @@ def eager_to_compile(op_name):
         def dummy_graph(*args, **kwargs):
             return op(*args, **kwargs)
 
+        from torch._dynamo.variables.torch_function import (
+            torch_function_mode_stack_state_mgr as modes)
+        outer = modes.stack
         in_flight.busy = True
         try:
             return dummy_graph(*args, **kwargs)
         finally:
             in_flight.busy = False
+            modes.stack = outer
 
     if op_name in _eager_compiled:
         return

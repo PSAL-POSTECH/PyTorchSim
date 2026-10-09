@@ -23,12 +23,18 @@ class CompilerError(RuntimeError):
         r"[A-Za-z_]\w*(?:\.\w+)+: .+|\[(?:transform|lower|binary)\] .*(?:refused|not allowed).*)$", re.M)
     _FRAME = re.compile(r'^\s|^\s*File "|^\s*\^')
     _STAGE_FAIL = re.compile(r"^\[\d+/\d+\] \S+\s+FAIL\s.*\n\n(  \S.*)$", re.M)
+    _STDERR_BLOCK = re.compile(r"^  stderr  :\n((?:    .*\n?)+)", re.M)
 
     def __init__(self, message, cmd=None, output=None):
         self.cmd = cmd
         self.output = output
         if output:
             hits = [h.strip() for h in self._STAGE_FAIL.findall(output)]
+            if hits:
+                said = "\n".join(l.strip() for b in self._STDERR_BLOCK.findall(output)
+                                 for l in b.splitlines())
+                hits += [h.strip() for h in self._SIGNAL.findall(said)
+                         if not self._FRAME.match(h) and h.strip() not in hits[-1]][-2:]
             if not hits:
                 hits = [h.strip() for h in self._SIGNAL.findall(output)
                         if not self._FRAME.match(h)]

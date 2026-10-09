@@ -103,8 +103,8 @@ export pytorchsim_functional_mode=False   # skips Spike
 ```
 
 **To read the IR a kernel went through:** every stage is left in
-`$TORCHSIM_DUMP_PATH/triton_<hash>/` — `01-ttir.mlir`, `03-ttshared.mlir`,
-`04-transformed.mlir`, `05-custom.mlir`, then the ELF. The stage a failure did not
+`$TORCHSIM_DUMP_PATH/triton_<hash>/` — `01-ttir.mlir`, `07-regularized.mlir`,
+`08-transformed.mlir`, `09-custom.mlir`, then the ELF (`11-<kernel>.elf`). The stage a failure did not
 reach is the one that owns it.
 
 **To find which op a wrong result first diverges at** (per-kernel CPU cross-check;

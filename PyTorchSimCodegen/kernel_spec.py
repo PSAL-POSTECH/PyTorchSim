@@ -227,7 +227,7 @@ def _dtype_tokens():
 def scalar_args(meta):
     """User scalar parameters, in kernel order, as [(name, c_type, value)].
 
-    triton-shared keeps these ahead of its own six grid/pid arguments, so the
+    the linalg lowering keeps these ahead of its own six grid/pid arguments, so the
     wrapper must pass them or every later argument lands one slot early.
     """
     numels = meta["numels"]

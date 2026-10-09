@@ -154,7 +154,7 @@ them were the same stop:
     a kernel would run the convolution on the HOST and simulate nothing.  The
     fix is to stop emitting it: a transposed convolution IS a direct one over
     an input with stride-1 zeros inserted, and that rewrite lives in
-    ``PyTorchSimCodegen/inductor_templates.py``, wrapped around the convolution
+    ``PyTorchSimCodegen/inductor_patches.py``, wrapped around the convolution
     LOWERING.  Verified against aten over the product of stride, padding,
     output_padding, dilation, groups and kernel size before it was wired in,
     then through the route on twelve shapes.  It costs stride^2 times the

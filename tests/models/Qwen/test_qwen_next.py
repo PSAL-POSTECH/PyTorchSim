@@ -19,7 +19,7 @@ WHAT EACH ONE ADDS, and why it is not covered by the four already here:
                               that ratio is the thing this preset pins, and it
                               is why the seq axis matters here more than width.
                               It also puts a Conv1d in the block, which needs
-                              inductor_templates' conv1d-to-conv2d registration
+                              inductor_patches' conv1d-to-conv2d registration
                               or it falls to an extern kernel this device has
                               no implementation for.
   * qwen3_next                Hybrid attention -- linear layers interleaved with

@@ -8,10 +8,10 @@
 Registered for `npu` at device import; see PyTorchSimDevice/torch_openreg.
 """
 
-from . import _triton_compat, inductor_templates
+from . import _triton_compat, inductor_patches
 
 _triton_compat.install()
-inductor_templates.install()
+inductor_patches.install()
 
 from .scheduling import TritonNPUScheduling
 from .wrapper_codegen import TritonNPUWrapperCodegen

@@ -181,7 +181,7 @@ def reduction_block_for(extent, elem_bytes=4, lane_bytes=None):
     """The R0_BLOCK this backend pins for a reduction of `extent`.
 
     Cover the extent and no more, then shrink to the budget. Two callers must
-    agree: this pins the block, inductor_templates asks if persistence matches.
+    agree: this pins the block, inductor_patches asks if persistence matches.
     """
     if lane_bytes is None:
         lane_bytes = int(os.environ.get("TORCHSIM_COMPILE_SPAD_SIZE", str(64 * 1024)), 0)

@@ -196,9 +196,10 @@ def _covers(want, n):
     """`want`, clamped to the smallest legal block that covers `n`.
 
     A block wider than its numel strands the mask's rank-1 index rows ONE_LANE
-    against banked data. A numel of 1 is NOT clamped: it leaves the lanes none.
+    against banked data, and a numel of 1 under a lane-wide block is a tile of
+    digits whose mask the DMA cannot state; the lanes go to another axis.
     """
-    if not n or n <= 1:
+    if not n:
         return want
     cover = 1
     while cover < n:

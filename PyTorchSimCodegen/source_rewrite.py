@@ -21,7 +21,7 @@ _HELPER_USE_RE = re.compile(r"\btriton_helpers\.(\w+)")
 
 
 def strip_for_compiler(src):
-    """Remove everything the torch-free the compiler venv cannot import.
+    """Remove everything the torch-free compiler venv cannot import.
 
     Drops torch/inductor imports and the @triton_heuristics decorator, then
     re-adds the imports and vendored helpers the stripped body still needs.
@@ -30,7 +30,7 @@ def strip_for_compiler(src):
     out, i = [], 0
     while i < len(lines):
         line = lines[i]
-        if _HEURISTIC_RE.match(line.strip()) or _HEURISTIC_RE.match(line):
+        if _HEURISTIC_RE.match(line.strip()):
             while i < len(lines) and lines[i].strip() != "@triton.jit":
                 i += 1
             continue
@@ -137,16 +137,17 @@ def clamp_instead_of_wrap(body, kernel_name=""):
             return body
 
         pad = " " * (len(lines[anchor]) - len(lines[anchor].lstrip()))
-        inserted, applied = [], {}
+        inserted, masks, applied = [], set(), {}
         for idx, dim, _block in _WRAP_TRIPLES:
             if not needs.get(idx):
                 continue
             name = _ROW_MASK if idx == "rm" else _COL_MASK
             slice_ = "[:, None]" if idx == "rm" else "[None, :]"
             inserted.append(f"{pad}{name} = {idx}{slice_} < {dim}")
+            masks.add(name)
         lines[anchor + 1:anchor + 1] = inserted
         for ptr, name in _MASK_FOR.items():
-            if name in "".join(inserted):
+            if name in masks:
                 applied[ptr] = _add_mask_to_loads(lines, ptr, name)
         if any(v == 0 for v in applied.values()):
             logger.warning(
@@ -155,7 +156,7 @@ def clamp_instead_of_wrap(body, kernel_name=""):
             return body
 
     body = "\n".join(lines)
-    for idx, dim, block in _WRAP_TRIPLES:
+    for idx, dim, _block in _WRAP_TRIPLES:
         if idx not in needs:
             continue
         body, n = re.subn(rf"\b{idx}\s*%\s*{dim}\b", idx, body)

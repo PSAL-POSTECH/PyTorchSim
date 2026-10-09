@@ -356,6 +356,12 @@ def _run_on_cpu(op, args, kwargs):
     return _tree_to(result, device) if device is not None else result
 
 
+def _compile_in_flight():
+    """Is a torch.compile running on this thread? An eager op reached then is compile-time work
+    (a constant Inductor folds), not the workload, and a compile inside a compile breaks dynamo."""
+    return torch.compiler.is_compiling()
+
+
 def eager_to_compile(op_name):
     """
     Register an eager mode operation as a graph-based implementation using torch.compile().
@@ -398,7 +404,7 @@ def eager_to_compile(op_name):
         for part in [namespace] + op_path.split("."):
             op = getattr(op, part)
 
-        if getattr(in_flight, "busy", False):
+        if getattr(in_flight, "busy", False) or _compile_in_flight():
             return _run_on_cpu(op, args, kwargs)
 
         @torch.compile(dynamic=False)

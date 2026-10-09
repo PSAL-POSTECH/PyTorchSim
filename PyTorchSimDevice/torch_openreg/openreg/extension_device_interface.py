@@ -36,7 +36,7 @@ class ExtensionDeviceInterface(DeviceInterface):
         def current_device() -> int:
             if "extension_device" in caching_worker_current_devices:
                 return caching_worker_current_devices["extension_device"]
-            return torch.xpu.current_device()
+            return torch.npu.current_device()
 
         @staticmethod
         def get_device_properties(device: torch.types.Device = None) -> _ExtensionDeviceProperties:

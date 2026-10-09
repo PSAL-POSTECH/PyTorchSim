@@ -26,10 +26,26 @@ def _register_npu_as_gpu():
 
 
 def _claim_triton_present():
-    """Make has_triton() true: it asks for a GPU driver, which npu never uses."""
+    """Make has_triton() true and triton_hash_with_backend() driver-free: npu never uses a GPU driver.
+
+    Triton itself must already be importable, from PYTHONPATH, before torch first imports it.
+    """
+    import functools
+    import hashlib
+
     import torch._inductor.scheduler as scheduler
     import torch.utils._triton as triton_utils
 
+    try:
+        import triton
+    except ModuleNotFoundError as e:
+        raise ModuleNotFoundError(
+            "Inductor's Triton codegen needs `triton` importable: put the compiler's "
+            "checkout ($TORCHSIM_PREFIX/triton-src/python) on PYTHONPATH") from e
+
+    key = f"pytorchsim-torchsim-compile-{triton.__version__}"
+    backend_hash = hashlib.sha256(key.encode("utf-8")).hexdigest().upper()
+    triton_utils.triton_hash_with_backend = functools.cache(lambda: backend_hash)
     triton_utils.has_triton = lambda: True
     if hasattr(scheduler, "has_triton"):
         scheduler.has_triton = lambda: True

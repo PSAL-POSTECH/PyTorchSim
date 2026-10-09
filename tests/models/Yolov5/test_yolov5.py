@@ -25,7 +25,7 @@ def run_yolo(batch, config):
     torch._dynamo.config.cache_size_limit = 128
 
     # Load model and prepare input
-    model = torch.hub.load("ultralytics/yolov5", "yolov5s").cpu().eval()
+    model = torch.hub.load("ultralytics/yolov5", "yolov5s", trust_repo=True).cpu().eval()
     url = "https://ultralytics.com/images/zidane.jpg"
 
     response = requests.get(url)
@@ -68,7 +68,7 @@ def test_c3_module(device, batch=1, c1=64, c2=128, n=1, h=64, w=64):
     # Import C3 module from YOLOv5
     try:
         # Load model first to ensure hub cache is populated
-        _ = torch.hub.load("ultralytics/yolov5", "yolov5s", pretrained=False)
+        _ = torch.hub.load("ultralytics/yolov5", "yolov5s", pretrained=False, trust_repo=True)
 
         # Try to import from torch hub cache
         hub_path = os.path.expanduser("~/.cache/torch/hub/ultralytics_yolov5_master")
@@ -113,7 +113,7 @@ def test_bottleneck_module(device, batch=1, c1=64, c2=64, shortcut=True, g=1, e=
     # Import Bottleneck module from YOLOv5
     try:
         # Load model first to ensure hub cache is populated
-        _ = torch.hub.load("ultralytics/yolov5", "yolov5s", pretrained=False)
+        _ = torch.hub.load("ultralytics/yolov5", "yolov5s", pretrained=False, trust_repo=True)
 
         # Try to import from torch hub cache
         hub_path = os.path.expanduser("~/.cache/torch/hub/ultralytics_yolov5_master")
@@ -154,7 +154,7 @@ def test_conv_module(device, batch=1, c1=32, c2=64, k=3, s=1, p=None, g=1, d=1, 
     # Import Conv module from YOLOv5
     try:
         # Load model first to ensure hub cache is populated
-        _ = torch.hub.load("ultralytics/yolov5", "yolov5s", pretrained=False)
+        _ = torch.hub.load("ultralytics/yolov5", "yolov5s", pretrained=False, trust_repo=True)
 
         # Try to import from torch hub cache
         hub_path = os.path.expanduser("~/.cache/torch/hub/ultralytics_yolov5_master")

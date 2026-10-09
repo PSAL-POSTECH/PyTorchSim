@@ -53,7 +53,8 @@ jobs:
 
       - name: The compiler has published an image for the pin
         run: |
-          if ! docker manifest inspect "${PTB_IMAGE}" > /dev/null 2>&1; then
+          if ! docker manifest inspect "${PTB_IMAGE}" > /dev/null 2> inspect.err; then
+            echo "docker manifest inspect: $(cat inspect.err)"
             echo "::error::${PTB_IMAGE} is not in the registry. PSAL-POSTECH/PyTorchSim-Triton-Backend's images workflow pushes one tag per commit on its main and develop; a pin on any other branch has no image. If the tag does exist, this repository has lost read access to the package (its settings: Manage Actions access)."
             exit 1
           fi

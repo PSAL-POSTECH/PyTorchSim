@@ -103,7 +103,14 @@ jobs:
             docker images --format '{{.Repository}}:{{.Tag}}' "$repo"
           done | grep -v -x -F "$keep" | xargs -r docker rmi > /dev/null 2>&1 || true
           docker image prune -f > /dev/null 2>&1 || true
+          free_gb() { df -BG --output=avail / | tail -1 | tr -dc 0-9; }
+          if [ "$(free_gb)" -lt 40 ]; then
+            echo "$(free_gb) GB free after removing this repository's images: removing every unused image and container on the runner"
+            docker container prune -f > /dev/null 2>&1 || true
+            docker image prune -af > /dev/null 2>&1 || true
+          fi
           df -h / | tail -1
+          docker images --format '{{.Size}}  {{.Repository}}:{{.Tag}}' 2>/dev/null | head -8
 
       - name: Build and Push Docker Image
         uses: docker/build-push-action@v6

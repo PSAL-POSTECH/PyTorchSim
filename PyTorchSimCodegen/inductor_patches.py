@@ -141,7 +141,7 @@ def _register_template_heuristics():
             def configs(m, n, k, **kwargs):
                 from torch._inductor.virtualized import V
                 try:
-                    mnk = [int(V.graph.sizevars.size_hint(s)) for s in (m, n, k)]
+                    mnk = [int(V.graph.sizevars.optimization_hint(s)) for s in (m, n, k)]
                 except Exception:
                     yield from generic(m, n, k, **kwargs)
                     return
@@ -386,7 +386,7 @@ def _short_circuit_degenerate_gemms():
             try:
                 m, n, k, layout = mm_args(*args[bias:bias + 2],
                                           layout=kwargs.get("layout"))[:4]
-                m, n, k = (int(V.graph.sizevars.size_hint(s)) for s in (m, n, k))
+                m, n, k = (int(V.graph.sizevars.optimization_hint(s)) for s in (m, n, k))
             except Exception:
                 return _orig(*args, **kwargs)
             if not _is_npu(layout):
@@ -429,6 +429,10 @@ def _npu_choices_class():
                 torch.int16: 16, torch.int8: 8, torch.uint8: 8, torch.bool: 8}
 
     class NPUChoices(InductorChoices):
+        def uuid(self):
+            """This class's part of Inductor's cache key."""
+            return "pytorchsim-npu-choices-1"
+
         def triton_kernel_kwargs(self, kernel_cls, features, groups, kernel_kwargs):
             """Pin this machine's blocks as a FixedTritonConfig, before the kernel is generated.
 
@@ -492,19 +496,18 @@ def _npu_choices_class():
             persistent = 1 << (extent - 1).bit_length()
             return persistent <= launch.reduction_block_for(extent)
 
-        @staticmethod
-        def reduction_split_factor(device, reduction_numel_hint, numel_hint,
+        def reduction_split_factor(self, device, reduction_numel_hint, numel_hint,
                                    inner_reduction):
             """Split a reduction only when a core would otherwise sit idle, and at most cores ways.
 
             One core, or a parallel axis that already fills the cores, means no split.
             """
             if getattr(device, "type", device) != "npu":
-                return InductorChoices.reduction_split_factor(
+                return super().reduction_split_factor(
                     device, reduction_numel_hint, numel_hint, inner_reduction)
             cores = _num_cores()
             if cores > 1:
-                want = InductorChoices.reduction_split_factor(
+                want = super().reduction_split_factor(
                     device, reduction_numel_hint, numel_hint, inner_reduction)
                 try:
                     if int(numel_hint) >= cores:

@@ -19,9 +19,9 @@ def test_reduction_split_is_upstream_off_device():
     """A cpu reduction keeps upstream's split factor, not this route's fixed 1."""
     device = torch.device("cpu")
     shapes = ((1 << 20, 2), (1 << 16, 1), (1 << 14, 4))
-    ours = [config.inductor_choices_class.reduction_split_factor(
+    ours = [config.inductor_choices_class().reduction_split_factor(
         device, r, n, True) for r, n in shapes]
-    upstream = [InductorChoices.reduction_split_factor(
+    upstream = [InductorChoices().reduction_split_factor(
         device, r, n, True) for r, n in shapes]
     test_result("ReductionSplitOffDevice", torch.tensor(ours),
                 torch.tensor(upstream))
@@ -68,7 +68,7 @@ def test_conv_grid_is_upstream_off_device():
 
 def test_this_device_still_gets_its_own_answers():
     """The scoping did not disable the route: npu keeps split 1 and allocation."""
-    split = config.inductor_choices_class.reduction_split_factor(
+    split = config.inductor_choices_class().reduction_split_factor(
         torch.device("npu"), 1 << 20, 2, True)
     operand = AlgorithmSelectorCache.generate_example_value(
         (64,), (1,), "npu", torch.float32, 0)

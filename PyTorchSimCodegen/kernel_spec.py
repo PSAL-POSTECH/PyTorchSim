@@ -45,7 +45,7 @@ def _buffer_numel(name):
         if buf is None:
             return None
         lay = buf.get_layout()
-        hint = V.graph.sizevars.size_hint
+        hint = V.graph.sizevars.optimization_hint
         size = [int(hint(s)) for s in lay.size]
         if any(s <= 0 for s in size):
             return 0
@@ -165,7 +165,7 @@ def collect_meta(kernel, kernel_name):
     numels = {}
     for prefix, val in (getattr(kernel, "numels", None) or {}).items():
         try:
-            numels[f"{prefix}numel"] = int(V.graph.sizevars.size_hint(val))
+            numels[f"{prefix}numel"] = int(V.graph.sizevars.optimization_hint(val))
         except Exception:
             numels[f"{prefix}numel"] = None
 

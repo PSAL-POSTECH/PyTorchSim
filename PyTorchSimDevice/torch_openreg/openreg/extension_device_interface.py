@@ -63,6 +63,16 @@ class ExtensionDeviceInterface(DeviceInterface):
         return 36
 
     @staticmethod
+    def is_available() -> bool:
+        """The simulated device is always there."""
+        return True
+
+    @staticmethod
+    def is_triton_capable(device: torch.types.Device = None) -> bool:
+        """Kernels for npu are Triton, compiled by PyTorchSim-Triton-Backend."""
+        return True
+
+    @staticmethod
     def is_bf16_supported(including_emulation: bool = False) -> bool:
         """Answer Inductor's bf16 gate, which the base class only raises on.
 

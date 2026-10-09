@@ -3,12 +3,11 @@
 Emits the header the wrapper needs (torchsim_compile,
 the functional-verify calls) and walks the wrapper IR lines once.
 """
-import contextlib
+import dataclasses
 
 import torch
 from torch._inductor.codegen import wrapper
 from torch._inductor.ir import GraphPartitionSignature
-from torch._inductor.utils import IndentedBuffer
 from torch._inductor.virtualized import V
 from typing import Optional
 
@@ -35,6 +34,15 @@ def _mutated(line):
         return ()
 
 
+@dataclasses.dataclass
+class _VerifyLine(wrapper.WrapperLine):
+    """One per-kernel verify call in the wrapper body."""
+    text: str
+
+    def codegen(self, code):
+        code.writeline(self.text)
+
+
 class TritonNPUWrapperCodegen(wrapper.PythonWrapperCodegen):
     """The npu wrapper: kernels are compiled by torchsim_compile and called as plain functions."""
 
@@ -59,126 +67,52 @@ class TritonNPUWrapperCodegen(wrapper.PythonWrapperCodegen):
             name, self.prepare_triton_kernel_call(call_args))
 
     def write_header(self):
+        """Inductor's own header, then the names the npu wrapper adds: torchsim_compile, verify, the log line."""
+        super().write_header()
         self.header.splice(
             f"""
-                from ctypes import c_void_p, c_long
-                import torch
-                import math
-                import random
-                import os
-                import tempfile
-                from math import inf, nan
-                from torch._inductor.hooks import run_intermediate_hooks
-                from torch._inductor.utils import maybe_profile
-                from torch._inductor.codegen.memory_planning import _align as align
-                from torch._inductor.async_compile import AsyncCompile
-
-                from torch import device, empty, empty_strided
                 from PyTorchSimFrontend.config import setup_logger
                 from Simulator import functional_verify as _fverify
-                from torch._inductor.select_algorithm import extern_kernels
                 from {codecache.__name__} import torchsim_compile
 
                 _logger = setup_logger("PyTorchSimCodegen.generated_wrapper")
-
-                aten = torch.ops.aten
-                inductor_ops = torch.ops.inductor
-                assert_size_stride = torch._C._dynamo.guards.assert_size_stride
-                assert_alignment = torch._C._dynamo.guards.assert_alignment
-                empty_strided_cpu = torch._C._dynamo.guards._empty_strided_cpu
-                alloc_from_pool = torch.ops.inductor._alloc_from_pool
-                reinterpret_tensor = torch.ops.inductor._reinterpret_tensor
-                async_compile = AsyncCompile()
                 _logger.info(f'Wrapper Codegen Path = {{__file__}}')
             """
         )
 
-    def write_prefix(self):
-        self.write_async_compile_wait()
-        self.prefix.splice(
-            """
-            def call(args):
-            """
-        )
-        with self.prefix.indent():
-            inp_len = len(V.graph.graph_inputs.keys())
-            if inp_len != 0:
-                lhs = f"{', '.join(V.graph.graph_inputs.keys())}{'' if inp_len != 1 else ','}"
-                self.prefix.writeline(f"{lhs} = args")
-                self.prefix.writeline("args.clear()")
+    def write_args(self, input_names):
+        """Unpack the inputs as Inductor does, then (per-kernel verify on) build the CPU golden from them."""
+        super().write_args(input_names)
+        if not _func_verify.enabled():
+            return
+        gm = getattr(V.graph, "module", None)
+        if gm is not None:
+            gid = _func_verify.register_graph(gm)
+            self.prefix.writeline(
+                f"_fverify.verify_init({gid}, [{', '.join(V.graph.graph_inputs.keys())}])")
 
-            if _func_verify.enabled():
-                gm = getattr(V.graph, "module", None)
-                if gm is not None:
-                    gid = _func_verify.register_graph(gm)
-                    in_names = list(V.graph.graph_inputs.keys())
-                    self.prefix.writeline(
-                        f"_fverify.verify_init({gid}, [{', '.join(in_names)}])")
-
-            self.codegen_inputs()
-            self.codegen_input_size_asserts()
-
-    def _generate_kernel_call_helper(
-        self,
-        kernel_name: str,
-        call_args,
-        *,
-        device=None,
-        triton=True,
-        arg_types=None,
-        raw_keys=None,
-        raw_args=None,
-        triton_meta=None,
-        graph_name="",
-        original_fxnode_name=None,
-    ):
+    def _generate_kernel_call_helper(self, kernel_name, call_args, **kwargs):
+        """A kernel call is a plain function call; grid, stream and autotune do not apply."""
         self.writeline(self.wrap_kernel_call(kernel_name, call_args))
-        return
 
-    def generate(self, is_inference):
-        result = IndentedBuffer()
-
+    def run_wrapper_ir_passes(self, is_inference):
+        """Inductor's passes, then (per-kernel verify on) a check line after each buffer's last writer."""
+        super().run_wrapper_ir_passes(is_inference)
+        if not _func_verify.enabled():
+            return
         self._fverify_seen = set()
-        self._fverify_last = None
-        with contextlib.ExitStack() as stack:
-            stack.enter_context(self.wrapper_call.indent())
-            if torch._inductor.config.allow_buffer_reuse:
-                self.estimate_peak = wrapper.EfficientPeakEstimate()
-            self.memory_plan_reuse()
-            with self.set_writeline(self.wrapper_call.writeline):
-                for line in self.lines:
-                    if isinstance(line, wrapper.MemoryPlanningLine):
-                        line.codegen(self.wrapper_call)
-                    elif isinstance(line, wrapper.KernelCallLine):
-                        self.wrapper_call.writeline(self.wrap_kernel_call(line.kernel_name, line.call_args))
-                        if _func_verify.enabled():
-                            self._fverify_emit_checks(line.call_args, id(line),
-                                                      line.kernel_name)
-                    else:
-                        if isinstance(line, wrapper.WrapperLine):
-                            line.codegen(self.wrapper_call)
-                            if _func_verify.enabled():
-                                self._fverify_emit_mutation_checks(line)
-                        else:
-                            self.wrapper_call.writeline(line)
-            output_refs = self.get_output_refs()
-            self.mark_output_type()
-            self.generate_return(output_refs)
-
-        result.splice(self.header)
-
-        self.finalize_prefix()
-        result.splice(self.prefix)
-
-        with result.indent():
-            result.splice(self.wrapper_call)
-
-        self.generate_end(result)
-        self.add_benchmark_harness(result)
-        return (
-            result.getvaluewithlinemap(),
-            self.kernel_declarations.getvaluewithlinemap(),
-        )
+        self._fverify_last = self._fverify_last_writer()
+        lines = []
+        for line in self.lines:
+            lines.append(line)
+            if isinstance(line, wrapper.KernelCallLine):
+                checks = self._fverify_emit_checks(line.call_args, id(line), line.kernel_name)
+            elif isinstance(line, wrapper.WrapperLine):
+                checks = self._fverify_emit_mutation_checks(line)
+            else:
+                checks = []
+            lines.extend(_VerifyLine(c) for c in checks)
+        self.lines = lines
 
     def _fverify_last_writer(self):
         """{buffer name: id of the last wrapper line that writes it}.
@@ -200,12 +134,11 @@ class TritonNPUWrapperCodegen(wrapper.PythonWrapperCodegen):
         return last
 
     def _fverify_emit_checks(self, call_args, line_id=None, kernel_name=None):
-        """Emit a verify_check after this kernel for each buffer it writes and finishes.
+        """The verify_check lines after this kernel, one per buffer it writes and finishes.
 
         Only written arguments are checked: a reused buffer that is only read carries another origin.
         """
-        if self._fverify_last is None:
-            self._fverify_last = self._fverify_last_writer()
+        checks = []
         for pos, a in enumerate(call_args):
             if not isinstance(a, str):
                 continue
@@ -214,33 +147,33 @@ class TritonNPUWrapperCodegen(wrapper.PythonWrapperCodegen):
                 continue
             if not _writes(kernel_name, pos):
                 continue
-            self._fverify_check_one(name, line_id)
+            checks += self._fverify_check_one(name, line_id)
+        return checks
 
     def _fverify_emit_mutation_checks(self, line):
-        """The same check, after a fallback that finishes a buffer in place."""
-        if self._fverify_last is None:
-            self._fverify_last = self._fverify_last_writer()
+        """The same checks, after a fallback that finishes a buffer in place."""
+        checks = []
         for name in _mutated(line):
-            self._fverify_check_one(name, id(line))
+            checks += self._fverify_check_one(name, id(line))
+        return checks
 
     def _fverify_check_one(self, name, line_id):
-        """One `verify_check` for `name`, if this line is its last writer."""
+        """The `verify_check` line for `name` ([] or one), if this line is its last writer."""
         if name in self._fverify_seen:
-            return
+            return []
         if line_id is not None and self._fverify_last.get(name) != line_id:
-            return
+            return []
         self._fverify_seen.add(name)
         if name in V.graph.graph_inputs:
-            return
+            return []
         try:
             buf = V.graph.get_buffer(name)
         except Exception:
             buf = None
         if buf is None:
-            return
+            return []
         origin = getattr(buf, "origin_node", None)
         if origin is None:
-            return
+            return []
         op = str(getattr(origin, "target", "?"))
-        self.wrapper_call.writeline(
-            f'_fverify.verify_check({name}, "{name}", "{origin.name}", "{op}")')
+        return [f'_fverify.verify_check({name}, "{name}", "{origin.name}", "{op}")']

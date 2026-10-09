@@ -17,7 +17,7 @@
 #                                            staged IR, ELF, trace.so)
 #
 # WHY THE TRITON ONES MATTER MORE THAN THEY LOOK. That hash is of the INDUCTOR
-# SOURCE, so a fix anywhere BELOW it -- a torchsim-compile pass, triton-shared -- leaves the
+# SOURCE, so a fix anywhere BELOW it -- a torchsim-compile pass, the linalg lowering -- leaves the
 # hash alone and the launcher reuses the ELF it already has. Measured: two runs
 # of test_transformer.py reported the same divergence while the kernel, given
 # the model's own recorded inputs, passed standalone at 2.7e-07; the artifacts

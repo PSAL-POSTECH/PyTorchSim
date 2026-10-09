@@ -26,10 +26,10 @@ PASSING = os.path.join(HERE, "triton_route_passing.txt")
 
 #: How far the kernel got. The stage a failure did not reach owns it.
 STAGES = [
-    ("01-ttir.mlir",        "1 triton-compile"),
-    ("03-ttshared.mlir",    "2 triton-shared"),
-    ("04-transformed.mlir", "3 torchsim-compile: transform"),
-    ("05-custom.mlir",      "3 torchsim-compile: lower (DMA, lanes, spad)"),
+    ("01-ttir.mlir",        "1 triton-compile: frontend"),
+    ("07-regularized.mlir", "1 triton-compile: TTGIR -> linalg"),
+    ("08-transformed.mlir", "2 torchsim-compile: transform"),
+    ("09-custom.mlir",      "2 torchsim-compile: lower (DMA, lanes, spad)"),
     ("trace.so",            "trace producer"),
 ]
 
@@ -41,7 +41,7 @@ BUCKETS = [
     ("wrapper_gap",    r"'TritonNPUWrapperCodegen' object has no attribute"),
     ("spec_incomplete", r"SpecIncomplete"),
     ("compiler_stage",     r"CompilerError|the compiler pipeline failed|triton-shared-opt|"
-                       r"\[stage\d\]|failed to legalize"),
+                       r"\[stage\d\]|\[(transform|lower|binary)\]|failed to legalize"),
     ("reduction",      r"lane-aware|linalg\.reduce|no reduction path"),
     ("dynamic_shape",  r"ShapeMismatch|dynamic shape|size_hint returned None"),
     ("matmul_timing",  r"vcix\.iv|sf\.vc\.|no compute node"),

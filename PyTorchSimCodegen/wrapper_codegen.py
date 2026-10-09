@@ -6,7 +6,7 @@ the functional-verify calls) and walks the wrapper IR lines once.
 import contextlib
 
 import torch
-from torch._inductor.codegen import wrapper, memory_planning
+from torch._inductor.codegen import wrapper
 from torch._inductor.ir import GraphPartitionSignature
 from torch._inductor.utils import IndentedBuffer
 from torch._inductor.virtualized import V
@@ -18,50 +18,25 @@ from . import codecache, kernel_spec
 
 
 def _writes(kernel_name, position):
-    """Does `kernel_name` write the tensor argument at `position`?
-
-    The roles are recorded at define_kernel. Unknown kernel or unknown
-    position -> True, so an unrecorded argument stays checkable.
-    """
+    """Does `kernel_name` write the tensor argument at `position`? True when unrecorded."""
     if kernel_name is None:
         return True
     return kernel_spec.writes_arg(kernel_name, position)
 
 
 def _mutated(line):
-    """Buffer names a NON-kernel wrapper line writes, from Inductor's own IR.
-
-    A GENERATED KERNEL IS NOT THE ONLY THING THAT WRITES A BUFFER. Anything
-    Inductor declines to codegen comes out as a fallback call that mutates its
-    first argument in place, and the buffer is only finished after it:
-
-        pytorchsim_triton_compiler_fused_eq_index_put_view_26(arg0_1, buf0, 1968)
-        _fverify.verify_check(buf0, ...)                    <- was here
-        aten.index_put_(buf0, [buf1], arg2_1, False)        <- finishes buf0
-
-        measured   Kimi-VL's MoonViT merge, `inputs_embeds[input_ids ==
-                   image_token] = image_features`. The kernel copies the
-                   embeddings and the fallback scatters the image rows in, so
-                   the check saw the copy and reported 492 of 1968 elements
-                   over tol -- exactly the 4 image tokens x 123 hidden the
-                   fallback had not written yet.
-
-    `get_mutation_names` is Inductor's answer to the same question, so this
-    asks it rather than pattern-matching the line class (there are four of
-    them, and a fifth would be silently missed).
-    """
+    """Buffer names a non-kernel wrapper line (a fallback) writes in place, from Inductor's IR."""
     node = getattr(line, "node", None)
     if node is None:
         return ()
     try:
         return tuple(node.get_mutation_names())
-    except Exception:  # noqa: BLE001 - a node type that does not answer
+    except Exception:  # noqa: BLE001
         return ()
 
 
 class TritonNPUWrapperCodegen(wrapper.PythonWrapperCodegen):
-    def __init__(self):
-        super().__init__()
+    """The npu wrapper: kernels are compiled by torchsim_compile and called as plain functions."""
 
     @classmethod
     def create(
@@ -79,11 +54,7 @@ class TritonNPUWrapperCodegen(wrapper.PythonWrapperCodegen):
         return cls()
 
     def wrap_kernel_call(self, name, call_args):
-        """Render the call args before joining them.
-
-        `generate` hands call_args straight to a join, so a sympy Integer is a
-        TypeError. Every call passes here, which is what makes it one place.
-        """
+        """The kernel call line, with sympy call args rendered as strings first."""
         return super().wrap_kernel_call(
             name, self.prepare_triton_kernel_call(call_args))
 
@@ -108,7 +79,6 @@ class TritonNPUWrapperCodegen(wrapper.PythonWrapperCodegen):
                 from torch._inductor.select_algorithm import extern_kernels
                 from {codecache.__name__} import torchsim_compile
 
-                # Configure logger for generated wrapper code
                 _logger = setup_logger("PyTorchSimCodegen.generated_wrapper")
 
                 aten = torch.ops.aten
@@ -119,17 +89,7 @@ class TritonNPUWrapperCodegen(wrapper.PythonWrapperCodegen):
                 alloc_from_pool = torch.ops.inductor._alloc_from_pool
                 reinterpret_tensor = torch.ops.inductor._reinterpret_tensor
                 async_compile = AsyncCompile()
-                os.environ["TORCHSIM_LAST_COMPILED_MODULE"] = __file__
                 _logger.info(f'Wrapper Codegen Path = {{__file__}}')
-            """
-        )
-        self.header.splice(
-            """
-            def host2device_memcopy(buffer):
-                pass
-
-            def device2host_memcpy(buffer):
-                pass
             """
         )
 
@@ -147,8 +107,6 @@ class TritonNPUWrapperCodegen(wrapper.PythonWrapperCodegen):
                 self.prefix.writeline(f"{lhs} = args")
                 self.prefix.writeline("args.clear()")
 
-            # Per-kernel functional verify: register the runnable aten graph and
-            # emit a CPU golden build at the top of call(), passing graph inputs.
             if _func_verify.enabled():
                 gm = getattr(V.graph, "module", None)
                 if gm is not None:
@@ -174,7 +132,6 @@ class TritonNPUWrapperCodegen(wrapper.PythonWrapperCodegen):
         graph_name="",
         original_fxnode_name=None,
     ):
-        device = device or V.graph.get_current_device_or_throw()
         self.writeline(self.wrap_kernel_call(kernel_name, call_args))
         return
 
@@ -185,13 +142,6 @@ class TritonNPUWrapperCodegen(wrapper.PythonWrapperCodegen):
         self._fverify_last = None
         with contextlib.ExitStack() as stack:
             stack.enter_context(self.wrapper_call.indent())
-            # memory_plan_reuse() reaches self.estimate_peak through
-            # AllocateLine.should_reuse_buffer, and upstream sets it in
-            # run_wrapper_ir_passes -- which this override replaces, so nothing
-            # else will. Missing it is not a planning miss but an AttributeError,
-            # and only on a graph with a reuse candidate far enough back to need
-            # the estimate: ResNet-18 hits it, add does not. Same guard upstream
-            # uses, so buffer reuse off means no estimate to build.
             if torch._inductor.config.allow_buffer_reuse:
                 self.estimate_peak = wrapper.EfficientPeakEstimate()
             self.memory_plan_reuse()
@@ -231,30 +181,9 @@ class TritonNPUWrapperCodegen(wrapper.PythonWrapperCodegen):
         )
 
     def _fverify_last_writer(self):
-        """{buffer name: id of the LAST kernel call that names it}.
+        """{buffer name: id of the last wrapper line that writes it}.
 
-        THE FIRST KERNEL TO NAME A BUFFER IS NOT ALWAYS THE ONE THAT FINISHES
-        IT. One fx op can be split across several kernels, and then the buffer
-        is only complete after the last of them -- checking after the first
-        compares a half-built buffer against a finished golden and reports a
-        divergence that is not one.
-
-            measured   DeepSeek-V3's MoE router. `aten.scatter.value` comes out
-                       as two kernels sharing one origin node:
-
-                         pytorchsim_triton_compiler_fused_scatter_zeros_like_38(buf9, 256)
-                         _fverify.verify_check(buf9, ...)        <- here
-                         pytorchsim_triton_compiler_fused_scatter_zeros_like_39(buf8, buf9, 128)
-
-                       38 writes the zeros and 39 scatters the ones, so the
-                       check saw an all-zero buffer and reported "128/256
-                       elements over tol, all npu=0 cpu=1" -- every one of the
-                       scattered ones "missing". Running kernel 39 standalone
-                       against a torch reference gives max_abs_err 0.
-
-        So the walk is done twice: once to find where each buffer is last
-        written, and once to emit. Same order, same buffers, one check each --
-        only the position moves.
+        A buffer is checked after its last writer, since one op can span several kernels.
         """
         last = {}
         for line in self.lines:
@@ -271,31 +200,9 @@ class TritonNPUWrapperCodegen(wrapper.PythonWrapperCodegen):
         return last
 
     def _fverify_emit_checks(self, call_args, line_id=None, kernel_name=None):
-        """Emit per-kernel CPU verify calls for this kernel's output buffers.
+        """Emit a verify_check after this kernel for each buffer it writes and finishes.
 
-        Each bare-identifier buffer arg the kernel WRITES is checked once,
-        after the LAST kernel that writes it -- see _fverify_last_writer for
-        why not the first. The buffer is mapped to its originating fx node (op)
-        so the runtime check can compare against the CPU golden keyed by that
-        node.
-
-        WRITES, NOT NAMES. This used to check every bare-identifier argument,
-        inputs included, and the docstrings on both halves said "writes" while
-        the code said "names". The two part company under buffer REUSE: the
-        wrapper renames storage (`buf20 = buf9  # reuse`), so one buffer's
-        contents live under another buffer's name, and that name's
-        `origin_node` describes what Inductor MEANT to put there. Check it
-        after a kernel that only reads it and the comparison is against a value
-        nothing computed.
-
-            measured   Stable Diffusion v1.5's UNet. Two kernels take an
-                       `in_out_ptr0` and never store to it; they are called
-                       eight times between them, on buf20, buf88, buf104,
-                       buf170, buf189, buf208, buf230 and buf298 -- and those
-                       eight are EXACTLY the eight divergences the run
-                       reported, each against an `add_N` node that no kernel
-                       materialises. Nothing else in the model diverges; 217
-                       kernels run between them.
+        Only written arguments are checked: a reused buffer that is only read carries another origin.
         """
         if self._fverify_last is None:
             self._fverify_last = self._fverify_last_writer()
@@ -306,16 +213,11 @@ class TritonNPUWrapperCodegen(wrapper.PythonWrapperCodegen):
             if not name.isidentifier():
                 continue
             if not _writes(kernel_name, pos):
-                continue          # this kernel only reads it
+                continue
             self._fverify_check_one(name, line_id)
 
     def _fverify_emit_mutation_checks(self, line):
-        """The same check, after a FALLBACK that finishes a buffer in place.
-
-        See `_mutated`: the last write to a buffer is not always a generated
-        kernel, and a check emitted before the fallback compares a half-built
-        buffer against a finished golden.
-        """
+        """The same check, after a fallback that finishes a buffer in place."""
         if self._fverify_last is None:
             self._fverify_last = self._fverify_last_writer()
         for name in _mutated(line):
@@ -326,10 +228,10 @@ class TritonNPUWrapperCodegen(wrapper.PythonWrapperCodegen):
         if name in self._fverify_seen:
             return
         if line_id is not None and self._fverify_last.get(name) != line_id:
-            return                # something later still writes this buffer
+            return
         self._fverify_seen.add(name)
         if name in V.graph.graph_inputs:
-            return  # placeholders: golden == input, nothing to verify
+            return
         try:
             buf = V.graph.get_buffer(name)
         except Exception:
@@ -342,6 +244,3 @@ class TritonNPUWrapperCodegen(wrapper.PythonWrapperCodegen):
         op = str(getattr(origin, "target", "?"))
         self.wrapper_call.writeline(
             f'_fverify.verify_check({name}, "{name}", "{origin.name}", "{op}")')
-
-    def memory_plan(self):
-        self.lines = memory_planning.MemoryPlanner(self).plan(self.lines)

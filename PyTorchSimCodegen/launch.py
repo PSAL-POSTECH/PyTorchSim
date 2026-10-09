@@ -38,7 +38,7 @@ def template_grid(kernel):
         return None
     name = getattr(kernel, "kernel_name", kernel)
     try:
-        vals = [int(V.graph.sizevars.size_hint(s)) for s in sizes]
+        vals = [int(V.graph.sizevars.optimization_hint(s)) for s in sizes]
         grid = grid_fn(*vals, dict(getattr(kernel, "meta", None) or {}))
         extents = [int(g) for g in grid]
     except Exception as e:
@@ -75,7 +75,7 @@ def combo_grid(kernel):
     meta_fn = getattr(kernel, "combo_grid_meta", None)
     if meta_fn is None:
         return None
-    grid_meta = meta_fn()
+    grid_meta = meta_fn([kernel.select_heuristics(k)[1] for k in kernel.sub_kernels])
     xblock = (grid_meta.get("default_config") or {}).get("XBLOCK")
     if not xblock:
         return None
@@ -196,9 +196,10 @@ def _covers(want, n):
     """`want`, clamped to the smallest legal block that covers `n`.
 
     A block wider than its numel strands the mask's rank-1 index rows ONE_LANE
-    against banked data. A numel of 1 is NOT clamped: it leaves the lanes none.
+    against banked data, and a numel of 1 under a lane-wide block is a tile of
+    digits whose mask the DMA cannot state; the lanes go to another axis.
     """
-    if not n or n <= 1:
+    if not n:
         return want
     cover = 1
     while cover < n:

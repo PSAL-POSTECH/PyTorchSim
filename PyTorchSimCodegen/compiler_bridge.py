@@ -19,15 +19,19 @@ class CompilerError(RuntimeError):
     _SIGNAL = re.compile(
         r"^(?!\s|Traceback|During handling|The above)"
         r"(.*\berror:\s.*|.*failed to legalize.*|"
-        r"[\w.]*(?:Error|Exception)\b.*|.*Assertion.*)$", re.M)
+        r"[\w.]*(?:Error|Exception)\b.*|.*Assertion.*|"
+        r"[A-Za-z_]\w*(?:\.\w+)+: .+|\[(?:transform|lower|binary)\] .*(?:refused|not allowed).*)$", re.M)
     _FRAME = re.compile(r'^\s|^\s*File "|^\s*\^')
+    _STAGE_FAIL = re.compile(r"^\[\d+/\d+\] \S+\s+FAIL\s.*\n\n(  \S.*)$", re.M)
 
     def __init__(self, message, cmd=None, output=None):
         self.cmd = cmd
         self.output = output
         if output:
-            hits = [h.strip() for h in self._SIGNAL.findall(output)
-                    if not self._FRAME.match(h)]
+            hits = [h.strip() for h in self._STAGE_FAIL.findall(output)]
+            if not hits:
+                hits = [h.strip() for h in self._SIGNAL.findall(output)
+                        if not self._FRAME.match(h)]
             if not hits:
                 hits = [l for l in output.strip().splitlines()
                         if l.strip() and not self._FRAME.match(l)]

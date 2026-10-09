@@ -36,7 +36,7 @@ class ExtensionDeviceInterface(DeviceInterface):
         def current_device() -> int:
             if "extension_device" in caching_worker_current_devices:
                 return caching_worker_current_devices["extension_device"]
-            return torch.xpu.current_device()
+            return torch.npu.current_device()
 
         @staticmethod
         def get_device_properties(device: torch.types.Device = None) -> _ExtensionDeviceProperties:
@@ -61,6 +61,16 @@ class ExtensionDeviceInterface(DeviceInterface):
     @staticmethod
     def get_compute_capability(device: torch.types.Device = None):
         return 36
+
+    @staticmethod
+    def is_available() -> bool:
+        """The simulated device is always there."""
+        return True
+
+    @staticmethod
+    def is_triton_capable(device: torch.types.Device = None) -> bool:
+        """Kernels for npu are Triton, compiled by PyTorchSim-Triton-Backend."""
+        return True
 
     @staticmethod
     def is_bf16_supported(including_emulation: bool = False) -> bool:

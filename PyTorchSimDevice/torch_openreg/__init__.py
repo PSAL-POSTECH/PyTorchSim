@@ -29,7 +29,7 @@ from PyTorchSimCodegen import (
     TritonNPUScheduling, TritonNPUWrapperCodegen)
 torch._inductor.codegen.common.register_backend_for_device(
     "npu",
-    lambda scheduling: TritonNPUScheduling(scheduling),
+    TritonNPUScheduling,
     TritonNPUWrapperCodegen
 )
 

@@ -2,7 +2,7 @@ name: Docker image CI
 
 on:
   pull_request:
-    branches: [ "master", "develop" ]
+    branches: [ "master", "develop", "pytorchsim-triton-backend" ]
   workflow_dispatch:
 
 env:

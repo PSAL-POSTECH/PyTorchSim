@@ -51,6 +51,20 @@ def argv_order(manifest):
     return [a["name"] for a in manifest["args"]]
 
 
+def argv_scalars(manifest, values):
+    """The scalar values main() reads after the tensor paths, as strings in parameter order:
+    the launch's by name, else the manifest's defaults."""
+    out = []
+    for s in manifest.get("scalars", []):
+        v = values.get(s["name"], s["default"])
+        if v is None:
+            raise SpikeError(f"{manifest['name']}: no value for scalar '{s['name']}' in this "
+                             f"launch, and the spec gave it no default")
+        out.append(repr(float(v)) if s["ctype"] in ("float", "double", "_Float16")
+                   else str(int(v)))
+    return out
+
+
 def grid3(manifest):
     """The launch grid padded to three axes."""
     g = list(manifest["grid"]) + [1, 1, 1]
@@ -113,7 +127,7 @@ def _run(cmd, cwd, log):
     return proc
 
 
-def launch(obj_dir, manifest, runtime, raw_paths, log, jobs=None):
+def launch(obj_dir, manifest, runtime, raw_paths, log, jobs=None, scalars=()):
     """Run the whole launch grid, leaving each written argument in its .raw."""
     elf = artifact(obj_dir, manifest, "elf")
     shutil.rmtree(os.path.join(runtime, "indirect_access"), ignore_errors=True)
@@ -135,7 +149,7 @@ def launch(obj_dir, manifest, runtime, raw_paths, log, jobs=None):
         f"--machine-config={yml}",
         f"--kernel-addr={lo:x}:{hi:x}",
         f"--base-path={runtime}",
-        PK, elf, *argv_paths,
+        PK, elf, *argv_paths, *scalars,
     ]
 
     total = 1

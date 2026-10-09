@@ -1,174 +1,29 @@
-# Copyright (c) 2020 The Regents of the University of California
-# All Rights Reserved.
-#
-# Redistribution and use in source and binary forms, with or without
-# modification, are permitted provided that the following conditions are
-# met: redistributions of source code must retain the above copyright
-# notice, this list of conditions and the following disclaimer;
-# redistributions in binary form must reproduce the above copyright
-# notice, this list of conditions and the following disclaimer in the
-# documentation and/or other materials provided with the distribution;
-# neither the name of the copyright holders nor the names of its
-# contributors may be used to endorse or promote products derived from
-# this software without specific prior written permission.
-#
-# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-# "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-# LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-# A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-# OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-# SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-# LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-# DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-# THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-# CPU-only base. PyTorchSim never executes CUDA: the npu PrivateUse1 backend
-# (third_party/openreg) simulates CUDA behavior on the CPU and forces math-only
-# SDPA, so no GPU libraries are needed at build or run time. We stay on
-# ubuntu:22.04 (the vcix-accelerator environment's prebuilt gem5 and toolchain are built
-# for it) and install the CPU PyTorch wheels. The RISC-V toolchain, pk, Spike and gem5
-# come from the PyTorchSim-Triton-Backend layer (Dockerfile.ptb), not from here.
-ARG PYTORCH_IMAGE=ubuntu:22.04
-FROM ${PYTORCH_IMAGE}
+# syntax=docker/dockerfile:1.7
+# CI's base image: the compiler's own published image at the pinned commit, plus PyTorch and what
+# the tests import. The compiler image (PSAL-POSTECH/PyTorchSim-Triton-Backend, workflow images.yml,
+# one tag per commit) already carries Ubuntu 22.04 with python3.11, the vcix-accelerator environment
+# (RISC-V toolchain, pk, Spike, gem5), LLVM, Triton built with the torchsim backend, the accelerator
+# model, the compiler, its dialect and extension, and TOGSim at the PyTorchSim it pins. Nothing of
+# that is built here. Rebuilt when scripts/ci/thirdparty_base_pin.sh changes, i.e. when this file,
+# the compiler pin or thirdparty/github-releases.json moves.
+ARG PTB_IMAGE=ghcr.io/psal-postech/pytorchsim-triton-backend:main
+FROM ${PTB_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive
 WORKDIR /workspace
 
-# System dependencies (TOGSim and the PTB layer's build + runtime) and Python 3.11 (deadsnakes).
-# Copied/adapted from the Gem5 Docker file.
+# `python` beside the image's python3 (3.11); boost headers for TOGSim's cmake probe.
 RUN apt-get -y update && \
-    apt-get -y install software-properties-common ca-certificates gnupg && \
-    add-apt-repository -y ppa:deadsnakes/ppa && \
-    apt-get -y update && \
-    apt-get -y install build-essential git m4 zlib1g zlib1g-dev \
-    libprotobuf-dev protobuf-compiler libprotoc-dev libgoogle-perftools-dev \
-    libboost-all-dev libhdf5-serial-dev libpng-dev libelf-dev pkg-config \
-    libssl-dev libasan6 libubsan1 curl wget device-tree-compiler ninja-build \
-    python3.11 python3.11-dev python3.11-venv python3.11-distutils && \
-    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 && \
+    apt-get -y install --no-install-recommends libboost-all-dev && \
     update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 && \
-    curl -sS https://bootstrap.pypa.io/get-pip.py | python3.11 && \
     rm -rf /var/lib/apt/lists/*
 
-# CPU PyTorch (no CUDA wheels). torchvision is required by the vision model tests.
-# torch 2.14 is pinned for the Triton codegen route: its Inductor targets triton 3.8,
-# the version PyTorchSim-Triton-Backend is built against.
+# PyTorchSim is CPU-only: the npu PrivateUse1 backend simulates the device on the CPU.
 RUN python3.11 -m pip install --no-cache-dir \
     torch==2.14.0 torchvision==0.29.0 --index-url https://download.pytorch.org/whl/cpu
 
-# Triton, for the Inductor Triton codegen route (PyTorchSimCodegen).
-# Inductor imports triton while GENERATING a kernel, so it is needed even though
-# nothing here compiles or launches through triton's own runtime -- the PTB layer
-# compiles the kernel ahead of time to a RISC-V ELF using its own triton build.
-# Not a dependency of the CPU torch wheels, hence installed explicitly.
-RUN python3.11 -m pip install --no-cache-dir triton==3.8.0
-
-# TorchSim Python dependencies.
-#
-# transformers is pinned exactly rather than by upper bound: the model code the
-# tests build against ships inside it, so a float here changes what the suite
-# means. THE PIN IS 5.15.0 AND IT IS THE ONLY VERSION THIS TREE TARGETS.
-#
-# THE TEST TREE IS NOT FINISHED CATCHING UP, and this pin is deliberately ahead
-# of it. Measured on 5.15.0 at the time of the switch:
-#   tests/models/Qwen/test_qwen.py  the `2-moe` preset -- one of the two in its
-#                                   gate -- raises AttributeError before it
-#                                   reaches the backend: 5.x moved `top_k` and
-#                                   `norm_topk_prob` off the MoE block and onto
-#                                   the config, and _assert_character still
-#                                   reads them off the block. `tiny`, `3-8b`,
-#                                   `2.5-7b` and `3-0.6b` build clean.
-# That is model-side work, tracked separately from this pin.
-#
-# WHAT IT BUYS: 16 qwen modules against 4.51.3's 7 -- qwen2_5_omni, qwen3_next,
-# qwen3_vl, qwen3_vl_moe, qwen3_omni_moe, qwen3_5, qwen3_5_moe and qwen3_asr.
-#
-# WHAT IT COSTS, and both are carried deliberately rather than unnoticed:
-#   * huggingface-hub 1.x, and httpx and typer behind it. 4.57.6 needs none of
-#     them, which is the whole dependency argument for the last 4.x.
-#   * CLIP, and DeepSeek-V3's grouped_mm gate kernel. Both are named in the
-#     block below with what each would take to fix.
-#
-# numpy is NO LONGER held below 2. That bound was here for transformers and
-# diffusers, and neither asks for it any more: transformers 5.15.0 wants
-# numpy>=1.17 and diffusers 0.34.0 does not constrain it. It is pinned exactly
-# instead, at the version the suite was verified against -- onnx, matplotlib,
-# scikit-learn, pandas, seaborn, cv2 and ultralytics all import clean on 2.4.6
-# with torch 2.10, which is what a floating numpy would stop guaranteeing.
-#
-# 5.15.0 IS BEING EVALUATED ON THIS BRANCH, and what it buys is Qwen: 16 qwen
-# modules against 7, adding qwen2_5_omni, qwen3_next, qwen3_vl, qwen3_vl_moe,
-# qwen3_omni_moe, qwen3_asr and the qwen3_5 pair. What it costs, measured
-# against this image rather than guessed:
-#
-#   huggingface-hub  0.36.2 -> >=1.5.0,<2.0    a MAJOR jump, and the one to
-#                                              watch: it is what pulls httpx
-#   httpx, typer     absent -> required        new dependencies
-#   tokenizers       0.21.4 -> >=0.22.0        minor
-#   safetensors, regex, numpy                  already satisfied
-#
-# No installed package requires transformers, so nothing is capped from below;
-# diffusers 0.34.0 asks for it only in its test and dev extras and its UNet
-# builds and runs under 5.15.0 (measured).
-#
-# WHAT BREAKS AT 5.15.0, from running all 18 model tests on the Triton route
-# against an isolated 5.15.0 rather than from reading the changelog. 14 pass --
-# BERT, GPT-2, both Llama files plus test_llama.py, Mistral, MobileNet, YOLOv5,
-# SwinV2, ConvNeXtV2, ResNet, ViT, Transformer and SD1.5, the last at its usual
-# 18 minutes. Four fail, and they are four different kinds of thing:
-#
-#   tests/models/Qwen/test_qwen.py       OURS. A MoE block's experts are a
-#       fused `Qwen2MoeExperts` module now, not a ModuleList, so the character
-#       assert's `len(block.experts)` raises. One line, and it can be written
-#       to hold on both versions.
-#
-#   tests/models/Qwen/test_qwen_vl.py    OURS, and more than a line. The VL
-#       configs are restructured: `Qwen2VLConfig.hidden_size` is gone (it lives
-#       under text_config) and `rope_scaling` is `rope_parameters`.
-#
-#   tests/models/DeepSeek/...            NOT OURS AND NOT FIXABLE HERE. The
-#       Hub's remote modeling file imports `is_torch_fx_available` from
-#       transformers.utils.import_utils, which v5 removed. That file is pinned
-#       4.x code. The way out is transformers' OWN deepseek_v3, which exists
-#       from 4.51 -- i.e. stop using trust_remote_code for this model.
-#
-#   tests/models/test_clip.py            THE BACKEND, and the same at 4.57.6.
-#       Stage 6 refuses it by name: "llc spilled a vector register GROUP to the
-#       stack", with 2 x <32 x i64> live at the peak, 17 of 32 registers. Spike
-#       would die at stage 7 with an invalid spad address, so the refusal is
-#       correct and the work is real.
-#
-#       IT NEEDS TWO FIXES, NOT ONE, and that is why it is not done here.
-#       Measured on that kernel's spec directly, walking the reduction block:
-#
-#           R0_BLOCK 512, 256   the spill above
-#           R0_BLOCK 128        a DIFFERENT refusal -- 'vector.load' op most
-#                               minor memref dim must have unit stride, on a
-#                               memref<128xf32, strided<[128]>> that a
-#                               memref.subview took as a COLUMN of a
-#                               [128, 128] tile
-#           R0_BLOCK 64         compiles
-#
-#       So a spill-triggered shrink (the answer the spad overflow already gets)
-#       walks into the second one on its way down. The second is a missing
-#       contiguity test where the vector loop is marked (bank_vectorize) and
-#       sized (fit_to_hardware) -- a strided access wants a gather or a scalar
-#       loop. A minimal coverage kernel for it was attempted twice and BOTH
-#       PASSED, so it is not pinned yet; the reproduction is the CLIP kernel
-#       spec at R0_BLOCK 128.
-#
-# SWITCHED. The pin below is 5.15.0, taken with CLIP and DeepSeek-V3 as known
-# regressions rather than waiting for the suite to be green -- both are named
-# above with the backend work each needs. 4.57.6 remains the cheaper target on
-# dependencies and is what to fall back to if hub 1.x proves expensive; it is
-# NOT what this tree runs.
-# nanobind builds the torchsim dialect's Python extension (PyTorchSim-Triton-Backend's
-# dialect/, which the codegen route loads to register `torchsim.*` ops). The range is
-# MLIR's own (mlir/python/requirements.txt) -- the extension is compiled against the
-# same bindings, so a 3.x here would not be the nanobind those bindings expect.
-RUN python3.11 -m pip install --no-cache-dir "nanobind>=2.9,<3.0"
-
+# Triton is the image's source build (/workspace/triton-src, on PYTHONPATH below), with the
+# torchsim backend linked in; a pip triton would shadow nothing but confuse `import triton`.
 RUN python3.11 -m pip install --no-cache-dir \
     numpy==2.4.6 onnx matplotlib scikit-learn pydot tabulate \
     transformers==5.15.0 diffusers==0.34.0 \
@@ -177,6 +32,18 @@ RUN python3.11 -m pip install --no-cache-dir \
     python3.11 -m pip install --no-cache-dir opencv-python-headless pandas seaborn \
     psutil pyyaml requests tqdm py-cpuinfo
 
-ENV PATH=$PATH:/root/.local/bin
-ENV LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
-ENV TORCHSIM_DIR=/workspace/PyTorchSim
+# The compiler route's environment, as the compiler's setup/env.sh spells it for a local install
+# (TORCHSIM_PREFIX=/workspace in the image). VCIX_ENV_ROOT comes from the environment image.
+ENV TORCHSIM_PREFIX=/workspace \
+    TORCHSIM_COMPILE_DIR=/workspace/pytorchsim-triton-compiler \
+    TORCHSIM_COMPILE_TARGET=/workspace/pytorchsim-triton-compiler/tests/targets/tpuv6e.json \
+    TORCHSIM_COMPILE_TRITON_SRC=/workspace/triton-src/python \
+    TRITON_BACKENDS_IN_TREE=1 \
+    TRITON_PLUGIN_PATHS=/workspace/torchsim-triton-ext-build/libtorchsim_triton_ext.so \
+    PYTHONPATH=/workspace/triton-src/python \
+    GEM5_PATH=${VCIX_ENV_ROOT}/gem5/build/RISCV/gem5.opt \
+    PATH=/workspace/pytorchsim-triton-compiler:${VCIX_ENV_ROOT}/riscv/bin:/root/.local/bin:${PATH} \
+    LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH} \
+    TORCHSIM_DIR=/workspace/PyTorchSim
+
+RUN python3 /workspace/pytorchsim-triton-compiler/pytorchsim-triton-compiler doctor

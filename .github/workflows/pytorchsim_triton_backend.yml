@@ -6,66 +6,37 @@ name: Triton codegen route (PyTorchSim-Triton-Backend)
 # Separate from the main CI on purpose: it runs when the compiler pin moves, and
 # its sweep reports rather than gates.
 #
-# Needs secrets.TNPU_TOKEN: a PAT that can read PSAL-POSTECH/PyTorchSim-Triton-Backend
+# The base image is the compiler's published image at the pin plus the test stack (Dockerfile.base);
+# the compiler's package grants this repository read access, so no token is involved.
 # and its vcix-accelerator submodule. Both are private and the default Actions token is
 # scoped to this repository. preflight checks it before the docker build.
 
 on:
   pull_request:
-    branches: [ "master", "develop" ]
+    branches: [ "master", "develop", "pytorchsim-triton-backend" ]
     paths:
       - 'PyTorchSimCodegen/**'
       - 'Simulator/**'
       - 'PyTorchSimFrontend/**'
       - 'thirdparty/pytorchsim-triton-backend.json'
-      - 'Dockerfile.ptb'
-      - 'scripts/ci/ptb_base_pin.sh'
+      - 'Dockerfile.base'
+      - 'scripts/ci/thirdparty_base_pin.sh'
       - 'scripts/ci/triton_route_passing.txt'
       - '.github/workflows/pytorchsim_triton_backend.yml'
   workflow_dispatch:
 
 env:
   BASE_IMAGE_REPO: ghcr.io/psal-postech/torchsim_base
-  PTB_IMAGE_REPO: ghcr.io/psal-postech/torchsim_ptb_base
+  PTB_IMAGE_REPO: ghcr.io/psal-postech/pytorchsim-triton-backend
   APP_IMAGE_REPO: ghcr.io/psal-postech/torchsim_ptb
   SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
 jobs:
-  preflight:
-    name: Check PTB access
-    runs-on: [self-hosted, slurm, x86_64]
-    outputs:
-      ready: ${{ steps.check.outputs.ready }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ env.SOURCE_SHA }}
-          persist-credentials: false
-
-      - name: Token can read the pin
-        id: check
-        env:
-          PTB_TOKEN: ${{ secrets.TNPU_TOKEN }}
-        run: |
-          if [ -z "${PTB_TOKEN}" ]; then
-            echo "::error::secrets.TNPU_TOKEN is not set. PSAL-POSTECH/PyTorchSim-Triton-Backend is private and the default Actions token cannot read it."
-            echo "ready=false" >> "$GITHUB_OUTPUT"; exit 1
-          fi
-          REPO=$(jq -r '.pytorchsim_triton_backend.repository' thirdparty/pytorchsim-triton-backend.json)
-          REF=$(jq -r '.pytorchsim_triton_backend.ref' thirdparty/pytorchsim-triton-backend.json)
-          if ! curl -fsS -H "Authorization: Bearer ${PTB_TOKEN}" \
-               "https://api.github.com/repos/${REPO}/commits/${REF}" -o /dev/null; then
-            echo "::error::PTB_TOKEN cannot read ${REPO} at ${REF}."
-            echo "ready=false" >> "$GITHUB_OUTPUT"; exit 1
-          fi
-          echo "ready=true" >> "$GITHUB_OUTPUT"
-
-  ensure-ptb-base:
-    name: Build PTB toolchain image
-    needs: preflight
+  ensure-base:
+    name: Base image on the compiler's
     runs-on: [self-hosted, slurm, big, x86_64]
     outputs:
-      ptb_image: ${{ steps.pin.outputs.ptb_image }}
+      base_image: ${{ steps.pin.outputs.base_image }}
     permissions:
       contents: read
       packages: write
@@ -75,50 +46,47 @@ jobs:
           ref: ${{ env.SOURCE_SHA }}
           submodules: recursive
           persist-credentials: false
-
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Pins
         id: pin
         run: |
-          BASE_PIN="$(bash scripts/ci/thirdparty_base_pin.sh)"
-          PTB_PIN="$(bash scripts/ci/ptb_base_pin.sh)"
-          echo "BASE_IMAGE=${BASE_IMAGE_REPO}:thirdparty-${BASE_PIN}" >> "$GITHUB_ENV"
-          # The PTB layer sits on a specific base, so its tag carries both pins.
-          echo "PTB_IMAGE=${PTB_IMAGE_REPO}:ptb-${PTB_PIN}-base-${BASE_PIN}" >> "$GITHUB_ENV"
-          echo "ptb_image=${PTB_IMAGE_REPO}:ptb-${PTB_PIN}-base-${BASE_PIN}" >> "$GITHUB_OUTPUT"
-          echo "PTB_REF=$(jq -r '.pytorchsim_triton_backend.ref' thirdparty/pytorchsim-triton-backend.json)" >> "$GITHUB_ENV"
-
-      - name: Check PTB image exists
+          PTB_REF=$(jq -r '.pytorchsim_triton_backend.ref' thirdparty/pytorchsim-triton-backend.json)
+          PIN="$(bash scripts/ci/thirdparty_base_pin.sh)"
+          echo "PTB_IMAGE=${PTB_IMAGE_REPO}:${PTB_REF}" >> "$GITHUB_ENV"
+          echo "BASE_IMAGE=${BASE_IMAGE_REPO}:thirdparty-${PIN}" >> "$GITHUB_ENV"
+          echo "base_image=${BASE_IMAGE_REPO}:thirdparty-${PIN}" >> "$GITHUB_OUTPUT"
+      - name: The compiler has published an image for the pin
+        run: |
+          if ! docker manifest inspect "${PTB_IMAGE}" > /dev/null 2>&1; then
+            echo "::error::${PTB_IMAGE} is not in the registry: the compiler's images workflow pushes one tag per commit on its main and develop, and a pin elsewhere has none. If the tag exists, this repository has lost read access to the package."
+            exit 1
+          fi
+      - name: Check base image exists
         id: exists
         run: |
-          if docker manifest inspect "${PTB_IMAGE}" > /dev/null 2>&1; then
+          if docker manifest inspect "${BASE_IMAGE}" > /dev/null 2>&1; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
             echo "ok=false" >> "$GITHUB_OUTPUT"
           fi
-
-      - name: Build and push PTB toolchain image
+      - name: Build and push base image (missing pin)
         if: steps.exists.outputs.ok != 'true'
         uses: docker/build-push-action@v4
         with:
           context: .
-          file: ./Dockerfile.ptb
+          file: ./Dockerfile.base
           push: true
           build-args: |
-            BASE_IMAGE=${{ env.BASE_IMAGE }}
-            PTB_REF=${{ env.PTB_REF }}
-          secrets: |
-            ptb_token=${{ secrets.TNPU_TOKEN }}
-          tags: ${{ env.PTB_IMAGE }}
+            PTB_IMAGE=${{ env.PTB_IMAGE }}
+          tags: ${{ env.BASE_IMAGE }}
 
   build-app:
-    name: Build app image on PTB base
-    needs: ensure-ptb-base
+    name: Build app image on the base
+    needs: ensure-base
     runs-on: [self-hosted, slurm, big, x86_64]
     outputs:
       app_image: ${{ steps.name.outputs.app_image }}
@@ -149,7 +117,7 @@ jobs:
           file: ./Dockerfile
           push: true
           build-args: |
-            BASE_IMAGE=${{ needs.ensure-ptb-base.outputs.ptb_image }}
+            BASE_IMAGE=${{ needs.ensure-base.outputs.base_image }}
           tags: ${{ steps.name.outputs.app_image }}
 
   ptb-baselines:

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the compiler and the simulators it runs (RISC-V toolchain, pk, Spike, gem5) from source,
 # at the PyTorchSim-Triton-Backend commit pinned in thirdparty/pytorchsim-triton-backend.json --
-# the same pin the CI docker image (Dockerfile.ptb) is built from. TOGSim is built from this repo.
+# the same pin CI's base image is built FROM (the compiler's published image at that commit). TOGSim is built from this repo.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

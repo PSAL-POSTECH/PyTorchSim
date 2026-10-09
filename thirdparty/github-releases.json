@@ -1,4 +1,3 @@
 {
-  "description": "Pins for CI's torchsim_base image. pytorch_image is the ARG PYTORCH_IMAGE (FROM base) for Dockerfile.base; PyTorchSim is CPU-only (the npu PrivateUse1 backend simulates CUDA on the CPU), so the CPU PyTorch wheels are installed on top of a plain ubuntu base. The compiler and the simulators it runs (Spike, gem5) are pinned in pytorchsim-triton-backend.json instead. CI builds ghcr.io/.../torchsim_base:thirdparty-<12 hex> when missing (pin = sha256 of this file plus Dockerfile.base) and updates :latest on that push.",
-  "pytorch_image": "ubuntu:22.04"
+ "description": "Pins for CI's torchsim_base image beyond the compiler pin. The base is built FROM the compiler's published image at thirdparty/pytorchsim-triton-backend.json's ref (ghcr.io/psal-postech/pytorchsim-triton-backend:<ref>, pushed by that repository's images workflow), so PyTorch and the test stack are the only layers added here; CI builds ghcr.io/.../torchsim_base:thirdparty-<12 hex> when missing (pin = scripts/ci/thirdparty_base_pin.sh: sha256 of the compiler pin, this file and Dockerfile.base) and updates :latest on a tag push."
 }

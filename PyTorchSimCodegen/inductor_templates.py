@@ -9,9 +9,9 @@ import os
 
 import torch
 
-from PyTorchSimFrontend import extension_config
+from PyTorchSimFrontend import config
 
-logger = extension_config.setup_logger()
+logger = config.setup_logger()
 
 _conv_groups = None
 
@@ -280,9 +280,9 @@ def _size_conv_blocks_from_the_machine():
     from torch._inductor.template_heuristics.triton import (
         BaseConfigHeuristic, ConvConfig)
 
-    from PyTorchSimFrontend import extension_config
+    from PyTorchSimFrontend import config
 
-    lanes = int(extension_config.vpu_num_lanes)
+    lanes = int(config.vpu_num_lanes)
 
     class NPUConfigHeuristic(BaseConfigHeuristic):
         def __init__(self):
@@ -551,10 +551,10 @@ def _npu_choices_class():
 
 def _install_npu_choices():
     """Register the choices this hardware makes differently: persistence, splits."""
-    from torch._inductor import config
+    from torch._inductor import config as inductor_config
 
-    if config.inductor_choices_class is None:
-        config.inductor_choices_class = _npu_choices_class()
+    if inductor_config.inductor_choices_class is None:
+        inductor_config.inductor_choices_class = _npu_choices_class()
 
 
 def _lower_conv1d_as_conv2d():
@@ -649,7 +649,7 @@ def install():
     global _installed
     if _installed or os.environ.get("TORCHSIM_TRITON_TEMPLATES", "1") == "0":
         return
-    from torch._inductor import config
+    from torch._inductor import config as inductor_config
 
     _register_npu_as_gpu()
     _claim_triton_present()
@@ -663,10 +663,10 @@ def install():
     _lower_conv1d_as_conv2d()
     _install_selection()
 
-    config.max_autotune_gemm = True
-    config.max_autotune_gemm_backends = "ATEN,TRITON"
-    config.max_autotune_conv_backends = "ATEN,TRITON"
-    config.triton.autotune_at_compile_time = False
-    config.benchmark_epilogue_fusion = False
+    inductor_config.max_autotune_gemm = True
+    inductor_config.max_autotune_gemm_backends = "ATEN,TRITON"
+    inductor_config.max_autotune_conv_backends = "ATEN,TRITON"
+    inductor_config.triton.autotune_at_compile_time = False
+    inductor_config.benchmark_epilogue_fusion = False
 
     _installed = True

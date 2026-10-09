@@ -10,10 +10,10 @@ import threading
 from pathlib import Path
 import uuid
 
-from PyTorchSimFrontend import extension_config
+from PyTorchSimFrontend import config
 
 # Configure logger for Simulator module
-logger = extension_config.setup_logger()
+logger = config.setup_logger()
 from tqdm import tqdm
 
 
@@ -58,9 +58,9 @@ class TOGSimulator():
     FINISH_STR = "Simulation finished"
     def __init__(self, config_path=None, togsim_path=None) -> None:
         if config_path is None:
-            config_path = extension_config.CONFIG_TOGSIM_CONFIG
+            config_path = config.CONFIG_TOGSIM_CONFIG
         if togsim_path is None:
-            togsim_path = os.path.join(extension_config.CONFIG_TORCHSIM_DIR, "TOGSim")
+            togsim_path = os.path.join(config.CONFIG_TORCHSIM_DIR, "TOGSim")
 
         self.base_dir = togsim_path
         self.config_path = config_path
@@ -92,8 +92,8 @@ class TOGSimulator():
 
     def _start_process(self):
         cmd = f"{self.get_togsim_command(self.config_path, self.base_dir)} --models_list {self.trace_file_path}"
-        if extension_config.CONFIG_TOGSIM_DEBUG_LEVEL:
-            cmd += f" --log_level {extension_config.CONFIG_TOGSIM_DEBUG_LEVEL}"
+        if config.CONFIG_TOGSIM_DEBUG_LEVEL:
+            cmd += f" --log_level {config.CONFIG_TOGSIM_DEBUG_LEVEL}"
 
         logger.debug(f"[TOGSim] cmd> {cmd}")
         if self.process is None:
@@ -189,7 +189,7 @@ class TOGSimulator():
 
             # Save stdout to result file
             if stdout_output:
-                result_path = extension_config.CONFIG_TORCHSIM_LOG_PATH
+                result_path = config.CONFIG_TORCHSIM_LOG_PATH
                 os.makedirs(result_path, exist_ok=True)
                 file_name = datetime.datetime.now().strftime('%Y%m%d_%H%M%S') + ".log"
                 result_path = os.path.join(result_path, file_name)
@@ -200,7 +200,7 @@ class TOGSimulator():
 
         # Save trace_log with same name but .trace extension
         if self.trace_log:
-            result_path = extension_config.CONFIG_TORCHSIM_LOG_PATH
+            result_path = config.CONFIG_TORCHSIM_LOG_PATH
             os.makedirs(result_path, exist_ok=True)
             file_name = datetime.datetime.now().strftime('%Y%m%d_%H%M%S') + ".trace"
             trace_path = os.path.join(result_path, file_name)
@@ -262,10 +262,10 @@ class TOGSimulator():
     @staticmethod
     def get_togsim_command(config_path, togsim_path=None):
         if togsim_path is None:
-            togsim_path = os.path.join(extension_config.CONFIG_TORCHSIM_DIR, "TOGSim")
+            togsim_path = os.path.join(config.CONFIG_TORCHSIM_DIR, "TOGSim")
         bin = os.path.join(togsim_path, "build/bin/Simulator")
-        config = os.path.join(togsim_path, config_path)
-        cmd = f"{bin} --config {config}"
+        config_file = os.path.join(togsim_path, config_path)
+        cmd = f"{bin} --config {config_file}"
         return cmd
 
     @staticmethod
@@ -296,15 +296,15 @@ class TOGSimulator():
             Path to the simulation result log file
         """
         if config_path is None:
-            config_path = extension_config.CONFIG_TOGSIM_CONFIG
+            config_path = config.CONFIG_TOGSIM_CONFIG
         if togsim_path is None:
-            togsim_path = os.path.join(extension_config.CONFIG_TORCHSIM_DIR, "TOGSim")
+            togsim_path = os.path.join(config.CONFIG_TORCHSIM_DIR, "TOGSim")
 
         # Create result path with appropriate filename
         if autotune_mode:
             base_dir = Path(model_path).parent / "togsim_result"
         else:
-            base_dir = Path(extension_config.CONFIG_TORCHSIM_LOG_PATH)
+            base_dir = Path(config.CONFIG_TORCHSIM_LOG_PATH)
 
         base_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -327,8 +327,8 @@ class TOGSimulator():
                 raise FileNotFoundError(f"{trace_so} not found -- the kernel has no trace to simulate")
             base_cmd = TOGSimulator.get_togsim_command(config_path, togsim_path)
             cmd = f"{base_cmd} --trace_so {trace_so} --cycle_table {cycle_tsv}"
-            if extension_config.CONFIG_TOGSIM_DEBUG_LEVEL:
-                cmd += f" --log_level {extension_config.CONFIG_TOGSIM_DEBUG_LEVEL}"
+            if config.CONFIG_TOGSIM_DEBUG_LEVEL:
+                cmd += f" --log_level {config.CONFIG_TOGSIM_DEBUG_LEVEL}"
 
             if not autotune_mode:
                 logger.debug(f"[TOGSim] cmd> {cmd}")

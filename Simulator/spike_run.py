@@ -124,12 +124,12 @@ def launch(obj_dir, manifest, runtime, raw_paths, log, jobs=None):
     t = _machine(manifest)
     spad_bytes = t["spad_size"] * t["vector_lanes"]
     lo, hi = manifest["abi"]["kernel_addr"]
-    from PyTorchSimFrontend import extension_config
+    from PyTorchSimFrontend import config
     yml = _write_machine_yaml(t, os.path.join(runtime, "machine.yml"))
     cmd = [
         SPIKE,
         "--isa", SPIKE_ISA,
-        f"--extlib={extension_config.CONFIG_VCIX_MODEL}",
+        f"--extlib={config.CONFIG_VCIX_MODEL}",
         "-m" + f"0x{t['dram_base']:x}:0x{t['dram_size']:x},"
                f"0x{t['spad_paddr']:x}:0x{spad_bytes:x}",
         f"--machine-config={yml}",

@@ -13,7 +13,7 @@ If applicable, add screenshots to help explain your problem.
 
 **To Reproduce**
 If the issue occurs while running a Python workload or involves a simulator crash, please also provide:
-- The Python script and any relevant configuration files (e.g., extension_config.py).
+- The Python script and any relevant configuration files (e.g., config.py).
 - For simulator crashes, the exact simulator command and arguments used for execution.
 - The directory containing the generated wrapper code and binaries.
 

@@ -19,12 +19,12 @@ def triton_src_dir():
 
     Read out of the compiler's setup/versions.env, where TRITON_ROOT is the checkout.
     """
-    from PyTorchSimFrontend import extension_config
+    from PyTorchSimFrontend import config
     override = os.environ.get("TORCHSIM_COMPILE_TRITON_SRC")
     if override:
         return override
 
-    versions = os.path.join(extension_config.CONFIG_TORCHSIM_COMPILE_DIR, "setup", "versions.env")
+    versions = os.path.join(config.CONFIG_TORCHSIM_COMPILE_DIR, "setup", "versions.env")
     try:
         with open(versions) as f:
             for line in f:

@@ -103,7 +103,7 @@ class TritonNPUWrapperCodegen(wrapper.PythonWrapperCodegen):
                 from torch._inductor.async_compile import AsyncCompile
 
                 from torch import device, empty, empty_strided
-                from PyTorchSimFrontend.extension_config import setup_logger
+                from PyTorchSimFrontend.config import setup_logger
                 from Simulator import functional_verify as _fverify
                 from torch._inductor.select_algorithm import extern_kernels
                 from {codecache.__name__} import torchsim_compile

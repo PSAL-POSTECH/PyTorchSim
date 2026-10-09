@@ -10,7 +10,7 @@ single checkout. Container-dedicated: paths assume the
 Three things have to line up for parallel worktrees to actually work in this
 repo:
 
-1. **Worktree-scoped env vars.** `PyTorchSimFrontend/extension_config.py`
+1. **Worktree-scoped env vars.** `PyTorchSimFrontend/config.py`
    anchors output / log / config paths on `TORCHSIM_DIR`. Without an override
    every worktree dumps into the same `outputs/` and `togsim_results/`.
 2. **`PYTHONPATH` override.** `pip install -e PyTorchSimDevice` writes a
@@ -93,9 +93,9 @@ scripts/clear_codegen_cache.sh
 ```
 
 between iterations. It wipes `outputs/.torchinductor` (Inductor's compile
-cache, set via `TORCHINDUCTOR_CACHE_DIR` inside `extension_config.get_dump_path()`) and
+cache, set via `TORCHINDUCTOR_CACHE_DIR` inside `config.get_dump_path()`) and
 the per-source-hash dirs (`outputs/<11-char-hash>/`, keyed by
-`extension_config.hash_prefix`). `togsim_results/` (run logs) is left
+`config.hash_prefix`). `togsim_results/` (run logs) is left
 alone.
 
 Diagnostic for the other common gotcha: if a traceback mentions a path

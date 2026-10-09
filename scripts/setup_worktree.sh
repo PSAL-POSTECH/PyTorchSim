@@ -85,7 +85,7 @@ cat > "$WT_DIR/.envrc" <<'ENVRC'
 # Source this from the worktree root:  source .envrc
 _self="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 
-# Worktree-scoped: override defaults from PyTorchSimFrontend/extension_config.py
+# Worktree-scoped: override defaults from PyTorchSimFrontend/config.py
 export TORCHSIM_DIR="$_self"
 export TORCHSIM_DUMP_PATH="$_self/outputs"
 export TORCHSIM_LOG_PATH="$_self/togsim_results"

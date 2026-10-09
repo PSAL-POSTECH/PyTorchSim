@@ -9,12 +9,12 @@ import json
 import os
 import shutil
 
-from PyTorchSimFrontend import extension_config
+from PyTorchSimFrontend import config
 
 from . import breakdown, session
 from PyTorchSimCodegen import launch
 
-logger = extension_config.setup_logger()
+logger = config.setup_logger()
 
 TRACE_SO = "trace.so"
 CYCLE_TSV = "trace_cycles.tsv"
@@ -46,7 +46,7 @@ def measure_tile_cycles(workdir, meta):
     try:
         with breakdown.span(breakdown.GEM5_RUN, kernel_name):
             return CycleSimulator().compile_and_simulate(
-                elf, int(extension_config.vpu_num_lanes), silent_mode=True)
+                elf, int(config.vpu_num_lanes), silent_mode=True)
     except Exception as e:
         logger.warning("[Gem5] sampling failed: %s", e)
         return None

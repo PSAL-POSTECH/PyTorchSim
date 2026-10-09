@@ -14,9 +14,9 @@ import time
 import uuid
 from contextlib import contextmanager
 
-from PyTorchSimFrontend import extension_config
+from PyTorchSimFrontend import config
 
-logger = extension_config.setup_logger()
+logger = config.setup_logger()
 
 ENV = "TORCHSIM_BREAKDOWN"
 PREFIX = "breakdown"
@@ -150,7 +150,7 @@ def _at_exit():
     text = render(REC.as_dict())
     print("\n" + text, flush=True)
     try:
-        path = os.path.join(extension_config.get_dump_path(),
+        path = os.path.join(config.get_dump_path(),
                             f"{PREFIX}_{REC.run_id}.json")
         with open(path, "w") as f:
             json.dump(REC.as_dict(), f, indent=2)

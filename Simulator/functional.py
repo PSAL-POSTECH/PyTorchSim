@@ -8,12 +8,12 @@ compiled ones is rejected rather than run against the wrong bounds.
 
 import os
 
-from PyTorchSimFrontend import extension_config
+from PyTorchSimFrontend import config
 
 from . import session
 from PyTorchSimCodegen import layout
 
-logger = extension_config.setup_logger()
+logger = config.setup_logger()
 
 REPLAY_DIR = ".triton_replay"
 

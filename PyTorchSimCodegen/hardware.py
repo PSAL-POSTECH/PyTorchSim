@@ -4,17 +4,17 @@ Enumerates every GEMM tiling that fits half the scratchpad, ranked by how much
 of it each one uses, so a caller picks rather than takes the first fit.
 """
 
-from PyTorchSimFrontend import extension_config
+from PyTorchSimFrontend import config
 
 
 class HardwareInfo:
     """Lanes, scratchpad, cores and vector length, plus the tile mapping."""
 
     def __init__(self):
-        self.vector_lane = extension_config.vpu_num_lanes
-        self.spad_info = extension_config.CONFIG_SPAD_INFO
-        self.num_cores = extension_config.CONFIG_NUM_CORES
-        self.vlen = extension_config.vpu_vector_length_bits
+        self.vector_lane = config.vpu_num_lanes
+        self.spad_info = config.CONFIG_SPAD_INFO
+        self.num_cores = config.CONFIG_NUM_CORES
+        self.vlen = config.vpu_vector_length_bits
 
     def get_spad_size_per_lane(self, tile_m, tile_n):
         size = tile_m * ((tile_n + self.vector_lane - 1) // self.vector_lane)

@@ -123,7 +123,7 @@ jobs:
             -e SPEEDUP_ITERS=2 \
             -v "$ART_DIR:/artifacts" \
             ${{ inputs.image_name }} bash -c 'set -eu -o pipefail; cd /workspace; export TORCHSIM_DIR="${TORCHSIM_DIR:-/workspace/PyTorchSim}"; \
-            PyTorchSim/experiments/artifact/cycle_validation/run_cycle.sh >/dev/null 2>&1; \
+            PyTorchSim/experiments/artifact/cycle_validation/run_cycle.sh > /artifacts/run_cycle.log 2>&1 || { tail -60 /artifacts/run_cycle.log; exit 1; }; \
             cp "$TORCHSIM_DIR/experiments/artifact/cycle_validation/summary_cycle.out" /artifacts/summary_cycle.out; \
             PyTorchSim/experiments/artifact/speedup/run_speedup.sh; \
             bash PyTorchSim/experiments/artifact/speedup/check_speedup_smoke.sh; \

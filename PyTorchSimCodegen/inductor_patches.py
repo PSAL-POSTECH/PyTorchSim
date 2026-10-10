@@ -541,11 +541,33 @@ def _install_npu_choices():
         inductor_config.inductor_choices_class = _npu_choices_class()
 
 
-def _lower_conv1d_as_conv2d():
-    """Register torch's unregistered conv1d_to_conv2d for npu, so a Conv1d reaches the 2-D template.
+def _is_depthwise(input, weight, groups):
+    """One channel a group, in and out: the conv is a per-channel stencil, not a matmul."""
+    return (groups > 1 and input.shape[1] == groups and weight.shape[0] == groups
+            and weight.shape[1] == 1)
 
-    Declines non-npu inputs, 2-D strides (which also ends the recursion), transposed and output_padding.
-    """
+
+def _depthwise_stencil(x, w, bias, stride, padding, dilation):
+    """A depthwise 2-D conv as taps: each a strided slice of the padded input times its weight, summed."""
+    (sh, sw), (ph, pw), (dh, dw) = stride, padding, dilation
+    g, _, kh, kw = w.shape
+    x = torch.ops.aten.constant_pad_nd(x, [pw, pw, ph, ph])
+    h_out = (x.shape[2] - dh * (kh - 1) - 1) // sh + 1
+    w_out = (x.shape[3] - dw * (kw - 1) - 1) // sw + 1
+    out = None
+    for i in range(kh):
+        for j in range(kw):
+            tap = x[:, :, i * dh:i * dh + sh * (h_out - 1) + 1:sh,
+                    j * dw:j * dw + sw * (w_out - 1) + 1:sw]
+            term = tap * w[:, 0, i, j].reshape(1, g, 1, 1)
+            out = term if out is None else out + term
+    return out if bias is None else out + bias.reshape(1, g, 1, 1)
+
+
+def _decompose_convolution_for_npu():
+    """Register npu's aten.convolution decompositions: a Conv1d reaches the 2-D template through
+    torch's conv1d_to_conv2d, and a depthwise 2-D conv is a stencil on the vector unit. Declines
+    non-npu inputs, transposed convs and output_padding; anything else keeps the template."""
     from torch._inductor.decomposition import conv1d_to_conv2d, register_decomposition
 
     aten = torch.ops.aten
@@ -553,13 +575,15 @@ def _lower_conv1d_as_conv2d():
     @register_decomposition([aten.convolution])
     def _npu_convolution(input, weight, bias, stride, padding, dilation,
                          transposed, output_padding, groups):
-        if input.device.type != "npu":
-            return NotImplemented
-        if len(stride) != 1 or transposed:
+        if input.device.type != "npu" or transposed:
             return NotImplemented
         if any(p != 0 for p in output_padding):
             return NotImplemented
-        return conv1d_to_conv2d(input, weight, bias, stride, padding, dilation, groups)
+        if len(stride) == 1:
+            return conv1d_to_conv2d(input, weight, bias, stride, padding, dilation, groups)
+        if len(stride) == 2 and _is_depthwise(input, weight, groups):
+            return _depthwise_stencil(input, weight, bias, stride, padding, dilation)
+        return NotImplemented
 
 
 def _install_selection():
@@ -618,7 +642,7 @@ def install():
     _size_grouped_conv_grid_per_group()
     _short_circuit_degenerate_gemms()
     _install_npu_choices()
-    _lower_conv1d_as_conv2d()
+    _decompose_convolution_for_npu()
     _install_selection()
 
     inductor_config.max_autotune_gemm = True

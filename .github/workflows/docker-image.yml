@@ -1,5 +1,12 @@
 name: Docker image CI
 
+# The PR gate. Three layers: the base image -- the compiler's own published image at the pinned
+# commit (ghcr.io/psal-postech/pytorchsim-triton-backend:<ref>, one tag per commit from that
+# repository's images workflow) plus PyTorch and the test stack, built once per pin and reused
+# (scripts/ci/thirdparty_base_pin.sh) -- the app image for this commit, and one container per
+# allowlisted test (pytorchsim_test.yml). Nothing of the compiler, Triton, Spike or gem5 is
+# built here. The compiler's package grants this repository read access, so the default Actions
+# token is all the registry needs.
 on:
   pull_request:
     branches: [ "master", "develop", "pytorchsim-triton-backend" ]
@@ -7,108 +14,19 @@ on:
 
 env:
   BASE_IMAGE_REPO: ghcr.io/psal-postech/torchsim_base
-  PTB_IMAGE_REPO: ghcr.io/psal-postech/torchsim_ptb_base
-  # PR: head commit; otherwise workflow_dispatch uses the branch SHA
+  PTB_IMAGE_REPO: ghcr.io/psal-postech/pytorchsim-triton-backend
   SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
 jobs:
-  preflight:
-    name: Check PTB access
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ env.SOURCE_SHA }}
-          persist-credentials: false
-
-      # The only codegen route lowers through PyTorchSim-Triton-Backend, so the toolchain is
-      # not optional and neither is the token. Fail here, not in the image build.
-      - name: Token can read the pin
-        env:
-          PTB_TOKEN: ${{ secrets.TNPU_TOKEN }}
-        run: |
-          if [ -z "${PTB_TOKEN}" ]; then
-            echo "::error::secrets.TNPU_TOKEN is not set. PSAL-POSTECH/PyTorchSim-Triton-Backend is private and the default Actions token cannot read it."
-            exit 1
-          fi
-          REPO=$(jq -r '.pytorchsim_triton_backend.repository' thirdparty/pytorchsim-triton-backend.json)
-          REF=$(jq -r '.pytorchsim_triton_backend.ref' thirdparty/pytorchsim-triton-backend.json)
-          if ! curl -fsS -H "Authorization: Bearer ${PTB_TOKEN}" \
-               "https://api.github.com/repos/${REPO}/commits/${REF}" -o /dev/null; then
-            echo "::error::PTB_TOKEN cannot read ${REPO} at ${REF}."
-            exit 1
-          fi
-
   ensure-base:
-    needs: preflight
-    runs-on: ubuntu-latest
+    name: Base image on the compiler's
+    # The compiler image is ~10 GB: a GitHub-hosted runner's disk is not the place to layer on it.
+    runs-on: [self-hosted, slurm, big, x86_64]
     outputs:
       base_image: ${{ steps.pin.outputs.base_image }}
     permissions:
       contents: read
       packages: write
-
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ env.SOURCE_SHA }}
-          submodules: recursive
-          persist-credentials: false
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: PyTorch base image from manifest
-        run: |
-          PYTORCH_IMAGE=$(python3 -c "import json; from pathlib import Path; v=json.loads(Path('thirdparty/github-releases.json').read_text()).get('pytorch_image'); print(v or '')")
-          if [ -z "$PYTORCH_IMAGE" ]; then echo "thirdparty/github-releases.json: pytorch_image is required" >&2; exit 1; fi
-          echo "PYTORCH_IMAGE=$PYTORCH_IMAGE" >> "$GITHUB_ENV"
-
-      - name: Thirdparty pin
-        id: pin
-        run: |
-          PIN="$(bash scripts/ci/thirdparty_base_pin.sh)"
-          echo "pin=${PIN}" >> "$GITHUB_OUTPUT"
-          echo "base_image=${BASE_IMAGE_REPO}:thirdparty-${PIN}" >> "$GITHUB_OUTPUT"
-          echo "BASE_IMAGE=${BASE_IMAGE_REPO}:thirdparty-${PIN}" >> "$GITHUB_ENV"
-
-      - name: Check base image exists
-        id: exists
-        run: |
-          if docker manifest inspect "${BASE_IMAGE}" > /dev/null 2>&1; then
-            echo "ok=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "ok=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Build and push base image (missing pin)
-        if: steps.exists.outputs.ok != 'true'
-        uses: docker/build-push-action@v4
-        with:
-          context: .
-          file: ./Dockerfile.base
-          push: true
-          build-args: |
-            PYTORCH_IMAGE=${{ env.PYTORCH_IMAGE }}
-          tags: ${{ env.BASE_IMAGE }}
-
-  ensure-ptb-base:
-    # The PyTorchSim-Triton-Backend layer the codegen route lowers through, with the
-    # simulators it runs. Kept a separate image because it moves on its own pin.
-    name: Build PTB toolchain image
-    needs: ensure-base
-    runs-on: [self-hosted, slurm, big, x86_64]
-    outputs:
-      ptb_image: ${{ steps.pin.outputs.ptb_image }}
-    permissions:
-      contents: read
-      packages: write
-
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -127,45 +45,46 @@ jobs:
       - name: Pins
         id: pin
         run: |
-          BASE_PIN="$(bash scripts/ci/thirdparty_base_pin.sh)"
-          PTB_PIN="$(bash scripts/ci/ptb_base_pin.sh)"
-          # The PTB layer sits on a specific base, so its tag carries both pins.
-          echo "PTB_IMAGE=${PTB_IMAGE_REPO}:ptb-${PTB_PIN}-base-${BASE_PIN}" >> "$GITHUB_ENV"
-          echo "ptb_image=${PTB_IMAGE_REPO}:ptb-${PTB_PIN}-base-${BASE_PIN}" >> "$GITHUB_OUTPUT"
-          echo "PTB_REF=$(jq -r '.pytorchsim_triton_backend.ref' thirdparty/pytorchsim-triton-backend.json)" >> "$GITHUB_ENV"
+          PTB_REF=$(jq -r '.pytorchsim_triton_backend.ref' thirdparty/pytorchsim-triton-backend.json)
+          PIN="$(bash scripts/ci/thirdparty_base_pin.sh)"
+          echo "PTB_IMAGE=${PTB_IMAGE_REPO}:${PTB_REF}" >> "$GITHUB_ENV"
+          echo "BASE_IMAGE=${BASE_IMAGE_REPO}:thirdparty-${PIN}" >> "$GITHUB_ENV"
+          echo "base_image=${BASE_IMAGE_REPO}:thirdparty-${PIN}" >> "$GITHUB_OUTPUT"
 
-      - name: Check PTB image exists
+      - name: The compiler has published an image for the pin
+        run: |
+          if ! docker buildx imagetools inspect "${PTB_IMAGE}" > /dev/null 2> inspect.err; then
+            echo "docker buildx imagetools inspect: $(cat inspect.err)"
+            echo "::error::${PTB_IMAGE} is not in the registry. PSAL-POSTECH/PyTorchSim-Triton-Backend's images workflow pushes one tag per commit on its main and develop; a pin on any other branch has no image. If the tag does exist, this repository has lost read access to the package (its settings: Manage Actions access)."
+            exit 1
+          fi
+
+      - name: Check base image exists
         id: exists
         run: |
-          if docker manifest inspect "${PTB_IMAGE}" > /dev/null 2>&1; then
+          if docker buildx imagetools inspect "${BASE_IMAGE}" > /dev/null 2>&1; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
             echo "ok=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build and push PTB toolchain image
+      - name: Build and push base image (missing pin)
         if: steps.exists.outputs.ok != 'true'
         uses: docker/build-push-action@v4
         with:
           context: .
-          file: ./Dockerfile.ptb
+          file: ./Dockerfile.base
           push: true
           build-args: |
-            BASE_IMAGE=${{ needs.ensure-base.outputs.base_image }}
-            PTB_REF=${{ env.PTB_REF }}
-          secrets: |
-            ptb_token=${{ secrets.TNPU_TOKEN }}
-          tags: ${{ env.PTB_IMAGE }}
+            PTB_IMAGE=${{ env.PTB_IMAGE }}
+          tags: ${{ env.BASE_IMAGE }}
 
   build-and-test:
-    needs: ensure-ptb-base
-    # Self-hosted: the app image now carries the PTB toolchain layer.
+    needs: ensure-base
     runs-on: [self-hosted, slurm, big, x86_64]
-
     permissions:
       contents: read
       packages: write
-
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -181,6 +100,22 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Remove this repository's older images from the runner
+        run: |
+          keep='${{ needs.ensure-base.outputs.base_image }}'
+          for repo in ghcr.io/psal-postech/torchsim-test ghcr.io/psal-postech/torchsim_base; do
+            docker images --format '{{.Repository}}:{{.Tag}}' "$repo"
+          done | grep -v -x -F "$keep" | xargs -r docker rmi > /dev/null 2>&1 || true
+          docker image prune -f > /dev/null 2>&1 || true
+          free_gb() { df -BG --output=avail / | tail -1 | tr -dc 0-9; }
+          if [ "$(free_gb)" -lt 40 ]; then
+            echo "$(free_gb) GB free after removing this repository's images: removing every unused image and container on the runner"
+            docker container prune -f > /dev/null 2>&1 || true
+            docker image prune -af > /dev/null 2>&1 || true
+          fi
+          df -h / | tail -1
+          docker images --format '{{.Size}}  {{.Repository}}:{{.Tag}}' 2>/dev/null | head -8
+
       - name: Build and Push Docker Image
         uses: docker/build-push-action@v6
         with:
@@ -189,10 +124,9 @@ jobs:
           push: true
           no-cache: true
           build-args: |
-            BASE_IMAGE=${{ needs.ensure-ptb-base.outputs.ptb_image }}
+            BASE_IMAGE=${{ needs.ensure-base.outputs.base_image }}
           tags: ghcr.io/psal-postech/torchsim-test:${{ env.SOURCE_SHA }}
 
-      # Do not use GITHUB_SHA here: on pull_request it is the merge commit, while the image tag uses SOURCE_SHA (PR head).
       - name: Wait for GHCR propagation
         env:
           IMAGE_SHA: ${{ env.SOURCE_SHA }}

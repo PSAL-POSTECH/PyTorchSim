@@ -83,6 +83,22 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Remove this repository's older images from the runner
+        run: |
+          keep='${{ inputs.image_name }}'
+          for repo in ghcr.io/psal-postech/torchsim-test ghcr.io/psal-postech/torchsim_base; do
+            docker images --format '{{.Repository}}:{{.Tag}}' "$repo"
+          done | grep -v -x -F "$keep" | xargs -r docker rmi > /dev/null 2>&1 || true
+          docker image prune -f > /dev/null 2>&1 || true
+          free_gb() { df -BG --output=avail / | tail -1 | tr -dc 0-9; }
+          if [ "$(free_gb)" -lt 40 ]; then
+            echo "$(free_gb) GB free after removing this repository's images: removing every unused image and container on the runner"
+            docker container prune -f > /dev/null 2>&1 || true
+            docker image prune -af > /dev/null 2>&1 || true
+          fi
+          df -h / | tail -1
+          docker images --format '{{.Size}}  {{.Repository}}:{{.Tag}}' 2>/dev/null | head -8
+
       - name: Run ${{ matrix.test }}
         run: |
           docker run --rm \
@@ -108,6 +124,22 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Remove this repository's older images from the runner
+        run: |
+          keep='${{ inputs.image_name }}'
+          for repo in ghcr.io/psal-postech/torchsim-test ghcr.io/psal-postech/torchsim_base; do
+            docker images --format '{{.Repository}}:{{.Tag}}' "$repo"
+          done | grep -v -x -F "$keep" | xargs -r docker rmi > /dev/null 2>&1 || true
+          docker image prune -f > /dev/null 2>&1 || true
+          free_gb() { df -BG --output=avail / | tail -1 | tr -dc 0-9; }
+          if [ "$(free_gb)" -lt 40 ]; then
+            echo "$(free_gb) GB free after removing this repository's images: removing every unused image and container on the runner"
+            docker container prune -f > /dev/null 2>&1 || true
+            docker image prune -af > /dev/null 2>&1 || true
+          fi
+          df -h / | tail -1
+          docker images --format '{{.Size}}  {{.Repository}}:{{.Tag}}' 2>/dev/null | head -8
+
       - name: run_cycle, accuracy summary, run_speedup
         env:
           ART_DIR: ${{ runner.temp }}/pt_sim_cycle_and_speedup
@@ -123,7 +155,7 @@ jobs:
             -e SPEEDUP_ITERS=2 \
             -v "$ART_DIR:/artifacts" \
             ${{ inputs.image_name }} bash -c 'set -eu -o pipefail; cd /workspace; export TORCHSIM_DIR="${TORCHSIM_DIR:-/workspace/PyTorchSim}"; \
-            PyTorchSim/experiments/artifact/cycle_validation/run_cycle.sh >/dev/null 2>&1; \
+            PyTorchSim/experiments/artifact/cycle_validation/run_cycle.sh > /artifacts/run_cycle.log 2>&1 || { tail -60 /artifacts/run_cycle.log; exit 1; }; \
             cp "$TORCHSIM_DIR/experiments/artifact/cycle_validation/summary_cycle.out" /artifacts/summary_cycle.out; \
             PyTorchSim/experiments/artifact/speedup/run_speedup.sh; \
             bash PyTorchSim/experiments/artifact/speedup/check_speedup_smoke.sh; \

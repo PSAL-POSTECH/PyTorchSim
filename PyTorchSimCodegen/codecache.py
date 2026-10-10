@@ -84,13 +84,16 @@ def _spad_overflow(exc):
 
 
 def _too_big(exc):
-    """Why this failure means the tile is too big, else None: the scratchpad budget it broke,
-    or the register file (llc spilled, which the compiler's ELF refuses)."""
+    """Why this failure means the tile is too big, else None: the scratchpad budget it broke, the
+    register file (llc spilled, which the compiler's ELF refuses) or Triton's own block size."""
     over = _spad_overflow(exc)
     if over is not None:
         return "%d bytes/lane over a budget of %d" % over
-    if "spill not allowed" in (getattr(exc, "output", None) or str(exc)):
+    said = getattr(exc, "output", None) or str(exc)
+    if "spill not allowed" in said:
         return "the vector register file spills"
+    if "exceeds triton maximum tensor numel" in said:
+        return "a block holds more elements than Triton accepts"
     return None
 
 

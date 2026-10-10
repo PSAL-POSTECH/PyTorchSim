@@ -84,14 +84,15 @@ def _gemm_tiles(m, n, k, dtype_size, out_size=None):
 
 
 def _gemm_tile_candidates(M, N, K, n_extra_node, precision_bytes):
-    """Every (tile_M, tile_N, tile_K) whose A, B and C fit half the scratchpad, largest first.
-
-    Each side is a lane multiple times a power of two (TTGIR's layouts need them), the tail masked.
-    """
+    """Every (tile_M, tile_N, tile_K) whose A, B and C are blocks Triton accepts and fit half the
+    scratchpad, largest first. Each side is a lane multiple times a power of two (TTGIR's layouts
+    need them), the tail masked."""
+    from . import launch
     lanes = int(config.vpu_num_lanes)
     spad_per_lane = config.CONFIG_SPAD_INFO["spad_size"]
     max_spad = spad_per_lane * lanes // 2
     max_spad_per_lane = spad_per_lane // 2
+    max_numel = launch.triton_max_numel()
 
     def per_lane(rows, cols):
         return max(rows * ((cols + lanes - 1) // lanes), 2)
@@ -111,7 +112,8 @@ def _gemm_tile_candidates(M, N, K, n_extra_node, precision_bytes):
                 used = (tm * tk + tk * tn + tm * tn * out) * precision_bytes
                 used_per_lane = (per_lane(tk, tn) + per_lane(tm, tk)
                                  + per_lane(tm * out, tn)) * precision_bytes
-                if used < max_spad and used_per_lane < max_spad_per_lane:
+                if (max(tm * tk, tk * tn, tm * tn) <= max_numel
+                        and used < max_spad and used_per_lane < max_spad_per_lane):
                     tiles.append((used, (tm, tn, tk)))
     tiles.sort(key=lambda x: x[0], reverse=True)
     return [t for _, t in tiles]

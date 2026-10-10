@@ -177,6 +177,15 @@ def _element_bits(args):
     return max(bits) if bits else 32
 
 
+def triton_max_numel():
+    """Elements Triton accepts in one block tensor, read from the Triton this route compiles with."""
+    try:
+        from triton._utils import TRITON_MAX_TENSOR_NUMEL
+    except ImportError:
+        from triton.language.core import TRITON_MAX_TENSOR_NUMEL
+    return int(TRITON_MAX_TENSOR_NUMEL)
+
+
 def reduction_block_for(extent, elem_bytes=4, lane_bytes=None):
     """The R0_BLOCK this backend pins for a reduction of `extent`.
 
@@ -232,10 +241,17 @@ def fixed_config_for(kernel, numels, args):
     if getattr(kernel, "inside_reduction", False):
         lane_bytes = machine["spad_size"]
         elem_bytes = max(1, _element_bits(args) // 8)
+        room = triton_max_numel()
+        for v in cfg.values():
+            room //= max(1, v or 1)
         for p in reduction_axes(numels) or ["r0_"]:
             n = numels.get(f"{p}numel")
             if not n:
                 cfg[_block_name(p)] = None
                 continue
-            cfg[_block_name(p)] = reduction_block_for(n, elem_bytes, lane_bytes)
+            block = reduction_block_for(n, elem_bytes, lane_bytes)
+            while block > max(1, room):
+                block //= 2
+            cfg[_block_name(p)] = block
+            room //= max(1, block)
     return cfg

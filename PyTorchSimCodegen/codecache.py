@@ -131,9 +131,9 @@ _DIM_RE = {k: re.compile(rf"^\s*{k} = (\d+)$", re.M) for k in "MNK"}
 
 
 def _mm_template(src_code, meta):
-    """(M, N, K, input bytes, output bytes) of an mm template kernel -- one program per output tile, its
-    blocks stated as constexprs -- else None."""
-    if (meta.get("template_grid") is None or "bmm" in meta.get("kernel_name", "")
+    """(M, N, K, input bytes, output bytes) of an mm or bmm template kernel -- one program per output
+    tile (and batch), its blocks stated as constexprs -- else None."""
+    if (meta.get("template_grid") is None
             or not all(r.search(src_code) for r in _TILE_RE.values())):
         return None
     dims = [_DIM_RE[k].search(src_code) for k in "MNK"]
@@ -145,13 +145,14 @@ def _mm_template(src_code, meta):
 
 
 def _retile(src_code, meta, mnk, tile):
-    """The same mm kernel at block `tile` (M, N, K): its constexprs and its grid."""
+    """The same mm or bmm kernel at block `tile` (M, N, K): its constexprs and its grid, the batch
+    axes of the grid kept."""
     (m, n, k), (bm, bn, bk) = mnk, tile
     vals = {"BLOCK_M": bm, "BLOCK_N": bn, "BLOCK_K": bk, "EVEN_K": k % bk == 0}
     for key, v in vals.items():
         src_code = _TILE_RE[key].sub(lambda mt, v=v: f"{mt.group(1)}{v}", src_code)
     meta = copy.deepcopy(meta)
-    meta["template_grid"] = [-(-m // bm) * -(-n // bn), 1, 1]
+    meta["template_grid"] = [-(-m // bm) * -(-n // bn)] + list(meta["template_grid"][1:])
     return src_code, meta
 
 
@@ -182,14 +183,17 @@ def _time_tile(src_code, meta, kernel_name, workdir, timeout):
 
 
 def _template_tiles(src_code, meta):
-    """Every mapped tile of an mm template kernel, best first, as (M, N, K) blocks; [] for
-    any other kernel."""
+    """Every mapped tile of an mm template kernel this source can take, best first, as (M, N, K)
+    blocks; [] for any other kernel. A body rendered with EVEN_K loads K unmasked, so it takes only
+    a BLOCK_K that divides K."""
     shape = _mm_template(src_code, meta)
     if shape is None:
         return []
     from .inductor_patches import _gemm_tiles
     m, n, k, size, out_size = shape
-    return [(c.block_m, c.block_n, c.block_k) for c in _gemm_tiles(m, n, k, size, out_size)]
+    even = _TILE_RE["EVEN_K"].search(src_code).group(2) == "True"
+    return [(c.block_m, c.block_n, c.block_k) for c in _gemm_tiles(m, n, k, size, out_size)
+            if not even or k % c.block_k == 0]
 
 
 def _smaller_tiles(src_code, meta):

@@ -183,14 +183,17 @@ def _time_tile(src_code, meta, kernel_name, workdir, timeout):
 
 
 def _template_tiles(src_code, meta):
-    """Every mapped tile of an mm template kernel, best first, as (M, N, K) blocks; [] for
-    any other kernel."""
+    """Every mapped tile of an mm template kernel this source can take, best first, as (M, N, K)
+    blocks; [] for any other kernel. A body rendered with EVEN_K loads K unmasked, so it takes only
+    a BLOCK_K that divides K."""
     shape = _mm_template(src_code, meta)
     if shape is None:
         return []
     from .inductor_patches import _gemm_tiles
     m, n, k, size, out_size = shape
-    return [(c.block_m, c.block_n, c.block_k) for c in _gemm_tiles(m, n, k, size, out_size)]
+    even = _TILE_RE["EVEN_K"].search(src_code).group(2) == "True"
+    return [(c.block_m, c.block_n, c.block_k) for c in _gemm_tiles(m, n, k, size, out_size)
+            if not even or k % c.block_k == 0]
 
 
 def _smaller_tiles(src_code, meta):

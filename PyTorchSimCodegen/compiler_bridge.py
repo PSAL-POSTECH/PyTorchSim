@@ -92,17 +92,13 @@ def target_path():
 
 
 def compiler_env():
-    """The environment for a compiler subprocess: this machine, no PYTHONPATH, and
-    no device backend autoload.
-
-    TORCHSIM_COMPILE_TARGET NAMES THE WHOLE MACHINE, and used to name three of its seven
-    fields while the compiler supplied the rest from a shipped default. One
-    description, written from the YAML this process is running.
-    """
+    """The environment for a compiler subprocess: this machine, no PYTHONPATH, and no device
+    backend autoload. TORCHSIM_COMPILE_TARGET is the target written from the TOGSim YAML this
+    process runs, whatever the toolchain's environment set it to: the YAML is the machine."""
     env = dict(os.environ)
     env.pop("PYTHONPATH", None)
     env["TORCH_DEVICE_BACKEND_AUTOLOAD"] = "0"
-    env.setdefault("TORCHSIM_COMPILE_TARGET", target_path())
+    env["TORCHSIM_COMPILE_TARGET"] = target_path()
     return env
 
 

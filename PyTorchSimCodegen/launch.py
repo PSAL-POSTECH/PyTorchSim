@@ -189,11 +189,16 @@ def triton_max_numel():
 def reduction_block_for(extent, elem_bytes=4, lane_bytes=None):
     """The R0_BLOCK this backend pins for a reduction of `extent`.
 
-    Cover the extent and no more, then shrink to the budget. Two callers must
+    Cover the extent and no more, then shrink to the budget: half of one lane's
+    scratchpad, shared by the tiles a reduction keeps live. Two callers must
     agree: this pins the block, inductor_patches asks if persistence matches.
+    Both see the machine's scratchpad when `lane_bytes` is left to this
+    function; a persistent reduction rendered for a bigger one than the target
+    has is a kernel the compiler refuses as over budget, whatever XBLOCK shrinks to.
     """
     if lane_bytes is None:
-        lane_bytes = int(os.environ.get("TORCHSIM_COMPILE_SPAD_SIZE", str(64 * 1024)), 0)
+        from . import compiler_bridge
+        lane_bytes = compiler_bridge.machine()["spad_size"]
     budget = lane_bytes // 2 // _REDUCTION_LIVE_TILES
     block = 1 << (int(extent) - 1).bit_length()
     while block * elem_bytes > budget and block > 1:

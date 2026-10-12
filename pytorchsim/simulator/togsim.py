@@ -370,64 +370,83 @@ class TOGSimulator():
             logger.info(f'[TOGSim] Simulation log{model_path_log}is stored to "{result_path}"')
         return result_path
 
+    # '<Core [i] | Total> : <unit> utilization(%): P, active_cycles: A, idle_cycles: I'. The unit is
+    # one of the unit table's (Systolic, Vpu, Issue, ...) or, in a run without the table, TOGSim's
+    # own 'Systolic array [k]', 'Vector unit', 'Cross-lane unit', which spell the counts differently.
+    _UNIT_LINE = re.compile(r"\] (Core \[\d+\]|Total) : (.+?) [Uu]tilization\(%\): (\d+\.?\d*), "
+                            r"active[ _]cycles?: (\d+), idle[ _]cycles?: (\d+)")
+    _DRAM_CHANNEL = re.compile(r"\[DRAM\] channel (\d+) \| .*?(\d+\.?\d*)% of utilization")
+    _DRAM_COMBINED = re.compile(r"\[DRAM\] channels .* combined \| .*?(\d+\.?\d*)% of utilization")
+    _ARRAY_UNITS = ("Systolic", "Msa")
+
     @staticmethod
     def get_result_from_file(result_path):
+        """(core_metrics, dram_channel_bw, avg_dram_bw, simulation_time, total_cycle) of a finished
+        run's log. core_metrics["units"] maps 'Core [i]' (and 'Total', which TOGSim prints for
+        several cores) to each unit's utilization, active_cycles and idle_cycles; the flat keys
+        read the array and the vector unit off the whole machine: the Total row, else the one core.
+        simulation_time stays inf for a standalone run, which prints no wall clock."""
         core_metrics = {}
         dram_channel_bw = {}
         avg_dram_bw = 0.0
         simulation_time = float("inf")
         total_cycle = float("inf")
 
-        # Read and find total stat position
         with open(result_path, "r") as f:
             lines = f.readlines()
 
-        simulation_finished_idx = -1
-        simulation_finished = False
         for idx, line in enumerate(lines):
             if TOGSimulator.FINISH_STR in line:
-                simulation_finished = True
-                simulation_finished_idx = idx
                 break
-
-        if simulation_finished_idx == -1:
+        else:
             logger.warning(f"[TOGSim] Warning: Unable to parse the output file ({result_path}). The file may be improperly formatted.")
-            return core_metrics, dram_channel_bw, avg_dram_bw, simulation_time
+            return core_metrics, dram_channel_bw, avg_dram_bw, simulation_time, total_cycle
 
-        total_stat_lines = lines[simulation_finished_idx:]
-
-        for line in total_stat_lines:
-            # Parse core metrics (MatMul active cycle, Vector active cycle, etc.)
-            if 'Core' in line:
-                if 'MatMul active cycle' in line:
-                    matmul_cycle = re.search(r'MatMul active cycle (\d+)', line).group(1)
-                    vector_cycle = re.search(r'Vector active cycle (\d+)', line).group(1)
-                    core_metrics['MatMul_active_cycle'] = int(matmul_cycle)
-                    core_metrics['Vector_active_cycle'] = int(vector_cycle)
-                elif 'Systolic Array Utilization' in line:
-                    systolic_util = re.search(r'Systolic Array Utilization\(%\) (\d+\.?\d*)', line).group(1)
-                    vector_util = re.search(r'Vector Unit Utilization\(%\) (\d+\.?\d*)', line).group(1)
-                    total_cycle = re.search(r'Total cycle: (\d+)', line).group(1)
-                    core_metrics['Systolic_Array_Utilization'] = float(systolic_util)
-                    core_metrics['Vector_Unit_Utilization'] = float(vector_util)
-                    core_metrics['Total_cycle'] = int(total_cycle)
-
-            # Parse DRAM channel bandwidth utilization
-            if 'DRAM CH' in line:
-                channel = re.search(r'DRAM CH\[(\d+)\]', line).group(1)
-                bw_util = re.search(r'AVG BW Util (\d+\.?\d*)%', line).group(1)
-                dram_channel_bw[f'CH[{channel}]'] = float(bw_util)
-
-            # Parse average DRAM bandwidth
-            if 'DRAM: AVG BW Util' in line:
-                avg_dram_bw = float(re.search(r'AVG BW Util (\d+\.?\d*)%', line).group(1))
-
-            if 'Total execution cycles' in line:
+        units = {}
+        combined = None
+        for line in lines[idx:]:
+            m = TOGSimulator._UNIT_LINE.search(line)
+            if m:
+                # the final block comes last, so it replaces a periodic print of the same unit
+                units.setdefault(m.group(1), {})[m.group(2)] = {
+                    "utilization": float(m.group(3)), "active_cycles": int(m.group(4)),
+                    "idle_cycles": int(m.group(5))}
+                continue
+            m = TOGSimulator._DRAM_CHANNEL.search(line)
+            if m:
+                dram_channel_bw[f"CH[{m.group(1)}]"] = float(m.group(2))
+                continue
+            m = TOGSimulator._DRAM_COMBINED.search(line)
+            if m:
+                combined = float(m.group(1))
+            elif 'Total execution cycles' in line:
                 total_cycle = int(re.search(r'Total execution cycles: (\d+)', line).group(1))
-
-            # Parse total simulation time
-            if 'Wall-clock time for simulation' in line:
+            elif 'Wall-clock time for simulation' in line:
                 simulation_time = float(re.search(r'Wall-clock time for simulation: (\d+\.?\d*) seconds', line).group(1))
+
+        if combined is not None:
+            avg_dram_bw = combined
+        elif dram_channel_bw:
+            avg_dram_bw = sum(dram_channel_bw.values()) / len(dram_channel_bw)
+
+        if units:
+            core_metrics["units"] = units
+            whole = units.get("Total") or next(iter(units.values()))
+            # The unit table names the machine's one array unit (the other variant stays at zero);
+            # without the table there is a row per array, each over the same cycles, and their
+            # mean is the per-array figure the table's row states under systolic_array_split.
+            table = [whole[name] for name in TOGSimulator._ARRAY_UNITS if name in whole]
+            arrays = ([max(table, key=lambda u: u["active_cycles"])] if table else
+                      [u for name, u in whole.items() if name.startswith("Systolic array [")])
+            vector = whole.get("Vpu") or whole.get("Vector unit")
+            if arrays:
+                core_metrics["Systolic_Array_Utilization"] = sum(u["utilization"] for u in arrays) / len(arrays)
+                core_metrics["MatMul_active_cycle"] = sum(u["active_cycles"] for u in arrays)
+            if vector:
+                core_metrics["Vector_Unit_Utilization"] = vector["utilization"]
+                core_metrics["Vector_active_cycle"] = vector["active_cycles"]
+            if total_cycle != float("inf"):
+                core_metrics["Total_cycle"] = total_cycle
         return core_metrics, dram_channel_bw, avg_dram_bw, simulation_time, total_cycle
 
 

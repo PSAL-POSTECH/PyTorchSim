@@ -1,0 +1,14 @@
+[2026-10-12 15:07:52.975] [info] Simulation finished
+[2026-10-12 15:07:52.975] [info] [DRAM] channel 0 | 19.48 GB/s avg., 38.06% of utilization | 16384 reads, 8192 writes
+[2026-10-12 15:07:52.975] [info] [DRAM] channel 1 | 19.48 GB/s avg., 38.06% of utilization | 16384 reads, 8192 writes
+[2026-10-12 15:07:52.975] [info] [DRAM] channels 0..31 combined | 623.52 GB/s aggregate, 38.06% of utilization (avg. per channel) | 524288 reads, 262144 writes
+[2026-10-12 15:07:52.975] [info] ========= Core stat =========
+[2026-10-12 15:07:52.975] [info] Core [0] : Issue utilization(%): 11.70, active_cycles: 15130, idle_cycles: 114227
+[2026-10-12 15:07:52.975] [info] Core [0] : Misc utilization(%): 0.20, active_cycles: 256, idle_cycles: 129101
+[2026-10-12 15:07:52.975] [info] Core [0] : Msa utilization(%): 0.00, active_cycles: 0, idle_cycles: 129357
+[2026-10-12 15:07:52.975] [info] Core [0] : Sfu utilization(%): 0.00, active_cycles: 0, idle_cycles: 129357
+[2026-10-12 15:07:52.975] [info] Core [0] : Systolic utilization(%): 50.66, active_cycles: 65536, idle_cycles: 63821
+[2026-10-12 15:07:52.975] [info] Core [0] : Xlu utilization(%): 0.00, active_cycles: 0, idle_cycles: 129357
+[2026-10-12 15:07:52.975] [info] Core [0] : Vpu utilization(%): 26.39, active_cycles: 34132, idle_cycles: 95225
+[2026-10-12 15:07:52.975] [info] Core [0] : Total_cycles: 129357
+[2026-10-12 15:07:52.975] [info] Total execution cycles: 129357

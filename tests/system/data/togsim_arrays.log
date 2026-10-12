@@ -1,0 +1,11 @@
+[2026-10-12 14:12:51.312] [info] Simulation finished
+[2026-10-12 14:12:51.313] [info] [DRAM] channel 0 | 11.33 GB/s avg., 22.13% of utilization | 16384 reads, 8192 writes
+[2026-10-12 14:12:51.313] [info] [DRAM] channel 1 | 11.33 GB/s avg., 22.13% of utilization | 16384 reads, 8192 writes
+[2026-10-12 14:12:51.313] [info] [DRAM] channels 0..31 combined | 362.64 GB/s aggregate, 22.13% of utilization (avg. per channel) | 524288 reads, 262144 writes
+[2026-10-12 14:12:51.313] [info] ========= Core stat =========
+[2026-10-12 14:12:51.313] [info] Core [0] : Systolic array [0] utilization(%): 64.06, active_cycles: 142475, idle_cycles: 79940
+[2026-10-12 14:12:51.313] [info] Core [0] : Systolic array [1] utilization(%): 0.00, active_cycles: 0, idle_cycles: 222415
+[2026-10-12 14:12:51.313] [info] Core [0] : Vector unit utilization(%): 2.39, active cycle: 5320, idle_cycle: 0
+[2026-10-12 14:12:51.313] [info] Core [0] : Cross-lane unit utilization(%): 0.00, active cycle: 0, idle_cycle: 222415
+[2026-10-12 14:12:51.313] [info] Core [0] : Total_cycles: 222415
+[2026-10-12 14:12:51.313] [info] Total execution cycles: 222415

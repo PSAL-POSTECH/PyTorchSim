@@ -129,7 +129,7 @@ class TOGSimulator():
             command_type: Type of command ("LAUNCH_KERNEL" or "DEVICE_SYNC")
             device_index: Device index
             stream_index: Stream index
-            tog_path: kernel-dir handle; TOGSim derives trace.so/trace_cycles.tsv from
+            tog_path: kernel-dir handle; TOGSim derives tog.so/tog_cycles.tsv from
                 its directory - empty for DEVICE_SYNC
             attribute_path: Path to attribute file - empty for DEVICE_SYNC
             timestamp: Timestamp in nanoseconds (default: 0)
@@ -223,7 +223,7 @@ class TOGSimulator():
         Args:
             device_index: Device index
             stream_index: Stream index
-            tog_path: kernel-dir handle; TOGSim derives trace.so from its directory
+            tog_path: kernel-dir handle; TOGSim derives tog.so from its directory
             attribute_path: Path to attribute file
             timestamp: Timestamp in nanoseconds (default: 0)
 
@@ -293,7 +293,7 @@ class TOGSimulator():
         For streaming multiple kernels, use launch_kernel() instead.
 
         Args:
-            model_path: kernel-dir handle; trace.so/trace_cycles.tsv are derived from
+            model_path: kernel-dir handle; tog.so/tog_cycles.tsv are derived from
                 its directory
             attribute_path: Path to attribute file
             autotune_mode: If True, run in autotune mode (silent)
@@ -331,13 +331,13 @@ class TOGSimulator():
             os.fsync(trace_file.fileno())
 
         try:
-            trace_so = os.path.join(os.path.dirname(str(model_path)), "trace.so")
-            cycle_tsv = os.path.join(os.path.dirname(str(model_path)), "trace_cycles.tsv")
-            if not os.path.exists(trace_so):
-                raise FileNotFoundError(f"{trace_so} not found -- the kernel has no trace to simulate")
+            tog_so = os.path.join(os.path.dirname(str(model_path)), "tog.so")
+            cycle_tsv = os.path.join(os.path.dirname(str(model_path)), "tog_cycles.tsv")
+            if not os.path.exists(tog_so):
+                raise FileNotFoundError(f"{tog_so} not found -- the kernel has no TOG to simulate")
             base_cmd = TOGSimulator.get_togsim_command(config_path, togsim_path)
-            unit_tsv = os.path.join(os.path.dirname(str(model_path)), "trace_units.tsv")
-            cmd = f"{base_cmd} --trace_so {trace_so} --cycle_table {cycle_tsv} --unit_table {unit_tsv}"
+            unit_tsv = os.path.join(os.path.dirname(str(model_path)), "tog_units.tsv")
+            cmd = f"{base_cmd} --tog_so {tog_so} --cycle_table {cycle_tsv} --unit_table {unit_tsv}"
             if config.CONFIG_TOGSIM_DEBUG_LEVEL:
                 cmd += f" --log_level {config.CONFIG_TOGSIM_DEBUG_LEVEL}"
 
@@ -465,7 +465,7 @@ if __name__ == "__main__":
     import argparse
 
     ap = argparse.ArgumentParser(description="Send kernels to TOGSim directly.")
-    ap.add_argument("kernel_dir", help="directory holding trace.so and trace_cycles.tsv")
+    ap.add_argument("kernel_dir", help="directory holding tog.so and tog_cycles.tsv")
     ap.add_argument("attribute", help="kernel attribute file")
     ap.add_argument("--config", default=None, help="TOGSim hardware YAML")
     ap.add_argument("--repeat", type=int, default=1)

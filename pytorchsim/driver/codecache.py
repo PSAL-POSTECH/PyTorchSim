@@ -35,7 +35,8 @@ def _write_path(src_code):
 STAMP_NAME = "provenance.json"
 
 
-_STALE_PATTERNS = ("[0-9][0-9]-*", "trace.so", "trace_cycles.tsv", "trace_units.tsv", "timing.json")
+_STALE_PATTERNS = ("[0-9][0-9]-*", "tog.so", "tog_cycles.tsv", "tog_units.tsv",
+                   "trace.so", "trace_cycles.tsv", "trace_units.tsv", "timing.json")
 
 
 _identity = None
@@ -137,7 +138,8 @@ def store_identity(workdir):
 
 
 def clear_stale(workdir):
-    """Remove the manifest, stage artifacts and timing derivatives built by another identity."""
+    """Remove the manifest, stage artifacts and timing derivatives built by another identity. The
+    trace* names are what a frontend from before TOGSim ABI 16 left in the workdir."""
     for pattern in (contract.KERNEL_MANIFEST,) + _STALE_PATTERNS:
         for path in glob.glob(os.path.join(workdir, pattern)):
             try:
@@ -221,7 +223,7 @@ def torchsim_compile(src_code, meta, kernel_name):
         spec_path = os.path.join(write_path, f"{kernel_name}_spec.py")
         elf = cached_elf(write_path, kernel_name)
         if (elf is not None and config.pytorchsim_timing_mode
-                and contract.artifact(write_path, "trace_so") is None):
+                and contract.artifact(write_path, "tog_so") is None):
             logger.info("[torchsim-compile] %s: cached without --tog, rebuilding for timing",
                         kernel_name)
             elf = None

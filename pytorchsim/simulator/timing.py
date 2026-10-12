@@ -1,7 +1,7 @@
-"""The timing half of the Triton route: the compiler IR -> trace.so -> TOGSim.
+"""The timing half of the Triton route: the compiler's tile-operation-graph (TOG), tog.so -> TOGSim.
 
     run(workdir, meta, args)    emit if needed, then simulate, under the lock
-    emit_trace(workdir, meta)   the compiler's trace.so + gem5 cycles -> trace_cycles.tsv, trace_units.tsv
+    emit_trace(workdir, meta)   the compiler's tog.so + gem5 cycles -> tog_cycles.tsv, tog_units.tsv
     run_togsim(workdir, ...)    hand them to TOGSim, return its parsed result
 """
 
@@ -18,18 +18,18 @@ from pytorchsim.simulator import wallclock
 
 logger = config.setup_logger()
 
-TRACE_SO = "trace.so"
-CYCLE_TSV = "trace_cycles.tsv"
-UNITS_TSV = "trace_units.tsv"
-SHARED = (TRACE_SO, CYCLE_TSV, UNITS_TSV)
-SHAPE_TXT = "trace_shape.txt"
-TENSORS_TXT = "trace_tensors.txt"
-TENSOR_SHAPES_TXT = "trace_tensor_shapes.txt"
+TOG_SO = "tog.so"
+CYCLE_TSV = "tog_cycles.tsv"
+UNITS_TSV = "tog_units.tsv"
+SHARED = (TOG_SO, CYCLE_TSV, UNITS_TSV)
+SHAPE_TXT = "tog_shape.txt"
+TENSORS_TXT = "tog_tensors.txt"
+TENSOR_SHAPES_TXT = "tog_tensor_shapes.txt"
 META_JSON = "meta.json"
 
 PLACEHOLDER_CYCLE = 1
 
-AXES_TXT = "trace_axes.txt"
+AXES_TXT = "tog_axes.txt"
 
 LOCK_NAME = ".timing.lock"
 LOCK_TIMEOUT = 1800
@@ -74,7 +74,7 @@ def write_tensors(workdir):
 
 
 def write_shape(workdir, meta, args=()):
-    """Write the grid extents the trace producer reads as shape_args.
+    """Write the grid extents the TOG reads as shape_args.
 
     The parallel numels are read off `args` by the kernel's parameter names. A
     template's trailing arguments ARE its grid, so its extents are used as is.
@@ -105,7 +105,7 @@ def write_shape(workdir, meta, args=()):
 def _write_extents(workdir, ext, what):
     """Write `ext` as this launch's shape_args, refusing a count it cannot use.
 
-    The count is checked against the shared trace; the file goes in this
+    The count is checked against the shared TOG; the file goes in this
     process's launch directory, because the grid belongs to the launch.
     """
     path = os.path.join(workdir, AXES_TXT)
@@ -114,8 +114,8 @@ def _write_extents(workdir, ext, what):
             want = int(f.read().strip())
         if want != len(ext):
             raise ValueError(
-                f"{TRACE_SO} in {workdir} was compiled to read {want} grid "
-                f"extent(s) and this launch has {len(ext)} ({ext}); the trace "
+                f"{TOG_SO} in {workdir} was compiled to read {want} grid "
+                f"extent(s) and this launch has {len(ext)} ({ext}); the TOG "
                 f"would read past the end of shape_args. Delete the workdir to "
                 f"rebuild it.")
     with open(os.path.join(contract.dir_for(workdir), SHAPE_TXT), "w") as f:
@@ -124,7 +124,7 @@ def _write_extents(workdir, ext, what):
 
 
 def emit_trace(workdir, meta):
-    """Build trace.so + trace_cycles.tsv from the compiler's trace producer.
+    """Place the compiler's tog.so in the workdir and write tog_cycles.tsv and tog_units.tsv beside it.
 
     Returns the number of compute tiles the cycle table covers.
     """
@@ -132,12 +132,12 @@ def emit_trace(workdir, meta):
 
 
     kernel = meta["kernel_name"]
-    so_path = contract.artifact(workdir, "trace_so")
+    so_path = contract.artifact(workdir, "tog_so")
     types_path = contract.artifact(workdir, "tile_types")
     if so_path is None or types_path is None:
         raise FileNotFoundError(
-            f"{workdir} has no trace_so/tile_types -- the compiler must reach "
-            f"the tog step (--tog), which is what builds the producer")
+            f"{workdir} has no tog_so/tile_types -- the compiler must reach "
+            f"the tog step (--tog), which is what builds the TOG")
     with open(types_path) as fh:
         tiles = json.load(fh)
     offsets = tiles["overlap_offset"]
@@ -151,8 +151,8 @@ def emit_trace(workdir, meta):
             f"not be modelled at all")
     table = cycle_table(offsets, list(cycles))
 
-    if os.path.abspath(so_path) != os.path.abspath(os.path.join(workdir, TRACE_SO)):
-        shutil.copyfile(so_path, os.path.join(workdir, TRACE_SO))
+    if os.path.abspath(so_path) != os.path.abspath(os.path.join(workdir, TOG_SO)):
+        shutil.copyfile(so_path, os.path.join(workdir, TOG_SO))
     with open(os.path.join(workdir, AXES_TXT), "w") as f:
         f.write(f"{len(axes)}\n")
 
@@ -165,7 +165,7 @@ def emit_trace(workdir, meta):
 
 
 def run_togsim(workdir, meta, args=()):
-    """Simulate the emitted trace, or hand it to an open TOGSimulator.
+    """Simulate the TOG, or hand it to an open TOGSimulator.
 
     Standalone returns the parsed result; a queued launch returns its kernel id,
     since the stream's numbers are only whole when the simulator closes.
@@ -195,7 +195,7 @@ def run(workdir, meta, args=()):
     TOGSim's result.
 
     Only the build is locked, and only against a second build of the same
-    trace; simulating is per launch and runs concurrently.
+    tables; simulating is per launch and runs concurrently.
     """
     from filelock import FileLock
 

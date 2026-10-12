@@ -134,7 +134,7 @@ CONFIG_DEBUG_MODE = int(os.environ.get('TORCHSIM_DEBUG_MODE', default=0))
 
 
 def togsim_include_dir():
-    """Where togsim_runtime.h lives: the header a trace producer is compiled against."""
+    """Where togsim_runtime.h lives: the header a TOG is compiled against."""
     return os.path.join(CONFIG_TOGSIM_DIR, "include")
 
 

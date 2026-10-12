@@ -1,6 +1,7 @@
 #!/bin/bash
 
 base_dir=$TORCHSIM_DIR/experiments/artifact/speedup
+config_dir="$(cd "$TORCHSIM_DIR" && python3 -c 'from pytorchsim.config import CONFIG_TOGSIM_CONFIG_DIR as d; print(d)')"
 config=(
     "systolic_ws_128x128_c2_simple_noc_tpuv3_ils.yml"
 )
@@ -23,7 +24,7 @@ for i in "${config[@]}"; do
     echo "===== config=$i | model=$ops =====" >> "$output_file"
     sum=0.0
     count=0
-    config_path="$TORCHSIM_DIR/configs/$i"
+    config_path="$config_dir/$i"
 
     for iter in {1..5}; do
       echo "[Iter $iter] Running simulation for workload=ils_$ops config=$config"

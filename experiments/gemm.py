@@ -7,7 +7,9 @@ sys.path.insert(0, base_path)
 
 import torch
 
-config = os.environ.get('TOGSIM_CONFIG', f'{base_path}/configs/systolic_ws_128x128_c2_simple_noc_tpuv4.yml')
+from pytorchsim.config import CONFIG_TOGSIM_CONFIG_DIR
+
+config = os.environ.get('TOGSIM_CONFIG', os.path.join(CONFIG_TOGSIM_CONFIG_DIR, 'systolic_ws_128x128_c2_simple_noc_tpuv4.yml'))
 os.environ['TOGSIM_CONFIG'] = config
 
 def matmul_fn(a, b):

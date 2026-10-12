@@ -43,7 +43,7 @@ std::shared_ptr<Instruction> make_mem_bar(const std::vector<std::shared_ptr<Inst
       std::vector<int64_t>{});
   bar->set_addr_name(batch.front()->get_addr_name(), batch.front()->get_addr_id());
   bar->prepare_tag_key();
-  for (const auto& d : batch) bar->add_wait_key(d->get_tag_id());
+  for (const auto& d : batch) bar->add_wait_key(d->get_tag_id(), d->tag_scope);
   return bar;
 }
 
@@ -82,6 +82,55 @@ class BufferWriters {
   std::shared_ptr<Instruction> _initializer;   // the non-MATMUL member of _all, if any
 };
 
+// What each spad buffer holds, as its last async load brought it: a tensor's bytes at an address
+// in a shape. The whole kernel is assumed to sit in the scratchpad at once, so a later load of
+// the same thing into the same buffer -- the weights, read again by every work-item -- finds the
+// data there: it shares the first load's tag key, which the Core skips, and opens no version.
+// A store to the tensor, or anything else written into the buffer, ends that.
+struct Resident {
+  struct What {
+    int32_t arg, bits;
+    uint64_t addr;
+    std::vector<int64_t> dims, strides;
+    int64_t tag;
+    bool same(const What& o) const {
+      return arg == o.arg && bits == o.bits && addr == o.addr && dims == o.dims && strides == o.strides;
+    }
+  };
+  std::map<int64_t, What> held;   // buf -> its content
+  int64_t next_tag = 0;
+
+  // The shared tag of load `t`, and whether it repeats what its buffer holds; -1 for any other
+  // record. Call once per record, in order: the version schedule and the build must agree.
+  int64_t note(const togsim::TraceRec& t, bool& repeat) {
+    using togsim::TraceRec;
+    repeat = false;
+    if (t.kind == TraceRec::COMPUTE) {
+      for (int64_t b : t.write_bufs) held.erase(b);
+      return -1;
+    }
+    if (t.kind != TraceRec::DMA) return -1;
+    if (t.dir == 1) {
+      for (auto it = held.begin(); it != held.end();)
+        it = it->second.arg == t.arg_id ? held.erase(it) : std::next(it);
+      return -1;
+    }
+    if (!t.is_async || t.indirect || t.arg_id < 0 || t.write_bufs.size() != 1) {
+      for (int64_t b : t.write_bufs) held.erase(b);
+      return -1;
+    }
+    What now{t.arg_id, t.elem_bits, t.addr, t.dims, t.strides, 0};
+    auto it = held.find(t.write_bufs.front());
+    if (it != held.end() && it->second.same(now)) {
+      repeat = true;
+      return it->second.tag;
+    }
+    now.tag = next_tag++;
+    held[t.write_bufs.front()] = now;
+    return now.tag;
+  }
+};
+
 // All builder state for one kernel, driven one dispatch tile at a time. Owned by
 // the TileGraph's tile source, so it survives between materializations. link() is
 // the dependency DAG, sram_effects() the buffer-version rule, feed() the dispatch.
@@ -101,6 +150,8 @@ struct BuildState {
   std::map<uint64_t, SemBatch> open_batch;
   std::map<uint64_t, int64_t> waited;
   int64_t next_tag = 0;
+  Resident resident;             // not per work-item: what the buffers hold outlives one
+  int tag_scope = 0;             // the Core tag scope this kernel's shared load keys live in
   int cur_tile_group = -1;
   std::string indirect_dir;               // where the functional run left its index dumps
   size_t indirect_found = 0, indirect_missing = 0;
@@ -213,11 +264,15 @@ struct BuildState {
     std::map<int64_t, int64_t> cur;    // buf -> current version id
     std::map<int64_t, bool> open;      // buf -> version still accepting writes
     std::vector<int64_t> reads, opens;
+    Resident there;
 
     for (size_t wi = 0; wi < prod.num_items(); wi++) {
       size_t pos = 0;
       for (const TraceRec& t : prod.run_item(wi)) {
+        bool repeat = false;
+        there.note(t, repeat);
         sram_effects(t, reads, opens);
+        if (repeat) opens.clear();                   // the version it would open is still held
         for (int64_t b : reads) {
           auto f = cur.find(b);
           if (f == cur.end()) continue;              // untracked buffer
@@ -320,10 +375,12 @@ struct BuildState {
   // Run record `t`'s spad effects against the live version state and tag `inst`
   // with what it allocates and frees. Same rule as sram_schedule() (sram_effects),
   // so the version ids agree; this pass just also touches the Instruction.
-  void sram_apply(const togsim::TraceRec& t, const std::shared_ptr<Instruction>& inst) {
+  void sram_apply(const togsim::TraceRec& t, const std::shared_ptr<Instruction>& inst,
+                  bool repeat = false) {
     using togsim::TraceRec;
     std::vector<int64_t> reads, opens;
     sram_effects(t, reads, opens);
+    if (repeat) opens.clear();                     // a load of what the buffer holds: no version
 
     for (int64_t b : reads) {                      // consume the current version
       auto it = cur_alloc.find(b);
@@ -380,8 +437,11 @@ struct BuildState {
     if (!tile) return;  // defensive: ops before the first TILE_BEGIN
 
     if (t.kind == TraceRec::DMA) {
-      int64_t uniq = next_tag++;                         // fresh Core tag key per dma record
-      auto inst = make_dma(t, uniq);
+      bool repeat = false;
+      const int64_t shared = resident.note(t, repeat);   // a load that may find its data there
+      int64_t uniq = next_tag++;                         // else a fresh Core tag key per dma record
+      auto inst = make_dma(t, shared >= 0 ? shared : uniq);
+      if (shared >= 0) inst->tag_scope = tag_scope;
       inst->set_tile_group(cur_tile_group);
       if (t.indirect) attach_indices(t, *inst);
       if (t.arg_id >= 0 && (size_t)t.arg_id < tilings.size()) inst->set_tensor_tiling(tilings[t.arg_id]);
@@ -403,7 +463,7 @@ struct BuildState {
         // latency WAR edge would force single-buffering and kill the spad overlap.
         for (int64_t b : t.write_bufs) writers[b].replace(inst);
       }
-      sram_apply(t, inst);   // a store frees what it drains; a load occupies the spad
+      sram_apply(t, inst, repeat);   // a store frees what it drains; a load occupies the spad
     } else if (t.kind == TraceRec::MEMORY_BAR) {
       auto ob = open_batch.find(t.sem);
       if (ob == open_batch.end()) {
@@ -425,6 +485,7 @@ struct BuildState {
       open_batch.erase(ob);
     } else if (t.kind == TraceRec::COMPUTE) {
       auto inst = make_compute(t);
+      { bool repeat = false; resident.note(t, repeat); }   // what it writes is no longer a load's
       inst->set_tile_id(unit_tile_base + (int64_t)t.tile_id);
       inst->set_tile_group(cur_tile_group);
       link(inst, t.read_bufs, t.write_bufs);
@@ -464,6 +525,8 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(
   using togsim::TraceRec;
   auto S = std::make_shared<BuildState>();
   S->unit_tile_base = unit_tile_base;
+  static int next_scope = -2;                 // below every work-item id, and -1 means none
+  S->tag_scope = next_scope--;
   S->indirect_dir = indirect_dir;
   S->tilings = tilings;
 

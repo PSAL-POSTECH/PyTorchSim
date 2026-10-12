@@ -163,11 +163,9 @@ class TOGSimulator():
         return kernel_id
 
     def shutdown(self):
-        """Close the FIFO, wait for TOGSim to exit, and write its log and trace.
-
-        Assumes every queued kernel has already been sent; draining the stream
-        belongs to whoever owns it.
-        """
+        """Close the FIFO, wait for TOGSim to exit, and write its log and trace; a Simulator that
+        exited non-zero (a kernel it refuses ends the session) is a RuntimeError raised after that.
+        Assumes every queued kernel has already been sent: draining the stream is its owner's."""
         # Close trace file handle if open
         if self._trace_file_handle is not None:
             try:
@@ -176,8 +174,9 @@ class TOGSimulator():
                 pass
             self._trace_file_handle = None
 
+        status = 0
         if self.process:
-            self.process.wait()
+            status = self.process.wait()
 
             # Read output streams
             stdout_output = ""
@@ -215,6 +214,9 @@ class TOGSimulator():
 
         # Clean up FIFOs
         self._cleanup_fifos()
+        if status:
+            raise RuntimeError(f"TOGSim Simulator exited with status {status}: the session did not run "
+                               f"every kernel it was sent, and the Simulator's own output says why")
 
     def launch_kernel(self, device_index, stream_index, tog_path, attribute_path, timestamp=0):
         """

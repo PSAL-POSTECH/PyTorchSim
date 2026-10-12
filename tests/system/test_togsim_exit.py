@@ -1,5 +1,5 @@
-"""A Simulator that exits non-zero is a RuntimeError: run_standalone's carries the exit status and
-the last line the Simulator printed. The Simulator here is a stub, so no TOGSim is needed."""
+"""A Simulator that exits non-zero is a RuntimeError on both paths: run_standalone carries its last
+line, shutdown its status. The Simulator here is a stub, so no TOGSim is needed."""
 import os
 import stat
 import sys
@@ -55,6 +55,26 @@ def test_standalone_refusal_is_a_runtime_error():
         assert said is not None and "status 1" in said and REFUSAL in said, said
 
 
+def test_session_refusal_is_a_runtime_error():
+    with tempfile.TemporaryDirectory() as root:
+        machine, handle, attribute = _checkout(root, 1)
+        sim = TOGSimulator(config_path=machine, togsim_path=root)
+        sim.launch_kernel(0, 0, handle, attribute)
+        said = _raised(sim.shutdown)
+        assert said is not None and "status 1" in said, said
+        assert sim.process is None and not os.path.exists(sim.fifo_dir)
+
+
+def test_session_that_ran_shuts_down_quietly():
+    with tempfile.TemporaryDirectory() as root:
+        machine, handle, attribute = _checkout(root, 0)
+        sim = TOGSimulator(config_path=machine, togsim_path=root)
+        sim.launch_kernel(0, 0, handle, attribute)
+        assert _raised(sim.shutdown) is None
+
+
 if __name__ == "__main__":
     test_standalone_refusal_is_a_runtime_error()
+    test_session_refusal_is_a_runtime_error()
+    test_session_that_ran_shuts_down_quietly()
     print("PASS")

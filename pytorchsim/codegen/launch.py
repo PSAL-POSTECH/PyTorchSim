@@ -9,7 +9,7 @@ import os
 
 from torch._inductor.virtualized import V
 
-from .errors import SpecIncomplete
+from pytorchsim.codegen.errors import SpecIncomplete
 
 _PARALLEL_PREFIXES = ("z", "y", "x")
 
@@ -197,7 +197,7 @@ def reduction_block_for(extent, elem_bytes=4, lane_bytes=None):
     has is a kernel the compiler refuses as over budget, whatever XBLOCK shrinks to.
     """
     if lane_bytes is None:
-        from . import compiler_bridge
+        from pytorchsim.driver import compiler_bridge
         lane_bytes = compiler_bridge.machine()["spad_size"]
     budget = lane_bytes // 2 // _REDUCTION_LIVE_TILES
     block = 1 << (int(extent) - 1).bit_length()
@@ -227,7 +227,7 @@ def fixed_config_for(kernel, numels, args):
     `numels` is the <prefix>numel-keyed dict, NOT kernel.numels. THESE ARE SIZES,
     NOT A LAYOUT -- the lane axis is the compiler's select_lane_axis, passes later.
     """
-    from . import compiler_bridge
+    from pytorchsim.driver import compiler_bridge
     machine = compiler_bridge.machine()
     lanes = machine["vector_lanes"]
     per_vector = max(1, machine["vlen_bits"] // _element_bits(args))

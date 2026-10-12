@@ -8,10 +8,10 @@ compiled ones is rejected rather than run against the wrong bounds.
 
 import os
 
-from PyTorchSimFrontend import config
+from pytorchsim import config
 
 from . import session
-from PyTorchSimCodegen import layout
+from pytorchsim.codegen import layout
 
 logger = config.setup_logger()
 
@@ -226,7 +226,7 @@ def run(workdir, meta, args):
     produced today; it is for the inner loop, not for reporting.
     """
     from . import spike_run
-    from PyTorchSimCodegen import compiler_bridge
+    from pytorchsim.driver import compiler_bridge
 
     runtime = write_inputs(workdir, meta, args)
 

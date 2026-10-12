@@ -10,7 +10,7 @@ import threading
 from pathlib import Path
 import uuid
 
-from PyTorchSimFrontend import config
+from pytorchsim import config
 
 # Configure logger for Simulator module
 logger = config.setup_logger()

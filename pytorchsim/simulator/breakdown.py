@@ -14,7 +14,7 @@ import time
 import uuid
 from contextlib import contextmanager
 
-from PyTorchSimFrontend import config
+from pytorchsim import config
 
 logger = config.setup_logger()
 

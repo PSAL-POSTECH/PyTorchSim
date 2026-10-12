@@ -132,7 +132,7 @@ void wrapper_cpu_fallback(
   oss << std::put_time(&tm_buf, "%Y-%m-%d %H:%M:%S");
   oss << '.' << std::setfill('0') << std::setw(3) << ms.count();
 
-  std::cerr << "[" << oss.str() << "] [INFO] [PyTorchSimDevice] [Eager Mode] Operator: " << op_name << std::endl;
+  std::cerr << "[" << oss.str() << "] [INFO] [device] [Eager Mode] Operator: " << op_name << std::endl;
 
   at::native::openreg::cpu_fallback(op, stack);
 }

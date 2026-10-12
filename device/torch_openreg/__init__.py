@@ -17,16 +17,15 @@ torch._register_device_module("npu", torch_openreg.openreg)
 torch.utils.generate_methods_for_privateuse1_backend(for_storage=True)
 
 sys.path.append(os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim'))
-import PyTorchSimFrontend.config  # noqa: F401
-from PyTorchSimFrontend import rewrite_fx_graph as _rewrite_fx_graph
+import pytorchsim.config  # noqa: F401
+from pytorchsim.frontend import rewrite_fx_graph as _rewrite_fx_graph
 
 _rewrite_fx_graph.install()
 
 # The `npu` codegen route: Inductor's own Triton codegen, lowered by the
 # compiler passes. Registered here because Inductor registers a backend per
 # device, once.
-from PyTorchSimCodegen import (
-    TritonNPUScheduling, TritonNPUWrapperCodegen)
+from pytorchsim.codegen import TritonNPUScheduling, TritonNPUWrapperCodegen
 torch._inductor.codegen.common.register_backend_for_device(
     "npu",
     TritonNPUScheduling,

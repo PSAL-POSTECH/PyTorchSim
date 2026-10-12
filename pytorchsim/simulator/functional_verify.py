@@ -28,8 +28,8 @@ import os
 
 import torch
 
-from PyTorchSimFrontend import config
-from PyTorchSimFrontend.config import setup_logger
+from pytorchsim import config
+from pytorchsim.config import setup_logger
 
 logger = setup_logger(__name__)
 

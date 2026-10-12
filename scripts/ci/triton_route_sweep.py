@@ -198,13 +198,13 @@ def write_markdown(results, path):
     if failed:
         L += ["| cause | count | owner |", "|---|---|---|"]
         OWNER = {
-            "device_op": "PyTorchSimDevice -- op not registered for npu",
-            "triton_helpers": "PyTorchSimCodegen -- needs a vendored copy",
-            "wrapper_gap": "PyTorchSimCodegen -- TritonNPUWrapperCodegen incomplete",
-            "spec_incomplete": "PyTorchSimCodegen -- kernel_spec cannot describe it",
+            "device_op": "device -- op not registered for npu",
+            "triton_helpers": "pytorchsim/codegen -- needs a vendored copy",
+            "wrapper_gap": "pytorchsim/codegen -- TritonNPUWrapperCodegen incomplete",
+            "spec_incomplete": "pytorchsim/codegen -- kernel_spec cannot describe it",
             "compiler_stage": "the compiler lowering passes",
             "reduction": "the compiler -- no lane-aware reduction",
-            "dynamic_shape": "PyTorchSimCodegen -- shape-specialised launch",
+            "dynamic_shape": "pytorchsim/codegen -- shape-specialised launch",
             "matmul_timing": "build_tog -- compute node lookup",
             "togsim": "TOGSim / trace producer",
             "wrong_values": "numerics -- investigate",

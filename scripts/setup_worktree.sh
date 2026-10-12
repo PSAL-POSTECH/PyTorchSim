@@ -20,7 +20,7 @@
 # After creation:
 #   cd /workspace/PyTorchSim-<...>
 #   source .envrc
-#   (cd PyTorchSimDevice && python setup.py build_ext --inplace)   # build the .so once
+#   (cd device && python setup.py build_ext --inplace)   # build the .so once
 set -euo pipefail
 
 if [[ $# -lt 1 || $# -gt 2 ]]; then
@@ -85,7 +85,7 @@ cat > "$WT_DIR/.envrc" <<'ENVRC'
 # Source this from the worktree root:  source .envrc
 _self="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 
-# Worktree-scoped: override defaults from PyTorchSimFrontend/config.py
+# Worktree-scoped: override defaults from pytorchsim/config.py
 export TORCHSIM_DIR="$_self"
 export TORCHSIM_DUMP_PATH="$_self/outputs"
 export TORCHSIM_LOG_PATH="$_self/togsim_results"
@@ -104,7 +104,7 @@ unset _v6e
 
 # Make `import torch_openreg` resolve to THIS worktree's .so first,
 # overriding the conda-wide editable install that points at the main worktree.
-export PYTHONPATH="$_self/PyTorchSimDevice:$_self:${PYTHONPATH:-}"
+export PYTHONPATH="$_self/device:$_self:${PYTHONPATH:-}"
 
 # Container-dedicated shared binaries.
 export GEM5_PATH="/workspace/vcix-env/gem5/build/RISCV/gem5.opt"
@@ -125,8 +125,8 @@ echo
 echo "Next:"
 echo "  cd $WT_DIR"
 echo "  source .envrc"
-echo "  (cd PyTorchSimDevice && python setup.py build_ext --inplace)   # build the .so once"
+echo "  (cd device && python setup.py build_ext --inplace)   # build the .so once"
 echo
-echo "When iterating on PyTorchSimCodegen/* or Simulator/* in this worktree,"
+echo "When iterating on pytorchsim/* in this worktree,"
 echo "run scripts/clear_codegen_cache.sh between runs so the cached compile does not"
 echo "shadow your changes."

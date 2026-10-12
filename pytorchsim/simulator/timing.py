@@ -9,10 +9,10 @@ import json
 import os
 import shutil
 
-from PyTorchSimFrontend import config
+from pytorchsim import config
 
 from . import breakdown, session
-from PyTorchSimCodegen import launch
+from pytorchsim.codegen import launch
 
 logger = config.setup_logger()
 
@@ -35,7 +35,7 @@ LOCK_TIMEOUT = 1800
 def measure_tile_cycles(workdir, meta):
     """Per-compute-node cycle counts for ONE tile: the compiler's cycle ELF, measured under gem5.
     None on any failure."""
-    from PyTorchSimCodegen.compiler_bridge import artifact
+    from pytorchsim.driver.compiler_bridge import artifact
     from .gem5 import CycleSimulator
 
     kernel_name = meta["kernel_name"]
@@ -59,7 +59,7 @@ def write_tensors(workdir):
 
     import torch
 
-    from PyTorchSimCodegen.compiler_bridge import kernel_object
+    from pytorchsim.driver.compiler_bridge import kernel_object
 
     manifest = kernel_object(workdir)
     if manifest is None:
@@ -130,7 +130,7 @@ def emit_trace(workdir, meta):
     import json
 
     from . import trace_build
-    from PyTorchSimCodegen.compiler_bridge import artifact
+    from pytorchsim.driver.compiler_bridge import artifact
 
     kernel = meta["kernel_name"]
     so_path = artifact(workdir, "trace_so")
@@ -170,7 +170,7 @@ def run_togsim(workdir, meta, args=()):
     """
     import torch
 
-    from Simulator.simulator import TOGSimulator
+    from pytorchsim.simulator.simulator import TOGSimulator
 
     for need in (TRACE_SO, CYCLE_TSV):
         if not os.path.isfile(os.path.join(workdir, need)):

@@ -9,9 +9,9 @@ __pycache__/
 *.ipynb_checkpoints
 
 TOGSim/build/
-PyTorchSimDevice/build/
-PyTorchSimDevice/torch_openreg/lib/
-PyTorchSimDevice/torch_openreg/_C.cpython-*.so
+device/build/
+device/torch_openreg/lib/
+device/torch_openreg/_C.cpython-*.so
 
 outputs/
 togsim_results/

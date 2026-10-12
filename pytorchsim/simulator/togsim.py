@@ -270,6 +270,10 @@ class TOGSimulator():
         if togsim_path is None:
             togsim_path = config.CONFIG_TOGSIM_DIR
         bin = config.togsim_simulator(togsim_path)
+        if not os.path.isfile(bin):
+            raise FileNotFoundError(
+                f"{bin} not found: TOGSIM_DIR must name a TOGSim checkout that has been built "
+                f"(the compiler's setup/toolchain.sh togsim builds the one it carries)")
         config_file = os.path.join(togsim_path, config_path)
         cmd = f"{bin} --config {config_file}"
         return cmd

@@ -96,8 +96,10 @@ def _trace_abi():
     try:
         with open(path, "rb") as fh:
             return hashlib.sha256(fh.read()).hexdigest()[:16]
-    except OSError:
-        return None
+    except OSError as exc:
+        raise FileNotFoundError(
+            f"{path} cannot be read ({exc.strerror}): TOGSIM_DIR must name a TOGSim checkout, "
+            f"the one the compiler carries as third_party/TOGSim unless set") from exc
 
 
 def identity():

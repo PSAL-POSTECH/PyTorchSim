@@ -1,0 +1,3 @@
+{
+ "description": "Pins for CI's torchsim_base image beyond the compiler pin. The base is built FROM the compiler's published image at third_party/pytorchsim-triton-backend.json's ref (ghcr.io/psal-postech/pytorchsim-triton-backend:<ref>, pushed by that repository's images workflow), so PyTorch and the test stack are the only layers added here; CI builds ghcr.io/.../torchsim_base:thirdparty-<12 hex> when missing (pin = scripts/ci/thirdparty_base_pin.sh: sha256 of the compiler pin, this file and Dockerfile.base) and updates :latest on a tag push."
+}

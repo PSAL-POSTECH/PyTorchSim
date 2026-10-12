@@ -6,7 +6,7 @@ name: Triton codegen route (PyTorchSim-Triton-Backend)
 # Separate from the main CI on purpose: it runs when the compiler pin moves, and
 # its sweep reports rather than gates.
 #
-# The base image is the compiler's published image at the pin plus the test stack (Dockerfile.base);
+# The base image is the compiler's published image at the pin plus the test stack (docker/Dockerfile.base);
 # the compiler's package grants this repository read access, so no token is involved.
 # and its vcix-accelerator submodule. Both are private and the default Actions token is
 # scoped to this repository. preflight checks it before the docker build.
@@ -18,9 +18,9 @@ on:
       - 'PyTorchSimCodegen/**'
       - 'Simulator/**'
       - 'PyTorchSimFrontend/**'
-      - 'thirdparty/pytorchsim-triton-backend.json'
-      - 'Dockerfile.base'
-      - 'scripts/ci/thirdparty_base_pin.sh'
+      - 'third_party/pytorchsim-triton-backend.json'
+      - 'docker/Dockerfile.base'
+      - 'scripts/ci/third_party_base_pin.sh'
       - 'scripts/ci/triton_route_passing.txt'
       - '.github/workflows/pytorchsim_triton_backend.yml'
   workflow_dispatch:
@@ -54,11 +54,11 @@ jobs:
       - name: Pins
         id: pin
         run: |
-          PTB_REF=$(jq -r '.pytorchsim_triton_backend.ref' thirdparty/pytorchsim-triton-backend.json)
-          PIN="$(bash scripts/ci/thirdparty_base_pin.sh)"
+          PTB_REF=$(jq -r '.pytorchsim_triton_backend.ref' third_party/pytorchsim-triton-backend.json)
+          PIN="$(bash scripts/ci/third_party_base_pin.sh)"
           echo "PTB_IMAGE=${PTB_IMAGE_REPO}:${PTB_REF}" >> "$GITHUB_ENV"
-          echo "BASE_IMAGE=${BASE_IMAGE_REPO}:thirdparty-${PIN}" >> "$GITHUB_ENV"
-          echo "base_image=${BASE_IMAGE_REPO}:thirdparty-${PIN}" >> "$GITHUB_OUTPUT"
+          echo "BASE_IMAGE=${BASE_IMAGE_REPO}:third_party-${PIN}" >> "$GITHUB_ENV"
+          echo "base_image=${BASE_IMAGE_REPO}:third_party-${PIN}" >> "$GITHUB_OUTPUT"
       - name: The compiler has published an image for the pin
         run: |
           if ! docker buildx imagetools inspect "${PTB_IMAGE}" > /dev/null 2> inspect.err; then
@@ -79,7 +79,7 @@ jobs:
         uses: docker/build-push-action@v4
         with:
           context: .
-          file: ./Dockerfile.base
+          file: ./docker/Dockerfile.base
           push: true
           build-args: |
             PTB_IMAGE=${{ env.PTB_IMAGE }}
@@ -131,7 +131,7 @@ jobs:
         uses: docker/build-push-action@v4
         with:
           context: .
-          file: ./Dockerfile
+          file: ./docker/Dockerfile
           push: true
           build-args: |
             BASE_IMAGE=${{ needs.ensure-base.outputs.base_image }}

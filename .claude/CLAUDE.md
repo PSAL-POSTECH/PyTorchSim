@@ -76,6 +76,8 @@ report next to the number it produced — never folded into a pass.
 | `tests/` | Op- and model-level tests organized under `ops/<family>/` (elementwise, reduce, gemm, conv, attention, view, sort, sparsity, misc, fusion), `models/<name>/` (Llama, Mixtral8x7B, DeepSeek, Diffusion, MoE, MLP, MobileNet, Yolov5) plus single-file model tests (test_resnet, test_transformer, test_vit, test_mlp, test_single_perceptron), and `system/` (scheduler, eager, vectorops). Shared helper: `tests/_utils.py`. **Which of them pass is `scripts/ci/triton_route_passing.txt`**; the rest are known gaps, swept and reported by `scripts/ci/triton_route_sweep.py --all` |
 | `experiments/artifact/` | Paper reproduction scripts (`cycle_validation/run_cycle.sh`, `speedup/run_speedup.sh`) |
 | `scripts/` | Dev tools (`util_viewer.py`, `trace_timeline.py`, `op_coverage.py`, `clear_codegen_cache.sh`, `setup_worktree.sh`) and CI helpers (`ci/`). `build_from_source.sh` builds the compiler and its simulators through PTB |
+| `docker/` | CI's images: `Dockerfile.base` (the compiler's published image at the pin plus the test stack) and `Dockerfile` (this tree on top of it), each with its own `.dockerignore`. The build context is the repository root |
+| `third_party/` | Version pins, no code: `pytorchsim-triton-backend.json` (the compiler commit) and `github-releases.json` |
 | `togsim_results/` | TOGSim log + trace dump directory (per-run) |
 | `outputs/` | Per-run hashed output dirs |
 
@@ -93,7 +95,7 @@ python tests/system/test_eager.py      # eager-fallback registration
 
 Run a model from `tests/models/Llama/`, `tests/models/DeepSeek/`, etc. similarly.
 
-**CI coverage:** `.github/workflows/docker-image.yml` is the PR gate. It builds the base image FROM the compiler's own published image at the pinned commit (`ghcr.io/psal-postech/pytorchsim-triton-backend:<ref>`, one tag per commit from PyTorchSim-Triton-Backend's `images.yml`: Ubuntu 22.04 + python3.11, the vcix-accelerator environment with the RISC-V toolchain, pk, Spike and gem5, LLVM, Triton with the torchsim backend, the compiler and its extension) plus PyTorch and the test stack (`Dockerfile.base`, rebuilt only when `scripts/ci/thirdparty_base_pin.sh` changes), then the app image, and calls `.github/workflows/pytorchsim_test.yml` once per hardware config. That workflow is a **matrix over `scripts/ci/triton_route_passing.txt`**, one Docker container per test -- so adding a test file gates PRs only once it is in that allowlist. Regenerate the allowlist with `python scripts/ci/triton_route_sweep.py --all --update-allowlist` and mirror it into the workflow.
+**CI coverage:** `.github/workflows/docker-image.yml` is the PR gate. It builds the base image FROM the compiler's own published image at the pinned commit (`ghcr.io/psal-postech/pytorchsim-triton-backend:<ref>`, one tag per commit from PyTorchSim-Triton-Backend's `images.yml`: Ubuntu 22.04 + python3.11, the vcix-accelerator environment with the RISC-V toolchain, pk, Spike and gem5, LLVM, Triton with the torchsim backend, the compiler and its extension) plus PyTorch and the test stack (`docker/Dockerfile.base`, rebuilt only when `scripts/ci/third_party_base_pin.sh` changes), then the app image, and calls `.github/workflows/pytorchsim_test.yml` once per hardware config. That workflow is a **matrix over `scripts/ci/triton_route_passing.txt`**, one Docker container per test -- so adding a test file gates PRs only once it is in that allowlist. Regenerate the allowlist with `python scripts/ci/triton_route_sweep.py --all --update-allowlist` and mirror it into the workflow.
 
 `.github/workflows/pytorchsim_triton_backend.yml` runs when the compiler pin itself moves: the compiler's own smoke kernels end to end, plus the full coverage sweep (allowlist *and* the rest, reported not gated). Neither workflow needs a token: the compiler's package grants this repository read access, and the default Actions token pulls it. Nothing of the compiler, Triton, Spike or gem5 is built in this repository's CI.
 
@@ -165,7 +167,7 @@ with TOGSimulator(config_path=...):
 - **Docker (recommended):** `docker run -it --ipc=host --name torchsim -w /workspace/PyTorchSim ghcr.io/psal-postech/torchsim-ci:v1.0.1 bash`
 - **TOGSim from source:** `cd TOGSim && mkdir -p build && cd build && conan install .. --build=missing && cmake .. && make -j$(nproc)`
 - **PyTorchSimDevice (Python package):** `cd PyTorchSimDevice && python -m pip install --no-build-isolation -e .`
-- **Compiler + Spike / gem5 from source:** `bash scripts/build_from_source.sh` (checks out PyTorchSim-Triton-Backend at the commit pinned in `thirdparty/pytorchsim-triton-backend.json`, the same pin as the CI docker image, and runs its `setup/toolchain.sh`; Spike, pk and gem5 land in `$VCIX_ENV_ROOT`).
+- **Compiler + Spike / gem5 from source:** `bash scripts/build_from_source.sh` (checks out PyTorchSim-Triton-Backend at the commit pinned in `third_party/pytorchsim-triton-backend.json`, the same pin as the CI docker image, and runs its `setup/toolchain.sh`; Spike, pk and gem5 land in `$VCIX_ENV_ROOT`).
 
 Conan deps for TOGSim: `boost/1.79.0`, `robin-hood-hashing/3.11.5`, `spdlog/1.11.0`, `yaml-cpp/0.8.0`.
 
@@ -182,7 +184,7 @@ Conan deps for TOGSim: `boost/1.79.0`, `robin-hood-hashing/3.11.5`, `spdlog/1.11
 
 ## Gotchas / things I've already learned
 
-- The repo expects `python` to be a Python 3.10+ binary with `torch==2.14.0` (torchvision `0.29.0`, triton `3.8.0`). The frontend extends the PyTorch 2 Inductor stack — pin to this version: 2.14's Inductor targets triton 3.8, the version PyTorchSim-Triton-Backend is built against. The device extension builds as C++20, which 2.14's headers require. The pins live in `Dockerfile.base`, and editing that file changes the base-image tag automatically (the tag is `thirdparty-<sha256 of thirdparty/github-releases.json + Dockerfile.base>`, see `scripts/ci/thirdparty_base_pin.sh`).
+- The repo expects `python` to be a Python 3.10+ binary with `torch==2.14.0` (torchvision `0.29.0`, triton `3.8.0`). The frontend extends the PyTorch 2 Inductor stack — pin to this version: 2.14's Inductor targets triton 3.8, the version PyTorchSim-Triton-Backend is built against. The device extension builds as C++20, which 2.14's headers require. The pins live in `docker/Dockerfile.base`, and editing that file changes the base-image tag automatically (the tag is `thirdparty-<sha256 of third_party/github-releases.json + docker/Dockerfile.base>`, see `scripts/ci/third_party_base_pin.sh`).
 - gem5 and Spike are the vcix-accelerator environment's, found through `VCIX_ENV_ROOT`; both load the accelerator model `TORCHSIM_COMPILE_VCIX_MODEL` (default `$TORCHSIM_PREFIX/vcix-build/libtpu.so`). Override with `GEM5_PATH` / `TORCHSIM_SPIKE` if you build elsewhere.
 - `_C.cpython-311-*.so` and `torch_openreg/lib/` are build artifacts — already in `.gitignore`, don't commit.
 - **Parallel runs sharing a `TORCHSIM_DUMP_PATH`** share every per-kernel workdir, and that is deliberate: the workdir holds what compiling produced, which is a function of the source and the machine. A **launch** is not, so each process gets `<workdir>/launch-<pid>/` (`Simulator/session.py`) holding its own `runtime/*.raw`, its own `trace_shape.txt` and symlinks to the shared trace — TOGSim resolves the cycle table and the shape from the directory of the trace it is handed, so linking is enough. What is left locked is only *building* the shared thing, once: `.compile.lock` (compile) and `.timing.lock` (trace.so + its gem5 cycle table). Launches take no lock. Measured on a warm cache, two `test_add.py` in parallel: 40s when launches were locked, **31s** now, against 30s for one run alone.
@@ -214,7 +216,7 @@ returns, not the one that says why.
 **Module docstrings** follow the same bar: a few lines naming what the file is
 for. A diagram of the pipeline is allowed once, in the package `__init__`.
 
-## Git workflow (per CONTRIBUTING.md)
+## Git workflow (per .github/CONTRIBUTING.md)
 
 - Fork, branch (`feature/<name>`), PR against `develop`, not `main`.
 - Commit prefix style observed: `[Frontend] ...`, `[TOGSim] ...`, etc.

@@ -33,11 +33,11 @@ jobs:
       - name: Pins
         id: pin
         run: |
-          PTB_REF=$(jq -r '.pytorchsim_triton_backend.ref' thirdparty/pytorchsim-triton-backend.json)
-          PIN="$(bash scripts/ci/thirdparty_base_pin.sh)"
+          PTB_REF=$(jq -r '.pytorchsim_triton_backend.ref' third_party/pytorchsim-triton-backend.json)
+          PIN="$(bash scripts/ci/third_party_base_pin.sh)"
           echo "PTB_IMAGE=${PTB_IMAGE_REPO}:${PTB_REF}" >> "$GITHUB_ENV"
-          echo "BASE_IMAGE=${BASE_IMAGE_REPO}:thirdparty-${PIN}" >> "$GITHUB_ENV"
-          echo "base_image=${BASE_IMAGE_REPO}:thirdparty-${PIN}" >> "$GITHUB_OUTPUT"
+          echo "BASE_IMAGE=${BASE_IMAGE_REPO}:third_party-${PIN}" >> "$GITHUB_ENV"
+          echo "base_image=${BASE_IMAGE_REPO}:third_party-${PIN}" >> "$GITHUB_OUTPUT"
       - name: The compiler has published an image for the pin
         run: |
           if ! docker buildx imagetools inspect "${PTB_IMAGE}" > /dev/null 2> inspect.err; then
@@ -58,7 +58,7 @@ jobs:
         uses: docker/build-push-action@v4
         with:
           context: .
-          file: ./Dockerfile.base
+          file: ./docker/Dockerfile.base
           push: true
           build-args: |
             PTB_IMAGE=${{ env.PTB_IMAGE }}
@@ -116,7 +116,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./Dockerfile
+          file: ./docker/Dockerfile
           push: true
           secrets: |
             GIT_ACCESS_TOKEN=${{ secrets.GIT_ACCESS_TOKEN }}

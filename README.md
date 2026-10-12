@@ -108,7 +108,7 @@ This script builds PyTorchSim-Triton-Backend -- the compiler, its LLVM and Trito
 ```bash
 bash scripts/build_from_source.sh
 ```
-The script checks out the commit pinned in [`thirdparty/pytorchsim-triton-backend.json`](thirdparty/pytorchsim-triton-backend.json), the same pin the CI docker image uses, so a from-source build matches the docker env.
+The script checks out the commit pinned in [`third_party/pytorchsim-triton-backend.json`](third_party/pytorchsim-triton-backend.json), the same pin the CI docker image uses, so a from-source build matches the docker env.
 ### Run Examples
 The `tests` directory contains several AI workload examples.
 ```bash

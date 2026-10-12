@@ -21,7 +21,7 @@ def _mobilenet_v2():
         return mobilenet_v2().cpu().eval()
 
 
-def run_mobilenet(batch, config):
+def run_mobilenet(batch):
     device = torch.device("npu:0")
 
     torch._dynamo.config.recompile_limit = 64
@@ -70,11 +70,6 @@ def test_inverted_residual_module(device, batch=1, inp=32, oup=32, stride=1, exp
 
 
 if __name__ == "__main__":
-    base_dir = os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim")
-    config = os.environ.get(
-        "TOGSIM_CONFIG",
-        default=f"{base_dir}/configs/systolic_ws_256x256_c1_simple_noc_tpuv6e.yml",
-    )
     args = argparse.ArgumentParser()
     args.add_argument("--batch", type=int, default=1)
     args.add_argument("--dump_path", type=str, default="results")
@@ -91,4 +86,4 @@ if __name__ == "__main__":
     print("\n" + "=" * 80)
     print("Testing Full MobileNet V2 Model")
     print("=" * 80)
-    run_mobilenet(batch, config)
+    run_mobilenet(batch)

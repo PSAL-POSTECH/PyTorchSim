@@ -178,19 +178,19 @@ def fixed_config_for(kernel, numels, args):
 
 
 def gemm_tiles(m, n, k, dtype_size, out_size=None):
-    """This machine's mm tiles for [m, k] @ [k, n], best first, as GemmConfigs.
-
-    `out_size` is C's element size when a fused cast stores it wider than the inputs.
-    """
+    """This machine's mm tiles for [m, k] @ [k, n], best first, as GemmConfigs. C is held twice
+    when it is stored at another width than it is summed at: the template sums halves in fp32."""
     from torch._inductor.template_heuristics.triton import GemmConfig
 
     size = int(dtype_size)
-    extra = max(int(out_size or size) // size - 1, 0)
-    tiles = gemm_tile_candidates(int(m), int(n), int(k), extra, size)
+    out = int(out_size or size)
+    acc = 4 if size == 2 else size
+    c_bytes = acc if out == acc else acc + out
+    tiles = gemm_tile_candidates(int(m), int(n), int(k), c_bytes, size)
     return [GemmConfig(tm, tn, tk, 1, 4) for tm, tn, tk in tiles]
 
 
-def gemm_tile_candidates(M, N, K, n_extra_node, precision_bytes):
+def gemm_tile_candidates(M, N, K, c_bytes, precision_bytes):
     """Every (tile_M, tile_N, tile_K) whose A, B and C are blocks Triton accepts and fit half the
     scratchpad, largest first. Each side is a lane multiple times a power of two (TTGIR's layouts
     need them), the tail masked."""
@@ -210,14 +210,13 @@ def gemm_tile_candidates(M, N, K, n_extra_node, precision_bytes):
             return [top]
         return [lanes << i for i in range((top // lanes).bit_length())]
 
-    out = 1 + n_extra_node
     tiles = []
     for tk in sides(max(K, 8)):
         for tm in sides(M):
             for tn in sides(N):
-                used = (tm * tk + tk * tn + tm * tn * out) * precision_bytes
-                used_per_lane = (per_lane(tk, tn) + per_lane(tm, tk)
-                                 + per_lane(tm * out, tn)) * precision_bytes
+                used = (tm * tk + tk * tn) * precision_bytes + tm * tn * c_bytes
+                used_per_lane = ((per_lane(tk, tn) + per_lane(tm, tk)) * precision_bytes
+                                 + per_lane(tm, tn) * c_bytes)
                 if (max(tm * tk, tk * tn, tm * tn) <= max_numel
                         and used < max_spad and used_per_lane < max_spad_per_lane):
                     tiles.append((used, (tm, tn, tk)))

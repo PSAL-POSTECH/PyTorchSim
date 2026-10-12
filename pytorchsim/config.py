@@ -119,6 +119,11 @@ def __getattr__(name):
 CONFIG_DEBUG_MODE = int(os.environ.get('TORCHSIM_DEBUG_MODE', default=0))
 
 
+def togsim_include_dir():
+    """Where togsim_runtime.h lives: the header a trace producer is compiled against."""
+    return os.path.join(CONFIG_TORCHSIM_DIR, "TOGSim", "include")
+
+
 def setup_logger(name=None, level=None):
     """
     Setup a logger with consistent formatting across all modules.

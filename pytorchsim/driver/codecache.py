@@ -6,35 +6,142 @@
 One directory per source hash, holding the compiler kernel file and every artifact.
 """
 
-import copy
-import itertools
+import glob
+import hashlib
 import json
 import os
-import re
-import time
+import shutil
+import subprocess
 
 from filelock import FileLock
 from torch._inductor.codecache import get_hash
 
 from pytorchsim import config
 
-from pytorchsim.codegen import kernel_spec
-from pytorchsim.driver import provenance, compiler_bridge
-from pytorchsim.simulator import breakdown, functional, session, timing
+from pytorchsim import contract
+from pytorchsim.driver import autotune, compiler_bridge, compiler_input
+from pytorchsim.simulator import functional, timing, wallclock
 
 logger = config.setup_logger()
 
 LOCK_TIMEOUT = 600
 
-#: THE MARKER IS A TEXT CONTRACT ACROSS A PROCESS BOUNDARY. The compiler runs
-#: as a subprocess, so this string cannot be imported from it -- it is spelled
-#: `spad.SPAD_OVERFLOW_MARKER` there and pinned by tile_spad_over_budget_marker.
-_SPAD_OVERFLOW_RE = re.compile(r"torchsim-spad-overflow: usage=(\d+) budget=(\d+)")
-
 
 def _write_path(src_code):
     return os.path.join(config.get_dump_path(),
                         "triton_" + get_hash(src_code.strip())[1:12])
+
+
+STAMP_NAME = "provenance.json"
+
+
+_STALE_PATTERNS = ("[0-9][0-9]-*", "trace.so", "trace_cycles.tsv", "timing.json")
+
+
+_identity = None
+
+
+def _run_tool(cmd, cwd):
+    """(rc, stdout) of a command, with stderr folded in on failure."""
+    proc = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
+    return proc.returncode, proc.stdout if proc.returncode == 0 else proc.stderr
+
+
+def _compiler_git(compiler_dir):
+    """The the compiler checkout's commit, with a digest of any uncommitted change."""
+    rc, head = _run_tool(["git", "rev-parse", "HEAD"], compiler_dir)
+    if rc != 0:
+        return None
+    rc, diff = _run_tool(["git", "diff", "HEAD"], compiler_dir)
+    dirty = hashlib.sha256(diff.encode()).hexdigest()[:12] if diff.strip() else ""
+    return {"commit": head.strip(), "dirty": dirty}
+
+
+def _tool_paths(compiler_dir):
+    """The tool paths the compiler itself would resolve, asked in its own interpreter."""
+    code = (f"import json; from {compiler_bridge.COMPILER_PKG} import config as c; "
+            "print(json.dumps({n: p for n, p, _ in c.CHECKS}))")
+    proc = subprocess.run(
+        [config.CONFIG_TORCHSIM_COMPILE_PYTHON, "-c", code],
+        capture_output=True, text=True, cwd=compiler_dir, env=compiler_bridge.compiler_env())
+    if proc.returncode != 0:
+        return None
+    try:
+        return json.loads(proc.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return None
+
+
+def _stat_tools(paths):
+    """Each tool as [path, size, mtime_ns], or None where it does not resolve."""
+    out = {}
+    for name, path in sorted(paths.items()):
+        resolved = path if os.sep in path else shutil.which(path)
+        try:
+            st = os.stat(resolved)
+            out[name] = [resolved, st.st_size, st.st_mtime_ns]
+        except (OSError, TypeError):
+            out[name] = None
+    return out
+
+
+def _trace_abi():
+    """A digest of the runtime header a cached trace.so was compiled against.
+
+    TOGSim declares that it refuses a producer whose ABI does not match and does
+    not check; making the header part of the artifact's identity gets the same
+    protection as a cache miss rather than a load-time refusal.
+    """
+    path = os.path.join(config.togsim_include_dir(), "togsim_runtime.h")
+    try:
+        with open(path, "rb") as fh:
+            return hashlib.sha256(fh.read()).hexdigest()[:16]
+    except OSError:
+        return None
+
+
+def identity():
+    """This process's build identity, computed once and reused."""
+    global _identity
+    if _identity is None:
+        compiler_dir = compiler_bridge.compiler_dir()
+        paths = _tool_paths(compiler_dir)
+        if paths is None:
+            logger.warning(
+                "[provenance] the compiler's toolchain could not be introspected; "
+                "cached kernels are guarded by the compiler commit only")
+        _identity = {
+            "the compiler": _compiler_git(compiler_dir),
+            "tools": _stat_tools(paths) if paths else None,
+            "machine": compiler_bridge.machine(),
+            "trace_abi": _trace_abi(),
+        }
+    return _identity
+
+
+def identity_matches(workdir):
+    """Whether `workdir`'s stamp names the identity that would build it today."""
+    try:
+        with open(os.path.join(workdir, STAMP_NAME)) as fh:
+            return json.load(fh) == identity()
+    except (OSError, ValueError):
+        return False
+
+
+def store_identity(workdir):
+    """Write the current identity next to the artifacts it describes."""
+    with open(os.path.join(workdir, STAMP_NAME), "w") as fh:
+        json.dump(identity(), fh, indent=1, sort_keys=True)
+
+
+def clear_stale(workdir):
+    """Remove stage artifacts and timing derivatives built by another identity."""
+    for pattern in _STALE_PATTERNS:
+        for path in glob.glob(os.path.join(workdir, pattern)):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
 
 
 class TritonNPULauncher:
@@ -50,7 +157,7 @@ class TritonNPULauncher:
 
     def __call__(self, *args):
         if config.pytorchsim_functional_mode:
-            with breakdown.span(breakdown.SPIKE, self.kernel_name):
+            with wallclock.span(wallclock.SPIKE, self.kernel_name):
                 written = functional.run(self.workdir, self.meta, args)
             logger.info("[Spike] %s wrote %s", self.kernel_name, written)
         else:
@@ -74,205 +181,6 @@ class TritonNPULauncher:
         return result
 
 
-def _spad_overflow(exc):
-    """(usage, budget) if this failure was the scratchpad, else None.
-
-    Read off `exc.output`, NOT `str(exc)`: CompilerError's message keeps only lines
-    that look like a diagnostic, and this marker is addressed to this function.
-    """
-    m = _SPAD_OVERFLOW_RE.search(getattr(exc, "output", None) or str(exc))
-    return (int(m.group(1)), int(m.group(2))) if m else None
-
-
-def _too_big(exc):
-    """Why this failure means the tile is too big, else None: the scratchpad budget it broke, the
-    register file (llc spilled, which the compiler's ELF refuses) or Triton's own block size."""
-    over = _spad_overflow(exc)
-    if over is not None:
-        return "%d bytes/lane over a budget of %d" % over
-    said = getattr(exc, "output", None) or str(exc)
-    if "spill not allowed" in said:
-        return "the vector register file spills"
-    if "exceeds triton maximum tensor numel" in said:
-        return "a block holds more elements than Triton accepts"
-    return None
-
-
-def _get_tile_candidates(meta):
-    """Every tile the search may try, LARGEST FIRST: each block the kernel takes as
-    an argument halves down to 2, never 1. Equal sizes go to the larger reduction
-    block; the first is the tile fixed_config_for pinned."""
-    cfg = meta.get("fixed_config") or {}
-    signature = meta.get("signature") or {}
-    movable = [k for k, v in cfg.items() if k in signature and v and v >= 2]
-    ranges = []
-    for k in movable:
-        vs, v = [], cfg[k]
-        while v >= 2:
-            vs.append(v)
-            v //= 2
-        ranges.append(vs)
-
-    def _product(tile, keep):
-        n = 1
-        for k, v in tile.items():
-            if keep(k):
-                n *= v
-        return n
-    tiles = [dict(zip(movable, vs)) for vs in itertools.product(*ranges)]
-    tiles.sort(key=lambda t: (-_product(t, lambda k: True),
-                              -_product(t, lambda k: k.startswith("R")),
-                              [-t[k] for k in movable]))
-    return tiles
-
-
-_TILE_RE = {k: re.compile(rf"^(\s*{k}\s*:\s*tl\.constexpr\s*=\s*)(\S+)$", re.M)
-            for k in ("BLOCK_M", "BLOCK_N", "BLOCK_K", "EVEN_K")}
-_DIM_RE = {k: re.compile(rf"^\s*{k} = (\d+)$", re.M) for k in "MNK"}
-
-
-def _mm_template(src_code, meta):
-    """(M, N, K, input bytes, output bytes) of an mm or bmm template kernel -- one program per output
-    tile (and batch), its blocks stated as constexprs -- else None."""
-    if (meta.get("template_grid") is None
-            or not all(r.search(src_code) for r in _TILE_RE.values())):
-        return None
-    dims = [_DIM_RE[k].search(src_code) for k in "MNK"]
-    if not all(dims):
-        return None
-    import torch
-    nbytes = {a["role"]: getattr(torch, a["dtype"]).itemsize for a in meta["args"]}
-    return tuple(int(d.group(1)) for d in dims) + (nbytes["in"], nbytes.get("out", nbytes["in"]))
-
-
-def _retile(src_code, meta, mnk, tile):
-    """The same mm or bmm kernel at block `tile` (M, N, K): its constexprs and its grid, the batch
-    axes of the grid kept."""
-    (m, n, k), (bm, bn, bk) = mnk, tile
-    vals = {"BLOCK_M": bm, "BLOCK_N": bn, "BLOCK_K": bk, "EVEN_K": k % bk == 0}
-    for key, v in vals.items():
-        src_code = _TILE_RE[key].sub(lambda mt, v=v: f"{mt.group(1)}{v}", src_code)
-    meta = copy.deepcopy(meta)
-    meta["template_grid"] = [-(-m // bm) * -(-n // bn)] + list(meta["template_grid"][1:])
-    return src_code, meta
-
-
-def _time_tile(src_code, meta, kernel_name, workdir, timeout):
-    """TOGSim cycles of one candidate, simulated alone; inf if it does not compile or run --
-    develop's autotune, where a scratchpad overflow is a tile that never finishes."""
-    from pytorchsim.simulator.simulator import TOGSimulator
-    os.makedirs(workdir, exist_ok=True)
-    spec_path = os.path.join(workdir, f"{kernel_name}_spec.py")
-    with open(os.path.join(workdir, "kernel.py"), "w") as f:
-        f.write(src_code)
-    timing.store_meta(workdir, meta)
-    kernel_spec.write_spec_file(src_code, meta, spec_path, compiler_bridge.compiler_dir())
-    try:
-        compiler_bridge.run_pipeline(spec_path, workdir, to_stage="torchsim-compile", tog=True)
-        timing.emit_trace(workdir, meta)
-        mine = session.link_shared(workdir, (timing.TRACE_SO, timing.CYCLE_TSV))
-        timing.write_shape(workdir, meta)
-        timing.write_tensors(workdir)
-        result = TOGSimulator.run_standalone(os.path.join(mine, "tile_graph.onnx"),
-                                             os.path.join(mine, "attribute"),
-                                             autotune_mode=True, timeout_sec=timeout)
-        return TOGSimulator.get_result_from_file(result)[-1]
-    except (compiler_bridge.CompilerError, RuntimeError, FileNotFoundError) as exc:
-        why = "scratchpad overflow" if _spad_overflow(exc) else type(exc).__name__
-        logger.info("[autotune] %s %s: %s", kernel_name, workdir, why)
-        return float("inf")
-
-
-def _template_tiles(src_code, meta):
-    """Every mapped tile of an mm template kernel this source can take, best first, as (M, N, K)
-    blocks; [] for any other kernel. A body rendered with EVEN_K loads K unmasked, so it takes only
-    a BLOCK_K that divides K."""
-    shape = _mm_template(src_code, meta)
-    if shape is None:
-        return []
-    from pytorchsim.frontend.inductor_patches import _gemm_tiles
-    m, n, k, size, out_size = shape
-    even = _TILE_RE["EVEN_K"].search(src_code).group(2) == "True"
-    return [(c.block_m, c.block_n, c.block_k) for c in _gemm_tiles(m, n, k, size, out_size)
-            if not even or k % c.block_k == 0]
-
-
-def _smaller_tiles(src_code, meta):
-    """(tile, source, meta) to retry with after a scratchpad overflow, in order: the other
-    mapped tiles of an mm template, else each smaller fixed_config tile."""
-    shape = _mm_template(src_code, meta)
-    if shape is not None:
-        mnk = shape[:3]
-        now = tuple(int(_TILE_RE[k].search(src_code).group(2))
-                    for k in ("BLOCK_M", "BLOCK_N", "BLOCK_K"))
-        for tile in _template_tiles(src_code, meta):
-            if tile != now:
-                yield (dict(zip(("BLOCK_M", "BLOCK_N", "BLOCK_K"), tile)),
-                       *_retile(src_code, meta, mnk, tile))
-        return
-    tiles = iter(_get_tile_candidates(meta))
-    next(tiles, None)
-    for tile in tiles:
-        meta = copy.deepcopy(meta)
-        meta["fixed_config"].update(tile)
-        yield {k: v for k, v in tile.items() if k.endswith("BLOCK")}, src_code, meta
-
-
-def _autotune_template(src_code, meta, kernel_name, write_path):
-    """develop's template autotune: the top-k mapped tiles, each compiled with what is fused
-    into it and simulated alone; the fewest cycles wins. Only in timing mode, since cycles
-    are what it ranks by; the first tile to finish limits the others' wall time."""
-    shape = _mm_template(src_code, meta)
-    if shape is None:
-        return src_code, meta
-    m, n, k = shape[:3]
-    strategy = config.codegen_mapping_strategy
-    known = _recorded_tile(m, n, k) if "external" in strategy else None
-    if known is not None:
-        logger.info("[autotune] %s BLOCK_M/N/K=%s: from %s", kernel_name, known,
-                    config.codegen_external_mapping_file)
-        return _retile(src_code, meta, (m, n, k), known)
-    if "autotune" not in strategy or not config.pytorchsim_timing_mode:
-        return src_code, meta
-    tiles = _template_tiles(src_code, meta)[:config.codegen_autotune_template_topk]
-    best, timeout = (float("inf"), src_code, meta, None), None
-    for tile in tiles:
-        s, mt = _retile(src_code, meta, (m, n, k), tile)
-        t0 = time.perf_counter()
-        cycles = _time_tile(s, mt, kernel_name,
-                            os.path.join(write_path, "autotune", "x".join(map(str, tile))), timeout)
-        if cycles != float("inf") and timeout is None:
-            timeout = time.perf_counter() - t0 + config.codegen_autotune_wall_slack_sec
-        logger.info("[autotune] %s BLOCK_M/N/K=%s: %s cycles", kernel_name, tile, cycles)
-        if cycles < best[0]:
-            best = (cycles, s, mt, tile)
-    if best[0] != float("inf"):
-        _record_tile(m, n, k, best[3])
-    return best[1], best[2]
-
-
-def _recorded_tile(m, n, k):
-    """develop's external mapping: `{"M_N_K": {"TILE_M", "TILE_N", "TILE_K"}}`, else None."""
-    path = config.codegen_external_mapping_file
-    if not path or not os.path.isfile(path):
-        return None
-    with open(path) as f:
-        t = json.load(f).get(f"{m}_{n}_{k}")
-    return None if t is None else (t["TILE_M"], t["TILE_N"], t["TILE_K"])
-
-
-def _record_tile(m, n, k, tile):
-    """Add an autotuned tile to the external mapping file, so the next compile reads it."""
-    path = config.codegen_external_mapping_file
-    if not path:
-        return
-    with FileLock(path + ".lock", timeout=LOCK_TIMEOUT):
-        data = json.load(open(path)) if os.path.isfile(path) else {}
-        data[f"{m}_{n}_{k}"] = dict(zip(("TILE_M", "TILE_N", "TILE_K"), map(int, tile)))
-        with open(path, "w") as f:
-            json.dump(data, f, indent=2, sort_keys=True)
-
-
 def torchsim_compile(src_code, meta, kernel_name):
     """Compile one Inductor-generated Triton kernel through the compiler.
 
@@ -285,37 +193,37 @@ def torchsim_compile(src_code, meta, kernel_name):
     lock = FileLock(os.path.join(write_path, ".compile.lock"), timeout=LOCK_TIMEOUT)
     with lock:
         spec_path = os.path.join(write_path, f"{kernel_name}_spec.py")
-        elf = compiler_bridge.artifact(write_path, "elf")
-        if elf is not None and not provenance.matches(write_path):
+        elf = contract.artifact(write_path, "elf")
+        if elf is not None and not identity_matches(write_path):
             logger.info(
                 "[torchsim-compile] %s: cached artifacts carry a different toolchain "
                 "or machine identity, rebuilding", kernel_name)
-            provenance.clear_stale(write_path)
+            clear_stale(write_path)
             elf = None
         if (elf is not None and config.pytorchsim_timing_mode
-                and compiler_bridge.artifact(write_path, "trace_so") is None):
+                and contract.artifact(write_path, "trace_so") is None):
             logger.info("[torchsim-compile] %s: cached without --tog, rebuilding for timing",
                         kernel_name)
             elf = None
         if elf is None:
-            src_code, tuned = _autotune_template(src_code, meta, kernel_name, write_path)
+            src_code, tuned = autotune.autotune_template(src_code, meta, kernel_name, write_path)
             meta.update(tuned)
             with open(os.path.join(write_path, "kernel.py"), "w") as f:
                 f.write(src_code)
             timing.store_meta(write_path, meta)
-            retries = _smaller_tiles(src_code, meta)
+            retries = autotune.smaller_tiles(src_code, meta)
             while True:
-                kernel_spec.write_spec_file(src_code, meta, spec_path,
+                compiler_input.write(src_code, meta, spec_path,
                                             compiler_bridge.compiler_dir())
                 try:
-                    with breakdown.span(breakdown.TORCHSIM_COMPILE, kernel_name):
+                    with wallclock.span(wallclock.TORCHSIM_COMPILE, kernel_name):
                         compiler_bridge.run_pipeline(
                             spec_path, write_path, to_stage="torchsim-compile",
                             tog=bool(config.pytorchsim_timing_mode))
-                    breakdown.ingest_compile(write_path, kernel_name)
+                    wallclock.ingest_compile(write_path, kernel_name)
                     break
                 except compiler_bridge.CompilerError as exc:
-                    why = _too_big(exc)
+                    why = autotune.too_big(exc)
                     if why is None:
                         raise
                     retry = next(retries, None)
@@ -329,7 +237,7 @@ def torchsim_compile(src_code, meta, kernel_name):
             with open(os.path.join(write_path, "kernel.py"), "w") as f:
                 f.write(src_code)
             timing.store_meta(write_path, meta)
-            provenance.store(write_path)
+            store_identity(write_path)
         else:
             # a cached template may have been autotuned to another block: its grid is the stored one
             stored = os.path.join(write_path, timing.META_JSON)

@@ -201,7 +201,7 @@ def write_markdown(results, path):
             "device_op": "device -- op not registered for npu",
             "triton_helpers": "pytorchsim/codegen -- needs a vendored copy",
             "wrapper_gap": "pytorchsim/codegen -- TritonNPUWrapperCodegen incomplete",
-            "spec_incomplete": "pytorchsim/codegen -- kernel_spec cannot describe it",
+            "spec_incomplete": "pytorchsim/codegen -- kernel_metadata cannot describe it",
             "compiler_stage": "the compiler lowering passes",
             "reduction": "the compiler -- no lane-aware reduction",
             "dynamic_shape": "pytorchsim/codegen -- shape-specialised launch",

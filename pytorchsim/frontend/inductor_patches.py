@@ -7,6 +7,7 @@ every kernel's blocks are pinned (NPUChoices), and selection skips benchmarking.
 import torch
 
 from pytorchsim import config
+from pytorchsim.codegen import block_sizing
 
 logger = config.setup_logger()
 
@@ -70,60 +71,6 @@ def _is_npu(obj):
     return getattr(dev, "type", None) == "npu"
 
 
-def _gemm_tiles(m, n, k, dtype_size, out_size=None):
-    """This machine's mm tiles for [m, k] @ [k, n], best first, as GemmConfigs.
-
-    `out_size` is C's element size when a fused cast stores it wider than the inputs.
-    """
-    from torch._inductor.template_heuristics.triton import GemmConfig
-
-    size = int(dtype_size)
-    extra = max(int(out_size or size) // size - 1, 0)
-    tiles = _gemm_tile_candidates(int(m), int(n), int(k), extra, size)
-    return [GemmConfig(tm, tn, tk, 1, 4) for tm, tn, tk in tiles]
-
-
-def _gemm_tile_candidates(M, N, K, n_extra_node, precision_bytes):
-    """Every (tile_M, tile_N, tile_K) whose A, B and C are blocks Triton accepts and fit half the
-    scratchpad, largest first. Each side is a lane multiple times a power of two (TTGIR's layouts
-    need them), the tail masked."""
-    from pytorchsim.codegen import launch
-    lanes = int(config.vpu_num_lanes)
-    spad_per_lane = config.CONFIG_SPAD_INFO["spad_size"]
-    max_spad = spad_per_lane * lanes // 2
-    max_spad_per_lane = spad_per_lane // 2
-    max_numel = launch.triton_max_numel()
-
-    def per_lane(rows, cols):
-        return max(rows * ((cols + lanes - 1) // lanes), 2)
-
-    def sides(dim):
-        pad = lanes if dim > lanes else 8
-        top = _pow2_ceil((dim + pad - 1) // pad * pad)
-        if dim <= lanes:
-            return [top]
-        return [lanes << i for i in range((top // lanes).bit_length())]
-
-    out = 1 + n_extra_node
-    tiles = []
-    for tk in sides(max(K, 8)):
-        for tm in sides(M):
-            for tn in sides(N):
-                used = (tm * tk + tk * tn + tm * tn * out) * precision_bytes
-                used_per_lane = (per_lane(tk, tn) + per_lane(tm, tk)
-                                 + per_lane(tm * out, tn)) * precision_bytes
-                if (max(tm * tk, tk * tn, tm * tn) <= max_numel
-                        and used < max_spad and used_per_lane < max_spad_per_lane):
-                    tiles.append((used, (tm, tn, tk)))
-    tiles.sort(key=lambda x: x[0], reverse=True)
-    return [t for _, t in tiles]
-
-
-def _pow2_ceil(v):
-    """The smallest power of two at or above v."""
-    return 1 << (int(v) - 1).bit_length()
-
-
 def _register_template_heuristics():
     """Register npu's mm/bmm/addmm/baddbmm tile heuristics: this machine's tiles, then the generic set."""
     from torch._inductor.kernel.bmm import bmm_template
@@ -137,7 +84,7 @@ def _register_template_heuristics():
     @register_template_heuristic(bmm_template.uid, "npu")
     class NPUMMTemplateConfigHeuristic(MMTemplateConfigMixin, BaseConfigHeuristic):
         def _get_config_generator(self):
-            """Configs for one m, n, k: _gemm_tiles first, then the generic set."""
+            """Configs for one m, n, k: gemm_tiles first, then the generic set."""
             generic = super()._get_config_generator()
 
             def configs(m, n, k, **kwargs):
@@ -147,7 +94,7 @@ def _register_template_heuristics():
                 except Exception:
                     yield from generic(m, n, k, **kwargs)
                     return
-                mapped = _gemm_tiles(*mnk, kwargs.get("dtype_size", 4))
+                mapped = block_sizing.gemm_tiles(*mnk, kwargs.get("dtype_size", 4))
                 if not mapped:
                     logger.warning(
                         "[torchsim-compile] no mapped tile for %sx%sx%s is a legal "
@@ -424,7 +371,6 @@ def _npu_choices_class():
         return _NPU_CHOICES
     from torch._inductor.choices import InductorChoices
 
-    from pytorchsim.codegen import launch
 
     _DT_BITS = {torch.float64: 64, torch.float32: 32, torch.float16: 16,
                 torch.bfloat16: 16, torch.int64: 64, torch.int32: 32,
@@ -470,7 +416,7 @@ def _npu_choices_class():
             shim = type("K", (), {"inside_reduction": bool(features.is_reduction()),
                                   "numels": numels})()
             try:
-                cfg = launch.fixed_config_for(shim, numels, args) or {}
+                cfg = block_sizing.fixed_config_for(shim, numels, args) or {}
             except Exception as e:  # noqa: BLE001
                 logger.info("[torchsim-compile] no fixed_config for this kernel: %s", e)
                 return kw
@@ -496,7 +442,7 @@ def _npu_choices_class():
             if extent < 1:
                 return base
             persistent = 1 << (extent - 1).bit_length()
-            return persistent <= launch.reduction_block_for(extent)
+            return persistent <= block_sizing.reduction_block_for(extent)
 
         def reduction_split_factor(self, device, reduction_numel_hint, numel_hint,
                                    inner_reduction):

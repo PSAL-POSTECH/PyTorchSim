@@ -18,6 +18,9 @@ class UnitTable {
 
   // Parse and validate `path`; on any error, log the offending line and exit(1).
   static std::unique_ptr<UnitTable> load(const std::string& path);
+  // The rows of another producer's table `path`, its tile_ids shifted behind the ones held: returns
+  // that shift. A unit the table does not have yet is an error (one machine, one set of units).
+  size_t append(const std::string& path) { return read(path, false); }
 
   size_t num_units() const { return _units.size(); }
   const std::string& unit_name(size_t u) const { return _units[u].name; }
@@ -59,6 +62,7 @@ class UnitTable {
   bool print_spread(const std::string& who, size_t u, double admitted, uint64_t cycles) const;
 
  private:
+  size_t read(const std::string& path, bool new_units);
   std::vector<Unit> _units;   // in first-seen order
   int64_t _array_unit = -1;
   std::vector<std::vector<std::pair<size_t, uint64_t>>> _rows;   // tile_id -> (unit, admitted)

@@ -22,4 +22,5 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(
     const int64_t* cyc, const int64_t* ovl, int32_t n_tiles,
     const int32_t* partition_cores, int32_t n_partition_cores,
     const std::string& indirect_dir, const std::string& name,
-    const std::vector<std::shared_ptr<const TensorTiling>>& tilings = {});
+    const std::vector<std::shared_ptr<const TensorTiling>>& tilings = {},
+    int64_t unit_tile_base = 0);   // added to each compute's tile_id: its rows in a table several kernels share

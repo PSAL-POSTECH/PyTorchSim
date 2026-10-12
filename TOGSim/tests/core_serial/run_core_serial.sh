@@ -8,8 +8,9 @@ SIM="${1:-$HERE/../../build/bin/Simulator}"
 INC="${2:-$HERE/../../include}"
 SRC_CFG="$HERE/../../../configs/systolic_ws_256x256_c1_simple_noc_tpuv6e.yml"
 OUT="$(mktemp -d)"
-sed -e "s#^ramulator_config_path: \.\./#ramulator_config_path: $HERE/../../../#" "$SRC_CFG" > "$OUT/cfg.yml"
-{ cat "$OUT/cfg.yml"; echo "systolic_array_split: round_robin"; } > "$OUT/split.yml"
+sed -e "s#^ramulator_config_path: \.\./#ramulator_config_path: $HERE/../../../#" "$SRC_CFG" > "$OUT/base.yml"
+{ cat "$OUT/base.yml"; echo "systolic_array_split: none"; } > "$OUT/cfg.yml"
+cp "$OUT/base.yml" "$OUT/split.yml"
 sed -e 's/^num_systolic_array_per_core: .*/num_systolic_array_per_core: 4/' "$OUT/split.yml" > "$OUT/split4.yml"
 { cat "$OUT/cfg.yml"; echo "systolic_array_unit: Msa"; } > "$OUT/msa_nosplit.yml"
 sed -e 's/^num_cores: 1$/num_cores: 2/' "$OUT/cfg.yml" > "$OUT/c2.yml"
@@ -38,6 +39,7 @@ run split_short g1 split.yml "$HERE/cycles_cc1100.tsv" units.tsv
 run split_no_array g1 split.yml "$HERE/cycles.tsv" units_no_array.tsv
 run split4_one_over g1 split4.yml "$HERE/cycles_cc230.tsv" units_one_subtile.tsv
 run msa_nosplit g1 msa_nosplit.yml "$HERE/cycles.tsv" units.tsv
+run default_no_table g1 base.yml "$HERE/cycles.tsv"
 
 python3 - "$OUT" <<'PY'
 import re, sys
@@ -81,7 +83,7 @@ for name, want in (("split", 1077), ("split_one", 1589), ("split_vpu", 1265), ("
     mm = sorted({c[4] for c in comps(name) if c[3] == 1})
     check(f"K3 {name}: matmul runs {want}", rc(name) == 0 and mm == [want], f"exit {rc(name)}, matmul {mm}")
 for name, said in (("split_no_array", "has no array unit"), ("msa_nosplit", "is ignored without"),
-                   ("split4_one_over", "Systolic spread")):
+                   ("split4_one_over", "Systolic spread"), ("default_no_table", "give --unit_table")):
     check(f"K5 {name} refused", rc(name) != 0 and said in log(name), f"exit {rc(name)}")
 print("FAIL " + "; ".join(bad) if bad else "PASS")
 sys.exit(1 if bad else 0)

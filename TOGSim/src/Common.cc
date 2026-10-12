@@ -82,7 +82,8 @@ SimulationConfig initialize_config(const YAML::Node& config,
   if (config["vpu_num_lanes"])
     parsed_config.vpu_num_lanes = config["vpu_num_lanes"].as<uint32_t>();
   if (parsed_config.systolic_array_split && parsed_config.vpu_num_lanes == 0)
-    throw std::runtime_error("systolic_array_split: round_robin needs vpu_num_lanes");
+    throw std::runtime_error("systolic_array_split: round_robin (the default) needs vpu_num_lanes; "
+                             "systolic_array_split: none runs without it");
 
   /* DRAM config */
   std::string dram_type_str = get_config_value<std::string>(config, "dram_type");

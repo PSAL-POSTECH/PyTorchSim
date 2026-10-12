@@ -76,7 +76,7 @@ std::vector<uint64_t> trace_tensor_bases(const fs::path& dir, const std::vector<
 std::unique_ptr<TileGraph> build_trace_tilegraph(Simulator* simulator,
                                                  const std::string& trace_so_path,
                                                  const std::string& cycle_table_path,
-                                                 int partition_id) {
+                                                 int partition_id, int64_t unit_tile_base = 0) {
   const auto& cfg = simulator->get_hardware_config_yaml();
   int num_cores = cfg["num_cores"] ? cfg["num_cores"].as<int>() : 1;
   std::vector<int32_t> partition_cores;
@@ -110,7 +110,8 @@ std::unique_ptr<TileGraph> build_trace_tilegraph(Simulator* simulator,
                             partition_cores.data(), (int32_t)partition_cores.size(),
                             (fs::path(trace_so_path).parent_path() / "runtime" / "indirect_access").string(),
                             "trace_kernel",
-                            std::vector<std::shared_ptr<const TensorTiling>>(tilings.begin(), tilings.end()));
+                            std::vector<std::shared_ptr<const TensorTiling>>(tilings.begin(), tilings.end()),
+                            unit_tile_base);
 }
 
 void launchKernel(Simulator* simulator, unsigned int kernel_id, std::string onnx_path, std::string attribute_path, const YAML::Node& config_yaml, cycle_type request_time=0, int partition_id=0, int device_id=0) {
@@ -120,8 +121,16 @@ void launchKernel(Simulator* simulator, unsigned int kernel_id, std::string onnx
   std::string cycle_tsv = dir + "/trace_cycles.tsv";
   if (!fs::exists(trace_so))
     throw std::runtime_error("[TOGSim] no trace.so next to " + onnx_path);
+  // Its unit table, when gem5 left one beside it, joins the simulator's: systolic_array_split reads it.
+  std::string units_tsv = dir + "/trace_units.tsv";
+  int64_t unit_tile_base = 0;
+  if (fs::exists(units_tsv))
+    unit_tile_base = simulator->add_kernel_unit_table(units_tsv);
+  else if (simulator->get_config().systolic_array_split)
+    throw std::runtime_error("[TOGSim] systolic_array_split (on by default) reads each tile's Systolic rows; no "
+                             "trace_units.tsv next to " + onnx_path + " (or set systolic_array_split: none)");
   std::unique_ptr<TileGraph> tile_graph =
-      build_trace_tilegraph(simulator, trace_so, cycle_tsv, partition_id);
+      build_trace_tilegraph(simulator, trace_so, cycle_tsv, partition_id, unit_tile_base);
   if (!tile_graph)
     throw std::runtime_error("[TOGSim] trace.so run failed for " + trace_so);
   std::string tog_path = trace_so;
@@ -279,7 +288,8 @@ int main(int argc, char** argv) {
     cmd_parser.set_if_defined("unit_table", &unit_table_path);
     if (!unit_table_path.empty()) simulator->set_unit_table(UnitTable::load(unit_table_path));
     if (simulator->get_config().systolic_array_split && unit_table_path.empty()) {
-      spdlog::error("[TOGSim] systolic_array_split reads each tile's Systolic rows; give --unit_table");
+      spdlog::error("[TOGSim] systolic_array_split (on by default) reads each tile's Systolic rows; give "
+                    "--unit_table, or set systolic_array_split: none");
       exit(EXIT_FAILURE);
     }
     try {
@@ -304,7 +314,8 @@ int main(int argc, char** argv) {
   std::string unit_table_path;
   cmd_parser.set_if_defined("unit_table", &unit_table_path);
   if (!unit_table_path.empty()) {
-    spdlog::error("[TOGSim] --unit_table is keyed by one producer's tile_ids; use it with --trace_so");
+    spdlog::error("[TOGSim] --unit_table is keyed by one producer's tile_ids; use it with --trace_so "
+                  "(a launched kernel brings its own trace_units.tsv)");
     exit(1);
   }
 

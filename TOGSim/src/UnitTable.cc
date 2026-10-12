@@ -25,13 +25,21 @@ bool parse_u64(const std::string& s, uint64_t& out) {
 }  // namespace
 
 std::unique_ptr<UnitTable> UnitTable::load(const std::string& path) {
+  auto table = std::make_unique<UnitTable>();
+  table->read(path, true);
+  return table;
+}
+
+size_t UnitTable::read(const std::string& path, bool new_units) {
   std::ifstream in(path);
   if (!in.is_open()) {
     spdlog::error("[TOGSim] --unit_table {}: cannot open", path);
     exit(EXIT_FAILURE);
   }
-  auto table = std::make_unique<UnitTable>();
-  std::map<std::string, std::pair<size_t, size_t>> index;
+  UnitTable* table = this;
+  const size_t base = _rows.size();
+  std::map<std::string, std::pair<size_t, size_t>> index;   // unit -> (its index, the line that named it; 0 = held)
+  for (size_t u = 0; u < _units.size(); u++) index.emplace(_units[u].name, std::make_pair(u, (size_t)0));
   std::set<std::pair<uint64_t, size_t>> tile_unit;
   std::string line;
   size_t lineno = 0;
@@ -56,6 +64,7 @@ std::unique_ptr<UnitTable> UnitTable::load(const std::string& path) {
     if (!parse_u64(f[4], admitted)) reject(path, lineno, fmt::format("admitted '{}' is not a non-negative integer", f[4]));
     auto it = index.find(f[1]);
     if (it == index.end()) {
+      if (!new_units) reject(path, lineno, fmt::format("unit {} is not one the first kernel's table has", f[1]));
       it = index.emplace(f[1], std::make_pair(table->_units.size(), lineno)).first;
       table->_units.push_back({f[1], f[2], capacity});
     } else {
@@ -67,10 +76,10 @@ std::unique_ptr<UnitTable> UnitTable::load(const std::string& path) {
     const size_t u = it->second.first;
     if (!tile_unit.emplace(tile, u).second)
       reject(path, lineno, fmt::format("second row for tile {} unit {}", tile, f[1]));
-    if (tile >= table->_rows.size()) table->_rows.resize(tile + 1);
-    table->_rows[tile].emplace_back(u, admitted);
+    if (base + tile >= table->_rows.size()) table->_rows.resize(base + tile + 1);
+    table->_rows[base + tile].emplace_back(u, admitted);
   }
-  return table;
+  return base;
 }
 
 bool UnitTable::print(const std::string& who, size_t u, uint64_t admitted, uint64_t cycles, bool check) const {

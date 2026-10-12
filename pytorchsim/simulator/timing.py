@@ -1,7 +1,7 @@
 """The timing half of the Triton route: the compiler IR -> trace.so -> TOGSim.
 
     run(workdir, meta, args)    emit if needed, then simulate, under the lock
-    emit_trace(workdir, meta)   the compiler's trace.so + gem5 cycles -> trace_cycles.tsv
+    emit_trace(workdir, meta)   the compiler's trace.so + gem5 cycles -> trace_cycles.tsv, trace_units.tsv
     run_togsim(workdir, ...)    hand them to TOGSim, return its parsed result
 """
 
@@ -20,6 +20,8 @@ logger = config.setup_logger()
 
 TRACE_SO = "trace.so"
 CYCLE_TSV = "trace_cycles.tsv"
+UNITS_TSV = "trace_units.tsv"
+SHARED = (TRACE_SO, CYCLE_TSV, UNITS_TSV)
 SHAPE_TXT = "trace_shape.txt"
 TENSORS_TXT = "trace_tensors.txt"
 TENSOR_SHAPES_TXT = "trace_tensor_shapes.txt"
@@ -154,6 +156,9 @@ def emit_trace(workdir, meta):
     with open(os.path.join(workdir, AXES_TXT), "w") as f:
         f.write(f"{len(axes)}\n")
 
+    rows = unit_rows(os.path.join(os.path.dirname(contract.artifact(workdir, "cycle_elf")), "m5out"))
+    with open(os.path.join(workdir, UNITS_TSV), "w") as f:
+        f.write("".join("\t".join(str(v) for v in r) + "\n" for r in rows))
     dump_cycle_table_tsv(table, os.path.join(workdir, CYCLE_TSV))
     logger.info("[Gem5] tile cycles: %s", table)
     return n_tiles
@@ -169,10 +174,10 @@ def run_togsim(workdir, meta, args=()):
 
     from pytorchsim.simulator.togsim import TOGSimulator
 
-    for need in (TRACE_SO, CYCLE_TSV):
+    for need in SHARED:
         if not os.path.isfile(os.path.join(workdir, need)):
             raise FileNotFoundError(f"{os.path.join(workdir, need)} not found -- call emit_trace first")
-    mine = contract.link_shared(workdir, (TRACE_SO, CYCLE_TSV))
+    mine = contract.link_shared(workdir, SHARED)
     write_shape(workdir, meta, args)
     write_tensors(workdir)
 
@@ -195,9 +200,13 @@ def run(workdir, meta, args=()):
     from filelock import FileLock
 
     kernel = meta["kernel_name"]
-    if not os.path.isfile(os.path.join(workdir, CYCLE_TSV)):
+
+    def emitted():
+        return all(os.path.isfile(os.path.join(workdir, name)) for name in (CYCLE_TSV, UNITS_TSV))
+
+    if not emitted():
         with FileLock(os.path.join(workdir, LOCK_NAME), timeout=LOCK_TIMEOUT):
-            if not os.path.isfile(os.path.join(workdir, CYCLE_TSV)):
+            if not emitted():
                 with wallclock.span(wallclock.TOGSIM_TRACE, kernel):
                     emit_trace(workdir, meta)
     with wallclock.span(wallclock.TOGSIM_RUN, kernel):
@@ -263,6 +272,52 @@ class CycleSimulator():
             cycle_list = [int(line.split()[1]) for line in raw_list if "system.cpu.numCycles" in line]
         cycle_list = cycle_list[:-1]
         return cycle_list
+
+
+_ISSUE = "Issue"
+_COMMITTED = "system.cpu.commitStats0.numOps"
+_CPU_UNITS = "system.cpu.units."
+
+
+def unit_rows(m5out):
+    """TOGSim's --unit_table rows of a gem5 run, one per sampled tile and unit: (tile_id, unit,
+    unit_of_work, capacity per cycle, admitted). Issue is the committed micro-ops over the issue
+    width; the end-of-run dump is left out, as the cycles leave it out."""
+    import json
+
+    with open(os.path.join(m5out, "config.json")) as f:
+        width = int(json.load(f)["system"]["cpu"]["executeIssueLimit"])
+    with open(os.path.join(m5out, "stats.txt")) as f:
+        dumps = f.read().split("Begin Simulation Statistics")[1:-1]
+    rows = []
+    for tile, dump in enumerate(dumps):
+        units = {}
+        for line in dump.splitlines():
+            field = line.split()
+            if len(field) < 2 or line[0].isspace():
+                continue
+            name = field[0]
+            if name == _COMMITTED:
+                units[_ISSUE] = {"admitted": field[1], "capacity": width, "work": "micro-ops"}
+            elif name.startswith(_CPU_UNITS):
+                part = name[len(_CPU_UNITS):].split(".")
+            elif ".vcix." in name:
+                part = name.split(".vcix.", 1)[1].split(".")
+            else:
+                continue
+            if name == _COMMITTED or len(part) != 2 or part[1] not in ("admitted", "capacity"):
+                continue
+            unit = units.setdefault(part[0], {})
+            unit[part[1]] = field[1]
+            if part[1] == "admitted":
+                unit["work"] = line.split("#", 1)[1].split()[0]
+        if _ISSUE not in units:
+            raise ValueError(f"{m5out}/stats.txt: dump {tile} has no {_COMMITTED}")
+        for name, u in units.items():
+            if "admitted" not in u or "capacity" not in u:
+                raise ValueError(f"{m5out}/stats.txt: dump {tile}, unit {name} lacks admitted or capacity")
+            rows.append((tile, name, u["work"], int(u["capacity"]), int(u["admitted"])))
+    return rows
 
 
 def cycle_table(overlap_offsets, cycle_list):

@@ -30,6 +30,8 @@ _DMA = re.compile(r"Core \[(\d+)\] : DMA active_cycles: (\d+), DMA idle_cycles: 
                   r"DRAM BW: ([\d.]+) GB/s \((\d+) responses\)")
 _VU = re.compile(r"Core \[(\d+)\] : Vector unit [Uu]tilization\(%\): ([\d.]+), "
                  r"active[ _]cycles?: (\d+), idle[ _]cycles?: (\d+)")
+_UNIT = re.compile(r"Core \[(\d+)\] : (Systolic|Msa|Vpu) [Uu]tilization\(%\): ([\d.]+), "
+                   r"active_cycles: (\d+), idle_cycles: (\d+)")
 _TOTCYC = re.compile(r"Core \[(\d+)\] : Total_cycles: (\d+)")
 _INST = re.compile(r"Core \[(\d+)\] : (\w+) +inst_count: (\d+)"
                    r"(?: \(GEMM: (\d+), Vector: (\d+)(?:, XLU: (\d+))?\))?")
@@ -73,7 +75,9 @@ def _core(cores, cid):
 
 
 def parse_log(path):
-    """Parse one TOGSim info-level log into a run dict, or None if it has no stats."""
+    """Parse one TOGSim info-level log into a run dict, or None if it has no stats. A run with the
+    unit table prints one array row (Systolic or its variant Msa, the other at zero), filed as
+    array 0, and Vpu as the vector unit; a run without it prints a row per array."""
     with open(path, errors="replace") as fh:
         text = fh.read()
     if "Total execution cycles" not in text:
@@ -114,6 +118,14 @@ def parse_log(path):
         if m:
             cur["vu"][int(m.group(1))] = float(m.group(2))
             continue
+        m = _UNIT.search(line)
+        if m and m.group(2) == "Vpu":
+            cur["vu"][int(m.group(1))] = float(m.group(3))
+            continue
+        if m:
+            per = cur["sa"].setdefault(int(m.group(1)), {})
+            per[0] = max(per.get(0, 0.0), float(m.group(3)))
+            continue
         m = _DMA.search(line)
         if m:
             cur["dma"][int(m.group(1))] = {
@@ -136,6 +148,12 @@ def parse_log(path):
             "util": float(m.group(3)), "active": int(m.group(4))}
     for m in _VU.finditer(tail):
         _core(run["cores"], m.group(1))["vu"] = {"util": float(m.group(2)), "active": int(m.group(3))}
+    for m in _UNIT.finditer(tail):
+        c, row = _core(run["cores"], m.group(1)), {"util": float(m.group(3)), "active": int(m.group(4))}
+        if m.group(2) == "Vpu":
+            c["vu"] = row
+        elif row["active"] >= c["sa"].get(0, row)["active"]:
+            c["sa"][0] = row
     for m in _DMA.finditer(tail):
         _core(run["cores"], m.group(1))["dma"] = {
             "active": int(m.group(2)), "gbps": float(m.group(4)), "responses": int(m.group(5))}

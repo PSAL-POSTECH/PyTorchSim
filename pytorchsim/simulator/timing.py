@@ -21,7 +21,7 @@ logger = config.setup_logger()
 TRACE_SO = "trace.so"
 CYCLE_TSV = "trace_cycles.tsv"
 UNITS_TSV = "trace_units.tsv"
-SHARED = (TRACE_SO, CYCLE_TSV, UNITS_TSV)   # what emit_trace leaves and TOGSim reads beside the handle
+SHARED = (TRACE_SO, CYCLE_TSV, UNITS_TSV)
 SHAPE_TXT = "trace_shape.txt"
 TENSORS_TXT = "trace_tensors.txt"
 TENSOR_SHAPES_TXT = "trace_tensor_shapes.txt"
@@ -280,10 +280,9 @@ _CPU_UNITS = "system.cpu.units."
 
 
 def unit_rows(m5out):
-    """TOGSim's --unit_table rows from a gem5 run, one per sampled tile and unit: (tile_id, unit,
-    unit_of_work, capacity per cycle, admitted). The units are the vcix functional unit's, the
-    CPU's own, and Issue (committed micro-ops over the issue width); the end-of-run dump is left
-    out, as the cycles leave it out."""
+    """TOGSim's --unit_table rows of a gem5 run, one per sampled tile and unit: (tile_id, unit,
+    unit_of_work, capacity per cycle, admitted). Issue is the committed micro-ops over the issue
+    width; the end-of-run dump is left out, as the cycles leave it out."""
     import json
 
     with open(os.path.join(m5out, "config.json")) as f:
@@ -311,7 +310,6 @@ def unit_rows(m5out):
             unit = units.setdefault(part[0], {})
             unit[part[1]] = field[1]
             if part[1] == "admitted":
-                # '# <unit_of_work> admitted at port <port> (Count)'
                 unit["work"] = line.split("#", 1)[1].split()[0]
         if _ISSUE not in units:
             raise ValueError(f"{m5out}/stats.txt: dump {tile} has no {_COMMITTED}")

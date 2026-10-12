@@ -17,13 +17,12 @@ def test_unit_table_rows():
     units = core["units"]["Core [0]"]
     assert units["Systolic"] == {"utilization": 50.66, "active_cycles": 65536, "idle_cycles": 63821}
     assert units["Vpu"]["active_cycles"] == 34132
-    # Msa, the other array variant, is in the table at zero and must not be averaged in
     assert core["Systolic_Array_Utilization"] == 50.66
     assert core["MatMul_active_cycle"] == 65536
     assert core["Vector_Unit_Utilization"] == 26.39
     assert core["Total_cycle"] == total == 129357
     assert channels == {"CH[0]": 38.06, "CH[1]": 38.06} and avg_bw == 38.06
-    assert wall == float("inf")          # a standalone run prints no wall clock
+    assert wall == float("inf")
 
 
 def test_per_array_rows():

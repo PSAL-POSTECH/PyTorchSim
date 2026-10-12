@@ -12,7 +12,7 @@ Time unit = core cycles. Barriers (MEMORY_BAR/COMPUTE_BAR) are not drawn. A DMA 
 runs from the op's first DRAM response (DRAM_RESP_FIRST, logged by the Core -- so it
 captures data moving even while still injecting) to its completion (load: data-ready;
 store: finished), serialized per direction so each is one visible bar (packed row =
-saturated bus). A compute slice's width is its occupancy (compute_cycle - overlapping).
+saturated bus). A compute slice's width is its compute_cycle, which is what the Core runs it for.
 
 Usage:
   bin/Simulator --config <yml> --trace_so <so> --cycle_table <tsv> --log_level trace \
@@ -111,11 +111,10 @@ def parse(lines):
     return insts
 
 
-def _occ(detail):
-    """(compute_cycle, overlapping_cycle) from a COMP detail string."""
+def _cycles(detail):
+    """compute_cycle from a COMP detail string."""
     cc = re.search(r"compute_cycle=(\d+)", detail)
-    ov = re.search(r"overlapping_cycle=(\d+)", detail)
-    return (int(cc.group(1)) if cc else 0, int(ov.group(1)) if ov else 0)
+    return int(cc.group(1)) if cc else 0
 
 
 def to_chrome(insts, num_sa=1):
@@ -126,9 +125,8 @@ def to_chrome(insts, num_sa=1):
       vector : COMP type 0  -- 1 VPU.
       sa     : COMP type 1/2 -- each op on the SA the Core reports (`sa=` field;
                weight-pinned), so lanes auto-split sa0..; rr fallback if absent.
-    A compute slice's width is compute_cycle - overlapping_cycle (its occupancy =
-    latency minus the tail that overlaps the next op), starting when the unit
-    actually picks it up: start = max(issue, unit_free). num_sa>1 -> lanes sa0.. ."""
+    A compute slice's width is its compute_cycle, starting when the unit actually
+    picks it up: start = max(issue, unit_free). num_sa>1 -> lanes sa0.. ."""
     by_core = {}
     for r in insts.values():
         op, detail, core = r["opcode"], r["detail"], r["core"]
@@ -177,13 +175,11 @@ def to_chrome(insts, num_sa=1):
                 start = max(r[sk], free)
                 free = max(r[ek], start + 1)
                 add(core, lane, start, free - start, _label(r["opcode"], r["detail"]), r)
-        # VPU: one server; slice = occupancy (compute_cycle - overlapping_cycle).
         free = 0
         for r in sorted(u["vector"], key=issue_key):
             if r["issued"] is None:
                 continue
-            cc, ov = _occ(r["detail"])
-            dur = max(cc - ov, 1)
+            dur = max(_cycles(r["detail"]), 1)
             start = max(r["issued"], free)
             free = start + dur
             add(core, "vector", start, dur, "vector", r)
@@ -202,8 +198,7 @@ def to_chrome(insts, num_sa=1):
             if r["issued"] is None:
                 continue
             s = _sa_of(r, i)
-            cc, ov = _occ(r["detail"])
-            dur = max(cc - ov, 1)
+            dur = max(_cycles(r["detail"]), 1)
             start = max(r["issued"], sa_free[s])
             sa_free[s] = start + dur
             lane = "sa" if max_sa == 1 else f"sa{s}"

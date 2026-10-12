@@ -370,9 +370,6 @@ class TOGSimulator():
             logger.info(f'[TOGSim] Simulation log{model_path_log}is stored to "{result_path}"')
         return result_path
 
-    # '<Core [i] | Total> : <unit> utilization(%): P, active_cycles: A, idle_cycles: I'. The unit is
-    # one of the unit table's (Systolic, Vpu, Issue, ...) or, in a run without the table, TOGSim's
-    # own 'Systolic array [k]', 'Vector unit', 'Cross-lane unit', which spell the counts differently.
     _UNIT_LINE = re.compile(r"\] (Core \[\d+\]|Total) : (.+?) [Uu]tilization\(%\): (\d+\.?\d*), "
                             r"active[ _]cycles?: (\d+), idle[ _]cycles?: (\d+)")
     _DRAM_CHANNEL = re.compile(r"\[DRAM\] channel (\d+) \| .*?(\d+\.?\d*)% of utilization")
@@ -381,11 +378,9 @@ class TOGSimulator():
 
     @staticmethod
     def get_result_from_file(result_path):
-        """(core_metrics, dram_channel_bw, avg_dram_bw, simulation_time, total_cycle) of a finished
-        run's log. core_metrics["units"] maps 'Core [i]' (and 'Total', which TOGSim prints for
-        several cores) to each unit's utilization, active_cycles and idle_cycles; the flat keys
-        read the array and the vector unit off the whole machine: the Total row, else the one core.
-        simulation_time stays inf for a standalone run, which prints no wall clock."""
+        """(core_metrics, dram_channel_bw, avg_dram_bw, simulation_time, total_cycle) of a run's log.
+        core_metrics["units"] holds every 'Core [i]' and 'Total' unit row; the flat keys read the
+        array and the vector unit off the Total row, else the one core."""
         core_metrics = {}
         dram_channel_bw = {}
         avg_dram_bw = 0.0
@@ -407,7 +402,6 @@ class TOGSimulator():
         for line in lines[idx:]:
             m = TOGSimulator._UNIT_LINE.search(line)
             if m:
-                # the final block comes last, so it replaces a periodic print of the same unit
                 units.setdefault(m.group(1), {})[m.group(2)] = {
                     "utilization": float(m.group(3)), "active_cycles": int(m.group(4)),
                     "idle_cycles": int(m.group(5))}
@@ -432,9 +426,6 @@ class TOGSimulator():
         if units:
             core_metrics["units"] = units
             whole = units.get("Total") or next(iter(units.values()))
-            # The unit table names the machine's one array unit (the other variant stays at zero);
-            # without the table there is a row per array, each over the same cycles, and their
-            # mean is the per-array figure the table's row states under systolic_array_split.
             table = [whole[name] for name in TOGSimulator._ARRAY_UNITS if name in whole]
             arrays = ([max(table, key=lambda u: u["active_cycles"])] if table else
                       [u for name, u in whole.items() if name.startswith("Systolic array [")])

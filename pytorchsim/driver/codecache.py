@@ -86,13 +86,10 @@ def _stat_tools(paths):
     return out
 
 
-def _trace_abi():
-    """A digest of the runtime header a cached trace.so was compiled against.
-
-    TOGSim declares that it refuses a producer whose ABI does not match and does
-    not check; making the header part of the artifact's identity gets the same
-    protection as a cache miss rather than a load-time refusal.
-    """
+def _tog_abi():
+    """A digest of the runtime header a cached tog.so was compiled against. TOGSim refuses a TOG
+    of another TOGSIM_ABI_VERSION when it loads it; with the header in the artifact's identity
+    any change to it is a cache miss before that."""
     path = os.path.join(config.togsim_include_dir(), "togsim_runtime.h")
     try:
         with open(path, "rb") as fh:
@@ -117,7 +114,7 @@ def identity():
             "the compiler": _compiler_git(compiler_dir),
             "tools": _stat_tools(paths) if paths else None,
             "machine": compiler_bridge.machine(),
-            "trace_abi": _trace_abi(),
+            "tog_abi": _tog_abi(),
         }
     return _identity
 

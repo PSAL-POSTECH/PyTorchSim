@@ -1,7 +1,7 @@
-"""How big a block: the sizes pinned at codegen time, from the machine and the kernel.
+"""How a kernel is cut into blocks: the sizes pinned at codegen time, a template's grid and its tiles.
 
-The compiler builds one binary per kernel and nothing tunes it later, so block sizes, a template's
-grid and the mm tiles this machine can take are all decided here.
+The compiler builds one binary per kernel and nothing tunes it later, so block sizes and the mm
+tiles this machine can take are decided here, from the machine and the kernel.
 """
 
 import re

@@ -8,7 +8,7 @@ import re
 
 from torch._inductor.virtualized import V
 
-from pytorchsim.codegen import block_sizing
+from pytorchsim.codegen import tiling
 from pytorchsim.contract import storage_span
 
 _DTYPE = {
@@ -174,8 +174,8 @@ def collect_meta(kernel, kernel_name):
         "call_params": call_params,
         "numels": numels,
         "inside_reduction": bool(getattr(kernel, "inside_reduction", False)),
-        "fixed_config": _held_blocks(kernel) or block_sizing.fixed_config_for(kernel, numels, args),
-        "template_grid": block_sizing.template_grid(kernel) or block_sizing.combo_grid(kernel),
+        "fixed_config": _held_blocks(kernel) or tiling.fixed_config_for(kernel, numels, args),
+        "template_grid": tiling.template_grid(kernel) or tiling.combo_grid(kernel),
     }
 
 

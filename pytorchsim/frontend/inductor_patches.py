@@ -7,7 +7,7 @@ every kernel's blocks are pinned (NPUChoices), and selection skips benchmarking.
 import torch
 
 from pytorchsim import config
-from pytorchsim.codegen import block_sizing
+from pytorchsim.codegen import tiling
 
 logger = config.setup_logger()
 
@@ -94,7 +94,7 @@ def _register_template_heuristics():
                 except Exception:
                     yield from generic(m, n, k, **kwargs)
                     return
-                mapped = block_sizing.gemm_tiles(*mnk, kwargs.get("dtype_size", 4))
+                mapped = tiling.gemm_tiles(*mnk, kwargs.get("dtype_size", 4))
                 if not mapped:
                     logger.warning(
                         "[torchsim-compile] no mapped tile for %sx%sx%s is a legal "
@@ -423,7 +423,7 @@ def _npu_choices_class():
             shim = type("K", (), {"inside_reduction": bool(features.is_reduction()),
                                   "numels": numels})()
             try:
-                cfg = block_sizing.fixed_config_for(shim, numels, args) or {}
+                cfg = tiling.fixed_config_for(shim, numels, args) or {}
             except Exception as e:  # noqa: BLE001
                 logger.info("[torchsim-compile] no fixed_config for this kernel: %s", e)
                 return kw
@@ -454,7 +454,7 @@ def _npu_choices_class():
                       if k.startswith("R")]
             if len(pinned) == 1:
                 return persistent <= pinned[0]
-            return persistent <= block_sizing.reduction_block_for(extent)
+            return persistent <= tiling.reduction_block_for(extent)
 
         def reduction_split_factor(self, device, reduction_numel_hint, numel_hint,
                                    inner_reduction):

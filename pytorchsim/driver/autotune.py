@@ -14,7 +14,7 @@ import time
 from filelock import FileLock
 
 from pytorchsim import config
-from pytorchsim.codegen import block_sizing
+from pytorchsim.codegen import tiling
 from pytorchsim import contract
 from pytorchsim.driver import compiler_bridge, compiler_input
 from pytorchsim.simulator import timing
@@ -88,7 +88,7 @@ def _retile(src_code, meta, mnk, tile):
     (m, n, k), (bm, bn, bk) = mnk, tile
     vals = {"BLOCK_M": bm, "BLOCK_N": bn, "BLOCK_K": bk, "EVEN_K": k % bk == 0}
     for key, v in vals.items():
-        src_code = block_sizing.TILE_RE[key].sub(lambda mt, v=v: f"{mt.group(1)}{v}", src_code)
+        src_code = tiling.TILE_RE[key].sub(lambda mt, v=v: f"{mt.group(1)}{v}", src_code)
     meta = copy.deepcopy(meta)
     meta["template_grid"] = [-(-m // bm) * -(-n // bn)] + list(meta["template_grid"][1:])
     return src_code, meta
@@ -124,17 +124,17 @@ def _template_tiles(src_code, meta):
     """The mapped tiles of an mm template kernel, best first: the ones codegen recorded, else worked out here."""
     tiles = meta.get("template_tiles")
     if tiles is None:
-        tiles = block_sizing.template_tiles(src_code, meta)
+        tiles = tiling.template_tiles(src_code, meta)
     return [tuple(t) for t in tiles]
 
 
 def smaller_tiles(src_code, meta):
     """(tile, source, meta) to retry with after a scratchpad overflow, in order: the other
     mapped tiles of an mm template, else each smaller fixed_config tile."""
-    shape = block_sizing.mm_template_shape(src_code, meta)
+    shape = tiling.mm_template_shape(src_code, meta)
     if shape is not None:
         mnk = shape[:3]
-        now = tuple(int(block_sizing.TILE_RE[k].search(src_code).group(2))
+        now = tuple(int(tiling.TILE_RE[k].search(src_code).group(2))
                     for k in ("BLOCK_M", "BLOCK_N", "BLOCK_K"))
         for tile in _template_tiles(src_code, meta):
             if tile != now:
@@ -153,7 +153,7 @@ def autotune_template(src_code, meta, kernel_name, write_path):
     """develop's template autotune: the top-k mapped tiles, each compiled with what is fused
     into it and simulated alone; the fewest cycles wins. Only in timing mode, since cycles
     are what it ranks by; the first tile to finish limits the others' wall time."""
-    shape = block_sizing.mm_template_shape(src_code, meta)
+    shape = tiling.mm_template_shape(src_code, meta)
     if shape is None:
         return src_code, meta
     m, n, k = shape[:3]

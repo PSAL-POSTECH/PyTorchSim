@@ -16,7 +16,7 @@ from torch._inductor.ir import GraphPartitionSignature
 from torch._inductor.utils import Placeholder, get_fused_kernel_name
 from torch._inductor.virtualized import V
 
-from pytorchsim.codegen import block_sizing, kernel_metadata, verify
+from pytorchsim.codegen import tiling, kernel_metadata, verify
 
 
 class TritonNPUKernel(TritonKernel):
@@ -63,7 +63,7 @@ class TritonNPUScheduling(TritonScheduling):
         meta = kernel_metadata.collect_meta(kernel, kernel_name)
         kernel_metadata.demote_unwritten_inout(meta, src_code)
         kernel_metadata.record_roles(kernel_name, meta)
-        tiles = block_sizing.template_tiles(src_code, meta)
+        tiles = tiling.template_tiles(src_code, meta)
         if tiles:
             meta["template_tiles"] = [list(t) for t in tiles]
 

@@ -375,6 +375,7 @@ Last but not least, you must set `l2d_type` and `l2d_config` in the [TOGSim conf
 You can configure these options using environment variables.
 ```bash
 export TORCHSIM_DIR=/workspace/PyTorchSim # home directory
+export TOGSIM_DIR=/workspace/pytorchsim-triton-compiler/third_party/TOGSim # TOGSim checkout: include/, build/bin/Simulator, configs/ (default: the one the compiler carries)
 
 # Plan which tensors are allocated in TPUv4's CMEM
 export SRAM_BUFFER_PLAN_PATH=/workspace/PyTorchSim/tpuv4/gemm_plan.py
@@ -383,7 +384,7 @@ export TORCHSIM_USE_TIMING_POOLING=0 # use lightweight pooling for timing
 ## TOGSim Configuration
 ![NPU_Core](./docs/npu_core.jpg)
 
-The `configs/` directory holds **YAML** (`.yml`) hardware descriptions. Set `TOGSIM_CONFIG` to one of these files. The **same file** is read by the **compiler** (`pytorchsim/extension_config.py`) for `vpu_*`, `pytorchsim_*`, and `codegen_*` fields, and by **TOGSim** (`TOGSim/src/Common.cc`) for the simulator-specific keys below.
+TOGSim is its own repository, [PSAL-POSTECH/TOGSim](https://github.com/PSAL-POSTECH/TOGSim), which the compiler carries as `third_party/TOGSim`. Its `configs/` directory holds **YAML** (`.yml`) hardware descriptions: `$TOGSIM_DIR/configs`, which is `/workspace/pytorchsim-triton-compiler/third_party/TOGSim/configs` in the Docker image. Set `TOGSIM_CONFIG` to one of these files. The **same file** is read by **PyTorchSim** (`pytorchsim/config.py`) for `vpu_*`, `pytorchsim_*`, and `codegen_*` fields, and by **TOGSim** (`src/Common.cc` there) for the simulator-specific keys below.
 
 ### Reference layout
 

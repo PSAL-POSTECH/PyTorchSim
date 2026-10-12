@@ -67,17 +67,15 @@ whichever worktree it already pointed at — `PYTHONPATH` from `.envrc` does
 the per-worktree routing. (Running `pip install -e` again rewrites that
 record and will pin "default" Python to the new worktree.)
 
-## TOGSim binary is shared
+## TOGSim is shared
 
-`TOGSim/build/bin/Simulator` is a standalone C++ binary whose source rarely
-changes alongside Python frontend work, so `setup_worktree.sh` symlinks it
-from the worktree the script was invoked in. If you do modify TOGSim C++ in
-a particular worktree, delete the symlink and run `cd TOGSim/build && make`
-locally — `pytorchsim/simulator/togsim.py` resolves the binary path relative to
-`TORCHSIM_DIR`, so each worktree has its own resolution.
-
-If neither worktree has the binary yet, build it once (any worktree) per
-the `.claude/CLAUDE.md` "Build" section.
+TOGSim is not in this repository. Every worktree runs the one the compiler
+checkout carries, `$TORCHSIM_COMPILE_DIR/third_party/TOGSim` (header in
+`include/`, binary at `build/bin/Simulator`, machine configs in `configs/`),
+so there is nothing to link or build per worktree. To run a TOGSim you are
+changing, build it in its own checkout and `export TOGSIM_DIR=<that checkout>`
+in the shell: the header digest, the compiler's TOG build and the Simulator
+all follow it.
 
 ## Iterating on codegen inside a worktree
 
@@ -112,7 +110,7 @@ Worktree-scoped (auto-set by `.envrc`):
 | `TORCHSIM_DIR` | `$PWD` of the worktree |
 | `TORCHSIM_DUMP_PATH` | `$PWD/outputs` |
 | `TORCHSIM_LOG_PATH` | `$PWD/togsim_results` |
-| `TOGSIM_CONFIG` | `$PWD/configs/systolic_ws_256x256_c1_simple_noc_tpuv6e.yml` |
+| `TOGSIM_CONFIG` | `systolic_ws_256x256_c1_simple_noc_tpuv6e.yml` in the TOGSim checkout's `configs/` |
 | `PYTHONPATH` | `$PWD/device:$PWD:$PYTHONPATH` |
 
 Shared (container-dedicated, set the same in every `.envrc`):

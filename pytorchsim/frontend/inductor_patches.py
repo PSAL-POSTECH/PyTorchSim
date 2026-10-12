@@ -384,13 +384,15 @@ def _npu_choices_class():
         def triton_kernel_kwargs(self, kernel_cls, features, groups, kernel_kwargs):
             """Pin this machine's blocks as a FixedTritonConfig, before the kernel is generated.
 
-            The numels come from `groups`; the dtype width from the widest scheduled node.
+            The numels come from `groups`; the dtype width from the widest tensor a scheduled
+            node makes or reads. The blocks are left on `features` for the persistence decision.
             """
             kw = super().triton_kernel_kwargs(kernel_cls, features, groups,
                                               kernel_kwargs)
             if not _lowering_npu():
                 return kw
             from torch._inductor.codegen.triton import FixedTritonConfig
+            from torch._inductor.virtualized import V
 
             numels = {}
             for g in (groups or []):
@@ -411,6 +413,11 @@ def _npu_choices_class():
                     bits.append(_DT_BITS.get(nd.node.get_dtype(), 32))
                 except Exception:
                     pass
+                for dep in getattr(getattr(nd, "read_writes", None), "reads", ()) or ():
+                    try:
+                        bits.append(_DT_BITS.get(V.graph.get_dtype(dep.name), 32))
+                    except Exception:
+                        pass
             args = ([{"dtype": {64: "float64", 32: "float32", 16: "float16",
                                 8: "int8"}[max(bits)]}] if bits else [])
             shim = type("K", (), {"inside_reduction": bool(features.is_reduction()),
@@ -426,6 +433,7 @@ def _npu_choices_class():
                 return kw
             kw = dict(kw)
             kw["fixed_config"] = FixedTritonConfig(cfg)
+            features._npu_blocks = cfg
             return kw
 
         @staticmethod
@@ -442,6 +450,10 @@ def _npu_choices_class():
             if extent < 1:
                 return base
             persistent = 1 << (extent - 1).bit_length()
+            pinned = [v for k, v in (getattr(features, "_npu_blocks", None) or {}).items()
+                      if k.startswith("R")]
+            if len(pinned) == 1:
+                return persistent <= pinned[0]
             return persistent <= block_sizing.reduction_block_for(extent)
 
         def reduction_split_factor(self, device, reduction_numel_hint, numel_hint,

@@ -23,11 +23,6 @@ logger = config.setup_logger()
 
 MAPPING_LOCK_TIMEOUT = 600
 
-_TILE_RE = {k: re.compile(rf"^(\s*{k}\s*:\s*tl\.constexpr\s*=\s*)(\S+)$", re.M)
-            for k in ("BLOCK_M", "BLOCK_N", "BLOCK_K", "EVEN_K")}
-
-_DIM_RE = {k: re.compile(rf"^\s*{k} = (\d+)$", re.M) for k in "MNK"}
-
 
 #: THE MARKER IS A TEXT CONTRACT ACROSS A PROCESS BOUNDARY. The compiler runs
 #: as a subprocess, so this string cannot be imported from it -- it is spelled
@@ -87,27 +82,13 @@ def _get_tile_candidates(meta):
     return tiles
 
 
-def _mm_template(src_code, meta):
-    """(M, N, K, input bytes, output bytes) of an mm or bmm template kernel -- one program per output
-    tile (and batch), its blocks stated as constexprs -- else None."""
-    if (meta.get("template_grid") is None
-            or not all(r.search(src_code) for r in _TILE_RE.values())):
-        return None
-    dims = [_DIM_RE[k].search(src_code) for k in "MNK"]
-    if not all(dims):
-        return None
-    import torch
-    nbytes = {a["role"]: getattr(torch, a["dtype"]).itemsize for a in meta["args"]}
-    return tuple(int(d.group(1)) for d in dims) + (nbytes["in"], nbytes.get("out", nbytes["in"]))
-
-
 def _retile(src_code, meta, mnk, tile):
     """The same mm or bmm kernel at block `tile` (M, N, K): its constexprs and its grid, the batch
     axes of the grid kept."""
     (m, n, k), (bm, bn, bk) = mnk, tile
     vals = {"BLOCK_M": bm, "BLOCK_N": bn, "BLOCK_K": bk, "EVEN_K": k % bk == 0}
     for key, v in vals.items():
-        src_code = _TILE_RE[key].sub(lambda mt, v=v: f"{mt.group(1)}{v}", src_code)
+        src_code = block_sizing.TILE_RE[key].sub(lambda mt, v=v: f"{mt.group(1)}{v}", src_code)
     meta = copy.deepcopy(meta)
     meta["template_grid"] = [-(-m // bm) * -(-n // bn)] + list(meta["template_grid"][1:])
     return src_code, meta
@@ -140,25 +121,20 @@ def _time_tile(src_code, meta, kernel_name, workdir, timeout):
 
 
 def _template_tiles(src_code, meta):
-    """Every mapped tile of an mm template kernel this source can take, best first, as (M, N, K)
-    blocks; [] for any other kernel. A body rendered with EVEN_K loads K unmasked, so it takes only
-    a BLOCK_K that divides K."""
-    shape = _mm_template(src_code, meta)
-    if shape is None:
-        return []
-    m, n, k, size, out_size = shape
-    even = _TILE_RE["EVEN_K"].search(src_code).group(2) == "True"
-    return [(c.block_m, c.block_n, c.block_k) for c in block_sizing.gemm_tiles(m, n, k, size, out_size)
-            if not even or k % c.block_k == 0]
+    """The mapped tiles of an mm template kernel, best first: the ones codegen recorded, else worked out here."""
+    tiles = meta.get("template_tiles")
+    if tiles is None:
+        tiles = block_sizing.template_tiles(src_code, meta)
+    return [tuple(t) for t in tiles]
 
 
 def smaller_tiles(src_code, meta):
     """(tile, source, meta) to retry with after a scratchpad overflow, in order: the other
     mapped tiles of an mm template, else each smaller fixed_config tile."""
-    shape = _mm_template(src_code, meta)
+    shape = block_sizing.mm_template_shape(src_code, meta)
     if shape is not None:
         mnk = shape[:3]
-        now = tuple(int(_TILE_RE[k].search(src_code).group(2))
+        now = tuple(int(block_sizing.TILE_RE[k].search(src_code).group(2))
                     for k in ("BLOCK_M", "BLOCK_N", "BLOCK_K"))
         for tile in _template_tiles(src_code, meta):
             if tile != now:
@@ -177,7 +153,7 @@ def autotune_template(src_code, meta, kernel_name, write_path):
     """develop's template autotune: the top-k mapped tiles, each compiled with what is fused
     into it and simulated alone; the fewest cycles wins. Only in timing mode, since cycles
     are what it ranks by; the first tile to finish limits the others' wall time."""
-    shape = _mm_template(src_code, meta)
+    shape = block_sizing.mm_template_shape(src_code, meta)
     if shape is None:
         return src_code, meta
     m, n, k = shape[:3]

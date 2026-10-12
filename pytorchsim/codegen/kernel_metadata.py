@@ -119,6 +119,12 @@ def writes_arg(kernel_name, position):
     return roles[position] in ("out", "inout")
 
 
+def _held_blocks(kernel):
+    """The block sizes Inductor generated this kernel with, or None for a kernel that has none (a template)."""
+    held = getattr(getattr(kernel, "fixed_config", None), "config", None)
+    return {k: v for k, v in held.items() if k.endswith("BLOCK")} if held else None
+
+
 def collect_meta(kernel, kernel_name):
     """Everything the compile step needs, as plain repr-able data.
 
@@ -168,7 +174,7 @@ def collect_meta(kernel, kernel_name):
         "call_params": call_params,
         "numels": numels,
         "inside_reduction": bool(getattr(kernel, "inside_reduction", False)),
-        "fixed_config": block_sizing.fixed_config_for(kernel, numels, args),
+        "fixed_config": _held_blocks(kernel) or block_sizing.fixed_config_for(kernel, numels, args),
         "template_grid": block_sizing.template_grid(kernel) or block_sizing.combo_grid(kernel),
     }
 

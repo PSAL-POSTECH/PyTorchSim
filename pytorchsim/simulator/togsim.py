@@ -304,6 +304,10 @@ class TOGSimulator():
 
         Returns:
             Path to the simulation result log file
+
+        Raises:
+            RuntimeError: the Simulator timed out, or exited non-zero (a kernel it refuses);
+                the message carries its exit status and the last line it printed
         """
         if config_path is None:
             config_path = config.CONFIG_TOGSIM_CONFIG
@@ -359,9 +363,11 @@ class TOGSimulator():
             )
             raise RuntimeError("TOGSim subprocess timeout") from e
         except subprocess.CalledProcessError as e:
-            logger.error(f"[TOGSim] Command failed with exit code {e.returncode}")
-            logger.error(f"[TOGSim] Error output: {e.output.decode() if isinstance(e.output, bytes) else e.output}")
-            assert 0
+            said = (e.stdout + e.stderr).decode(errors="replace").strip().splitlines()
+            if not autotune_mode:
+                logger.error("[TOGSim] Simulator exited with status %d:\n%s", e.returncode, "\n".join(said))
+            raise RuntimeError(f"TOGSim Simulator exited with status {e.returncode}: "
+                               f"{said[-1] if said else 'it printed nothing'}") from e
 
         # Prevent race condition
         with open(result_path, "w") as f:

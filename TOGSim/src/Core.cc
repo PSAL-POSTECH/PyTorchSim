@@ -87,8 +87,9 @@ void Core::apply_due(const DueAction& a) {
 // two of its loads arriving in the same cycle each schedule a WakeBar.
 bool Core::bar_released(const std::shared_ptr<Instruction>& bar) {
   if (bar->finished) return false;
-  for (auto& key : bar->get_wait_keys())
-    if (_dma.get_tag_finish(bar->subgraph_id, key) == 0) return false;
+  auto& keys = bar->get_wait_keys();
+  for (size_t i = 0; i < keys.size(); i++)
+    if (_dma.get_tag_finish(bar->wait_scope(i), keys[i]) == 0) return false;
   return true;
 }
 
@@ -249,7 +250,8 @@ void Core::dma_cycle() {
     /* Set tag table of async dma load */
     if (instruction->is_dma_read() && instruction->is_async_dma()) {
       auto& key = instruction->get_tag_id();
-      assert(!_dma.get_tag_finish(instruction->subgraph_id, key));
+      const int scope = instruction->tag_scope_id();
+      assert(!_dma.get_tag_finish(scope, key));
       spdlog::trace(
           "[{}][Core {}] TOG async DMA response (table notify): tag_addr=0x{:016x} global_inst_id={} "
           "subgraph_id={}",
@@ -258,10 +260,10 @@ void Core::dma_cycle() {
           static_cast<uint64_t>(static_cast<uintptr_t>(instruction->get_addr_id())),
           instruction->get_global_inst_id(),
           instruction->subgraph_id);
-      _dma.set_tag_finish(instruction->subgraph_id, key);
+      _dma.set_tag_finish(scope, key);
       finish_instruction(instruction, InstFinishTraceTag::DmaRespComplete);
-      for (auto & wait_inst : _dma.get_tag_waiter(instruction->subgraph_id, key)) {
-        _dma.mark_tag_used(instruction->subgraph_id, key);
+      for (auto & wait_inst : _dma.get_tag_waiter(scope, key)) {
+        _dma.mark_tag_used(scope, key);
         _due_events.emplace(_core_cycle, DueAction{DueAction::WakeBar, nullptr, wait_inst});
       }
     }
@@ -350,12 +352,12 @@ void Core::cycle() {
           {
             /* Check another MOVIN with same tag is issued */
             auto& key = inst->get_tag_id();
-            if (inst->is_async_dma() && _dma.tag_key_exist(inst->subgraph_id, key)) {
-              bool finished = _dma.get_tag_finish(inst->subgraph_id, key);
+            if (inst->is_async_dma() && _dma.tag_key_exist(inst->tag_scope_id(), key)) {
+              bool finished = _dma.get_tag_finish(inst->tag_scope_id(), key);
               if (finished)
                 finish_instruction(inst);
               else
-                _dma.register_tag_waiter(inst->subgraph_id, key, inst);
+                _dma.register_tag_waiter(inst->tag_scope_id(), key, inst);
               if (core_trace_log::trace_enabled()) core_trace_log::trace_instruction_line(_core_cycle,
                                                        _id,
                                                        TraceLogTag::pad15(
@@ -376,7 +378,7 @@ void Core::cycle() {
                                                        inst->get_global_inst_id(),
                                                        core_trace_log::format_dma_inst_issued_trace_line(
                                                            *inst));
-              _dma.register_tag(inst->subgraph_id, inst->get_tag_id());
+              _dma.register_tag(inst->tag_scope_id(), inst->get_tag_id());
               _ld_inst_queue.push(inst);
               issued = true;
               break;
@@ -487,8 +489,8 @@ void Core::cycle() {
           {
             auto& keys = inst->get_wait_keys();
             bool sparse = false, pending = false;
-            for (auto& key : keys) {
-              uint32_t finished = _dma.get_tag_finish(inst->subgraph_id, key);
+            for (size_t k = 0; k < keys.size(); k++) {
+              uint32_t finished = _dma.get_tag_finish(inst->wait_scope(k), keys[k]);
               sparse |= finished == (uint32_t)-1;
               pending |= finished == 0;
             }
@@ -499,10 +501,11 @@ void Core::cycle() {
                 }
               }
             }
-            for (auto& key : keys) {
-              uint32_t finished = _dma.get_tag_finish(inst->subgraph_id, key);
-              if (finished == 0) _dma.register_tag_waiter(inst->subgraph_id, key, inst);
-              else if (finished != (uint32_t)-1) _dma.mark_tag_used(inst->subgraph_id, key);
+            for (size_t k = 0; k < keys.size(); k++) {
+              const int scope = inst->wait_scope(k);
+              uint32_t finished = _dma.get_tag_finish(scope, keys[k]);
+              if (finished == 0) _dma.register_tag_waiter(scope, keys[k], inst);
+              else if (finished != (uint32_t)-1) _dma.mark_tag_used(scope, keys[k]);
             }
             if (!pending) finish_instruction(inst);
             if (core_trace_log::trace_enabled()) core_trace_log::trace_instruction_line(_core_cycle,

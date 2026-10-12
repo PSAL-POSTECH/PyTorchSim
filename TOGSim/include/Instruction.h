@@ -141,8 +141,15 @@ class Instruction : public std::enable_shared_from_this<Instruction> {
   int get_nr_inner_loop() { return _nr_inner_loop; }
   void set_is_async(bool is_async) { _is_async_dma = is_async; }
   void prepare_tag_key();
-  // MEMORY_BAR: the async-load tag keys it waits; none added = its own tag key.
-  void add_wait_key(const std::vector<int64_t>& k) { _wait_keys.push_back(k); }
+  // MEMORY_BAR: the async-load tag keys it waits, each in its load's tag scope; none added = its
+  // own tag key.
+  void add_wait_key(const std::vector<int64_t>& k, int scope = -1) {
+    _wait_keys.push_back(k);
+    _wait_scopes.push_back(scope);
+  }
+  int wait_scope(size_t i) const {
+    return i < _wait_scopes.size() && _wait_scopes[i] != -1 ? _wait_scopes[i] : subgraph_id;
+  }
   std::vector<std::vector<int64_t>>& get_wait_keys() {
     if (_wait_keys.empty()) _wait_keys.push_back(_tag_key);
     return _wait_keys;
@@ -177,6 +184,10 @@ class Instruction : public std::enable_shared_from_this<Instruction> {
 
   bool finished=false;
   int subgraph_id = 0;
+  // Where the DMA's tag key lives in the Core's tag table: its work-item (-1), or a scope the
+  // kernel's work-items share, so a load of what a buffer already holds finds the first one's key.
+  int tag_scope = -1;
+  int tag_scope_id() const { return tag_scope == -1 ? subgraph_id : tag_scope; }
  private:
   uint64_t _global_inst_id = 0;
   static uint64_t _next_global_inst_id;
@@ -207,6 +218,7 @@ class Instruction : public std::enable_shared_from_this<Instruction> {
   std::vector<int64_t> _tag_stride_list;
   std::vector<int64_t> _tag_key;
   std::vector<std::vector<int64_t>> _wait_keys;
+  std::vector<int> _wait_scopes;
   std::vector<int64_t> _accum_tag_idx_list;
   std::vector<addr_type> _trace_address;
   std::string _addr_name;

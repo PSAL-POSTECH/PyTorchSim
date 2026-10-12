@@ -245,6 +245,46 @@ def rewrite_topk(g) -> None:
         _recompile(g)
 
 
+def _row_times_matrix(node):
+    """(a, b, bias) of an mm or a plain addmm whose left operand is one row, else None."""
+    if node.op != "call_function":
+        return None
+    if node.target is aten.mm.default:
+        (a, b), bias = node.args, None
+    elif node.target is aten.addmm.default and not node.kwargs:
+        bias, a, b = node.args
+    else:
+        return None
+    av, bv = _val(a), _val(b)
+    if av is None or bv is None or av.dim() != 2 or bv.dim() != 2 or av.shape[0] != 1:
+        return None
+    return a, b, bias
+
+
+def rewrite_row_mm(g) -> None:
+    """Replace a 1 x K row times a K x N matrix with the row broadcast down the matrix, a
+    multiply and a sum over K: vector work, where the mm template would run it on the array."""
+    if isinstance(g, fx.GraphModule):
+        g = g.graph
+    changed = 0
+    for node in list(g.nodes):
+        found = _row_times_matrix(node)
+        if found is None:
+            continue
+        a, b, bias = found
+        k = int(_val(a).shape[1])
+        with g.inserting_before(node):
+            column = g.call_function(aten.view.default, (a, [k, 1]))
+            scaled = g.call_function(aten.mul.Tensor, (column, b))
+            out = g.call_function(aten.sum.dim_IntList, (scaled, [0], True))
+            if bias is not None:
+                out = g.call_function(aten.add.Tensor, (out, bias))
+        node.replace_all_uses_with(out)
+        changed += 1
+    if changed:
+        _recompile(g)
+
+
 _MUL = (aten.mul.Tensor, aten.mul.Scalar)
 _SHAPE = (aten.unsqueeze.default,)
 _HANDLED = (aten.view_as_complex.default,) + _MUL + _SHAPE
@@ -360,4 +400,5 @@ def install():
     """Chain the post-grad passes onto Inductor's hook, each at most once."""
     install_once("pytorchsim-grouped-mm", npu_only(rewrite_grouped_mm))
     install_once("pytorchsim-topk", npu_only(rewrite_topk))
+    install_once("pytorchsim-row-mm", npu_only(rewrite_row_mm))
     install_once(_COMPLEX_TO_REAL.uuid(), npu_only(_COMPLEX_TO_REAL))

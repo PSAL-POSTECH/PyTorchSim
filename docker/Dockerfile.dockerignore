@@ -8,7 +8,6 @@ __pycache__/
 *.py[cod]
 *.ipynb_checkpoints
 
-TOGSim/build/
 device/build/
 device/torch_openreg/lib/
 device/torch_openreg/_C.cpython-*.so

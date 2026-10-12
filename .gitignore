@@ -1,5 +1,4 @@
 __pycache__/
-TOGSim/build/
 .vscode
 *.ipynb_checkpoints
 output

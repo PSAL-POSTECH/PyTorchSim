@@ -73,7 +73,7 @@ record and will pin "default" Python to the new worktree.)
 changes alongside Python frontend work, so `setup_worktree.sh` symlinks it
 from the worktree the script was invoked in. If you do modify TOGSim C++ in
 a particular worktree, delete the symlink and run `cd TOGSim/build && make`
-locally — `pytorchsim/simulator/simulator.py` resolves the binary path relative to
+locally — `pytorchsim/simulator/togsim.py` resolves the binary path relative to
 `TORCHSIM_DIR`, so each worktree has its own resolution.
 
 If neither worktree has the binary yet, build it once (any worktree) per

@@ -7,12 +7,14 @@
 
 import json
 import os
+import re
 import shutil
+import subprocess
 
 from pytorchsim import config
 
-from . import breakdown, session
-from pytorchsim.codegen import launch
+from pytorchsim import contract
+from pytorchsim.simulator import wallclock
 
 logger = config.setup_logger()
 
@@ -35,16 +37,14 @@ LOCK_TIMEOUT = 1800
 def measure_tile_cycles(workdir, meta):
     """Per-compute-node cycle counts for ONE tile: the compiler's cycle ELF, measured under gem5.
     None on any failure."""
-    from pytorchsim.driver.compiler_bridge import artifact
-    from .gem5 import CycleSimulator
 
     kernel_name = meta["kernel_name"]
-    elf = artifact(workdir, "cycle_elf")
+    elf = contract.artifact(workdir, "cycle_elf")
     if elf is None:
         logger.warning("[Gem5] %s has no cycle_elf; it was compiled without --tog", workdir)
         return None
     try:
-        with breakdown.span(breakdown.GEM5_RUN, kernel_name):
+        with wallclock.span(wallclock.GEM5_RUN, kernel_name):
             return CycleSimulator().compile_and_simulate(
                 elf, int(config.vpu_num_lanes), silent_mode=True)
     except Exception as e:
@@ -59,15 +59,14 @@ def write_tensors(workdir):
 
     import torch
 
-    from pytorchsim.driver.compiler_bridge import kernel_object
 
-    manifest = kernel_object(workdir)
+    manifest = contract.kernel_object(workdir)
     if manifest is None:
         raise FileNotFoundError(f"{workdir} has no kernel.json -- compile the kernel first")
     args = [(a["shape"], getattr(torch, a["dtype"]).itemsize) for a in manifest["args"]]
-    with open(os.path.join(session.dir_for(workdir), TENSORS_TXT), "w") as f:
+    with open(os.path.join(contract.dir_for(workdir), TENSORS_TXT), "w") as f:
         f.write("".join(f"{math.prod(shape) * elem}\n" for shape, elem in args))
-    with open(os.path.join(session.dir_for(workdir), TENSOR_SHAPES_TXT), "w") as f:
+    with open(os.path.join(contract.dir_for(workdir), TENSOR_SHAPES_TXT), "w") as f:
         f.write("".join(f"{math.prod(shape[:-1])} {shape[-1] if shape else 1} {elem}\n"
                         for shape, elem in args))
 
@@ -80,7 +79,7 @@ def write_shape(workdir, meta, args=()):
     """
     numels = dict(meta["numels"])
     if meta.get("template_grid") is not None:
-        grid = list(launch.launch_extents(meta))
+        grid = list(contract.launch_extents(meta))
         _write_extents(workdir, grid, "template grid")
         return grid
 
@@ -96,7 +95,7 @@ def write_shape(workdir, meta, args=()):
             for key, val in zip(passed, trailing[-len(passed):]):
                 numels[key] = val
 
-    grid = list(launch.grid_of({**meta, "numels": numels}))
+    grid = list(contract.grid_of({**meta, "numels": numels}))
     _write_extents(workdir, grid, "grid")
     return grid
 
@@ -117,7 +116,7 @@ def _write_extents(workdir, ext, what):
                 f"extent(s) and this launch has {len(ext)} ({ext}); the trace "
                 f"would read past the end of shape_args. Delete the workdir to "
                 f"rebuild it.")
-    with open(os.path.join(session.dir_for(workdir), SHAPE_TXT), "w") as f:
+    with open(os.path.join(contract.dir_for(workdir), SHAPE_TXT), "w") as f:
         f.write("\n".join(str(int(g)) for g in ext) + "\n")
     logger.info("[TOGSim] %s %s -> %s", what, ext, SHAPE_TXT)
 
@@ -129,12 +128,10 @@ def emit_trace(workdir, meta):
     """
     import json
 
-    from . import trace_build
-    from pytorchsim.driver.compiler_bridge import artifact
 
     kernel = meta["kernel_name"]
-    so_path = artifact(workdir, "trace_so")
-    types_path = artifact(workdir, "tile_types")
+    so_path = contract.artifact(workdir, "trace_so")
+    types_path = contract.artifact(workdir, "tile_types")
     if so_path is None or types_path is None:
         raise FileNotFoundError(
             f"{workdir} has no trace_so/tile_types -- the compiler must reach "
@@ -150,14 +147,14 @@ def emit_trace(workdir, meta):
         raise RuntimeError(
             f"[Gem5] sampling failed for {kernel}, so compute latency would "
             f"not be modelled at all")
-    table = trace_build.cycle_table(offsets, list(cycles))
+    table = cycle_table(offsets, list(cycles))
 
     if os.path.abspath(so_path) != os.path.abspath(os.path.join(workdir, TRACE_SO)):
         shutil.copyfile(so_path, os.path.join(workdir, TRACE_SO))
     with open(os.path.join(workdir, AXES_TXT), "w") as f:
         f.write(f"{len(axes)}\n")
 
-    trace_build.dump_cycle_table_tsv(table, os.path.join(workdir, CYCLE_TSV))
+    dump_cycle_table_tsv(table, os.path.join(workdir, CYCLE_TSV))
     logger.info("[Gem5] tile cycles: %s", table)
     return n_tiles
 
@@ -170,12 +167,12 @@ def run_togsim(workdir, meta, args=()):
     """
     import torch
 
-    from pytorchsim.simulator.simulator import TOGSimulator
+    from pytorchsim.simulator.togsim import TOGSimulator
 
     for need in (TRACE_SO, CYCLE_TSV):
         if not os.path.isfile(os.path.join(workdir, need)):
             raise FileNotFoundError(f"{os.path.join(workdir, need)} not found -- call emit_trace first")
-    mine = session.link_shared(workdir, (TRACE_SO, CYCLE_TSV))
+    mine = contract.link_shared(workdir, (TRACE_SO, CYCLE_TSV))
     write_shape(workdir, meta, args)
     write_tensors(workdir)
 
@@ -201,9 +198,9 @@ def run(workdir, meta, args=()):
     if not os.path.isfile(os.path.join(workdir, CYCLE_TSV)):
         with FileLock(os.path.join(workdir, LOCK_NAME), timeout=LOCK_TIMEOUT):
             if not os.path.isfile(os.path.join(workdir, CYCLE_TSV)):
-                with breakdown.span(breakdown.TOGSIM_TRACE, kernel):
+                with wallclock.span(wallclock.TOGSIM_TRACE, kernel):
                     emit_trace(workdir, meta)
-    with breakdown.span(breakdown.TOGSIM_RUN, kernel):
+    with wallclock.span(wallclock.TOGSIM_RUN, kernel):
         return run_togsim(workdir, meta, args)
 
 
@@ -212,3 +209,83 @@ def store_meta(workdir, meta):
     run standalone."""
     with open(os.path.join(workdir, META_JSON), "w") as f:
         json.dump(meta, f, indent=2)
+
+
+#: What gem5 says when it dies, as opposed to the libc backtrace that follows it.
+_GEM5_SIGNAL = re.compile(
+    r"^(?:.*\b(?:panic|fatal):.*|.*Assertion.*|Program aborted at tick.*)$", re.M)
+
+
+def _gem5_failure(proc, log_path):
+    """The message a failed gem5 run should raise, from the log it redirects to.
+
+    `-r` sends stdout AND stderr to `--stdout-file`, so the pipes are empty and
+    a return code on its own says nothing: gem5 panics and aborts.
+    """
+    how = (f"signal {-proc.returncode}" if proc.returncode < 0
+           else f"exit {proc.returncode}")
+    try:
+        with open(log_path, errors="replace") as fh:
+            text = fh.read()
+    except OSError:
+        text = (proc.stderr or "") + (proc.stdout or "")
+    hits = [h.strip() for h in _GEM5_SIGNAL.findall(text)]
+    if not hits:
+        hits = [l.strip() for l in text.strip().splitlines()[-3:]]
+    if not hits:
+        hits = [f"gem5 left no diagnostic; see {log_path}"]
+    return (f"Gem5 Simulation Failed ({how}); full log in {log_path}\n  "
+            + "\n  ".join(h[:300] for h in hits[:3]))
+
+
+class CycleSimulator():
+    def __init__(self) -> None:
+        pass
+
+    def compile_and_simulate(self, target_binary, vectorlane_size, silent_mode=False):
+        dir_path = os.path.join(os.path.dirname(target_binary), "m5out")
+        gem5_cmd = [config.CONFIG_GEM5_PATH, "-r", "--stdout-file=sto.log", "-d", dir_path,
+                    config.CONFIG_GEM5_SCRIPT, "-c", target_binary,
+                    "--model", config.CONFIG_VCIX_MODEL, "--vlane", str(vectorlane_size),
+                    "--vlen", str(config.vpu_vector_length_bits)]
+
+        if not silent_mode:
+            logger.debug(f"[Gem5] cmd> {' '.join(gem5_cmd)}")
+            logger.info("[Gem5] Gem5 simulation started")
+
+        proc = subprocess.run(gem5_cmd, capture_output=True, text=True, errors="replace")
+        if proc.returncode != 0:
+            raise RuntimeError(_gem5_failure(proc, os.path.join(dir_path, "sto.log")))
+
+        with open(f"{dir_path}/stats.txt", "r") as stat_file:
+            raw_list = stat_file.readlines()
+            cycle_per_tick = [int(line.split()[1]) for line in raw_list if "system.clk_domain.clock" in line][0]
+            cycle_list = [int(line.split()[1]) for line in raw_list if "system.cpu.numCycles" in line]
+        cycle_list = cycle_list[:-1]
+        return cycle_list
+
+
+def cycle_table(overlap_offsets, cycle_list):
+    """[(cycle, overlapping_cycle), ...] indexed by tile_id. The compiler states each tile's
+    overlap offset (None where nothing of it overlaps); gem5 gives the cycles."""
+    if len(cycle_list) != len(overlap_offsets):
+        raise ValueError(
+            f"gem5 returned {len(cycle_list)} cycle sample(s) for "
+            f"{len(overlap_offsets)} compute tile(s): a marker fired a different "
+            f"number of times than there are tiles, so the table would be keyed "
+            f"by the wrong samples")
+    return [(int(c), 0 if off is None else max(int(c) - int(off), 0))
+            for c, off in zip(cycle_list, overlap_offsets)]
+
+
+def dump_cycle_table_tsv(table, path, origins=None):
+    """cycle<TAB>overlapping per line, in tile_id order, for TOGSim's loader.
+
+    origins is appended as a trailing comment line, which the loader stops at.
+    """
+    with open(path, "w") as fh:
+        for cycle, overlapping in table:
+            fh.write("%d\t%d\n" % (int(cycle), int(overlapping)))
+        if origins:
+            fh.write("# origins: %s\n" % ", ".join(sorted(str(o) for o in origins)))
+    return path

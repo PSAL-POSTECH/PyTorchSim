@@ -24,9 +24,14 @@ NOTE: codegen bakes the check calls into the wrapper only when enabled at
 *compile* time. Toggle the option and clear the codegen cache together
 (scripts/clear_codegen_cache.sh), or a cached wrapper without checks is replayed.
 """
+import dataclasses
 import os
 
 import torch
+from torch._inductor.codegen import wrapper
+from torch._inductor.virtualized import V
+
+from pytorchsim.codegen import kernel_metadata
 
 from pytorchsim import config
 from pytorchsim.config import setup_logger
@@ -179,3 +184,98 @@ def verify_check(value, buffer_name, node_name, op):
     raise FunctionalVerifyMismatch(
         f"[FuncVerify] first divergence at buffer '{buffer_name}' (op {op}): "
         f"max abs diff {maxd:.6g}, {n_bad}/{ref.numel()} elements over tol")
+
+
+def _writes(kernel_name, position):
+    """Does `kernel_name` write the tensor argument at `position`? True when unrecorded."""
+    if kernel_name is None:
+        return True
+    return kernel_metadata.writes_arg(kernel_name, position)
+
+
+def _mutated(line):
+    """Buffer names a non-kernel wrapper line (a fallback) writes in place, from Inductor's IR."""
+    node = getattr(line, "node", None)
+    if node is None:
+        return ()
+    try:
+        return tuple(node.get_mutation_names())
+    except Exception:  # noqa: BLE001
+        return ()
+
+
+@dataclasses.dataclass
+class VerifyLine(wrapper.WrapperLine):
+    """One per-kernel verify call in the wrapper body."""
+    text: str
+
+    def codegen(self, code):
+        code.writeline(self.text)
+
+
+class VerifyLines:
+    """The wrapper's side of the cross-check: which line last writes each buffer, and the check after it."""
+
+    def _fverify_last_writer(self):
+        """{buffer name: id of the last wrapper line that writes it}.
+
+        A buffer is checked after its last writer, since one op can span several kernels.
+        """
+        last = {}
+        for line in self.lines:
+            if isinstance(line, wrapper.KernelCallLine):
+                for pos, a in enumerate(line.call_args):
+                    if not (isinstance(a, str) and a.strip().isidentifier()):
+                        continue
+                    if not _writes(line.kernel_name, pos):
+                        continue
+                    last[a.strip()] = id(line)
+                continue
+            for name in _mutated(line):
+                last[name] = id(line)
+        return last
+
+    def _fverify_emit_checks(self, call_args, line_id=None, kernel_name=None):
+        """The verify_check lines after this kernel, one per buffer it writes and finishes.
+
+        Only written arguments are checked: a reused buffer that is only read carries another origin.
+        """
+        checks = []
+        for pos, a in enumerate(call_args):
+            if not isinstance(a, str):
+                continue
+            name = a.strip()
+            if not name.isidentifier():
+                continue
+            if not _writes(kernel_name, pos):
+                continue
+            checks += self._fverify_check_one(name, line_id)
+        return checks
+
+    def _fverify_emit_mutation_checks(self, line):
+        """The same checks, after a fallback that finishes a buffer in place."""
+        checks = []
+        for name in _mutated(line):
+            checks += self._fverify_check_one(name, id(line))
+        return checks
+
+    def _fverify_check_one(self, name, line_id):
+        """The `verify_check` line for `name` ([] or one), if this line is its last writer."""
+        if name in self._fverify_seen:
+            return []
+        if line_id is not None and self._fverify_last.get(name) != line_id:
+            return []
+        self._fverify_seen.add(name)
+        if name in V.graph.graph_inputs:
+            return []
+        try:
+            buf = V.graph.get_buffer(name)
+        except Exception:
+            buf = None
+        if buf is None:
+            return []
+        origin = getattr(buf, "origin_node", None)
+        if origin is None:
+            return []
+        op = str(getattr(origin, "target", "?"))
+        return [f'_fverify.verify_check({name}, "{name}", "{origin.name}", "{op}")']

@@ -1,29 +1,24 @@
-"""What shape the launch is: which axes, how many programs, how big a block.
+"""How a kernel is cut into blocks: the sizes pinned at codegen time, a template's grid and its tiles.
 
-the compiler compiles one binary per kernel and the C wrapper walks the grid as a plain
-loop, so there is no autotuner to choose any of this later. Every consumer that
-pairs an axis with an extent reads it from here, or two of them disagree.
+The compiler builds one binary per kernel and nothing tunes it later, so block sizes and the mm
+tiles this machine can take are decided here, from the machine and the kernel.
 """
 
-import os
+import re
 
 from torch._inductor.virtualized import V
 
-from pytorchsim.codegen.errors import SpecIncomplete
-
-_PARALLEL_PREFIXES = ("z", "y", "x")
+from pytorchsim import config
+from pytorchsim.contract import SpecIncomplete, block_name, parallel_axes, reduction_axes
 
 _REDUCTION_LIVE_TILES = 12
+
 
 _DTYPE_BITS = {"float64": 64, "float32": 32, "float16": 16, "bfloat16": 16,
                "float8_e5m2": 8, "float8_e4m3fn": 8,
                "int64": 64, "int32": 32, "int16": 16, "int8": 8,
                "uint64": 64, "uint32": 32, "uint16": 16, "uint8": 8,
                "bool": 8}
-
-
-def _block_name(prefix):
-    return f"{prefix.upper()}BLOCK"
 
 
 def template_grid(kernel):
@@ -88,84 +83,6 @@ def combo_grid(kernel):
     return [blocks, 1, 1] if blocks else None
 
 
-def parallel_axes(numels):
-    """Grid axes this kernel uses, outermost first."""
-    return [p for p in _PARALLEL_PREFIXES if f"{p}numel" in numels]
-
-
-def launch_axes(meta):
-    """The axes the LAUNCH spreads programs over, outermost first.
-
-    A template declares ALL THREE even at extent 1: its source reads
-    tl.program_id(0..2) regardless, and the trace producer stops at an extra arg.
-    """
-    if meta.get("template_grid") is None:
-        return parallel_axes(meta["numels"])
-    return list(_PARALLEL_PREFIXES)
-
-
-def launch_extents(meta):
-    """The extents of `launch_axes`, in the same order.
-
-    Kept beside the axes rather than recomputed per consumer: the pairing is
-    the part that has been got wrong, not either half on its own.
-    """
-    grid = meta.get("template_grid")
-    if grid is None:
-        return grid_of(meta)
-    by_axis = dict(zip(("x", "y", "z"), grid))
-    return tuple(by_axis[p] for p in launch_axes(meta))
-
-
-def reduction_axes(numels):
-    """Reduction prefixes, read off the keys rather than assumed.
-
-    THE PREFIX CARRIES A TRAILING UNDERSCORE -- Inductor names the parameter
-    `r0_numel`, so the prefix is "r0_". Looking up "r0numel" silently misses.
-    """
-    return sorted(k[:-len("numel")] for k in numels
-                  if k.endswith("numel") and k.startswith("r"))
-
-
-def grid_of(meta):
-    """Launch grid from the numels and the pinned blocks, outermost first.
-
-    Also read by the timing path with the LAUNCH's numels, so the derivation is
-    stated once and only the extents differ. A template states its own grid.
-    """
-    if meta.get("template_grid") is not None:
-        return launch_extents(meta)
-
-    numels = meta["numels"]
-    cfg = meta.get("fixed_config") or {}
-    axes = parallel_axes(numels)
-    if not axes:
-        raise SpecIncomplete(
-            f"{meta['kernel_name']} has no parallel iteration axis to grid over")
-
-    grid = []
-    for prefix in axes:
-        n, block = numels.get(f"{prefix}numel"), cfg.get(_block_name(prefix))
-        if n is None or not block:
-            raise SpecIncomplete(
-                f"cannot compute the grid for {meta['kernel_name']} axis "
-                f"'{prefix}': {prefix}numel={n!r}, {_block_name(prefix)}={block!r}. "
-                f"Inductor defers the grid to triton_heuristics at runtime; this "
-                f"route needs it statically (see fixed_config_for).")
-        grid.append(-(-int(n) // int(block)))
-    return tuple(grid)
-
-
-def grid_xyz(meta):
-    """The same grid in the compiler's order: (gridX, gridY, gridZ).
-
-    the compiler's spec.grid is X-FIRST while grid_of is outermost-first, and the wrong
-    order writes only the first XBLOCK columns silently. Built by axis NAME.
-    """
-    extents = dict(zip(launch_axes(meta), launch_extents(meta)))
-    return tuple(extents.get(p, 1) for p in ("x", "y", "z"))
-
-
 def _element_bits(args):
     """Widest tensor element in the kernel, in bits.
 
@@ -197,8 +114,7 @@ def reduction_block_for(extent, elem_bytes=4, lane_bytes=None):
     has is a kernel the compiler refuses as over budget, whatever XBLOCK shrinks to.
     """
     if lane_bytes is None:
-        from pytorchsim.driver import compiler_bridge
-        lane_bytes = compiler_bridge.machine()["spad_size"]
+        lane_bytes = config.CONFIG_MACHINE["spad_size"]
     budget = lane_bytes // 2 // _REDUCTION_LIVE_TILES
     block = 1 << (int(extent) - 1).bit_length()
     while block * elem_bytes > budget and block > 1:
@@ -227,8 +143,7 @@ def fixed_config_for(kernel, numels, args):
     `numels` is the <prefix>numel-keyed dict, NOT kernel.numels. THESE ARE SIZES,
     NOT A LAYOUT -- the lane axis is the compiler's select_lane_axis, passes later.
     """
-    from pytorchsim.driver import compiler_bridge
-    machine = compiler_bridge.machine()
+    machine = config.CONFIG_MACHINE
     lanes = machine["vector_lanes"]
     per_vector = max(1, machine["vlen_bits"] // _element_bits(args))
 
@@ -236,11 +151,11 @@ def fixed_config_for(kernel, numels, args):
     cfg = {}
     for i, p in enumerate(axes):
         if i == 0:
-            cfg[_block_name(p)] = _covers(lanes, numels.get(f"{p}numel"))
+            cfg[block_name(p)] = _covers(lanes, numels.get(f"{p}numel"))
         elif i == len(axes) - 1:
-            cfg[_block_name(p)] = _covers(per_vector, numels.get(f"{p}numel"))
+            cfg[block_name(p)] = _covers(per_vector, numels.get(f"{p}numel"))
         else:
-            cfg[_block_name(p)] = 1
+            cfg[block_name(p)] = 1
     cfg.setdefault("XBLOCK", _covers(lanes, numels.get("xnumel")))
 
     if getattr(kernel, "inside_reduction", False):
@@ -252,11 +167,98 @@ def fixed_config_for(kernel, numels, args):
         for p in reduction_axes(numels) or ["r0_"]:
             n = numels.get(f"{p}numel")
             if not n:
-                cfg[_block_name(p)] = None
+                cfg[block_name(p)] = None
                 continue
             block = reduction_block_for(n, elem_bytes, lane_bytes)
             while block > max(1, room):
                 block //= 2
-            cfg[_block_name(p)] = block
+            cfg[block_name(p)] = block
             room //= max(1, block)
     return cfg
+
+
+def gemm_tiles(m, n, k, dtype_size, out_size=None):
+    """This machine's mm tiles for [m, k] @ [k, n], best first, as GemmConfigs.
+
+    `out_size` is C's element size when a fused cast stores it wider than the inputs.
+    """
+    from torch._inductor.template_heuristics.triton import GemmConfig
+
+    size = int(dtype_size)
+    extra = max(int(out_size or size) // size - 1, 0)
+    tiles = gemm_tile_candidates(int(m), int(n), int(k), extra, size)
+    return [GemmConfig(tm, tn, tk, 1, 4) for tm, tn, tk in tiles]
+
+
+def gemm_tile_candidates(M, N, K, n_extra_node, precision_bytes):
+    """Every (tile_M, tile_N, tile_K) whose A, B and C are blocks Triton accepts and fit half the
+    scratchpad, largest first. Each side is a lane multiple times a power of two (TTGIR's layouts
+    need them), the tail masked."""
+    lanes = int(config.vpu_num_lanes)
+    spad_per_lane = config.CONFIG_SPAD_INFO["spad_size"]
+    max_spad = spad_per_lane * lanes // 2
+    max_spad_per_lane = spad_per_lane // 2
+    max_numel = triton_max_numel()
+
+    def per_lane(rows, cols):
+        return max(rows * ((cols + lanes - 1) // lanes), 2)
+
+    def sides(dim):
+        pad = lanes if dim > lanes else 8
+        top = _pow2_ceil((dim + pad - 1) // pad * pad)
+        if dim <= lanes:
+            return [top]
+        return [lanes << i for i in range((top // lanes).bit_length())]
+
+    out = 1 + n_extra_node
+    tiles = []
+    for tk in sides(max(K, 8)):
+        for tm in sides(M):
+            for tn in sides(N):
+                used = (tm * tk + tk * tn + tm * tn * out) * precision_bytes
+                used_per_lane = (per_lane(tk, tn) + per_lane(tm, tk)
+                                 + per_lane(tm * out, tn)) * precision_bytes
+                if (max(tm * tk, tk * tn, tm * tn) <= max_numel
+                        and used < max_spad and used_per_lane < max_spad_per_lane):
+                    tiles.append((used, (tm, tn, tk)))
+    tiles.sort(key=lambda x: x[0], reverse=True)
+    return [t for _, t in tiles]
+
+
+def _pow2_ceil(v):
+    """The smallest power of two at or above v."""
+    return 1 << (int(v) - 1).bit_length()
+
+
+TILE_RE = {k: re.compile(rf"^(\s*{k}\s*:\s*tl\.constexpr\s*=\s*)(\S+)$", re.M)
+            for k in ("BLOCK_M", "BLOCK_N", "BLOCK_K", "EVEN_K")}
+
+
+DIM_RE = {k: re.compile(rf"^\s*{k} = (\d+)$", re.M) for k in "MNK"}
+
+
+def mm_template_shape(src_code, meta):
+    """(M, N, K, input bytes, output bytes) of an mm or bmm template kernel -- one program per output
+    tile (and batch), its blocks stated as constexprs -- else None."""
+    if (meta.get("template_grid") is None
+            or not all(r.search(src_code) for r in TILE_RE.values())):
+        return None
+    dims = [DIM_RE[k].search(src_code) for k in "MNK"]
+    if not all(dims):
+        return None
+    import torch
+    nbytes = {a["role"]: getattr(torch, a["dtype"]).itemsize for a in meta["args"]}
+    return tuple(int(d.group(1)) for d in dims) + (nbytes["in"], nbytes.get("out", nbytes["in"]))
+
+
+def template_tiles(src_code, meta):
+    """Every mapped tile of an mm template kernel this source can take, best first, as (M, N, K)
+    blocks; [] for any other kernel. A body rendered with EVEN_K loads K unmasked, so it takes only
+    a BLOCK_K that divides K."""
+    shape = mm_template_shape(src_code, meta)
+    if shape is None:
+        return []
+    m, n, k, size, out_size = shape
+    even = TILE_RE["EVEN_K"].search(src_code).group(2) == "True"
+    return [(c.block_m, c.block_n, c.block_k) for c in gemm_tiles(m, n, k, size, out_size)
+            if not even or k % c.block_k == 0]

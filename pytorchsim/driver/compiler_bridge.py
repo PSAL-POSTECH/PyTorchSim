@@ -1,9 +1,8 @@
-"""Run pytorchsim-triton-compiler in its own process and read the kernel object it leaves.
+"""Run pytorchsim-triton-compiler in its own process, for the machine the TOGSim YAML describes.
 
-The seam is kernel.json in the kernel's workdir; nothing here imports the compiler.
+Nothing here imports the compiler; what it leaves is read through contract.py.
 """
 
-import json
 import os
 import re
 import subprocess
@@ -111,7 +110,6 @@ def doctor():
     return proc.returncode == 0, proc.stdout + proc.stderr
 
 
-
 def run_pipeline(spec_path, workdir, to_stage="torchsim-compile", tog=False, timeout=1800):
     """Drive the compiler's stages over `spec_path`, writing artifacts into `workdir`.
 
@@ -134,43 +132,3 @@ def run_pipeline(spec_path, workdir, to_stage="torchsim-compile", tog=False, tim
                         cmd=" ".join(cmd), output=output)
     logger.debug("[torchsim-compile] %s", output)
     return workdir
-
-
-#: The compiler's manifest. Its schema is declared in the compiler
-#: (pytorchsim_triton_compiler/contract/kernel_object.py); this is a reader, and the format field is what stops
-#: the two from drifting silently.
-KERNEL_MANIFEST = "kernel.json"
-KERNEL_FORMAT = 1
-
-
-def kernel_object(workdir):
-    """The manifest the compiler left in `workdir`, or None if it did not get that far."""
-    path = os.path.join(workdir, KERNEL_MANIFEST)
-    try:
-        with open(path) as fh:
-            got = json.load(fh)
-    except (OSError, ValueError):
-        return None
-    if got.get("format") != KERNEL_FORMAT:
-        raise CompilerError(
-            f"{path}: kernel object format {got.get('format')!r}, this reader "
-            f"knows {KERNEL_FORMAT}. The compiler and this frontend disagree "
-            f"about the contract; rebuild the kernel cache.")
-    return got
-
-
-def artifact(workdir, kind):
-    """One compiler output by the name the manifest gives it, or None.
-
-    THE STAGE NUMBERS ARE NOT AN INTERFACE and this is what replaced globbing
-    for them: the compiler renumbers when a stage is added, and the post-vcix IR has
-    already moved from 04- to 05- once.
-    """
-    got = kernel_object(workdir)
-    if got is None:
-        return None
-    rel = got.get("artifacts", {}).get(kind)
-    if not rel:
-        return None
-    full = os.path.join(workdir, rel)
-    return full if os.path.exists(full) else None

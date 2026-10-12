@@ -221,7 +221,7 @@ Use the same API you already use; only wrap the region you want co-simulated:
 
 ```python
 import torch
-from pytorchsim.simulator.simulator import TOGSimulator
+from pytorchsim.simulator.togsim import TOGSimulator
 
 # ... build model, torch.compile, tensors on npu:0 as usual ...
 
@@ -271,10 +271,10 @@ Here `stream_index=0` selects queue `0` (core_0), `stream_index=1` selects queue
 
 ### 3. Load generation (Poisson arrivals)
 
-The `poisson_request_generator` in `pytorchsim.simulator.scheduler` yields synthetic **arrival times** (in **milliseconds**). Merge those with `launch_model`: convert each time to **nanoseconds** for `timestamp`, set `stream_index` to the target partition queue, and run all launches inside one `with TOGSimulator(...)` so a **single** log captures the full trace.
+The `poisson_request_generator` in `pytorchsim.simulator.togsim` yields synthetic **arrival times** (in **milliseconds**). Merge those with `launch_model`: convert each time to **nanoseconds** for `timestamp`, set `stream_index` to the target partition queue, and run all launches inside one `with TOGSimulator(...)` so a **single** log captures the full trace.
 
 ```python
-from pytorchsim.simulator.scheduler import poisson_request_generator
+from pytorchsim.simulator.togsim import poisson_request_generator
 
 model0_lambda = 5.0
 model1_lambda = 3.0

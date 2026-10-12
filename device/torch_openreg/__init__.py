@@ -18,9 +18,11 @@ torch.utils.generate_methods_for_privateuse1_backend(for_storage=True)
 
 sys.path.append(os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim'))
 import pytorchsim.config  # noqa: F401
+from pytorchsim.frontend import inductor_patches as _inductor_patches
 from pytorchsim.frontend import rewrite_fx_graph as _rewrite_fx_graph
 
 _rewrite_fx_graph.install()
+_inductor_patches.install()
 
 # The `npu` codegen route: Inductor's own Triton codegen, lowered by the
 # compiler passes. Registered here because Inductor registers a backend per

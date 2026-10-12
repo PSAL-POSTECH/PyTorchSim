@@ -1,5 +1,6 @@
 #pragma once
 
+#include <map>
 #include <queue>
 #include <filesystem>
 #include <string>
@@ -53,6 +54,15 @@ class Simulator {
     }
     for (auto& core : _cores) core->set_unit_table(_unit_table.get());
   }
+  // A launched kernel's trace_units.tsv joins the one table: the tile_id shift its computes carry.
+  int64_t add_kernel_unit_table(const std::string& path) {
+    auto it = _kernel_unit_base.find(path);
+    if (it != _kernel_unit_base.end()) return it->second;
+    int64_t base = 0;
+    if (!_unit_table) set_unit_table(UnitTable::load(path));
+    else base = (int64_t)_unit_table->append(path);
+    return _kernel_unit_base[path] = base;
+  }
   void cycle();
   const SimulationConfig& get_config() const { return _config; }
   const YAML::Node& get_hardware_config_yaml() const { return _hardware_config_yaml; }
@@ -79,6 +89,7 @@ class Simulator {
   // Components
   std::vector<std::unique_ptr<Core>> _cores;
   std::unique_ptr<UnitTable> _unit_table;
+  std::map<std::string, int64_t> _kernel_unit_base;
   std::unique_ptr<Interconnect> _icnt;
   std::unique_ptr<Dram> _dram;
   std::vector<std::unique_ptr<Scheduler>> _partition_scheduler;

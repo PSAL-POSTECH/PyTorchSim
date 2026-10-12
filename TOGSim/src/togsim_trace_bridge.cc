@@ -86,6 +86,7 @@ class BufferWriters {
 // the TileGraph's tile source, so it survives between materializations. link() is
 // the dependency DAG, sram_effects() the buffer-version rule, feed() the dispatch.
 struct BuildState {
+  int64_t unit_tile_base = 0;    // see trace_to_tilegraph
   togsim::LazyProducer prod;
   size_t next = 0;               // next work-item to materialize
   std::map<int64_t, size_t> buf_bytes;
@@ -424,6 +425,7 @@ struct BuildState {
       open_batch.erase(ob);
     } else if (t.kind == TraceRec::COMPUTE) {
       auto inst = make_compute(t);
+      inst->set_tile_id(unit_tile_base + (int64_t)t.tile_id);
       inst->set_tile_group(cur_tile_group);
       link(inst, t.read_bufs, t.write_bufs);
       note_bufs(t.read_bufs); note_bufs(t.write_bufs);   // distinct-buffer footprint for 1- vs 2-dispatch
@@ -458,9 +460,10 @@ std::unique_ptr<TileGraph> trace_to_tilegraph(
     const int64_t* cyc, const int64_t* ovl, int32_t n_tiles,
     const int32_t* partition_cores, int32_t n_partition_cores,
     const std::string& indirect_dir, const std::string& name,
-    const std::vector<std::shared_ptr<const TensorTiling>>& tilings) {
+    const std::vector<std::shared_ptr<const TensorTiling>>& tilings, int64_t unit_tile_base) {
   using togsim::TraceRec;
   auto S = std::make_shared<BuildState>();
+  S->unit_tile_base = unit_tile_base;
   S->indirect_dir = indirect_dir;
   S->tilings = tilings;
 

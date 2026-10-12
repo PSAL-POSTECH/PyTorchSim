@@ -1,8 +1,8 @@
 """The timing half of the Triton route: the compiler's tile-operation-graph (TOG), tog.so -> TOGSim.
 
-    run(workdir, meta, args)    emit if needed, then simulate, under the lock
-    emit_trace(workdir, meta)   the compiler's tog.so + gem5 cycles -> tog_cycles.tsv, tog_units.tsv
-    run_togsim(workdir, ...)    hand them to TOGSim, return its parsed result
+    run(workdir, meta, args)            write the tables if needed, then simulate, under the lock
+    write_cycle_tables(workdir, meta)   the compiler's tog.so + gem5 cycles -> tog_cycles.tsv, tog_units.tsv
+    run_togsim(workdir, ...)            hand them to TOGSim, return its parsed result
 """
 
 import json
@@ -123,7 +123,7 @@ def _write_extents(workdir, ext, what):
     logger.info("[TOGSim] %s %s -> %s", what, ext, SHAPE_TXT)
 
 
-def emit_trace(workdir, meta):
+def write_cycle_tables(workdir, meta):
     """Place the compiler's tog.so in the workdir and write tog_cycles.tsv and tog_units.tsv beside it.
 
     Returns the number of compute tiles the cycle table covers.
@@ -176,7 +176,7 @@ def run_togsim(workdir, meta, args=()):
 
     for need in SHARED:
         if not os.path.isfile(os.path.join(workdir, need)):
-            raise FileNotFoundError(f"{os.path.join(workdir, need)} not found -- call emit_trace first")
+            raise FileNotFoundError(f"{os.path.join(workdir, need)} not found -- call write_cycle_tables first")
     mine = contract.link_shared(workdir, SHARED)
     write_shape(workdir, meta, args)
     write_tensors(workdir)
@@ -207,8 +207,8 @@ def run(workdir, meta, args=()):
     if not emitted():
         with FileLock(os.path.join(workdir, LOCK_NAME), timeout=LOCK_TIMEOUT):
             if not emitted():
-                with wallclock.span(wallclock.TOGSIM_TRACE, kernel):
-                    emit_trace(workdir, meta)
+                with wallclock.span(wallclock.TOGSIM_TABLES, kernel):
+                    write_cycle_tables(workdir, meta)
     with wallclock.span(wallclock.TOGSIM_RUN, kernel):
         return run_togsim(workdir, meta, args)
 

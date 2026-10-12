@@ -106,7 +106,7 @@ def _time_tile(src_code, meta, kernel_name, workdir, timeout):
     compiler_input.write(src_code, meta, spec_path, compiler_bridge.compiler_dir())
     try:
         compiler_bridge.run_pipeline(spec_path, workdir, to_stage="torchsim-compile", tog=True)
-        timing.emit_trace(workdir, meta)
+        timing.write_cycle_tables(workdir, meta)
         mine = contract.link_shared(workdir, timing.SHARED)
         timing.write_shape(workdir, meta)
         timing.write_tensors(workdir)

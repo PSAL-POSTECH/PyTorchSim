@@ -3,7 +3,7 @@ name: Docker image CI
 # The PR gate. Three layers: the base image -- the compiler's own published image at the pinned
 # commit (ghcr.io/psal-postech/pytorchsim-triton-backend:<ref>, one tag per commit from that
 # repository's images workflow) plus PyTorch and the test stack, built once per pin and reused
-# (scripts/ci/thirdparty_base_pin.sh) -- the app image for this commit, and one container per
+# (scripts/ci/third_party_base_pin.sh) -- the app image for this commit, and one container per
 # allowlisted test (pytorchsim_test.yml). Nothing of the compiler, Triton, Spike or gem5 is
 # built here. The compiler's package grants this repository read access, so the default Actions
 # token is all the registry needs.
@@ -45,11 +45,11 @@ jobs:
       - name: Pins
         id: pin
         run: |
-          PTB_REF=$(jq -r '.pytorchsim_triton_backend.ref' thirdparty/pytorchsim-triton-backend.json)
-          PIN="$(bash scripts/ci/thirdparty_base_pin.sh)"
+          PTB_REF=$(jq -r '.pytorchsim_triton_backend.ref' third_party/pytorchsim-triton-backend.json)
+          PIN="$(bash scripts/ci/third_party_base_pin.sh)"
           echo "PTB_IMAGE=${PTB_IMAGE_REPO}:${PTB_REF}" >> "$GITHUB_ENV"
-          echo "BASE_IMAGE=${BASE_IMAGE_REPO}:thirdparty-${PIN}" >> "$GITHUB_ENV"
-          echo "base_image=${BASE_IMAGE_REPO}:thirdparty-${PIN}" >> "$GITHUB_OUTPUT"
+          echo "BASE_IMAGE=${BASE_IMAGE_REPO}:third_party-${PIN}" >> "$GITHUB_ENV"
+          echo "base_image=${BASE_IMAGE_REPO}:third_party-${PIN}" >> "$GITHUB_OUTPUT"
 
       - name: The compiler has published an image for the pin
         run: |
@@ -73,7 +73,7 @@ jobs:
         uses: docker/build-push-action@v4
         with:
           context: .
-          file: ./Dockerfile.base
+          file: ./docker/Dockerfile.base
           push: true
           build-args: |
             PTB_IMAGE=${{ env.PTB_IMAGE }}
@@ -120,7 +120,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./Dockerfile
+          file: ./docker/Dockerfile
           push: true
           no-cache: true
           build-args: |

@@ -38,7 +38,7 @@ scripts/setup_worktree.sh <purpose> [base-ref]
 | `setup_worktree.sh bugfix/issue-198` | `/workspace/PyTorchSim-bugfix` | `bugfix/issue-198` |
 | `setup_worktree.sh feature origin/master` | `/workspace/PyTorchSim-feature` | `feature/scratch` (off master) |
 
-Default base is `origin/develop` (per `CONTRIBUTING.md`).
+Default base is `origin/develop` (per `.github/CONTRIBUTING.md`).
 
 ## Activate
 
@@ -77,7 +77,7 @@ locally — `Simulator/simulator.py` resolves the binary path relative to
 `TORCHSIM_DIR`, so each worktree has its own resolution.
 
 If neither worktree has the binary yet, build it once (any worktree) per
-the CLAUDE.md "Build" section.
+the `.claude/CLAUDE.md` "Build" section.
 
 ## Iterating on codegen inside a worktree
 

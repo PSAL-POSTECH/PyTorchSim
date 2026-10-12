@@ -107,7 +107,7 @@ def _time_tile(src_code, meta, kernel_name, workdir, timeout):
     try:
         compiler_bridge.run_pipeline(spec_path, workdir, to_stage="torchsim-compile", tog=True)
         timing.emit_trace(workdir, meta)
-        mine = contract.link_shared(workdir, (timing.TRACE_SO, timing.CYCLE_TSV))
+        mine = contract.link_shared(workdir, timing.SHARED)
         timing.write_shape(workdir, meta)
         timing.write_tensors(workdir)
         result = TOGSimulator.run_standalone(os.path.join(mine, "tile_graph.onnx"),

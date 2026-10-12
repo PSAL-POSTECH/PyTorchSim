@@ -35,7 +35,7 @@ def _write_path(src_code):
 STAMP_NAME = "provenance.json"
 
 
-_STALE_PATTERNS = ("[0-9][0-9]-*", "trace.so", "trace_cycles.tsv", "timing.json")
+_STALE_PATTERNS = ("[0-9][0-9]-*", "trace.so", "trace_cycles.tsv", "trace_units.tsv", "timing.json")
 
 
 _identity = None

@@ -331,7 +331,8 @@ class TOGSimulator():
             if not os.path.exists(trace_so):
                 raise FileNotFoundError(f"{trace_so} not found -- the kernel has no trace to simulate")
             base_cmd = TOGSimulator.get_togsim_command(config_path, togsim_path)
-            cmd = f"{base_cmd} --trace_so {trace_so} --cycle_table {cycle_tsv}"
+            unit_tsv = os.path.join(os.path.dirname(str(model_path)), "trace_units.tsv")
+            cmd = f"{base_cmd} --trace_so {trace_so} --cycle_table {cycle_tsv} --unit_table {unit_tsv}"
             if config.CONFIG_TOGSIM_DEBUG_LEVEL:
                 cmd += f" --log_level {config.CONFIG_TOGSIM_DEBUG_LEVEL}"
 

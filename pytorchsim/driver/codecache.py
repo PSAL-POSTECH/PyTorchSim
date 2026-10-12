@@ -137,13 +137,37 @@ def store_identity(workdir):
 
 
 def clear_stale(workdir):
-    """Remove stage artifacts and timing derivatives built by another identity."""
-    for pattern in _STALE_PATTERNS:
+    """Remove the manifest, stage artifacts and timing derivatives built by another identity."""
+    for pattern in (contract.KERNEL_MANIFEST,) + _STALE_PATTERNS:
         for path in glob.glob(os.path.join(workdir, pattern)):
             try:
                 os.remove(path)
             except OSError:
                 pass
+
+
+def cached_elf(workdir, kernel_name):
+    """The ELF an earlier compile left in `workdir` if this identity built it, else None with that
+    build's leftovers removed. A kernel.json of another format is such a leftover unless this
+    identity wrote it: then the compiler and this reader disagree, and that is raised."""
+    foreign = False
+    try:
+        elf = contract.artifact(workdir, "elf")
+    except contract.KernelObjectMismatch as exc:
+        if identity_matches(workdir):
+            raise contract.KernelObjectMismatch(
+                f"{workdir}: the kernel object is not format {contract.KERNEL_FORMAT}, and its "
+                f"{STAMP_NAME} says this toolchain wrote it, so rebuilding will write the same. "
+                f"contract.KERNEL_FORMAT and the compiler pinned in "
+                f"third_party/pytorchsim-triton-backend.json must be moved together.") from exc
+        elf, foreign = None, True
+    if foreign or (elf is not None and not identity_matches(workdir)):
+        logger.info(
+            "[torchsim-compile] %s: cached artifacts carry a different toolchain, machine "
+            "or kernel-object identity, rebuilding", kernel_name)
+        clear_stale(workdir)
+        return None
+    return elf
 
 
 class TritonNPULauncher:
@@ -195,13 +219,7 @@ def torchsim_compile(src_code, meta, kernel_name):
     lock = FileLock(os.path.join(write_path, ".compile.lock"), timeout=LOCK_TIMEOUT)
     with lock:
         spec_path = os.path.join(write_path, f"{kernel_name}_spec.py")
-        elf = contract.artifact(write_path, "elf")
-        if elf is not None and not identity_matches(write_path):
-            logger.info(
-                "[torchsim-compile] %s: cached artifacts carry a different toolchain "
-                "or machine identity, rebuilding", kernel_name)
-            clear_stale(write_path)
-            elf = None
+        elf = cached_elf(write_path, kernel_name)
         if (elf is not None and config.pytorchsim_timing_mode
                 and contract.artifact(write_path, "trace_so") is None):
             logger.info("[torchsim-compile] %s: cached without --tog, rebuilding for timing",

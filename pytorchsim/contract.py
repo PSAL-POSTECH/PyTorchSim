@@ -135,8 +135,8 @@ def kernel_object(workdir):
     if got.get("format") != KERNEL_FORMAT:
         raise KernelObjectMismatch(
             f"{path}: kernel object format {got.get('format')!r}, this reader "
-            f"knows {KERNEL_FORMAT}. The compiler and this frontend disagree "
-            f"about the contract; rebuild the kernel cache.")
+            f"knows {KERNEL_FORMAT}. Another compiler or frontend wrote it; "
+            f"delete the workdir (scripts/clear_codegen_cache.sh) to rebuild it.")
     return got
 
 

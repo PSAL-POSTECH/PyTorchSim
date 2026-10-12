@@ -7,9 +7,9 @@ source), and replace the mm/bmm templates' modulo wrap with a load mask so the o
 import inspect
 import re
 
-from PyTorchSimFrontend import config
+from pytorchsim import config
 
-from .errors import SpecIncomplete
+from pytorchsim.codegen.errors import SpecIncomplete
 
 logger = config.setup_logger()
 

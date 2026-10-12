@@ -16,10 +16,11 @@ import time
 from filelock import FileLock
 from torch._inductor.codecache import get_hash
 
-from PyTorchSimFrontend import config
+from pytorchsim import config
 
-from . import kernel_spec, provenance, compiler_bridge
-from Simulator import breakdown, functional, session, timing
+from pytorchsim.codegen import kernel_spec
+from pytorchsim.driver import provenance, compiler_bridge
+from pytorchsim.simulator import breakdown, functional, session, timing
 
 logger = config.setup_logger()
 
@@ -159,7 +160,7 @@ def _retile(src_code, meta, mnk, tile):
 def _time_tile(src_code, meta, kernel_name, workdir, timeout):
     """TOGSim cycles of one candidate, simulated alone; inf if it does not compile or run --
     develop's autotune, where a scratchpad overflow is a tile that never finishes."""
-    from Simulator.simulator import TOGSimulator
+    from pytorchsim.simulator.simulator import TOGSimulator
     os.makedirs(workdir, exist_ok=True)
     spec_path = os.path.join(workdir, f"{kernel_name}_spec.py")
     with open(os.path.join(workdir, "kernel.py"), "w") as f:
@@ -189,7 +190,7 @@ def _template_tiles(src_code, meta):
     shape = _mm_template(src_code, meta)
     if shape is None:
         return []
-    from .inductor_patches import _gemm_tiles
+    from pytorchsim.frontend.inductor_patches import _gemm_tiles
     m, n, k, size, out_size = shape
     even = _TILE_RE["EVEN_K"].search(src_code).group(2) == "True"
     return [(c.block_m, c.block_n, c.block_k) for c in _gemm_tiles(m, n, k, size, out_size)

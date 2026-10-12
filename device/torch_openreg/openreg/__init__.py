@@ -224,7 +224,7 @@ class simulator:
         self._backend = None
 
     def __enter__(self):
-        from Simulator.simulator import TOGSimulator
+        from pytorchsim.simulator.simulator import TOGSimulator
 
         self._backend = TOGSimulator(config_path=self.config_path,
                                      togsim_path=self.togsim_path)

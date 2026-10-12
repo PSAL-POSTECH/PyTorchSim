@@ -8,7 +8,7 @@ import os
 import re
 import subprocess
 
-from PyTorchSimFrontend import config
+from pytorchsim import config
 
 logger = config.setup_logger()
 
@@ -81,7 +81,7 @@ def target_path():
     out = os.path.join(config.get_dump_path(), f"target-{name}.json")
     doc = dict(m, name=name,
                provenance={"togsim_config": os.environ.get("TOGSIM_CONFIG", ""),
-                           "address_map": "PyTorchSimFrontend/config.py"})
+                           "address_map": "pytorchsim/config.py"})
     body = json.dumps(doc, indent=2) + "\n"
     if not os.path.isfile(out) or open(out).read() != body:
         tmp = f"{out}.{os.getpid()}"

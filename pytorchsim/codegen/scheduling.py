@@ -11,7 +11,7 @@ from torch._inductor.codegen.triton import TritonKernel, TritonScheduling
 from torch._inductor.utils import Placeholder, get_fused_kernel_name
 from torch._inductor.virtualized import V
 
-from . import kernel_spec
+from pytorchsim.codegen import kernel_spec
 
 
 class TritonNPUKernel(TritonKernel):

@@ -6,7 +6,7 @@ every kernel's blocks are pinned (NPUChoices), and selection skips benchmarking.
 
 import torch
 
-from PyTorchSimFrontend import config
+from pytorchsim import config
 
 logger = config.setup_logger()
 
@@ -87,7 +87,7 @@ def _gemm_tile_candidates(M, N, K, n_extra_node, precision_bytes):
     """Every (tile_M, tile_N, tile_K) whose A, B and C are blocks Triton accepts and fit half the
     scratchpad, largest first. Each side is a lane multiple times a power of two (TTGIR's layouts
     need them), the tail masked."""
-    from . import launch
+    from pytorchsim.codegen import launch
     lanes = int(config.vpu_num_lanes)
     spad_per_lane = config.CONFIG_SPAD_INFO["spad_size"]
     max_spad = spad_per_lane * lanes // 2
@@ -298,7 +298,7 @@ def _size_conv_blocks_from_the_machine():
     from torch._inductor.template_heuristics.triton import (
         BaseConfigHeuristic, ConvConfig)
 
-    from PyTorchSimFrontend import config
+    from pytorchsim import config
 
     lanes = int(config.vpu_num_lanes)
 
@@ -424,7 +424,7 @@ def _npu_choices_class():
         return _NPU_CHOICES
     from torch._inductor.choices import InductorChoices
 
-    from . import launch
+    from pytorchsim.codegen import launch
 
     _DT_BITS = {torch.float64: 64, torch.float32: 32, torch.float16: 16,
                 torch.bfloat16: 16, torch.int64: 64, torch.int32: 32,

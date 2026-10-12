@@ -12,9 +12,10 @@ from torch._inductor.ir import GraphPartitionSignature
 from torch._inductor.virtualized import V
 from typing import Optional
 
-from Simulator import functional_verify as _func_verify
+from pytorchsim.simulator import functional_verify as _func_verify
 
-from . import codecache, kernel_spec
+from pytorchsim.driver import codecache
+from pytorchsim.codegen import kernel_spec
 
 
 def _writes(kernel_name, position):
@@ -67,11 +68,11 @@ class TritonNPUWrapperCodegen(wrapper.PythonWrapperCodegen):
         super().write_header()
         self.header.splice(
             f"""
-                from PyTorchSimFrontend.config import setup_logger
-                from Simulator import functional_verify as _fverify
+                from pytorchsim.config import setup_logger
+                from pytorchsim.simulator import functional_verify as _fverify
                 from {codecache.__name__} import torchsim_compile
 
-                _logger = setup_logger("PyTorchSimCodegen.generated_wrapper")
+                _logger = setup_logger("pytorchsim.codegen.generated_wrapper")
                 _logger.info(f'Wrapper Codegen Path = {{__file__}}')
             """
         )

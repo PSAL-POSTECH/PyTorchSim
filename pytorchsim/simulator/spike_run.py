@@ -138,7 +138,7 @@ def launch(obj_dir, manifest, runtime, raw_paths, log, jobs=None, scalars=()):
     t = _machine(manifest)
     spad_bytes = t["spad_size"] * t["vector_lanes"]
     lo, hi = manifest["abi"]["kernel_addr"]
-    from PyTorchSimFrontend import config
+    from pytorchsim import config
     yml = _write_machine_yaml(t, os.path.join(runtime, "machine.yml"))
     cmd = [
         SPIKE,

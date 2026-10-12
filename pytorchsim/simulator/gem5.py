@@ -8,7 +8,7 @@ import os
 import re
 import subprocess
 
-from PyTorchSimFrontend import config
+from pytorchsim import config
 
 logger = config.setup_logger()
 

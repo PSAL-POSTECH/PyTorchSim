@@ -221,7 +221,7 @@ Use the same API you already use; only wrap the region you want co-simulated:
 
 ```python
 import torch
-from Simulator.simulator import TOGSimulator
+from pytorchsim.simulator.simulator import TOGSimulator
 
 # ... build model, torch.compile, tensors on npu:0 as usual ...
 
@@ -271,10 +271,10 @@ Here `stream_index=0` selects queue `0` (core_0), `stream_index=1` selects queue
 
 ### 3. Load generation (Poisson arrivals)
 
-The `poisson_request_generator` in `Scheduler.scheduler` yields synthetic **arrival times** (in **milliseconds**). Merge those with `launch_model`: convert each time to **nanoseconds** for `timestamp`, set `stream_index` to the target partition queue, and run all launches inside one `with TOGSimulator(...)` so a **single** log captures the full trace.
+The `poisson_request_generator` in `pytorchsim.simulator.scheduler` yields synthetic **arrival times** (in **milliseconds**). Merge those with `launch_model`: convert each time to **nanoseconds** for `timestamp`, set `stream_index` to the target partition queue, and run all launches inside one `with TOGSimulator(...)` so a **single** log captures the full trace.
 
 ```python
-from Scheduler.scheduler import poisson_request_generator
+from pytorchsim.simulator.scheduler import poisson_request_generator
 
 model0_lambda = 5.0
 model1_lambda = 3.0
@@ -370,7 +370,7 @@ In this example, only one input tensor is registered in L2 cache. You can refer 
 Last but not least, you must set `l2d_type` and `l2d_config` in the [TOGSim config](#togsim-configuration) to use L2 cache. The `l2d_config` follows the same configuration method as [AccelSim](https://github.com/accel-sim/accel-sim-framework).
 
 ## Compiler Configuration
-`PyTorchSimFrontend/extension_config.py` contains target hardware configuration to compile.
+`pytorchsim/config.py` contains target hardware configuration to compile.
 
 You can configure these options using environment variables.
 ```bash
@@ -383,7 +383,7 @@ export TORCHSIM_USE_TIMING_POOLING=0 # use lightweight pooling for timing
 ## TOGSim Configuration
 ![NPU_Core](./docs/npu_core.jpg)
 
-The `configs/` directory holds **YAML** (`.yml`) hardware descriptions. Set `TOGSIM_CONFIG` to one of these files. The **same file** is read by the **compiler** (`PyTorchSimFrontend/extension_config.py`) for `vpu_*`, `pytorchsim_*`, and `codegen_*` fields, and by **TOGSim** (`TOGSim/src/Common.cc`) for the simulator-specific keys below.
+The `configs/` directory holds **YAML** (`.yml`) hardware descriptions. Set `TOGSIM_CONFIG` to one of these files. The **same file** is read by the **compiler** (`pytorchsim/extension_config.py`) for `vpu_*`, `pytorchsim_*`, and `codegen_*` fields, and by **TOGSim** (`TOGSim/src/Common.cc`) for the simulator-specific keys below.
 
 ### Reference layout
 

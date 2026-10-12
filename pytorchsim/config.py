@@ -61,6 +61,10 @@ def __getattr__(name):
     if name == "CONFIG_TOGSIM_CONFIG":
         return config_path
 
+    if not os.path.isfile(config_path):
+        raise FileNotFoundError(
+            f"{config_path} not found: TOGSIM_DIR must name a TOGSim checkout (its configs/ holds the "
+            f"machine configs; now {CONFIG_TOGSIM_DIR}), or TOGSIM_CONFIG a machine config file")
     with open(config_path, 'r') as f:
         config_yaml = yaml.safe_load(f)
 

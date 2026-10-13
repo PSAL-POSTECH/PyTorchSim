@@ -96,7 +96,8 @@ def _retile(src_code, meta, mnk, tile):
 
 def _time_tile(src_code, meta, kernel_name, workdir, timeout):
     """TOGSim cycles of one candidate, simulated alone; inf if it does not compile or run --
-    develop's autotune, where a scratchpad overflow is a tile that never finishes."""
+    develop's autotune. TOGSim 1.3.0 refuses a tile over the spad at load, where an earlier one never
+    finishes it; the refusal and the timeout both reach here as RuntimeError."""
     from pytorchsim.simulator.togsim import TOGSimulator
     os.makedirs(workdir, exist_ok=True)
     spec_path = os.path.join(workdir, f"{kernel_name}_spec.py")

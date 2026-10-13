@@ -163,11 +163,9 @@ class TOGSimulator():
         return kernel_id
 
     def shutdown(self):
-        """Close the FIFO, wait for TOGSim to exit, and write its log and trace.
-
-        Assumes every queued kernel has already been sent; draining the stream
-        belongs to whoever owns it.
-        """
+        """Close the FIFO, wait for TOGSim to exit, and write its log and trace; a Simulator that
+        exited non-zero (a kernel it refuses ends the session) is a RuntimeError raised after that.
+        Assumes every queued kernel has already been sent: draining the stream is its owner's."""
         # Close trace file handle if open
         if self._trace_file_handle is not None:
             try:
@@ -176,8 +174,9 @@ class TOGSimulator():
                 pass
             self._trace_file_handle = None
 
+        status = 0
         if self.process:
-            self.process.wait()
+            status = self.process.wait()
 
             # Read output streams
             stdout_output = ""
@@ -215,6 +214,9 @@ class TOGSimulator():
 
         # Clean up FIFOs
         self._cleanup_fifos()
+        if status:
+            raise RuntimeError(f"TOGSim Simulator exited with status {status}: the session did not run "
+                               f"every kernel it was sent, and the Simulator's own output says why")
 
     def launch_kernel(self, device_index, stream_index, tog_path, attribute_path, timestamp=0):
         """
@@ -304,6 +306,10 @@ class TOGSimulator():
 
         Returns:
             Path to the simulation result log file
+
+        Raises:
+            RuntimeError: the Simulator timed out, or exited non-zero (a kernel it refuses);
+                the message carries its exit status and the last line it printed
         """
         if config_path is None:
             config_path = config.CONFIG_TOGSIM_CONFIG
@@ -359,9 +365,11 @@ class TOGSimulator():
             )
             raise RuntimeError("TOGSim subprocess timeout") from e
         except subprocess.CalledProcessError as e:
-            logger.error(f"[TOGSim] Command failed with exit code {e.returncode}")
-            logger.error(f"[TOGSim] Error output: {e.output.decode() if isinstance(e.output, bytes) else e.output}")
-            assert 0
+            said = (e.stdout + e.stderr).decode(errors="replace").strip().splitlines()
+            if not autotune_mode:
+                logger.error("[TOGSim] Simulator exited with status %d:\n%s", e.returncode, "\n".join(said))
+            raise RuntimeError(f"TOGSim Simulator exited with status {e.returncode}: "
+                               f"{said[-1] if said else 'it printed nothing'}") from e
 
         # Prevent race condition
         with open(result_path, "w") as f:

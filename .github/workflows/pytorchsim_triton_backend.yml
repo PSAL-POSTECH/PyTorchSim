@@ -24,6 +24,11 @@ on:
       - 'scripts/ci/triton_route_passing.txt'
       - '.github/workflows/pytorchsim_triton_backend.yml'
   workflow_dispatch:
+    inputs:
+      sweep_jobs:
+        description: "Tests the sweep runs at once (empty: the sweep's default, 8 on a 16-CPU runner)"
+        required: false
+        default: ''
 
 concurrency:
   group: triton-route-${{ github.ref }}
@@ -124,13 +129,19 @@ jobs:
       # extension that does not build fails the step, a sweep result does not.
       - name: Device extension + full sweep (the sweep reports)
         if: ${{ !cancelled() && steps.pull.outcome == 'success' }}
+        env:
+          SWEEP_JOBS: ${{ inputs.sweep_jobs }}
         run: |
+          case "$SWEEP_JOBS" in
+            ''|[1-9]|[1-9][0-9]) ;;
+            *) echo "::error::sweep_jobs is '$SWEEP_JOBS'; it is a number from 1 to 99, or empty"; exit 1 ;;
+          esac
           mkdir -p sweep sweep-prev && chmod 777 sweep
           rc=0
           docker run --rm -v "$PWD:/src:ro" -v "$PWD/sweep:/sweep" "${BASE_IMAGE}" \
             bash /src/scripts/ci/triton_route_in_container.sh --all \
               --timeout 900 --order-from /src/sweep-prev/results.json \
-              --json /sweep/results.json \
+              ${SWEEP_JOBS:+-j "$SWEEP_JOBS"} --json /sweep/results.json \
               --markdown /sweep/coverage.md --artifacts /sweep/failures || rc=$?
           if [ ! -f sweep/device-built ]; then
             echo "::error::the device extension did not build (exit $rc)"

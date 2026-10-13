@@ -65,7 +65,7 @@ class TOGSimulator():
         if config_path is None:
             config_path = config.CONFIG_TOGSIM_CONFIG
         if togsim_path is None:
-            togsim_path = os.path.join(config.CONFIG_TORCHSIM_DIR, "TOGSim")
+            togsim_path = config.CONFIG_TOGSIM_DIR
 
         self.base_dir = togsim_path
         self.config_path = config_path
@@ -266,9 +266,14 @@ class TOGSimulator():
 
     @staticmethod
     def get_togsim_command(config_path, togsim_path=None):
+        """The Simulator of the TOGSim checkout at `togsim_path` (TOGSIM_DIR's by default), on `config_path`."""
         if togsim_path is None:
-            togsim_path = os.path.join(config.CONFIG_TORCHSIM_DIR, "TOGSim")
-        bin = os.path.join(togsim_path, "build/bin/Simulator")
+            togsim_path = config.CONFIG_TOGSIM_DIR
+        bin = config.togsim_simulator(togsim_path)
+        if not os.path.isfile(bin):
+            raise FileNotFoundError(
+                f"{bin} not found: TOGSIM_DIR must name a TOGSim checkout that has been built "
+                f"(the compiler's setup/toolchain.sh togsim builds the one it carries)")
         config_file = os.path.join(togsim_path, config_path)
         cmd = f"{bin} --config {config_file}"
         return cmd
@@ -293,7 +298,7 @@ class TOGSimulator():
             attribute_path: Path to attribute file
             autotune_mode: If True, run in autotune mode (silent)
             config_path: Path to TOGSim config file (required)
-            togsim_path: Path to TOGSim directory (optional, defaults to CONFIG_TORCHSIM_DIR/TOGSim)
+            togsim_path: TOGSim repository root (optional, defaults to config.CONFIG_TOGSIM_DIR)
             timeout_sec: If set, terminate the Simulator subprocess after this many seconds
                 (autotune uses this to skip very slow tile candidates).
 
@@ -303,7 +308,7 @@ class TOGSimulator():
         if config_path is None:
             config_path = config.CONFIG_TOGSIM_CONFIG
         if togsim_path is None:
-            togsim_path = os.path.join(config.CONFIG_TORCHSIM_DIR, "TOGSim")
+            togsim_path = config.CONFIG_TOGSIM_DIR
 
         # Create result path with appropriate filename
         if autotune_mode:

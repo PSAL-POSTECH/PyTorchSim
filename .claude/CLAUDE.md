@@ -133,6 +133,7 @@ Read in `pytorchsim/config.py`:
 | `TORCHSIM_BREAKDOWN` | `0` | `1` prints where the run's wall clock went (compile per stage/pass, Spike, gem5, TOGSim) at exit, and writes `breakdown_<YYYYMMDD_HHMMSS>_<hash>.json` into the dump path — stamped like `togsim_results/`, so parallel runs sharing a dump path each keep their own |
 | `TORCHSIM_COMPILE_DIR` | `$TORCHSIM_DIR/pytorchsim-triton-compiler` | compiler checkout (stages 1-6) |
 | `TORCHSIM_COMPILE_PYTHON` | `sys.executable` | interpreter the compiler runs under |
+| `TOGSIM_DIR` | `$TORCHSIM_COMPILE_DIR/third_party/TOGSim` | TOGSim repository root: the header is `$TOGSIM_DIR/include/togsim_runtime.h`, the binary `$TOGSIM_DIR/build/bin/Simulator`. Also handed to the compiler subprocess |
 | `TOGSIM_DEBUG_LEVEL` | unset | passed to TOGSim `--log_level` |
 
 Note: `TOGSIM_CONFIG` is **overwritten** while inside a `with TOGSimulator(config_path=...)` block (and restored on exit). Compilation reads the same YAML as TOGSim that way.
@@ -168,7 +169,7 @@ with TOGSimulator(config_path=...):
 - **Docker (recommended):** `docker run -it --ipc=host --name torchsim -w /workspace/PyTorchSim ghcr.io/psal-postech/torchsim-ci:v1.0.1 bash`
 - **TOGSim from source:** `cd TOGSim && mkdir -p build && cd build && conan install .. --build=missing && cmake .. && make -j$(nproc)`
 - **device (Python package):** `cd device && python -m pip install --no-build-isolation -e .`
-- **Compiler + Spike / gem5 from source:** `bash scripts/build_from_source.sh` (checks out PyTorchSim-Triton-Backend at the commit pinned in `third_party/pytorchsim-triton-backend.json`, the same pin as the CI docker image, and runs its `setup/toolchain.sh`; Spike, pk and gem5 land in `$VCIX_ENV_ROOT`).
+- **Compiler + Spike / gem5 / TOGSim from source:** `bash scripts/build_from_source.sh` (checks out PyTorchSim-Triton-Backend at the commit pinned in `third_party/pytorchsim-triton-backend.json`, the same pin as the CI docker image, and runs its `setup/toolchain.sh`; Spike, pk and gem5 land in `$VCIX_ENV_ROOT`, and the TOGSim it carries is built in its `third_party/TOGSim/build`, which needs conan 1.56 and cmake on PATH).
 
 Conan deps for TOGSim: `boost/1.79.0`, `robin-hood-hashing/3.11.5`, `spdlog/1.11.0`, `yaml-cpp/0.8.0`.
 

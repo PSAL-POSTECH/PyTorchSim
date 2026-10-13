@@ -30,7 +30,7 @@ STAGES = [
     ("07-regularized.mlir", "1 triton-compile: TTGIR -> linalg"),
     ("08-transformed.mlir", "2 torchsim-compile: transform"),
     ("09-custom.mlir",      "2 torchsim-compile: lower (DMA, lanes, spad)"),
-    ("trace.so",            "trace producer"),
+    ("tog.so",              "TOG"),
 ]
 
 #: First match wins. Each bucket names the layer that owns the fix.
@@ -45,7 +45,7 @@ BUCKETS = [
     ("reduction",      r"lane-aware|linalg\.reduce|no reduction path"),
     ("dynamic_shape",  r"ShapeMismatch|dynamic shape|size_hint returned None"),
     ("matmul_timing",  r"vcix\.iv|sf\.vc\.|no compute node"),
-    ("togsim",         r"TOGSim|trace\.so|SIGSEGV|Signals\.SIG|'vpu_num_lanes'"),
+    ("togsim",         r"TOGSim|tog\.so|SIGSEGV|Signals\.SIG|'vpu_num_lanes'"),
     ("wrong_values",   r"VALUES WRONG|allclose|Test Failed"),
     ("timeout",        r"^__timeout__$"),
 ]
@@ -206,7 +206,7 @@ def write_markdown(results, path):
             "reduction": "the compiler -- no lane-aware reduction",
             "dynamic_shape": "pytorchsim/codegen -- shape-specialised launch",
             "matmul_timing": "build_tog -- compute node lookup",
-            "togsim": "TOGSim / trace producer",
+            "togsim": "TOGSim / the TOG",
             "wrong_values": "numerics -- investigate",
             "missing_dep": "test environment (present in the CI image)",
             "timeout": "too slow, or hung",

@@ -2,7 +2,7 @@
 
 Off unless TORCHSIM_BREAKDOWN=1; one table at process exit and a
 breakdown_<run-id>.json beside it, stamped so parallel runs do not share a file.
-Nested spans are charged self time, so gem5 inside a trace build counts once.
+Nested spans are charged self time, so gem5 inside the cycle-table build counts once.
 """
 
 import atexit
@@ -26,10 +26,10 @@ SPIKE = "spike"
 GEM5_SAMPLE = "gem5/sample"
 GEM5_BUILD = "gem5/build"
 GEM5_RUN = "gem5/run"
-TOGSIM_TRACE = "togsim/trace"
+TOGSIM_TABLES = "togsim/tables"
 TOGSIM_RUN = "togsim/run"
 
-ORDER = [TORCHSIM_COMPILE, SPIKE, GEM5_SAMPLE, GEM5_BUILD, GEM5_RUN, TOGSIM_TRACE, TOGSIM_RUN]
+ORDER = [TORCHSIM_COMPILE, SPIKE, GEM5_SAMPLE, GEM5_BUILD, GEM5_RUN, TOGSIM_TABLES, TOGSIM_RUN]
 
 
 def enabled():

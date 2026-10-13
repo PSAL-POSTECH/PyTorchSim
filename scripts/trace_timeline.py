@@ -15,7 +15,7 @@ store: finished), serialized per direction so each is one visible bar (packed ro
 saturated bus). A compute slice's width is its compute_cycle, which is what the Core runs it for.
 
 Usage:
-  bin/Simulator --config <yml> --trace_so <so> --cycle_table <tsv> --log_level trace \
+  bin/Simulator --config <yml> --tog_so <so> --cycle_table <tsv> --log_level trace \
       2>&1 | python scripts/trace_timeline.py -o timeline.json
   # or
   python scripts/trace_timeline.py trace.log -o timeline.json

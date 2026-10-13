@@ -6,10 +6,12 @@ name: Triton codegen route (PyTorchSim-Triton-Backend)
 # Separate from the main CI on purpose: it runs when the compiler pin moves, and
 # its sweep reports rather than gates.
 #
-# The base image is the compiler's published image at the pin plus the test stack (docker/Dockerfile.base);
-# the compiler's package grants this repository read access, so no token is involved.
-# and its vcix-accelerator submodule. Both are private and the default Actions token is
-# scoped to this repository. preflight checks it before the docker build.
+# One job, one image pull. The base image is the compiler's published image at the pin plus the
+# test stack (docker/Dockerfile.base); the compiler's package grants this repository read access,
+# so the workflow's own token pulls it. The commit under test is not baked into an image: the checkout is
+# mounted read-only and scripts/ci/triton_route_in_container.sh builds its device extension there.
+# What fails the run: no compiler image, the base build or its pull, the smoke kernels, the device
+# extension.
 
 on:
   push:
@@ -30,15 +32,12 @@ concurrency:
 env:
   BASE_IMAGE_REPO: ghcr.io/psal-postech/torchsim_base
   PTB_IMAGE_REPO: ghcr.io/psal-postech/pytorchsim-triton-backend
-  APP_IMAGE_REPO: ghcr.io/psal-postech/torchsim_ptb
   SOURCE_SHA: ${{ github.sha }}
 
 jobs:
-  ensure-base:
-    name: Base image on the compiler's
+  route:
+    name: Triton route (smoke gate + coverage sweep)
     runs-on: [self-hosted, slurm, big, x86_64]
-    outputs:
-      base_image: ${{ steps.pin.outputs.base_image }}
     permissions:
       contents: read
       packages: write
@@ -59,7 +58,6 @@ jobs:
           PIN="$(bash scripts/ci/third_party_base_pin.sh)"
           echo "PTB_IMAGE=${PTB_IMAGE_REPO}:${PTB_REF}" >> "$GITHUB_ENV"
           echo "BASE_IMAGE=${BASE_IMAGE_REPO}:third_party-${PIN}" >> "$GITHUB_ENV"
-          echo "base_image=${BASE_IMAGE_REPO}:third_party-${PIN}" >> "$GITHUB_OUTPUT"
       - name: The compiler has published an image for the pin
         run: |
           if ! docker buildx imagetools inspect "${PTB_IMAGE}" > /dev/null 2> inspect.err; then
@@ -86,67 +84,9 @@ jobs:
             PTB_IMAGE=${{ env.PTB_IMAGE }}
           tags: ${{ env.BASE_IMAGE }}
 
-  build-app:
-    name: Build app image on the base
-    needs: ensure-base
-    runs-on: [self-hosted, slurm, big, x86_64]
-    outputs:
-      app_image: ${{ steps.name.outputs.app_image }}
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ env.SOURCE_SHA }}
-          persist-credentials: false
-
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Image name
-        id: name
-        run: echo "app_image=${APP_IMAGE_REPO}:${SOURCE_SHA}" >> "$GITHUB_OUTPUT"
-
-      - name: Remove this repository's older images from the runner
-        run: |
-          keep='${{ needs.ensure-base.outputs.base_image }}'
-          for repo in ghcr.io/psal-postech/torchsim-test ghcr.io/psal-postech/torchsim_base; do
-            docker images --format '{{.Repository}}:{{.Tag}}' "$repo"
-          done | grep -v -x -F "$keep" | xargs -r docker rmi > /dev/null 2>&1 || true
-          docker image prune -f > /dev/null 2>&1 || true
-          free_gb() { df -BG --output=avail / | tail -1 | tr -dc 0-9; }
-          if [ "$(free_gb)" -lt 40 ]; then
-            echo "$(free_gb) GB free after removing this repository's images: removing every unused image and container on the runner"
-            docker container prune -f > /dev/null 2>&1 || true
-            docker image prune -af > /dev/null 2>&1 || true
-          fi
-          df -h / | tail -1
-          docker images --format '{{.Size}}  {{.Repository}}:{{.Tag}}' 2>/dev/null | head -8
-
-      - name: Build and push
-        uses: docker/build-push-action@v4
-        with:
-          context: .
-          file: ./docker/Dockerfile
-          push: true
-          build-args: |
-            BASE_IMAGE=${{ needs.ensure-base.outputs.base_image }}
-          tags: ${{ steps.name.outputs.app_image }}
-
-  ptb-baselines:
-    name: PyTorchSim-Triton-Backend baselines
-    needs: build-app
-    runs-on: [self-hosted, slurm, x86_64]
-    steps:
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Pull the base image
+        id: pull
+        run: docker pull "${BASE_IMAGE}"
 
       # The harness's own kernels, end to end through Spike. This is the gate on
       # the toolchain itself: if these regress, nothing downstream is meaningful.
@@ -157,37 +97,38 @@ jobs:
       # numbers, which is the whole point of a smoke test.
       - name: doctor + add / mul / relu / gemm / bmm
         run: |
-          docker run --rm \
-            ${{ needs.build-app.outputs.app_image }} bash -lc '
+          docker run --rm "${BASE_IMAGE}" bash -lc '
               cd /workspace/pytorchsim-triton-compiler &&
               python3 tests/torchsim-compile doctor &&
               for k in add mul relu gemm bmm; do
                 echo "=== $k ===" && python3 tests/torchsim-compile tests/cases/smoke/$k.py || exit 1
               done'
 
-  coverage-sweep:
-    name: Coverage sweep beyond the allowlist
-    needs: build-app
-    runs-on: [self-hosted, slurm, big, x86_64]
-    steps:
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      # Reports every test, allowlist included. Each failure leaves its kernel
-      # and stage IR behind. pytorchsim_test.yml is what gates the allowlist.
-      - name: Full sweep (report)
-        continue-on-error: true
+      # Runs whether or not the smoke kernels held. Reports every test, allowlist
+      # included; each failure leaves its kernel and stage IR behind. A device
+      # extension that does not build fails the step, a sweep result does not.
+      - name: Device extension + full sweep (the sweep reports)
+        if: ${{ !cancelled() && steps.pull.outcome == 'success' }}
         run: |
           mkdir -p sweep && chmod 777 sweep
-          docker run --rm -v "$PWD/sweep:/sweep" \
-            ${{ needs.build-app.outputs.app_image }} \
-            python3 PyTorchSim/scripts/ci/triton_route_sweep.py --all \
+          rc=0
+          docker run --rm -v "$PWD:/src:ro" -v "$PWD/sweep:/sweep" "${BASE_IMAGE}" \
+            bash /src/scripts/ci/triton_route_in_container.sh --all \
               --timeout 900 --json /sweep/results.json \
-              --markdown /sweep/coverage.md --artifacts /sweep/failures
-          cat sweep/coverage.md >> "$GITHUB_STEP_SUMMARY"
+              --markdown /sweep/coverage.md --artifacts /sweep/failures || rc=$?
+          if [ ! -f sweep/device-built ]; then
+            echo "::error::the device extension did not build (exit $rc)"
+            exit 1
+          fi
+          rm -f sweep/device-built
+          if [ "$rc" -ne 0 ]; then
+            echo "::warning::the sweep container exited $rc"
+          fi
+          if [ -f sweep/coverage.md ]; then
+            cat sweep/coverage.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::the sweep wrote no report"
+          fi
 
       - uses: actions/upload-artifact@v4
         if: always()

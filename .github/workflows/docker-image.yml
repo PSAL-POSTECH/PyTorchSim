@@ -1,6 +1,7 @@
 name: Docker image CI
 
-# The PR gate. Three layers: the base image -- the compiler's own published image at the pinned
+# Started by hand only (workflow_dispatch): neither a pull request nor a push to
+# pytorchsim-triton-backend starts it. Three layers: the base image -- the compiler's own published image at the pinned
 # commit (ghcr.io/psal-postech/pytorchsim-triton-backend:<ref>, one tag per commit from that
 # repository's images workflow) plus PyTorch and the test stack, built once per pin and reused
 # (scripts/ci/third_party_base_pin.sh) -- the app image for this commit, and one container per
@@ -8,14 +9,16 @@ name: Docker image CI
 # built here. The compiler's package grants this repository read access, so the default Actions
 # token is all the registry needs.
 on:
-  pull_request:
-    branches: [ "master", "develop", "pytorchsim-triton-backend" ]
   workflow_dispatch:
+
+concurrency:
+  group: docker-image-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   BASE_IMAGE_REPO: ghcr.io/psal-postech/torchsim_base
   PTB_IMAGE_REPO: ghcr.io/psal-postech/pytorchsim-triton-backend
-  SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+  SOURCE_SHA: ${{ github.sha }}
 
 jobs:
   ensure-base:
@@ -153,7 +156,7 @@ jobs:
     needs: build-and-test
     uses: ./.github/workflows/pytorchsim_test.yml
     with:
-      image_name: ghcr.io/psal-postech/torchsim-test:${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+      image_name: ghcr.io/psal-postech/torchsim-test:${{ github.sha }}
       togsim_config: /workspace/PyTorchSim/configs/systolic_ws_256x256_c1_simple_noc_tpuv6e_functional_only.yml
       run_accuracy: true
 
@@ -161,7 +164,7 @@ jobs:
     needs: build-and-test
     uses: ./.github/workflows/pytorchsim_test.yml
     with:
-      image_name: ghcr.io/psal-postech/torchsim-test:${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+      image_name: ghcr.io/psal-postech/torchsim-test:${{ github.sha }}
       togsim_config: /workspace/PyTorchSim/configs/systolic_ws_32x32_c1_simple_noc_tpuv3.yml
       run_accuracy: false
 
@@ -169,6 +172,6 @@ jobs:
     needs: build-and-test
     uses: ./.github/workflows/pytorchsim_test.yml
     with:
-      image_name: ghcr.io/psal-postech/torchsim-test:${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+      image_name: ghcr.io/psal-postech/torchsim-test:${{ github.sha }}
       togsim_config: /workspace/PyTorchSim/configs/systolic_ws_8x8_c1_simple_noc_tpuv3.yml
       run_accuracy: false

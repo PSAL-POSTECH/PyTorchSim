@@ -6,7 +6,8 @@ the periodic `Core stat` blocks every `core_stats_print_period_cycles` already c
 the whole time series. For per-instruction Gantt detail use `trace_timeline.py`.
 
 Compile wall clock comes from the the compiler `timing.json` each kernel workdir holds,
-joined to a run by the `triton_<hash>` beside its `trace_so`. A PyTorchSim
+joined to a run by the `triton_<hash>` beside its `--tog_so` (`--trace_so` in a log from before
+TOGSim ABI 16). A PyTorchSim
 `breakdown.json` (TORCHSIM_BREAKDOWN=1) adds Spike, gem5 and TOGSim on top.
 
 Usage:
@@ -21,7 +22,7 @@ import os
 import re
 import sys
 
-_CMDLINE = re.compile(r"--trace_so (\S+)")
+_CMDLINE = re.compile(r"--(?:tog_so|trace_so) (\S+)")
 _CONFIG_INT = re.compile(r"^(\w+): (\d+)$")
 _PEAK_BW = re.compile(r"Total bandwidth ([\d.]+) GB/s, (\d+) MHz, (\d+) channels, (\d+) bytes")
 _SA = re.compile(r"Core \[(\d+)\] : Systolic array \[(\d+)\] utilization\(%\): ([\d.]+), "
@@ -53,12 +54,12 @@ _WANTED_CONFIG = ("num_cores", "core_freq_mhz", "core_stats_print_period_cycles"
                   "core_spad_size_kb", "pytorchsim_timing_mode", "pytorchsim_functional_mode")
 
 
-def kernel_name(trace_so):
+def kernel_name(tog_so):
     """Name a kernel by its `triton_<hash>` dir and the test dir above it."""
-    parts = [p for p in trace_so.split(os.sep) if p]
+    parts = [p for p in tog_so.split(os.sep) if p]
     kdir = next((p for p in reversed(parts) if p.startswith("triton_")), None)
     if kdir is None:
-        kdir = parts[-2] if len(parts) > 1 else trace_so
+        kdir = parts[-2] if len(parts) > 1 else tog_so
     i = parts.index(kdir) if kdir in parts else -1
     source = parts[i - 1] if i > 0 else ""
     if source in ("outputs", ".triton_sweep", "scratchpad"):
@@ -89,8 +90,8 @@ def parse_log(path):
            "cores": {}, "dram_channels": [], "kernels": []}
 
     m = _CMDLINE.search(head)
-    run["trace_so"] = m.group(1) if m else ""
-    run["kernel"], run["source"] = kernel_name(run["trace_so"]) if m else ("?", "")
+    run["tog_so"] = m.group(1) if m else ""
+    run["kernel"], run["source"] = kernel_name(run["tog_so"]) if m else ("?", "")
 
     for line in head.splitlines():
         cm = _CONFIG_INT.match(line.strip())
@@ -356,7 +357,7 @@ def build_payload(runs, timing=None, breakdowns=None):
             prev["source"] = prev["source"] or r["source"]
             continue
         item = {"log": r["log"], "kernel": r["kernel"], "source": r["source"], "repeats": 1,
-                "workdir": os.path.dirname(os.path.abspath(r["trace_so"])) if r["trace_so"] else "",
+                "workdir": os.path.dirname(os.path.abspath(r["tog_so"])) if r["tog_so"] else "",
                 "config": r["config"], "summary": summarize(r), "series": series(r),
                 "dram_channels": r["dram_channels"], "interval": r["interval"],
                 "cores": {str(k): {"sa": v["sa"], "vu": v["vu"], "dma": v["dma"],
@@ -1245,7 +1246,7 @@ def main(argv=None):
     ap.add_argument("-o", "--out", default="util.html", help="output HTML path")
     ap.add_argument("--timing", nargs="*", default=None, metavar="ROOT",
                     help="extra roots to scan for the compiler timing.json; the workdir beside "
-                         "each log's trace_so is always checked")
+                         "each log's tog_so is always checked")
     ap.add_argument("--breakdown", nargs="*", default=None, metavar="ROOT",
                     help="roots to scan for PyTorchSim breakdown.json (TORCHSIM_BREAKDOWN=1), "
                          "which adds Spike, gem5 and TOGSim wall clock")
@@ -1256,9 +1257,9 @@ def main(argv=None):
     timing = find_timing(args.timing or [])
     embedded = timing_from_breakdowns(breakdowns)
     for r in runs:
-        if not r["trace_so"]:
+        if not r["tog_so"]:
             continue
-        wd = os.path.dirname(os.path.abspath(r["trace_so"]))
+        wd = os.path.dirname(os.path.abspath(r["tog_so"]))
         if wd not in timing:
             rec = read_timing(os.path.join(wd, "timing.json"))
             if rec:

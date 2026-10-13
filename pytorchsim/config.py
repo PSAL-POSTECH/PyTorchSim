@@ -21,6 +21,16 @@ CONFIG_VCIX_MODEL = os.environ.get("TORCHSIM_COMPILE_VCIX_MODEL", default=os.pat
 CONFIG_TORCHSIM_COMPILE_PYTHON = os.environ.get("TORCHSIM_COMPILE_PYTHON", default=sys.executable)
 
 
+def _togsim_dir():
+    """The TOGSim repository root: TOGSIM_DIR, else the checkout the compiler carries as third_party/TOGSim."""
+    return os.environ.get("TOGSIM_DIR") or os.path.join(
+        CONFIG_TORCHSIM_COMPILE_DIR, "third_party", "TOGSim")
+
+
+CONFIG_TOGSIM_DIR = _togsim_dir()
+CONFIG_TOGSIM_CONFIG_DIR = os.path.join(CONFIG_TOGSIM_DIR, "configs")
+
+
 def get_dump_path():
     """Resolve TORCHSIM_DUMP_PATH and re-point Inductor's cache dir at it.
 
@@ -46,11 +56,15 @@ def get_write_path(src_code):
 
 def __getattr__(name):
     # TOGSim config
-    config_path = os.environ.get('TOGSIM_CONFIG',
-                default=f"{CONFIG_TORCHSIM_DIR}/configs/systolic_ws_256x256_c1_simple_noc_tpuv6e_functional_only.yml")
+    config_path = os.environ.get('TOGSIM_CONFIG', default=os.path.join(
+        CONFIG_TOGSIM_CONFIG_DIR, "systolic_ws_256x256_c1_simple_noc_tpuv6e_functional_only.yml"))
     if name == "CONFIG_TOGSIM_CONFIG":
         return config_path
 
+    if not os.path.isfile(config_path):
+        raise FileNotFoundError(
+            f"{config_path} not found: TOGSIM_DIR must name a TOGSim checkout (its configs/ holds the "
+            f"machine configs; now {CONFIG_TOGSIM_DIR}), or TOGSIM_CONFIG a machine config file")
     with open(config_path, 'r') as f:
         config_yaml = yaml.safe_load(f)
 
@@ -120,8 +134,13 @@ CONFIG_DEBUG_MODE = int(os.environ.get('TORCHSIM_DEBUG_MODE', default=0))
 
 
 def togsim_include_dir():
-    """Where togsim_runtime.h lives: the header a trace producer is compiled against."""
-    return os.path.join(CONFIG_TORCHSIM_DIR, "TOGSim", "include")
+    """Where togsim_runtime.h lives: the header a TOG is compiled against."""
+    return os.path.join(CONFIG_TOGSIM_DIR, "include")
+
+
+def togsim_simulator(togsim_dir=None):
+    """The Simulator a TOGSim checkout builds in its own tree; CONFIG_TOGSIM_DIR's unless another is named."""
+    return os.path.join(togsim_dir or CONFIG_TOGSIM_DIR, "build", "bin", "Simulator")
 
 
 def setup_logger(name=None, level=None):

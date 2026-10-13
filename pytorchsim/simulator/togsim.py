@@ -65,7 +65,7 @@ class TOGSimulator():
         if config_path is None:
             config_path = config.CONFIG_TOGSIM_CONFIG
         if togsim_path is None:
-            togsim_path = os.path.join(config.CONFIG_TORCHSIM_DIR, "TOGSim")
+            togsim_path = config.CONFIG_TOGSIM_DIR
 
         self.base_dir = togsim_path
         self.config_path = config_path
@@ -129,7 +129,7 @@ class TOGSimulator():
             command_type: Type of command ("LAUNCH_KERNEL" or "DEVICE_SYNC")
             device_index: Device index
             stream_index: Stream index
-            tog_path: kernel-dir handle; TOGSim derives trace.so/trace_cycles.tsv from
+            tog_path: kernel-dir handle; TOGSim derives tog.so/tog_cycles.tsv from
                 its directory - empty for DEVICE_SYNC
             attribute_path: Path to attribute file - empty for DEVICE_SYNC
             timestamp: Timestamp in nanoseconds (default: 0)
@@ -163,11 +163,9 @@ class TOGSimulator():
         return kernel_id
 
     def shutdown(self):
-        """Close the FIFO, wait for TOGSim to exit, and write its log and trace.
-
-        Assumes every queued kernel has already been sent; draining the stream
-        belongs to whoever owns it.
-        """
+        """Close the FIFO, wait for TOGSim to exit, and write its log and trace; a Simulator that
+        exited non-zero (a kernel it refuses ends the session) is a RuntimeError raised after that.
+        Assumes every queued kernel has already been sent: draining the stream is its owner's."""
         # Close trace file handle if open
         if self._trace_file_handle is not None:
             try:
@@ -176,8 +174,9 @@ class TOGSimulator():
                 pass
             self._trace_file_handle = None
 
+        status = 0
         if self.process:
-            self.process.wait()
+            status = self.process.wait()
 
             # Read output streams
             stdout_output = ""
@@ -215,6 +214,9 @@ class TOGSimulator():
 
         # Clean up FIFOs
         self._cleanup_fifos()
+        if status:
+            raise RuntimeError(f"TOGSim Simulator exited with status {status}: the session did not run "
+                               f"every kernel it was sent, and the Simulator's own output says why")
 
     def launch_kernel(self, device_index, stream_index, tog_path, attribute_path, timestamp=0):
         """
@@ -223,7 +225,7 @@ class TOGSimulator():
         Args:
             device_index: Device index
             stream_index: Stream index
-            tog_path: kernel-dir handle; TOGSim derives trace.so from its directory
+            tog_path: kernel-dir handle; TOGSim derives tog.so from its directory
             attribute_path: Path to attribute file
             timestamp: Timestamp in nanoseconds (default: 0)
 
@@ -266,9 +268,14 @@ class TOGSimulator():
 
     @staticmethod
     def get_togsim_command(config_path, togsim_path=None):
+        """The Simulator of the TOGSim checkout at `togsim_path` (TOGSIM_DIR's by default), on `config_path`."""
         if togsim_path is None:
-            togsim_path = os.path.join(config.CONFIG_TORCHSIM_DIR, "TOGSim")
-        bin = os.path.join(togsim_path, "build/bin/Simulator")
+            togsim_path = config.CONFIG_TOGSIM_DIR
+        bin = config.togsim_simulator(togsim_path)
+        if not os.path.isfile(bin):
+            raise FileNotFoundError(
+                f"{bin} not found: TOGSIM_DIR must name a TOGSim checkout that has been built "
+                f"(the compiler's setup/toolchain.sh togsim builds the one it carries)")
         config_file = os.path.join(togsim_path, config_path)
         cmd = f"{bin} --config {config_file}"
         return cmd
@@ -288,22 +295,26 @@ class TOGSimulator():
         For streaming multiple kernels, use launch_kernel() instead.
 
         Args:
-            model_path: kernel-dir handle; trace.so/trace_cycles.tsv are derived from
+            model_path: kernel-dir handle; tog.so/tog_cycles.tsv are derived from
                 its directory
             attribute_path: Path to attribute file
             autotune_mode: If True, run in autotune mode (silent)
             config_path: Path to TOGSim config file (required)
-            togsim_path: Path to TOGSim directory (optional, defaults to CONFIG_TORCHSIM_DIR/TOGSim)
+            togsim_path: TOGSim repository root (optional, defaults to config.CONFIG_TOGSIM_DIR)
             timeout_sec: If set, terminate the Simulator subprocess after this many seconds
                 (autotune uses this to skip very slow tile candidates).
 
         Returns:
             Path to the simulation result log file
+
+        Raises:
+            RuntimeError: the Simulator timed out, or exited non-zero (a kernel it refuses);
+                the message carries its exit status and the last line it printed
         """
         if config_path is None:
             config_path = config.CONFIG_TOGSIM_CONFIG
         if togsim_path is None:
-            togsim_path = os.path.join(config.CONFIG_TORCHSIM_DIR, "TOGSim")
+            togsim_path = config.CONFIG_TOGSIM_DIR
 
         # Create result path with appropriate filename
         if autotune_mode:
@@ -326,13 +337,13 @@ class TOGSimulator():
             os.fsync(trace_file.fileno())
 
         try:
-            trace_so = os.path.join(os.path.dirname(str(model_path)), "trace.so")
-            cycle_tsv = os.path.join(os.path.dirname(str(model_path)), "trace_cycles.tsv")
-            if not os.path.exists(trace_so):
-                raise FileNotFoundError(f"{trace_so} not found -- the kernel has no trace to simulate")
+            tog_so = os.path.join(os.path.dirname(str(model_path)), "tog.so")
+            cycle_tsv = os.path.join(os.path.dirname(str(model_path)), "tog_cycles.tsv")
+            if not os.path.exists(tog_so):
+                raise FileNotFoundError(f"{tog_so} not found -- the kernel has no TOG to simulate")
             base_cmd = TOGSimulator.get_togsim_command(config_path, togsim_path)
-            unit_tsv = os.path.join(os.path.dirname(str(model_path)), "trace_units.tsv")
-            cmd = f"{base_cmd} --trace_so {trace_so} --cycle_table {cycle_tsv} --unit_table {unit_tsv}"
+            unit_tsv = os.path.join(os.path.dirname(str(model_path)), "tog_units.tsv")
+            cmd = f"{base_cmd} --tog_so {tog_so} --cycle_table {cycle_tsv} --unit_table {unit_tsv}"
             if config.CONFIG_TOGSIM_DEBUG_LEVEL:
                 cmd += f" --log_level {config.CONFIG_TOGSIM_DEBUG_LEVEL}"
 
@@ -354,9 +365,11 @@ class TOGSimulator():
             )
             raise RuntimeError("TOGSim subprocess timeout") from e
         except subprocess.CalledProcessError as e:
-            logger.error(f"[TOGSim] Command failed with exit code {e.returncode}")
-            logger.error(f"[TOGSim] Error output: {e.output.decode() if isinstance(e.output, bytes) else e.output}")
-            assert 0
+            said = (e.stdout + e.stderr).decode(errors="replace").strip().splitlines()
+            if not autotune_mode:
+                logger.error("[TOGSim] Simulator exited with status %d:\n%s", e.returncode, "\n".join(said))
+            raise RuntimeError(f"TOGSim Simulator exited with status {e.returncode}: "
+                               f"{said[-1] if said else 'it printed nothing'}") from e
 
         # Prevent race condition
         with open(result_path, "w") as f:
@@ -460,7 +473,7 @@ if __name__ == "__main__":
     import argparse
 
     ap = argparse.ArgumentParser(description="Send kernels to TOGSim directly.")
-    ap.add_argument("kernel_dir", help="directory holding trace.so and trace_cycles.tsv")
+    ap.add_argument("kernel_dir", help="directory holding tog.so and tog_cycles.tsv")
     ap.add_argument("attribute", help="kernel attribute file")
     ap.add_argument("--config", default=None, help="TOGSim hardware YAML")
     ap.add_argument("--repeat", type=int, default=1)

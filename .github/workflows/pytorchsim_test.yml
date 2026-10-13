@@ -76,6 +76,7 @@ jobs:
           - tests/ops/view/test_view3D_2D.py
           - tests/system/test_eager.py
           - tests/system/test_patch_scope.py
+          - tests/system/test_togsim_exit.py
           - tests/system/test_togsim_result.py
     steps:
       - name: Log in to GitHub Container Registry

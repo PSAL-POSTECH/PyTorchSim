@@ -37,7 +37,7 @@ def launch_axes(meta):
     """The axes the LAUNCH spreads programs over, outermost first.
 
     A template declares ALL THREE even at extent 1: its source reads
-    tl.program_id(0..2) regardless, and the trace producer stops at an extra arg.
+    tl.program_id(0..2) regardless, and the TOG stops at an extra arg.
     """
     if meta.get("template_grid") is None:
         return parallel_axes(meta["numels"])
@@ -121,7 +121,7 @@ def storage_span(size, stride, offset=0):
 KERNEL_MANIFEST = "kernel.json"
 
 
-KERNEL_FORMAT = 1
+KERNEL_FORMAT = 2
 
 
 def kernel_object(workdir):
@@ -135,8 +135,8 @@ def kernel_object(workdir):
     if got.get("format") != KERNEL_FORMAT:
         raise KernelObjectMismatch(
             f"{path}: kernel object format {got.get('format')!r}, this reader "
-            f"knows {KERNEL_FORMAT}. The compiler and this frontend disagree "
-            f"about the contract; rebuild the kernel cache.")
+            f"knows {KERNEL_FORMAT}. Another compiler or frontend wrote it; "
+            f"delete the workdir (scripts/clear_codegen_cache.sh) to rebuild it.")
     return got
 
 
@@ -178,7 +178,7 @@ def link_shared(workdir, names):
     """Relink `names` from the workdir into this launch directory. Returns it.
 
     TOGSim resolves the cycle table and the shape file from the directory of
-    the trace it is given, so the shared trace has to appear in this one.
+    the TOG it is given, so the shared TOG has to appear in this one.
     """
     d = dir_for(workdir)
     for name in names:

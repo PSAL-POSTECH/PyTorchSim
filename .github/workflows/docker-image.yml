@@ -159,7 +159,7 @@ jobs:
     uses: ./.github/workflows/pytorchsim_test.yml
     with:
       image_name: ghcr.io/psal-postech/torchsim-test:${{ github.sha }}
-      togsim_config: /workspace/PyTorchSim/configs/systolic_ws_256x256_c1_simple_noc_tpuv6e_functional_only.yml
+      togsim_config: /workspace/pytorchsim-triton-compiler/third_party/TOGSim/configs/systolic_ws_256x256_c1_simple_noc_tpuv6e_functional_only.yml
       run_accuracy: true
 
   test-pytorchsim-wrapper2:
@@ -167,7 +167,7 @@ jobs:
     uses: ./.github/workflows/pytorchsim_test.yml
     with:
       image_name: ghcr.io/psal-postech/torchsim-test:${{ github.sha }}
-      togsim_config: /workspace/PyTorchSim/configs/systolic_ws_32x32_c1_simple_noc_tpuv3.yml
+      togsim_config: /workspace/pytorchsim-triton-compiler/third_party/TOGSim/configs/systolic_ws_32x32_c1_simple_noc_tpuv3.yml
       run_accuracy: false
 
   test-pytorchsim-wrapper3:
@@ -175,5 +175,5 @@ jobs:
     uses: ./.github/workflows/pytorchsim_test.yml
     with:
       image_name: ghcr.io/psal-postech/torchsim-test:${{ github.sha }}
-      togsim_config: /workspace/PyTorchSim/configs/systolic_ws_8x8_c1_simple_noc_tpuv3.yml
+      togsim_config: /workspace/pytorchsim-triton-compiler/third_party/TOGSim/configs/systolic_ws_8x8_c1_simple_noc_tpuv3.yml
       run_accuracy: false

@@ -14,7 +14,7 @@
 #                                            hash_prefix(src) in
 #                                            config.py)
 #   $TORCHSIM_DUMP_PATH/triton_<hash>/      (per-kernel artifacts: spec,
-#                                            staged IR, ELF, trace.so)
+#                                            staged IR, ELF, tog.so)
 #
 # WHY THE TRITON ONES MATTER MORE THAN THEY LOOK. That hash is of the INDUCTOR
 # SOURCE, so a fix anywhere BELOW it -- a torchsim-compile pass, the linalg lowering -- leaves the

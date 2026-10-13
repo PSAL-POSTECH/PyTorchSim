@@ -8,7 +8,7 @@ Shapes come from the tpu-perf-archive table data/v6e/<op>/torchxla.csv (cloned o
 $TPU_PERF_ARCHIVE), smallest work first. Everything of a
 tag lives in <out>/<tag>/:
 
-    config.yml    the config every shape ran on: --config with $TORCHSIM_DIR expanded and --set applied
+    config.yml    the config every shape ran on: --config with $TOGSIM_DIR expanded and --set applied
     meta.json     op, filters, frontend / compiler / archive commits, every invocation
     results.csv   one row per finished shape, written as it finishes, so a rerun skips what is done
     failed.csv    shapes that failed or timed out; they are retried on the next run
@@ -46,7 +46,9 @@ SA = re.compile(r"Systolic(?: array \[\d+\])? utilization\(%\): ([\d.]+)")
 
 
 def build_config(src, sets):
-    text = os.path.expandvars(open(src).read())
+    sys.path.insert(0, os.environ["TORCHSIM_DIR"])
+    from pytorchsim.config import CONFIG_TOGSIM_DIR
+    text = os.path.expandvars(open(src).read().replace("$TOGSIM_DIR", CONFIG_TOGSIM_DIR))
     for s in sets:
         k, v = s.split("=", 1)
         text, n = re.subn(rf"^{re.escape(k)}:.*$", f"{k}: {v}", text, flags=re.M)

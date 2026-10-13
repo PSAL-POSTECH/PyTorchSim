@@ -7,8 +7,9 @@ base_path = os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim')
 sys.path.append(base_path)
 sys.path.insert(0, os.path.join(base_path, 'tests'))
 from models.test_transformer import EncoderBlock as model2
+from pytorchsim.config import CONFIG_TOGSIM_CONFIG_DIR
 
-config = f'{base_path}/configs/systolic_ws_128x128_c2_simple_noc_tpuv3_partition.yml'
+config = os.path.join(CONFIG_TOGSIM_CONFIG_DIR, 'systolic_ws_128x128_c2_simple_noc_tpuv3_partition.yml')
 
 target_model1 = model1().eval()
 target_model2 = model2(768, 12).eval()

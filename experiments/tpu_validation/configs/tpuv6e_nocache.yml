@@ -1,6 +1,6 @@
-# TPU v6e timing config for the sim-vs-TPU comparison: the frontend's shipped
+# TPU v6e timing config for the sim-vs-TPU comparison: TOGSim's
 # configs/systolic_ws_256x256_c1_simple_noc_tpuv6e_timing_only.yml with ONE change, no L2 cache
-# (v6e has none between HBM and VMEM). run.py expands $TORCHSIM_DIR, applies any --set key=value
+# (v6e has none between HBM and VMEM). run.py expands $TOGSIM_DIR, applies any --set key=value
 # and writes the result to runs/<tag>/config.yml, which is the file every shape of that tag runs on.
 num_cores: 1
 core_freq_mhz: 3502
@@ -15,7 +15,7 @@ tpu_systolic_queue_entries: 256
 dram_type: ramulator2
 dram_channels: 32
 dram_stats_print_period_cycles: 200
-ramulator_config_path: $TORCHSIM_DIR/configs/ramulator2_configs/HBM3_TPUv6e.yaml
+ramulator_config_path: $TOGSIM_DIR/configs/ramulator2_configs/HBM3_TPUv6e.yaml
 l2d_type: nocache
 
 icnt_type: simple

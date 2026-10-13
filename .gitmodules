@@ -1,6 +1,0 @@
-[submodule "TOGSim/extern/booksim"]
-	path = TOGSim/extern/booksim
-	url = https://github.com/PSAL-POSTECH/booksim.git
-[submodule "TOGSim/extern/ramulator2"]
-	path = TOGSim/extern/ramulator2
-	url = https://github.com/PSAL-POSTECH/ramulator2

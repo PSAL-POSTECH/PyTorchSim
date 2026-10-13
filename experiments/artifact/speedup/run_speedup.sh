@@ -2,7 +2,7 @@
 set -e
 
 LOG_DIR=$TORCHSIM_DIR/experiments/artifact/logs
-CONFIG_DIR="$TORCHSIM_DIR/configs"
+CONFIG_DIR="$(cd "$TORCHSIM_DIR" && python3 -c 'from pytorchsim.config import CONFIG_TOGSIM_CONFIG_DIR as d; print(d)')"
 # CI: e.g. SKIP_ILS=1, SPEEDUP_ITERS=1 (shorter, no ILS re-runs)
 : "${SKIP_ILS:=0}"
 : "${SPEEDUP_ITERS:=5}"

@@ -2,8 +2,8 @@
 # Create a sibling git worktree for parallel work and wire up per-worktree env.
 #
 # Container-dedicated: assumes the ghcr.io/psal-postech/torchsim-ci container
-# layout. Shared binaries (gem5, LLVM, riscv toolchain) live at known paths
-# and are NOT duplicated per worktree.
+# layout. Shared binaries (gem5, LLVM, riscv toolchain, and TOGSim in the
+# compiler checkout) live at known paths and are NOT duplicated per worktree.
 #
 # Usage:
 #   scripts/setup_worktree.sh <purpose> [base-ref]
@@ -61,24 +61,6 @@ git -C "$REPO_ROOT" worktree add "$WT_DIR" -b "$BRANCH" "$BASE_REF"
 # pushes to its own name on first `git push -u origin <branch>`.
 git -C "$WT_DIR" branch --unset-upstream || true
 
-# Share the TOGSim binary from the worktree this script was run from. TOGSim
-# is a standalone C++ simulator that rarely changes alongside Python frontend
-# work, so symlinking saves a ~10-minute rebuild per worktree. If you do
-# modify TOGSim C++ in the new worktree, run `cd TOGSim/build && make` after
-# wiping the link target -- the symlink will be replaced by the local build
-# output.
-TOGSIM_BIN_SRC="$REPO_ROOT/TOGSim/build/bin/Simulator"
-TOGSIM_BIN_DST="$WT_DIR/TOGSim/build/bin/Simulator"
-if [[ -x "$TOGSIM_BIN_SRC" ]]; then
-    # Resolve so we point at the real binary, not a chain of worktree symlinks.
-    TOGSIM_BIN_REAL="$(readlink -f "$TOGSIM_BIN_SRC")"
-    mkdir -p "$(dirname "$TOGSIM_BIN_DST")"
-    ln -sfn "$TOGSIM_BIN_REAL" "$TOGSIM_BIN_DST"
-    TOGSIM_LINK_MSG="Symlinked TOGSim binary from $TOGSIM_BIN_REAL"
-else
-    TOGSIM_LINK_MSG="TOGSim binary not found at $TOGSIM_BIN_SRC; build it once with 'cd TOGSim/build && conan install .. --build=missing && cmake .. && make -j' or symlink from another worktree."
-fi
-
 # Per-worktree env. Container-dedicated paths for shared binaries.
 cat > "$WT_DIR/.envrc" <<'ENVRC'
 #!/usr/bin/env bash
@@ -93,12 +75,13 @@ export TORCHSIM_LOG_PATH="$_self/togsim_results"
 # one: v3 has 128 lanes where v6e has 256, and three coverage kernels answer
 # differently by lane count alone -- two of them WRONG at 256 while the 128-lane
 # run reports them green. A silent downgrade reads as "it passed yesterday".
-_v6e="$_self/configs/systolic_ws_256x256_c1_simple_noc_tpuv6e.yml"
+_v6e="$(cd "$_self" && python3 -c 'from pytorchsim.config import CONFIG_TOGSIM_CONFIG_DIR as d; print(d)')/systolic_ws_256x256_c1_simple_noc_tpuv6e.yml"
 export TOGSIM_CONFIG="$_v6e"
 if [ ! -f "$_v6e" ]; then
   echo "setup_worktree.sh: MISSING $_v6e" >&2
-  echo "  this worktree's branch predates the v6e config. Check it out or move" >&2
-  echo "  the branch; NOT falling back to v3, which is a different answer." >&2
+  echo "  the TOGSim checkout pytorchsim/config.py resolves (TOGSIM_DIR, else the" >&2
+  echo "  compiler's third_party/TOGSim) has no v6e config. Fix that checkout;" >&2
+  echo "  NOT falling back to v3, which is a different answer." >&2
 fi
 unset _v6e
 
@@ -120,7 +103,6 @@ ENVRC
 echo
 echo "Created worktree: $WT_DIR"
 echo "Branch:           $BRANCH (base: $BASE_REF)"
-echo "$TOGSIM_LINK_MSG"
 echo
 echo "Next:"
 echo "  cd $WT_DIR"

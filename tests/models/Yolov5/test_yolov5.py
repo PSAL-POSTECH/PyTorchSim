@@ -16,7 +16,7 @@ import shutil
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
 from _pytorchsim_utils import test_result
 
-def run_yolo(batch, config):
+def run_yolo(batch):
     import copy
 
     device = torch.device("npu:0")
@@ -226,12 +226,6 @@ def test_concat_4d(device):
     print("Concat 4D Test Done")
 
 if __name__ == "__main__":
-
-    base_dir = os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim")
-    config = os.environ.get(
-        "TOGSIM_CONFIG",
-        default=f"{base_dir}/configs/systolic_ws_256x256_c1_simple_noc_tpuv6e.yml",
-    )
     args = argparse.ArgumentParser()
     args.add_argument("--batch", type=int, default=1)
     args.add_argument("--dump_path", type=str, default="results")
@@ -268,4 +262,4 @@ if __name__ == "__main__":
     print("\n" + "=" * 80)
     print("Testing Full YOLOv5 Model")
     print("=" * 80)
-    run_yolo(batch, config)
+    run_yolo(batch)

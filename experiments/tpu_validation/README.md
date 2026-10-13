@@ -43,7 +43,7 @@ settings never mix in one `results.csv`; use a new tag for each variant.
 ## What a run leaves
 
     runs/<tag>/
-      config.yml     the exact config every shape ran on ($TORCHSIM_DIR expanded, --set applied)
+      config.yml     the exact config every shape ran on ($TOGSIM_DIR expanded, --set applied)
       meta.json      op, TPU table, frontend / compiler / archive commits, every command line
       results.csv    shape, cycles, sim_ns, dram_reads, dram_writes, sa_util_pct, wall_s
       failed.csv     shape, rc (or "timeout"), last log line

@@ -21,7 +21,7 @@ on:
       - 'third_party/pytorchsim-triton-backend.json'
       - 'docker/Dockerfile.base'
       - 'scripts/ci/third_party_base_pin.sh'
-      - 'scripts/ci/triton_route_passing.txt'
+      - 'scripts/ci/triton_route_*'
       - '.github/workflows/pytorchsim_triton_backend.yml'
   workflow_dispatch:
     inputs:

@@ -21,6 +21,8 @@ import sys
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, ROOT)
+from pytorchsim.config import CONFIG_TOGSIM_CONFIG_DIR
 HERE = os.path.dirname(os.path.abspath(__file__))
 PASSING = os.path.join(HERE, "triton_route_passing.txt")
 
@@ -153,7 +155,7 @@ def run_one(test, timeout, artifacts, scratch):
     # off for the same reason from the other side. A caller that wants cycles
     # sets TOGSIM_CONFIG itself and this leaves it alone.
     env.setdefault("TOGSIM_CONFIG", os.path.join(
-        ROOT, "configs",
+        CONFIG_TOGSIM_CONFIG_DIR,
         "systolic_ws_256x256_c1_simple_noc_tpuv6e_functional_only.yml"))
 
     t0, timed_out = time.time(), False

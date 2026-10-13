@@ -8,7 +8,9 @@ sys.path.insert(0, os.path.join(base_path, 'tests'))
 
 import torch
 
-config = os.environ.get('TOGSIM_CONFIG', f'{base_path}/configs/systolic_ws_256x256_c1_simple_noc_tpuv6e_timing_only.yml')
+from pytorchsim.config import CONFIG_TOGSIM_CONFIG_DIR
+
+config = os.environ.get('TOGSIM_CONFIG', os.path.join(CONFIG_TOGSIM_CONFIG_DIR, 'systolic_ws_256x256_c1_simple_noc_tpuv6e_timing_only.yml'))
 os.environ['TOGSIM_CONFIG'] = config
 
 # Try Fusion EncoderBlock first, fall back to standard test_transformer

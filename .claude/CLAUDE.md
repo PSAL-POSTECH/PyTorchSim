@@ -73,13 +73,13 @@ report next to the number it produced — never folded into a pass.
 | `pytorchsim/driver/` | Building a kernel and having it run: `codecache.py` (the compile entry point, the cache and the identity that admits it, the launcher), `autotune.py` (the template tile: autotuned on TOGSim, or a smaller one when the compiler says too big), `compiler_input.py` (what the compiler is handed: the rewritten Triton source and the KernelSpec file), `compiler_bridge.py` (PyTorchSim-Triton-Backend in a subprocess, the target description) |
 | `pytorchsim/simulator/` | What runs a kernel object: `functional.py` (tensors to disk, Spike, tensors back), `timing.py` (gem5 tile cycles, the cycle and unit tables beside the TOG, TOGSim), `togsim.py` (`TOGSimulator`, the TOGSim process, and `poisson_request_generator`), `wallclock.py` (where the run's own time went) |
 | `device/` | C++ PyTorch backend registering the `npu` device. Built as a pip-installed package via `setup.py`. Based on `torch_openreg` (PrivateUse1 example). Produces `_C.cpython-*.so` |
-| `TOGSim/` | C++ TOGSim source. `src/Simulator.cc`, `Core.cc`, `Dram.cc`, `Interconnect.cc`, `L2Cache.cc`, `Tile.cc`, `TileGraph.cc` are the core models. Externals: ramulator2, booksim, spdlog, yaml-cpp |
-| `configs/` | TOGSim hardware configs (YAML). The default is `systolic_ws_256x256_c1_simple_noc_tpuv6e_functional_only.yml` -- the same machine as `..._tpuv6e.yml` and one line apart, `pytorchsim_timing_mode: 0`. Naming pattern: `systolic_ws_<size>_c<cores>_<noc>_<target>.yml` |
+| `$TOGSIM_DIR` (not in this repo) | TOGSim, the repository PSAL-POSTECH/TOGSim, as the compiler checkout carries it: `$TORCHSIM_COMPILE_DIR/third_party/TOGSim`. C++ source in `src/` and `include/` (`include/togsim_runtime.h` is the C ABI a TOG is compiled against), the built `build/bin/Simulator`, and `configs/` |
+| `$TOGSIM_DIR/configs/` | TOGSim hardware configs (YAML); `config.CONFIG_TOGSIM_CONFIG_DIR`. The default is `systolic_ws_256x256_c1_simple_noc_tpuv6e_functional_only.yml` -- the same machine as `..._tpuv6e.yml` and one line apart, `pytorchsim_timing_mode: 0`. Naming pattern: `systolic_ws_<size>_c<cores>_<noc>_<target>.yml` |
 | `tests/` | Op- and model-level tests organized under `ops/<family>/` (elementwise, reduce, gemm, conv, attention, view, sort, misc, fusion), `models/<name>/` (Llama, Mixtral8x7B, DeepSeek, Diffusion, MoE, MLP, MobileNet, Yolov5) plus single-file model tests (test_resnet, test_transformer, test_vit, test_mlp, test_single_perceptron), and `system/` (scheduler, eager, vectorops). Shared helper: `tests/_utils.py`. **Which of them pass is `scripts/ci/triton_route_passing.txt`**; the rest are known gaps, swept and reported by `scripts/ci/triton_route_sweep.py --all` |
 | `experiments/artifact/` | Paper reproduction scripts (`cycle_validation/run_cycle.sh`, `speedup/run_speedup.sh`) |
 | `scripts/` | Dev tools (`util_viewer.py`, `trace_timeline.py`, `op_coverage.py`, `clear_codegen_cache.sh`, `setup_worktree.sh`) and CI helpers (`ci/`). `build_from_source.sh` builds the compiler and its simulators through PTB |
 | `docker/` | CI's images: `Dockerfile.base` (the compiler's published image at the pin plus the test stack) and `Dockerfile` (this tree on top of it), each with its own `.dockerignore`. The build context is the repository root |
-| `third_party/` | Version pins, no code: `pytorchsim-triton-backend.json` (the compiler commit) and `github-releases.json` |
+| `third_party/` | Version pins, no code: `pytorchsim-triton-backend.json` (the compiler commit, which is also what pins TOGSim) and `github-releases.json` |
 | `togsim_results/` | TOGSim log + trace dump directory (per-run) |
 | `outputs/` | Per-run hashed output dirs |
 
@@ -124,7 +124,7 @@ Read in `pytorchsim/config.py`:
 | Var | Default | Purpose |
 |---|---|---|
 | `TORCHSIM_DIR` | `/workspace/PyTorchSim` | repo root |
-| `TOGSIM_CONFIG` | `configs/systolic_ws_256x256_c1_simple_noc_tpuv6e_functional_only.yml` | TOGSim hardware YAML |
+| `TOGSIM_CONFIG` | `$TOGSIM_DIR/configs/systolic_ws_256x256_c1_simple_noc_tpuv6e_functional_only.yml` | TOGSim hardware YAML |
 | `TORCHSIM_TIMING_MODE` | unset | overrides the config's `pytorchsim_timing_mode` for one run (`1` to time, `0` not to) |
 | `GEM5_PATH` | `$VCIX_ENV_ROOT/gem5/build/RISCV/gem5.opt` | gem5 binary (vcix-accelerator environment) |
 | `TORCHSIM_LOG_PATH` | `$TORCHSIM_DIR/togsim_results` | where TOGSim logs go |
@@ -140,7 +140,7 @@ Note: `TOGSIM_CONFIG` is **overwritten** while inside a `with TOGSimulator(confi
 
 ## TOGSim YAML knobs (the ones I edit most)
 
-Located under `configs/*.yml`:
+Located under `$TOGSIM_DIR/configs/*.yml` (the TOGSim repository; a change there reaches this one through the compiler pin):
 
 - `num_cores`, `core_freq_mhz`, `num_systolic_array_per_core`
 - `sa_weight_buffer_depth` (per-SA resident weight slots; **must be > 0** — the simulator errors on 0. Raise it to effectively disable the preload run-ahead throttle. Defaults to 2 if the key is absent.)
@@ -167,17 +167,15 @@ with TOGSimulator(config_path=...):
 ## Build
 
 - **Docker (recommended):** `docker run -it --ipc=host --name torchsim -w /workspace/PyTorchSim ghcr.io/psal-postech/torchsim-ci:v1.0.1 bash`
-- **TOGSim from source:** `cd TOGSim && mkdir -p build && cd build && conan install .. --build=missing && cmake .. && make -j$(nproc)`
+- **TOGSim from source:** the compiler's `setup/toolchain.sh togsim` builds the one it carries (`third_party/TOGSim/build/bin/Simulator`); `scripts/build_from_source.sh` runs it. For another checkout, build it there as its README says and set `TOGSIM_DIR`.
 - **device (Python package):** `cd device && python -m pip install --no-build-isolation -e .`
 - **Compiler + Spike / gem5 / TOGSim from source:** `bash scripts/build_from_source.sh` (checks out PyTorchSim-Triton-Backend at the commit pinned in `third_party/pytorchsim-triton-backend.json`, the same pin as the CI docker image, and runs its `setup/toolchain.sh`; Spike, pk and gem5 land in `$VCIX_ENV_ROOT`, and the TOGSim it carries is built in its `third_party/TOGSim/build`, which needs conan 1.56 and cmake on PATH).
-
-Conan deps for TOGSim: `boost/1.79.0`, `robin-hood-hashing/3.11.5`, `spdlog/1.11.0`, `yaml-cpp/0.8.0`.
 
 ## Where to look for X
 
 - **Adding a new op:** nothing here, usually — Inductor's own Triton lowerings emit the kernel and PyTorchSim-Triton-Backend lowers it. What lives here is our FX graph rewrites, `rewrite_fx_graph.py`: decompositions and post-grad passes for ops with no `npu` kernel (histc, polar, topk, transformers' grouped_mm, complex arithmetic). GEMM/BMM tile selection: `pytorchsim/codegen/tiling.py` (`gemm_tile_candidates`). Kernel source fixups before the compiler sees them: `pytorchsim/driver/compiler_input.py`.
 - **Adding a PyTorch device op:** `device/csrc/aten/native/*` (Minimal/Extra split mirrors `torch_openreg`).
-- **TOGSim hardware model changes:** `TOGSim/src/{Core,Dram,Interconnect,L2Cache,Tile,TileGraph}.cc` + matching `include/*.h`.
+- **TOGSim hardware model changes:** in the TOGSim repository, `src/{Core,Dram,Interconnect,L2Cache,Tile,TileGraph}.cc` + matching `include/*.h`. They reach this repository when the compiler pins that TOGSim commit and this repository pins that compiler commit.
 - **TOG generation:** the compiler emits the tile-operation-graph (TOG) as C++, compiles it to `tog.so` against TOGSim's `togsim_runtime.h` and records the compute type of each tile (`pytorchsim_triton_compiler/lowering/tog/`; `tog_cpp`, `tog_so` and `tile_types` in `kernel.json`); this repo measures the tiles under gem5 and writes `tog_cycles.tsv` and `tog_units.tsv` beside the TOG (`pytorchsim/simulator/timing.py`); TOGSim replays the TOG into a TileGraph (`tog_to_tilegraph`).
 - **Eager fallback registration:** `torch.npu.register_eager_to_compile([...])` — see `tests/system/test_eager.py`.
 - **Per-run results:** `togsim_results/<YYYYMMDD_HHMMSS_<hash>>.log` (stats) and `.trace` (instruction trace). The path is also printed at the end of every run.

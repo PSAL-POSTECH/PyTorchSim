@@ -37,7 +37,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ env.SOURCE_SHA }}
-          submodules: recursive
           persist-credentials: false
 
       - name: Log in to GitHub Container Registry
@@ -95,7 +94,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ env.SOURCE_SHA }}
-          submodules: recursive
           persist-credentials: false
 
       - name: Login to GHCR

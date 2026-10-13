@@ -8,7 +8,9 @@ sys.path.insert(0, base_path)
 import torch
 from torchvision.models import resnet18
 
-config = os.environ.get('TOGSIM_CONFIG', f'{base_path}/configs/systolic_ws_256x256_c1_simple_noc_tpuv6e.yml')
+from pytorchsim.config import CONFIG_TOGSIM_CONFIG_DIR
+
+config = os.environ.get('TOGSIM_CONFIG', os.path.join(CONFIG_TOGSIM_CONFIG_DIR, 'systolic_ws_256x256_c1_simple_noc_tpuv6e.yml'))
 os.environ['TOGSIM_CONFIG'] = config
 
 if __name__ == "__main__":

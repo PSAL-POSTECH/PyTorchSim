@@ -3,20 +3,16 @@
 # the tests import. The compiler image (PSAL-POSTECH/PyTorchSim-Triton-Backend, workflow images.yml,
 # one tag per commit) already carries Ubuntu 22.04 with python3.11, the vcix-accelerator environment
 # (RISC-V toolchain, pk, Spike, gem5), LLVM, Triton built with the torchsim backend, the accelerator
-# model, the compiler, its dialect and extension, and TOGSim at the PyTorchSim it pins. Nothing of
+# model, the compiler, its dialect and extension, and the TOGSim it pins, built. Nothing of
 # that is built here. Rebuilt when scripts/ci/third_party_base_pin.sh changes, i.e. when this file,
 # the compiler pin or third_party/github-releases.json moves.
 ARG PTB_IMAGE=ghcr.io/psal-postech/pytorchsim-triton-backend:main
 FROM ${PTB_IMAGE}
 
-ENV DEBIAN_FRONTEND=noninteractive
 WORKDIR /workspace
 
-# `python` beside the image's python3 (3.11); boost headers for TOGSim's cmake probe.
-RUN apt-get -y update && \
-    apt-get -y install --no-install-recommends libboost-all-dev && \
-    update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 && \
-    rm -rf /var/lib/apt/lists/*
+# `python` beside the image's python3 (3.11).
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1
 
 # PyTorchSim is CPU-only: the npu PrivateUse1 backend simulates the device on the CPU.
 RUN python3.11 -m pip install --no-cache-dir \
@@ -27,7 +23,7 @@ RUN python3.11 -m pip install --no-cache-dir \
 RUN python3.11 -m pip install --no-cache-dir \
     numpy==2.4.6 onnx matplotlib scikit-learn pydot tabulate \
     transformers==5.15.0 diffusers==0.34.0 \
-    conan==1.56.0 cmake==3.26.4 && \
+    cmake==3.26.4 && \
     python3.11 -m pip install --no-cache-dir --no-deps ultralytics && \
     python3.11 -m pip install --no-cache-dir opencv-python-headless pandas seaborn \
     psutil pyyaml requests tqdm py-cpuinfo

@@ -12,8 +12,8 @@ name: Triton codegen route (PyTorchSim-Triton-Backend)
 # scoped to this repository. preflight checks it before the docker build.
 
 on:
-  pull_request:
-    branches: [ "master", "develop", "pytorchsim-triton-backend" ]
+  push:
+    branches: [ "pytorchsim-triton-backend" ]
     paths:
       - 'pytorchsim/**'
       - 'third_party/pytorchsim-triton-backend.json'
@@ -23,11 +23,15 @@ on:
       - '.github/workflows/pytorchsim_triton_backend.yml'
   workflow_dispatch:
 
+concurrency:
+  group: triton-route-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   BASE_IMAGE_REPO: ghcr.io/psal-postech/torchsim_base
   PTB_IMAGE_REPO: ghcr.io/psal-postech/pytorchsim-triton-backend
   APP_IMAGE_REPO: ghcr.io/psal-postech/torchsim_ptb
-  SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+  SOURCE_SHA: ${{ github.sha }}
 
 jobs:
   ensure-base:

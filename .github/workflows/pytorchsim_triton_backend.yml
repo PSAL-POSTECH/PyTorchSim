@@ -11,7 +11,7 @@ name: Triton codegen route (PyTorchSim-Triton-Backend)
 # so the workflow's own token pulls it. The commit under test is not baked into an image: the checkout is
 # mounted read-only and scripts/ci/triton_route_in_container.sh builds its device extension there.
 # What fails the run: no compiler image, the base build or its pull, the smoke kernels, the device
-# extension.
+# extension, the job's time limit.
 
 on:
   push:
@@ -38,6 +38,7 @@ jobs:
   route:
     name: Triton route (smoke gate + coverage sweep)
     runs-on: [self-hosted, slurm, big, x86_64]
+    timeout-minutes: 180
     permissions:
       contents: read
       packages: write

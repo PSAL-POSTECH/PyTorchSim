@@ -41,6 +41,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      actions: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -104,17 +105,31 @@ jobs:
                 echo "=== $k ===" && python3 tests/torchsim-compile tests/cases/smoke/$k.py || exit 1
               done'
 
+      # Only orders the sweep (longest test first), so a miss costs time and nothing
+      # else. In a container of its own: the token never reaches the tests.
+      - name: Durations of the previous sweep (best effort)
+        if: ${{ !cancelled() && steps.pull.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p sweep-prev && chmod 777 sweep-prev
+          docker run --rm -e GH_TOKEN -e GITHUB_RUN_ID -e GITHUB_API_URL \
+            -v "$PWD:/src:ro" -v "$PWD/sweep-prev:/out" "${BASE_IMAGE}" \
+            python3 /src/scripts/ci/triton_route_previous.py "${GITHUB_REPOSITORY}" /out/results.json
+
       # Runs whether or not the smoke kernels held. Reports every test, allowlist
       # included; each failure leaves its kernel and stage IR behind. A device
       # extension that does not build fails the step, a sweep result does not.
       - name: Device extension + full sweep (the sweep reports)
         if: ${{ !cancelled() && steps.pull.outcome == 'success' }}
         run: |
-          mkdir -p sweep && chmod 777 sweep
+          mkdir -p sweep sweep-prev && chmod 777 sweep
           rc=0
           docker run --rm -v "$PWD:/src:ro" -v "$PWD/sweep:/sweep" "${BASE_IMAGE}" \
             bash /src/scripts/ci/triton_route_in_container.sh --all \
-              --timeout 900 --json /sweep/results.json \
+              --timeout 900 --order-from /src/sweep-prev/results.json \
+              --json /sweep/results.json \
               --markdown /sweep/coverage.md --artifacts /sweep/failures || rc=$?
           if [ ! -f sweep/device-built ]; then
             echo "::error::the device extension did not build (exit $rc)"

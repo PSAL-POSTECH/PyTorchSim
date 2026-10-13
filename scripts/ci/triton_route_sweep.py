@@ -7,6 +7,7 @@ stage, and per-failure artifacts for reporting upstream.
   python scripts/ci/triton_route_sweep.py                  # the allowlist, gating
   python scripts/ci/triton_route_sweep.py --all            # every test, reports
   python scripts/ci/triton_route_sweep.py --all --artifacts triton-failures
+  python scripts/ci/triton_route_sweep.py --all --order-from results.json
 """
 
 import argparse
@@ -73,6 +74,21 @@ def load_allowlist():
     with open(PASSING) as f:
         return [l.strip() for l in f
                 if l.strip() and not l.lstrip().startswith("#")]
+
+
+def longest_first(tests, path):
+    """Order by a previous run's results.json: longest first, a test it has not
+    seen before those, ties by path. Path order when it cannot be read."""
+    try:
+        with open(path) as f:
+            prev = {r["test"]: float(r["seconds"]) for r in json.load(f)}
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        print(f"--order-from {path}: {e!r}; keeping path order")
+        return tests
+    known = sum(t in prev for t in tests)
+    print(f"--order-from {path}: longest first, {known} of {len(tests)} tests "
+          f"have a previous duration")
+    return sorted(tests, key=lambda t: (-prev.get(t, float("inf")), t))
 
 
 def classify(output, timed_out):
@@ -248,6 +264,10 @@ def main():
                     help="tests in flight at once; each may itself use several "
                          "cores (gem5, TOGSim), so this is half the box by "
                          "default")
+    ap.add_argument("--order-from", metavar="RESULTS_JSON",
+                    help="a previous run's --json: start the tests that took "
+                         "longest first, so the last one to finish is not one "
+                         "that was started last")
     ap.add_argument("--json", help="write the full result list here")
     ap.add_argument("--artifacts", metavar="DIR",
                     help="per-failure kernel + stage IR + error, for reporting")
@@ -261,6 +281,8 @@ def main():
     if not tests:
         print("no tests selected; the allowlist is empty and --all was not given")
         return 1
+    if args.order_from:
+        tests = longest_first(tests, args.order_from)
 
     scratch = os.path.join(ROOT, ".triton_sweep")
     shutil.rmtree(scratch, ignore_errors=True)
@@ -297,7 +319,7 @@ def main():
                 r = fut.result()
                 results.append(r)
                 report(r)
-        results.sort(key=lambda r: r["test"])
+    results.sort(key=lambda r: r["test"])
     shutil.rmtree(scratch, ignore_errors=True)
 
     passed = [r for r in results if r["ok"]]

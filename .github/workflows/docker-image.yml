@@ -1,7 +1,7 @@
 name: Docker image CI
 
-# Runs when the pytorchsim-triton-backend branch moves (a merge or a push), not per pull request:
-# a pull request starts nothing, so a small edit does not take a runner. Three layers: the base image -- the compiler's own published image at the pinned
+# Started by hand only (workflow_dispatch): neither a pull request nor a push to
+# pytorchsim-triton-backend starts it. Three layers: the base image -- the compiler's own published image at the pinned
 # commit (ghcr.io/psal-postech/pytorchsim-triton-backend:<ref>, one tag per commit from that
 # repository's images workflow) plus PyTorch and the test stack, built once per pin and reused
 # (scripts/ci/third_party_base_pin.sh) -- the app image for this commit, and one container per
@@ -9,8 +9,6 @@ name: Docker image CI
 # built here. The compiler's package grants this repository read access, so the default Actions
 # token is all the registry needs.
 on:
-  push:
-    branches: [ "pytorchsim-triton-backend" ]
   workflow_dispatch:
 
 concurrency:

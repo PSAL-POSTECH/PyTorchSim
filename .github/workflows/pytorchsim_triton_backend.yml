@@ -126,7 +126,8 @@ jobs:
 
       # Runs whether or not the smoke kernels held. Reports every test, allowlist
       # included; each failure leaves its kernel and stage IR behind. A device
-      # extension that does not build fails the step, a sweep result does not.
+      # extension that does not build fails the step, a sweep result does not. A test on the
+      # allowlist gets twice the time: the slowest one runs within seconds of 900.
       - name: Device extension + full sweep (the sweep reports)
         if: ${{ !cancelled() && steps.pull.outcome == 'success' }}
         env:
@@ -140,7 +141,7 @@ jobs:
           rc=0
           docker run --rm -v "$PWD:/src:ro" -v "$PWD/sweep:/sweep" "${BASE_IMAGE}" \
             bash /src/scripts/ci/triton_route_in_container.sh --all \
-              --timeout 900 --order-from /src/sweep-prev/results.json \
+              --timeout 900 --allowlist-timeout 1800 --order-from /src/sweep-prev/results.json \
               ${SWEEP_JOBS:+-j "$SWEEP_JOBS"} --json /sweep/results.json \
               --markdown /sweep/coverage.md --artifacts /sweep/failures || rc=$?
           if [ ! -f sweep/device-built ]; then

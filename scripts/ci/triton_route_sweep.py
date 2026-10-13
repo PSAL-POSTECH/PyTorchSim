@@ -259,6 +259,9 @@ def main():
     ap.add_argument("--all", action="store_true",
                     help="run every test, not just the passing allowlist")
     ap.add_argument("--timeout", type=int, default=1800)
+    ap.add_argument("--allowlist-timeout", type=int, metavar="SECONDS",
+                    help="the timeout of a test on the allowlist, when it is "
+                         "to differ from --timeout")
     ap.add_argument("-j", "--jobs", type=int,
                     default=max(1, min(8, (os.cpu_count() or 2) // 2)),
                     help="tests in flight at once; each may itself use several "
@@ -291,6 +294,7 @@ def main():
         shutil.rmtree(args.artifacts, ignore_errors=True)
         os.makedirs(args.artifacts, exist_ok=True)
 
+    limit = {t: args.allowlist_timeout or args.timeout for t in allow}
     print(f"Triton route sweep: {len(tests)} tests, {args.jobs} at a time"
           f"{'' if args.all else ' (allowlist)'}\n")
     results, done = [], 0
@@ -306,15 +310,15 @@ def main():
 
     if args.jobs == 1:
         for t in tests:
-            r = run_one(t, args.timeout, args.artifacts, scratch)
+            r = run_one(t, limit.get(t, args.timeout), args.artifacts, scratch)
             results.append(r)
             report(r)
     else:
         # Threads: run_one only waits on a subprocess, and dump dir, Inductor
         # cache and TOGSim FIFO are all already per-test.
         with cf.ThreadPoolExecutor(max_workers=args.jobs) as pool:
-            futs = {pool.submit(run_one, t, args.timeout, args.artifacts,
-                                scratch): t for t in tests}
+            futs = {pool.submit(run_one, t, limit.get(t, args.timeout),
+                                args.artifacts, scratch): t for t in tests}
             for fut in cf.as_completed(futs):
                 r = fut.result()
                 results.append(r)

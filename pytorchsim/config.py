@@ -41,16 +41,6 @@ def get_dump_path():
     return dump_path
 
 
-def hash_prefix(hash_value):
-    return hash_value[1:12]
-
-
-def get_write_path(src_code):
-    """The per-source directory under the dump path that holds its artifacts."""
-    from torch._inductor.codecache import get_hash
-    return os.path.join(get_dump_path(), hash_prefix(get_hash(src_code.strip())))
-
-
 # PyTorchSim's run settings: (environment variable, default, type). They are not the machine's.
 RUN_SETTINGS = {
     "pytorchsim_functional_mode": ("TORCHSIM_FUNCTIONAL_MODE", 1, int),

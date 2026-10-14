@@ -357,12 +357,11 @@ def launch(obj_dir, manifest, runtime, raw_paths, log, jobs=None, scalars=()):
     argv_paths = [os.path.basename(raw_paths[n]) for n in argv_order(manifest)]
     lo, hi = manifest["abi"]["kernel_addr"]
     try:
-        run_under = ["--isa", manifest["run"]["spike_isa"],
-                     f"--extlib={compiler_bridge.model(manifest)}",
-                     "-m" + contract.spike_memory(manifest),
-                     f"--machine-config={contract.machine_config(obj_dir, manifest)}"]
-    except (compiler_bridge.NoTarget, contract.KernelObjectMismatch) as e:
+        run = compiler_bridge.run_options(obj_dir, manifest)
+    except compiler_bridge.NoTarget as e:
         raise SpikeError(str(e)) from None
+    run_under = ["--isa", run["spike_isa"], f"--extlib={run['model']}", "-m" + run["memory"],
+                 f"--machine-config={run['machine_config']}"]
     cmd = [
         SPIKE,
         *run_under,

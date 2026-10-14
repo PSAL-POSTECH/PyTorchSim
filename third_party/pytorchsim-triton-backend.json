@@ -2,6 +2,6 @@
   "description": "Pin for the compiler the codegen route lowers through: PyTorchSim-Triton-Backend, with its LLVM, Triton, the vcix-accelerator environment (RISC-V toolchain, pk, Spike, gem5), the accelerator model, and TOGSim, which the compiler carries as its third_party/TOGSim submodule: this pin is therefore also what pins the Simulator, the runtime header and the machine configs. CI builds its base image FROM ghcr.io/psal-postech/pytorchsim-triton-backend:<ref>, the image that repository publishes for every commit on its main and develop, so ref must be such a commit. scripts/build_from_source.sh checks the same ref out for a local toolchain. The repository is private; its package grants this repository read access.",
   "pytorchsim_triton_backend": {
     "repository": "PSAL-POSTECH/PyTorchSim-Triton-Backend",
-    "ref": "866cb1999f51cad448f2e9ae55d9a847e2723c92"
+    "ref": "6e14664e2584137eadf171c33fd8ae2e8be43b8a"
   }
 }

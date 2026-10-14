@@ -32,7 +32,7 @@ softmax 157), which takes many hours; the large shapes dominate.
 | `--tag T` | names the run; everything lands in `runs/T/` |
 | `--keep COLS=VALUES` | only these shapes. `C=128,512`, or several columns at once: `KxN=768x768,2048x3072`. Repeatable; a shape must match every `--keep` |
 | `--drop COLS=VALUES` | skip these shapes, same syntax |
-| `--set KEY=VALUE` | change one line of the config, e.g. `--set vpu_num_lanes=128 --set core_freq_mhz=1750`. Repeatable |
+| `--set KEY=VALUE` | change one line of the config, e.g. `--set vpu_num_lanes=256 --set vpu_spad_size_kb_per_lane=512`. Repeatable |
 | `--config FILE` | base config, default `configs/tpuv6e_nocache.yml` |
 | `--timeout S` | seconds per shape, default 7200; a shape over it is killed and logged in `failed.csv` |
 | `--out DIR` | where the tag directories live, default `runs/` here. Keep it on a real disk, not a RAM tmpfs |

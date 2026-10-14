@@ -1,16 +1,17 @@
 # TPU v6e timing config for the sim-vs-TPU comparison: TOGSim's
-# configs/systolic_ws_256x256_c1_simple_noc_tpuv6e_timing_only.yml with ONE change, no L2 cache
-# (v6e has none between HBM and VMEM). run.py expands $TOGSIM_DIR, applies any --set key=value
-# and writes the result to runs/<tag>/config.yml, which is the file every shape of that tag runs on.
+# configs/systolic_ws_256x256_c1_simple_noc_tpuv6e_timing_only.yml with no L2 cache (v6e has none
+# between HBM and VMEM). run.py expands $TOGSIM_DIR, applies --set and writes runs/<tag>/config.yml.
 num_cores: 1
-core_freq_mhz: 3502
+core_freq_mhz: 1751
 core_stats_print_period_cycles: 200
 num_systolic_array_per_core: 2
+systolic_array_split: round_robin
+systolic_array_unit: TPUV6_MXU
 
-vpu_num_lanes: 256
-vpu_spad_size_kb_per_lane: 512
-vpu_vector_length_bits: 512
-tpu_systolic_queue_entries: 256
+vpu_num_lanes: 128
+vpu_spad_size_kb_per_lane: 1024
+vpu_vector_length_bits: 256
+tpu_mxu_queue_entries: 512
 
 dram_type: ramulator2
 dram_channels: 32
@@ -20,8 +21,8 @@ l2d_type: nocache
 
 icnt_type: simple
 icnt_latency_cycles: 10
-icnt_freq_mhz: 3502
-icnt_injection_ports_per_core: 16
+icnt_freq_mhz: 1751
+icnt_injection_ports_per_core: 32
 
 pytorchsim_functional_mode: 0
 pytorchsim_timing_mode: 1
@@ -31,8 +32,3 @@ codegen_external_mapping_file: ''
 codegen_autotune_max_retry: 10
 codegen_autotune_template_topk: 4
 codegen_compiler_optimization: all
-
-# Per-core VMEM (vector/scratchpad) size, so TOGSim charges tiles for it instead
-# of modelling an infinite spad: vpu_spad_size_kb_per_lane x vpu_num_lanes,
-# the same identity the v2/v3/v4 configs hold (128 x 128 = 16384). 512 x 256 = 128 MB.
-core_spad_size_kb: 131072

@@ -2,7 +2,7 @@
 
     python run.py gemm    --tag g1 [--keep KxN=768x768,2048x3072]
     python run.py softmax --tag s1 [--keep C=128,512,2048,8192] [--drop R=1]
-    python run.py softmax --tag s2 --set vpu_num_lanes=128 --set core_freq_mhz=1750
+    python run.py softmax --tag s2 --set vpu_num_lanes=256 --set vpu_spad_size_kb_per_lane=512
 
 Shapes come from the tpu-perf-archive table data/v6e/<op>/torchxla.csv (cloned on first use, or
 $TPU_PERF_ARCHIVE), smallest work first. Everything of a
@@ -155,7 +155,7 @@ if __name__ == "__main__":
     ap.add_argument("--tag", required=True, help="names the run: <out>/<tag>/")
     ap.add_argument("--config", default=os.path.join(HERE, "configs", "tpuv6e_nocache.yml"))
     ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
-                    help="override one config line, e.g. --set vpu_num_lanes=128 (repeatable)")
+                    help="override one config line, e.g. --set vpu_num_lanes=256 (repeatable)")
     ap.add_argument("--keep", action="append", default=[], metavar="COLS=VALUES",
                     help="only these shapes, e.g. C=128,512 or KxN=768x768,2048x3072 (repeatable: all must match)")
     ap.add_argument("--drop", action="append", default=[], metavar="COLS=VALUES", help="skip these shapes, e.g. R=1")

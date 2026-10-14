@@ -382,7 +382,7 @@ def launch(obj_dir, manifest, runtime, raw_paths, log, jobs=None, scalars=()):
     cmd = [
         SPIKE,
         "--isa", SPIKE_ISA,
-        f"--extlib={config.CONFIG_VCIX_MODEL}",
+        f"--extlib={compiler_bridge.vcix_model()}",
         "-m" + f"0x{t['dram_base']:x}:0x{t['dram_size']:x},"
                f"0x{t['spad_paddr']:x}:0x{spad_bytes:x}",
         f"--machine-config={compiler_bridge.model_yaml()}",

@@ -116,6 +116,14 @@ def model_yaml():
         f"target.load(sys.argv[1]).write_model_yaml(sys.argv[2])", target_path())
 
 
+def vcix_model():
+    """The accelerator model Spike and gem5 load: TORCHSIM_COMPILE_VCIX_MODEL, else the one PTB's
+    setup builds for this machine's matmul_unit."""
+    return os.environ.get("TORCHSIM_COMPILE_VCIX_MODEL") or os.path.join(
+        os.environ.get("TORCHSIM_PREFIX", "/workspace"), "vcix-build",
+        {"systolic": "libtpu.so", "tpuv6_mxu": "libtpuv6.so"}[machine()["matmul_unit"]])
+
+
 def compiler_env():
     """The environment for a compiler subprocess: this machine and this TOGSim. The target is written
     from the TOGSim YAML this process runs, and TOGSIM_DIR is the checkout whose header this process

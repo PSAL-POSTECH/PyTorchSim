@@ -187,7 +187,7 @@ def run_togsim(workdir, meta, args=()):
         return torch.npu.launch_kernel(handle, attribute)
 
     result_path = TOGSimulator.run_standalone(handle, attribute)
-    return TOGSimulator.get_result_from_file(result_path)
+    return TOGSimulator.get_result_from_file(result_path, compiler_bridge.machine()["matmul_unit"].upper())
 
 
 def run(workdir, meta, args=()):
@@ -255,7 +255,7 @@ class CycleSimulator():
         dir_path = os.path.join(os.path.dirname(target_binary), "m5out")
         gem5_cmd = [config.CONFIG_GEM5_PATH, "-r", "--stdout-file=sto.log", "-d", dir_path,
                     config.CONFIG_GEM5_SCRIPT, "-c", target_binary,
-                    "--model", config.CONFIG_VCIX_MODEL,
+                    "--model", compiler_bridge.vcix_model(),
                     "--machine-config", compiler_bridge.model_yaml(),
                     "--vlen", str(compiler_bridge.machine()["vlen_bits"])]
 

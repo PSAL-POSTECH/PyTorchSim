@@ -11,12 +11,9 @@ CONFIG_GEM5_PATH = os.environ.get('GEM5_PATH', default=os.path.join(
 # -> RISC-V ELF). It is a SEPARATE repository, deliberately not vendored.
 CONFIG_TORCHSIM_COMPILE_DIR = os.environ.get(
     "TORCHSIM_COMPILE_DIR", default=os.path.join(CONFIG_TORCHSIM_DIR, "pytorchsim-triton-compiler"))
-# What gem5 runs a sample tile under: the vcix-accelerator script and the accelerator model it loads.
 CONFIG_GEM5_SCRIPT = os.environ.get("TORCHSIM_GEM5_SCRIPT", default=os.path.join(
     CONFIG_TORCHSIM_COMPILE_DIR, "third_party", "vcix-accelerator", "examples", "tpu", "gem5",
     "script_systolic.py"))
-CONFIG_VCIX_MODEL = os.environ.get("TORCHSIM_COMPILE_VCIX_MODEL", default=os.path.join(
-    os.environ.get("TORCHSIM_PREFIX", "/workspace"), "vcix-build", "libtpu.so"))
 # the compiler runs in its own process, under this interpreter unless overridden.
 CONFIG_TORCHSIM_COMPILE_PYTHON = os.environ.get("TORCHSIM_COMPILE_PYTHON", default=sys.executable)
 

@@ -387,13 +387,12 @@ class TOGSimulator():
                             r"active[ _]cycles?: (\d+), idle[ _]cycles?: (\d+)")
     _DRAM_CHANNEL = re.compile(r"\[DRAM\] channel (\d+) \| .*?(\d+\.?\d*)% of utilization")
     _DRAM_COMBINED = re.compile(r"\[DRAM\] channels .* combined \| .*?(\d+\.?\d*)% of utilization")
-    _ARRAY_UNITS = ("Systolic", "Msa")
 
     @staticmethod
-    def get_result_from_file(result_path):
+    def get_result_from_file(result_path, array_unit):
         """(core_metrics, dram_channel_bw, avg_dram_bw, simulation_time, total_cycle) of a run's log.
-        core_metrics["units"] holds every 'Core [i]' and 'Total' unit row; the flat keys read the
-        array and the vector unit off the Total row, else the one core."""
+        core_metrics["units"] holds every 'Core [i]' and 'Total' unit row; the flat keys read
+        `array_unit` (the config's systolic_array_unit) and the vector unit off the Total row."""
         core_metrics = {}
         dram_channel_bw = {}
         avg_dram_bw = 0.0
@@ -439,8 +438,7 @@ class TOGSimulator():
         if units:
             core_metrics["units"] = units
             whole = units.get("Total") or next(iter(units.values()))
-            table = [whole[name] for name in TOGSimulator._ARRAY_UNITS if name in whole]
-            arrays = ([max(table, key=lambda u: u["active_cycles"])] if table else
+            arrays = ([whole[array_unit]] if array_unit in whole else
                       [u for name, u in whole.items() if name.startswith("Systolic array [")])
             vector = whole.get("Vpu") or whole.get("Vector unit")
             if arrays:

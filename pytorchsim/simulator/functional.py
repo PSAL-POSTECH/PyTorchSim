@@ -16,6 +16,7 @@ from pytorchsim import config
 
 from pytorchsim import contract
 from pytorchsim.contract import storage_span
+from pytorchsim.driver import compiler_bridge
 
 logger = config.setup_logger()
 
@@ -26,16 +27,9 @@ class ShapeMismatch(RuntimeError):
     """The launch does not match the shapes the binary was compiled for."""
 
 
-#: Dtypes numpy cannot name, and the unsigned int of the same width that
-#: carries their bytes instead. The .raw file holds the ORIGINAL bits either
-#: way -- the view is a reinterpretation, never a conversion. Same table as the
-#: compiler's contract/kernel_object.py NP_DTYPE.
-#:
-#: bfloat16 IS UNREACHABLE and is here for the day it is not. Its bytes would
-#: ride correctly, but nothing downstream computes in it: spike has no Zvfbfmin,
-#: so vfadd.vv at e16 is IEEE-half addition whatever the bits meant. Measured
-#: 2026-09-30: a bf16 argument widened to f32 in the kernel comes back wrong.
-#: The compiler pins that wall in ops_bf16_matmul.py (expect="blocked").
+#: Dtypes numpy cannot name, and the unsigned int of the same width that carries their bytes
+#: instead. The .raw file holds the ORIGINAL bits either way -- the view is a reinterpretation,
+#: never a conversion. Same table as the compiler's contract/kernel_object.py NP_DTYPE.
 _NP_CARRIER = {"float8_e5m2": "uint8", "float8_e4m3fn": "uint8",
                "bfloat16": "uint16"}
 
@@ -91,7 +85,7 @@ def _check(meta, pairs):
                 f"the compiler bakes the extents and the grid into the kernel, so a "
                 f"dynamic-shape graph reuses an ELF that does not fit. The timing "
                 f"path does handle this (it takes the grid at run time); set "
-                f"pytorchsim_functional_mode: False to study cycles alone, or keep "
+                f"TORCHSIM_FUNCTIONAL_MODE=0 to study cycles alone, or keep "
                 f"shapes static to check values.")
         if str(t.dtype).removeprefix("torch.") != m["dtype"]:
             raise ShapeMismatch(
@@ -267,10 +261,6 @@ PK = os.environ.get("TORCHSIM_PK", os.environ.get(
     "TORCHSIM_COMPILE_PK", os.path.join(_VCIX_ENV, "pk", "riscv64-unknown-elf", "bin", "pk")))
 
 
-SPIKE_ISA = os.environ.get("TORCHSIM_SPIKE_ISA",
-                           os.environ.get("TORCHSIM_COMPILE_SPIKE_ISA", "rv64gcv_zfh_xvcixaccel"))
-
-
 #: Second copy of the compiler's contract/kernel_object.py ITEMSIZE. The two
 #: describe the same .raw files, so an entry added to one belongs in both.
 ITEMSIZE = {"float64": 8, "float32": 4, "float16": 2, "bfloat16": 2,
@@ -342,29 +332,6 @@ def nbytes(arg):
     return n * ITEMSIZE[arg["dtype"]]
 
 
-def _write_machine_yaml(t, path):
-    """The machine in the spelling the vcix accelerator model reads (--machine-config)."""
-    kb, rem = divmod(t["spad_size"], 1024)
-    if rem:
-        raise SpikeError(f"scratchpad {t['spad_size']} B is not whole kilobytes")
-    with open(path, "w") as f:
-        f.write(f"vpu_num_lanes: {t['vector_lanes']}\n"
-                f"vpu_spad_size_kb_per_lane: {kb}\n"
-                f"vpu_spad_base_vaddr: 0x{t['spad_vaddr']:x}\n"
-                f"vpu_vector_length_bits: {t['vlen_bits']}\n")
-    return path
-
-
-def _machine(manifest):
-    """The target fields this launch needs, as ints."""
-    t = dict(manifest["target"])
-    for k in ("spad_vaddr", "spad_paddr", "dram_base", "dram_size",
-              "spad_size", "vector_lanes", "vlen_bits"):
-        v = t[k]
-        t[k] = int(v, 0) if isinstance(v, str) else int(v)
-    return t
-
-
 def _run(cmd, cwd, log):
     """Spawn one process, raising SpikeError with what it said."""
     log("[Spike] $ " + " ".join(str(c) for c in cmd))
@@ -388,18 +355,17 @@ def launch(obj_dir, manifest, runtime, raw_paths, log, jobs=None, scalars=()):
     os.makedirs(os.path.join(runtime, "dma_access"), exist_ok=True)
 
     argv_paths = [os.path.basename(raw_paths[n]) for n in argv_order(manifest)]
-    t = _machine(manifest)
-    spad_bytes = t["spad_size"] * t["vector_lanes"]
     lo, hi = manifest["abi"]["kernel_addr"]
-    from pytorchsim import config
-    yml = _write_machine_yaml(t, os.path.join(runtime, "machine.yml"))
+    try:
+        run_under = ["--isa", manifest["run"]["spike_isa"],
+                     f"--extlib={compiler_bridge.model(manifest)}",
+                     "-m" + contract.spike_memory(manifest),
+                     f"--machine-config={contract.machine_config(obj_dir, manifest)}"]
+    except (compiler_bridge.NoTarget, contract.KernelObjectMismatch) as e:
+        raise SpikeError(str(e)) from None
     cmd = [
         SPIKE,
-        "--isa", SPIKE_ISA,
-        f"--extlib={config.CONFIG_VCIX_MODEL}",
-        "-m" + f"0x{t['dram_base']:x}:0x{t['dram_size']:x},"
-               f"0x{t['spad_paddr']:x}:0x{spad_bytes:x}",
-        f"--machine-config={yml}",
+        *run_under,
         f"--kernel-addr={lo:x}:{hi:x}",
         f"--base-path={runtime}",
         PK, elf, *argv_paths, *scalars,

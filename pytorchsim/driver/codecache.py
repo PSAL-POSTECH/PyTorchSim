@@ -113,7 +113,7 @@ def identity():
         _identity = {
             "the compiler": _compiler_git(compiler_dir),
             "tools": _stat_tools(paths) if paths else None,
-            "machine": compiler_bridge.machine(),
+            "machine": compiler_bridge.target().as_dict(),
             "tog_abi": _tog_abi(),
         }
     return _identity

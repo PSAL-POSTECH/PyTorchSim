@@ -7,10 +7,8 @@ sys.path.insert(0, base_path)
 
 import torch
 
-from pytorchsim.config import CONFIG_TOGSIM_CONFIG_DIR
-
-config = os.environ.get('TOGSIM_CONFIG', os.path.join(CONFIG_TOGSIM_CONFIG_DIR, 'systolic_ws_128x128_c2_simple_noc_tpuv4.yml'))
-os.environ['TOGSIM_CONFIG'] = config
+os.environ.setdefault("TORCHSIM_TARGET", "tpuv6e")
+os.environ.setdefault("TORCHSIM_TIMING_MODE", "1")
 
 def matmul_fn(a, b):
     return torch.matmul(a, b)
@@ -27,7 +25,7 @@ if __name__ == "__main__":
     input_b = torch.randn(K, N).to(device=device)
     opt_fn = torch.compile(dynamic=False)(matmul_fn)
 
-    with torch.npu.simulator(config_path=config), torch.no_grad():
+    with torch.npu.simulator(), torch.no_grad():
         torch.npu.launch_model(opt_fn, input_a, input_b, stream_index=0, timestamp=0)
         torch.npu.synchronize()
     print(f"GEMM {M}x{K}x{N} (MxKxN) Simulation Done")

@@ -8,10 +8,9 @@ sys.path.insert(0, os.path.join(base_path, 'tests'))
 
 import torch
 
-from pytorchsim.config import CONFIG_TOGSIM_CONFIG_DIR
-
-config = os.environ.get('TOGSIM_CONFIG', os.path.join(CONFIG_TOGSIM_CONFIG_DIR, 'systolic_ws_256x256_c1_simple_noc_tpuv6e_timing_only.yml'))
-os.environ['TOGSIM_CONFIG'] = config
+os.environ.setdefault("TORCHSIM_TARGET", "tpuv6e")
+os.environ.setdefault("TORCHSIM_TIMING_MODE", "1")
+os.environ.setdefault("TORCHSIM_FUNCTIONAL_MODE", "0")
 
 # Try Fusion EncoderBlock first, fall back to standard test_transformer
 try:
@@ -38,7 +37,7 @@ if __name__ == "__main__":
     model_input = torch.randn(args.input_size, hidden_dim).to(device=device)
     opt_fn = torch.compile(dynamic=False)(model)
 
-    with torch.npu.simulator(config_path=config), torch.no_grad():
+    with torch.npu.simulator(), torch.no_grad():
         torch.npu.launch_model(opt_fn, model_input, stream_index=0, timestamp=0)
         torch.npu.synchronize()
     print(f"BERT-{args.size} Simulation Done")

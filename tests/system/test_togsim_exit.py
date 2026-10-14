@@ -4,6 +4,7 @@ import os
 import stat
 import sys
 import tempfile
+from unittest import mock
 
 sys.path.insert(0, os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"))
 
@@ -20,8 +21,8 @@ exit {status}
 
 
 def _checkout(root, status):
-    """A TOGSim checkout whose Simulator drains its command stream, prints REFUSAL and exits `status`;
-    the process's machine config and log directory are pointed into it."""
+    """A TOGSim checkout whose Simulator drains its command stream, prints REFUSAL and exits `status`,
+    and a machine file in it; the simulator is handed both explicitly."""
     os.makedirs(os.path.join(root, "build", "bin"))
     simulator = config.togsim_simulator(root)
     with open(simulator, "w") as f:
@@ -30,13 +31,16 @@ def _checkout(root, status):
     machine = os.path.join(root, "machine.yml")
     with open(machine, "w") as f:
         f.write("core_freq_mhz: 1\n")
-    os.environ["TOGSIM_CONFIG"] = machine
-    os.environ["TORCHSIM_LOG_PATH"] = os.path.join(root, "logs")
     kernel = os.path.join(root, "k")
     os.makedirs(kernel)
     for name in ("tog.so", "tog_cycles.tsv", "tog_units.tsv"):
         open(os.path.join(kernel, name), "w").close()
     return machine, os.path.join(kernel, "tile_graph.onnx"), os.path.join(kernel, "attribute")
+
+
+def _logs_in(root):
+    """TORCHSIM_LOG_PATH pointed into `root` for the block, and the environment put back after it."""
+    return mock.patch.dict(os.environ, TORCHSIM_LOG_PATH=os.path.join(root, "logs"))
 
 
 def _raised(fn):
@@ -48,7 +52,7 @@ def _raised(fn):
 
 
 def test_standalone_refusal_is_a_runtime_error():
-    with tempfile.TemporaryDirectory() as root:
+    with tempfile.TemporaryDirectory() as root, _logs_in(root):
         machine, handle, attribute = _checkout(root, 1)
         said = _raised(lambda: TOGSimulator.run_standalone(
             handle, attribute, autotune_mode=True, config_path=machine, togsim_path=root))
@@ -56,7 +60,7 @@ def test_standalone_refusal_is_a_runtime_error():
 
 
 def test_session_refusal_is_a_runtime_error():
-    with tempfile.TemporaryDirectory() as root:
+    with tempfile.TemporaryDirectory() as root, _logs_in(root):
         machine, handle, attribute = _checkout(root, 1)
         sim = TOGSimulator(config_path=machine, togsim_path=root)
         sim.launch_kernel(0, 0, handle, attribute)
@@ -66,15 +70,24 @@ def test_session_refusal_is_a_runtime_error():
 
 
 def test_session_that_ran_shuts_down_quietly():
-    with tempfile.TemporaryDirectory() as root:
+    with tempfile.TemporaryDirectory() as root, _logs_in(root):
         machine, handle, attribute = _checkout(root, 0)
         sim = TOGSimulator(config_path=machine, togsim_path=root)
         sim.launch_kernel(0, 0, handle, attribute)
         assert _raised(sim.shutdown) is None
 
 
+def test_environment_is_left_as_found():
+    """No TOGSIM_CONFIG (which the compiler bridge refuses) or log path outlives a test here."""
+    before = dict(os.environ)
+    test_standalone_refusal_is_a_runtime_error()
+    test_session_that_ran_shuts_down_quietly()
+    assert dict(os.environ) == before, sorted(set(os.environ.items()) ^ set(before.items()))
+
+
 if __name__ == "__main__":
     test_standalone_refusal_is_a_runtime_error()
     test_session_refusal_is_a_runtime_error()
     test_session_that_ran_shuts_down_quietly()
+    test_environment_is_left_as_found()
     print("PASS")

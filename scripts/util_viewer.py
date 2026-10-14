@@ -51,7 +51,7 @@ _FINAL_MARKERS = ("=== DRAM statistics ===", "[DRAM] Per-channel average bandwid
 _WANTED_CONFIG = ("num_cores", "core_freq_mhz", "core_stats_print_period_cycles",
                   "num_systolic_array_per_core", "vpu_num_lanes", "vpu_vector_length_bits",
                   "vpu_spad_size_kb_per_lane", "dram_channels", "dram_freq_mhz",
-                  "core_spad_size_kb", "pytorchsim_timing_mode", "pytorchsim_functional_mode")
+                  "core_spad_size_kb")
 
 
 def kernel_name(tog_so):
@@ -689,8 +689,7 @@ function drawKPIs() {
   const c = r.config, cfg = document.getElementById('cfg');
   const rows = [['cores', c.num_cores], ['systolic arrays/core', c.num_systolic_array_per_core],
     ['VPU lanes', c.vpu_num_lanes], ['vector bits', c.vpu_vector_length_bits],
-    ['spad KB/lane', c.vpu_spad_size_kb_per_lane], ['DRAM channels', c.dram_channels],
-    ['timing mode', c.pytorchsim_timing_mode], ['functional mode', c.pytorchsim_functional_mode]];
+    ['spad KB/lane', c.vpu_spad_size_kb_per_lane], ['DRAM channels', c.dram_channels]];
   cfg.innerHTML = rows.filter(x => x[1] != null)
     .map(x => `<span><b>${x[0]}</b> ${x[1]}</span>`).join('');
   document.getElementById('sel-note').innerHTML =

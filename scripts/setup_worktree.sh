@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Create a sibling git worktree for parallel work and wire up per-worktree env.
 #
-# Container-dedicated: assumes the ghcr.io/psal-postech/torchsim-ci container
-# layout. Shared binaries (gem5, LLVM, riscv toolchain, and TOGSim in the
-# compiler checkout) live at known paths and are NOT duplicated per worktree.
+# Container-dedicated: assumes the ghcr.io/psal-postech/torchsim-test (or torchsim_base)
+# layout. Shared binaries (Spike, gem5 and the riscv toolchain under VCIX_ENV_ROOT; LLVM,
+# and TOGSim in the compiler checkout) live where the image puts them and are NOT duplicated.
 #
 # Usage:
 #   scripts/setup_worktree.sh <purpose> [base-ref]
@@ -71,27 +71,16 @@ _self="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 export TORCHSIM_DIR="$_self"
 export TORCHSIM_DUMP_PATH="$_self/outputs"
 export TORCHSIM_LOG_PATH="$_self/togsim_results"
-# TPU v6e IS the machine, and a missing config must not quietly become another
-# one: v3 has 128 lanes where v6e has 256, and three coverage kernels answer
-# differently by lane count alone -- two of them WRONG at 256 while the 128-lane
-# run reports them green. A silent downgrade reads as "it passed yesterday".
-_v6e="$(cd "$_self" && python3 -c 'from pytorchsim.config import CONFIG_TOGSIM_CONFIG_DIR as d; print(d)')/systolic_ws_256x256_c1_simple_noc_tpuv6e.yml"
-export TOGSIM_CONFIG="$_v6e"
-if [ ! -f "$_v6e" ]; then
-  echo "setup_worktree.sh: MISSING $_v6e" >&2
-  echo "  the TOGSim checkout pytorchsim/config.py resolves (TOGSIM_DIR, else the" >&2
-  echo "  compiler's third_party/TOGSim) has no v6e config. Fix that checkout;" >&2
-  echo "  NOT falling back to v3, which is a different answer." >&2
-fi
-unset _v6e
+# The machine: a TOGSim machine file, $TOGSIM_DIR/configs/tpuv6e.yml (pytorchsim/config.py's default).
+export TORCHSIM_TARGET=tpuv6e
 
 # Make `import torch_openreg` resolve to THIS worktree's .so first,
 # overriding the conda-wide editable install that points at the main worktree.
 export PYTHONPATH="$_self/device:$_self:${PYTHONPATH:-}"
 
-# Container-dedicated shared binaries.
-export GEM5_PATH="/workspace/vcix-env/gem5/build/RISCV/gem5.opt"
-export RISCV="/workspace/vcix-env/riscv"
+# The image's shared binaries: VCIX_ENV_ROOT is set by the image (/opt/vcix-env).
+export GEM5_PATH="${VCIX_ENV_ROOT:-/opt/vcix-env}/gem5/build/RISCV/gem5.opt"
+export RISCV="${VCIX_ENV_ROOT:-/opt/vcix-env}/riscv"
 
 # Prompt hint so you do not lose track of which worktree this shell is on.
 export PS1="[torchsim:$(basename "$_self")] ${PS1:-\\w\\$ }"

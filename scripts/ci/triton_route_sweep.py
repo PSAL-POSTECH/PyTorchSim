@@ -23,7 +23,6 @@ import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
-from pytorchsim.config import CONFIG_TOGSIM_CONFIG_DIR
 HERE = os.path.dirname(os.path.abspath(__file__))
 PASSING = os.path.join(HERE, "triton_route_passing.txt")
 
@@ -48,7 +47,7 @@ BUCKETS = [
     ("reduction",      r"lane-aware|linalg\.reduce|no reduction path"),
     ("dynamic_shape",  r"ShapeMismatch|dynamic shape|size_hint returned None"),
     ("matmul_timing",  r"vcix\.iv|sf\.vc\.|no compute node"),
-    ("togsim",         r"TOGSim|tog\.so|SIGSEGV|Signals\.SIG|'vpu_num_lanes'"),
+    ("togsim",         r"TOGSim|tog\.so|SIGSEGV|Signals\.SIG"),
     ("wrong_values",   r"VALUES WRONG|allclose|Test Failed"),
     ("timeout",        r"^__timeout__$"),
 ]
@@ -157,22 +156,9 @@ def run_one(test, timeout, artifacts, scratch):
     shutil.rmtree(dump, ignore_errors=True)
     os.makedirs(dump, exist_ok=True)
     env = dict(os.environ, TORCHSIM_DUMP_PATH=dump)
-    # WHAT THIS SWEEP CHECKS IS VALUES, so it does not pay for cycles. Every test
-    # here compares its output against a torch reference and none of them looks
-    # at a cycle count, but the default config has pytorchsim_timing_mode on, so
-    # each one also ran TOGSim over every kernel it compiled.
-    #
-    #     measured   mobilenet_v2 takes about 21 minutes here with timing off and
-    #                does not finish inside the 1800s timeout with it on -- its
-    #                depthwise layers launch one program per group, 28544 of them
-    #                across the model. resnet18 takes 587s with timing on.
-    #
-    # The config is the mirror of `_timing_only`, which turns the functional half
-    # off for the same reason from the other side. A caller that wants cycles
-    # sets TOGSIM_CONFIG itself and this leaves it alone.
-    env.setdefault("TOGSIM_CONFIG", os.path.join(
-        CONFIG_TOGSIM_CONFIG_DIR,
-        "systolic_ws_256x256_c1_simple_noc_tpuv6e_functional_only.yml"))
+    # What this sweep checks is values, so it does not pay for cycles (mobilenet_v2 does not
+    # finish inside 1800s with timing on). A caller that wants cycles sets TORCHSIM_TIMING_MODE.
+    env.setdefault("TORCHSIM_TIMING_MODE", "0")
 
     t0, timed_out = time.time(), False
     try:

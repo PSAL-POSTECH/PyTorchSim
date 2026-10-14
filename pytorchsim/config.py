@@ -11,12 +11,9 @@ CONFIG_GEM5_PATH = os.environ.get('GEM5_PATH', default=os.path.join(
 # -> RISC-V ELF). It is a SEPARATE repository, deliberately not vendored.
 CONFIG_TORCHSIM_COMPILE_DIR = os.environ.get(
     "TORCHSIM_COMPILE_DIR", default=os.path.join(CONFIG_TORCHSIM_DIR, "pytorchsim-triton-compiler"))
-# What gem5 runs a sample tile under: the vcix-accelerator script and the accelerator model it loads.
-CONFIG_GEM5_SCRIPT = os.environ.get("TORCHSIM_GEM5_SCRIPT", default=os.path.join(
-    CONFIG_TORCHSIM_COMPILE_DIR, "third_party", "vcix-accelerator", "examples", "tpu", "gem5",
-    "script_systolic.py"))
-CONFIG_VCIX_MODEL = os.environ.get("TORCHSIM_COMPILE_VCIX_MODEL", default=os.path.join(
-    os.environ.get("TORCHSIM_PREFIX", "/workspace"), "vcix-build", "libtpu.so"))
+# Where the accelerator models are built (a kernel object's accelerator names which one it runs on).
+# The gem5 script every model is timed with is the compiler's contract.vcix_model.GEM5_SCRIPT.
+CONFIG_VCIX_BUILD = os.path.join(os.environ.get("TORCHSIM_PREFIX", "/workspace"), "vcix-build")
 # the compiler runs in its own process, under this interpreter unless overridden.
 CONFIG_TORCHSIM_COMPILE_PYTHON = os.environ.get("TORCHSIM_COMPILE_PYTHON", default=sys.executable)
 
@@ -54,74 +51,48 @@ def get_write_path(src_code):
     return os.path.join(get_dump_path(), hash_prefix(get_hash(src_code.strip())))
 
 
+# PyTorchSim's run settings: (environment variable, default, type). They are not the machine's.
+RUN_SETTINGS = {
+    "pytorchsim_functional_mode": ("TORCHSIM_FUNCTIONAL_MODE", 1, int),
+    "pytorchsim_timing_mode": ("TORCHSIM_TIMING_MODE", 0, int),
+    "pytorchsim_functional_verify_per_kernel": ("TORCHSIM_FUNCTIONAL_VERIFY_PER_KERNEL", 0, int),
+    "codegen_mapping_strategy": ("TORCHSIM_CODEGEN_MAPPING_STRATEGY", "autotune", str),
+    "codegen_autotune_template_topk": ("TORCHSIM_CODEGEN_AUTOTUNE_TEMPLATE_TOPK", 4, int),
+    "codegen_external_mapping_file": ("TORCHSIM_CODEGEN_EXTERNAL_MAPPING_FILE", "", str),
+    "codegen_autotune_wall_slack_sec": ("TORCHSIM_CODEGEN_AUTOTUNE_WALL_SLACK_SEC", 15, float),
+}
+
+
+def _run_setting(name):
+    env, default, kind = RUN_SETTINGS[name]
+    got = os.environ.get(env)
+    return kind(default if got is None or got == "" else got)
+
+
 def __getattr__(name):
-    # TOGSim config
-    config_path = os.environ.get('TOGSIM_CONFIG', default=os.path.join(
-        CONFIG_TOGSIM_CONFIG_DIR, "systolic_ws_256x256_c1_simple_noc_tpuv6e_functional_only.yml"))
-    if name == "CONFIG_TOGSIM_CONFIG":
-        return config_path
-
-    if not os.path.isfile(config_path):
-        raise FileNotFoundError(
-            f"{config_path} not found: TOGSIM_DIR must name a TOGSim checkout (its configs/ holds the "
-            f"machine configs; now {CONFIG_TOGSIM_DIR}), or TOGSIM_CONFIG a machine config file")
-    with open(config_path, 'r') as f:
-        config_yaml = yaml.safe_load(f)
-
-    # Hardware info config
-    if name == "vpu_num_lanes":
-        return config_yaml["vpu_num_lanes"]
-    if name == "CONFIG_SPAD_INFO":
-        return {
-          "spad_vaddr" : 0xD0000000,
-          "spad_paddr" : 0x2000000000,
-          "spad_size" : config_yaml["vpu_spad_size_kb_per_lane"] << 10 # Note: spad size per lane
-        }
-
+    # The machine: TORCHSIM_TARGET names a TOGSim machine file ($TOGSIM_DIR/configs/<name>.yml) or
+    # gives a path to one. The compiler compiles for it and TOGSim times on it.
+    if name == "CONFIG_TORCHSIM_TARGET":
+        return os.environ.get("TORCHSIM_TARGET") or "tpuv6e"
     if name == "CONFIG_MACHINE":
-        return {
-          "vector_lanes" : config_yaml["vpu_num_lanes"],
-          "vlen_bits" : config_yaml["vpu_vector_length_bits"],
-          "systolic_queue_entries" : config_yaml["tpu_systolic_queue_entries"],
-          "spad_size" : config_yaml["vpu_spad_size_kb_per_lane"] << 10,
-          "spad_vaddr" : 0xD0000000,
-          "spad_paddr" : 0x2000000000,
-          "dram_base" : 0x80000000,
-          "dram_size" : 100 << 30,
-        }
-
+        from pytorchsim.driver import compiler_bridge
+        return compiler_bridge.target()
+    if name == "CONFIG_MACHINE_FILE":
+        from pytorchsim.driver import compiler_bridge
+        return compiler_bridge.target().file
+    if name == "CONFIG_GEM5_SCRIPT":
+        from pytorchsim.driver import compiler_bridge
+        return os.environ.get("TORCHSIM_GEM5_SCRIPT") or compiler_bridge.compiler_contract(
+            "vcix_model").GEM5_SCRIPT
     if name == "CONFIG_NUM_CORES":
-        return config_yaml["num_cores"]
-    if name == "vpu_vector_length_bits":
-        return config_yaml["vpu_vector_length_bits"]
+        from pytorchsim.driver import compiler_bridge
+        with open(compiler_bridge.target().file) as f:
+            return yaml.safe_load(f)["num_cores"]
 
-    if name == "pytorchsim_functional_mode":
-        return config_yaml['pytorchsim_functional_mode']
-    if name == "pytorchsim_timing_mode":
-        # The config says whether this machine is being timed; TORCHSIM_TIMING_MODE
-        # overrides it for one run. Five configs never declared the key and 18 of
-        # the 23 that do say 1, so an absent key reads as 1.
-        env = os.environ.get("TORCHSIM_TIMING_MODE")
-        if env is not None:
-            return int(env)
-        return config_yaml.get('pytorchsim_timing_mode', 1)
-    # Sub-option of functional mode: compare every realized Spike buffer against a CPU
-    # golden to localize the first kernel whose value diverges. Auto-disabled when
-    # functional mode is off (there are no Spike values to verify).
     if name == "pytorchsim_functional_verify_per_kernel":
-        return bool(config_yaml.get('pytorchsim_functional_verify_per_kernel', False)) \
-            and bool(config_yaml['pytorchsim_functional_mode'])
-
-    # Tile mapping (develop's keys): "autotune" times the top-k template tiles and keeps
-    # the fastest; a tile that does not compile counts as never finishing.
-    if name == "codegen_mapping_strategy":
-        return config_yaml.get("codegen_mapping_strategy", "heuristic")
-    if name == "codegen_autotune_template_topk":
-        return int(config_yaml.get("codegen_autotune_template_topk", 4))
-    if name == "codegen_external_mapping_file":
-        return config_yaml.get("codegen_external_mapping_file", "")
-    if name == "codegen_autotune_wall_slack_sec":
-        return float(config_yaml.get("codegen_autotune_wall_slack_sec", 15))
+        return bool(_run_setting(name)) and bool(_run_setting("pytorchsim_functional_mode"))
+    if name in RUN_SETTINGS:
+        return _run_setting(name)
 
     if name == "CONFIG_TOGSIM_DEBUG_LEVEL":
         return os.environ.get("TOGSIM_DEBUG_LEVEL", "")

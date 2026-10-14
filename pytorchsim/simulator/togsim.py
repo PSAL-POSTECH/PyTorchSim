@@ -63,7 +63,7 @@ class TOGSimulator():
     FINISH_STR = "Simulation finished"
     def __init__(self, config_path=None, togsim_path=None) -> None:
         if config_path is None:
-            config_path = config.CONFIG_TOGSIM_CONFIG
+            config_path = config.CONFIG_MACHINE_FILE
         if togsim_path is None:
             togsim_path = config.CONFIG_TOGSIM_DIR
 
@@ -299,7 +299,7 @@ class TOGSimulator():
                 its directory
             attribute_path: Path to attribute file
             autotune_mode: If True, run in autotune mode (silent)
-            config_path: Path to TOGSim config file (required)
+            config_path: the machine file TOGSim times on (default: the one TORCHSIM_TARGET names)
             togsim_path: TOGSim repository root (optional, defaults to config.CONFIG_TOGSIM_DIR)
             timeout_sec: If set, terminate the Simulator subprocess after this many seconds
                 (autotune uses this to skip very slow tile candidates).
@@ -312,7 +312,7 @@ class TOGSimulator():
                 the message carries its exit status and the last line it printed
         """
         if config_path is None:
-            config_path = config.CONFIG_TOGSIM_CONFIG
+            config_path = config.CONFIG_MACHINE_FILE
         if togsim_path is None:
             togsim_path = config.CONFIG_TOGSIM_DIR
 

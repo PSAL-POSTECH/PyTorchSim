@@ -1,8 +1,8 @@
-"""Run pytorchsim-triton-compiler in its own process, for the machine the TOGSim YAML describes.
+"""Run pytorchsim-triton-compiler in its own process, for the machine TORCHSIM_TARGET names. The
+machine file and the model library are read with the compiler's own contract modules, imported from
+that same checkout; what a compile leaves is read through contract.py."""
 
-Nothing here imports the compiler; what it leaves is read through contract.py.
-"""
-
+import importlib
 import os
 import re
 import subprocess
@@ -44,7 +44,7 @@ class CompilerError(RuntimeError):
         super().__init__(message)
 
 
-#: The compiler's package. One name since pytorchsim-triton-compiler fe0ee08.
+#: The compiler's package.
 COMPILER_PKG = "pytorchsim_triton_compiler"
 
 
@@ -57,47 +57,76 @@ def compiler_dir():
     return d
 
 
-def machine():
-    """The machine the kernel is compiled for, from the TOGSim YAML.
-
-    The YAML is the hardware description and therefore the authority.
-    """
-    return dict(config.CONFIG_MACHINE)
+class NoTarget(RuntimeError):
+    """TORCHSIM_TARGET names no machine file the compiler takes."""
 
 
-def target_path():
-    """Write this machine as a target description and return its path.
-
-    Named for the config it came from, so two configs in one dump path do not
-    overwrite each other. Written whole and renamed into place, since several
-    processes may reach this at once.
-    """
-    import json
-
-    m = machine()
-    name = os.path.splitext(os.path.basename(
-        os.environ.get("TOGSIM_CONFIG", "togsim")))[0]
-    out = os.path.join(config.get_dump_path(), f"target-{name}.json")
-    doc = dict(m, name=name,
-               provenance={"togsim_config": os.environ.get("TOGSIM_CONFIG", ""),
-                           "address_map": "pytorchsim/config.py"})
-    body = json.dumps(doc, indent=2) + "\n"
-    if not os.path.isfile(out) or open(out).read() != body:
-        tmp = f"{out}.{os.getpid()}"
-        with open(tmp, "w") as fh:
-            fh.write(body)
-        os.replace(tmp, out)
-    return out
+def compiler_contract(name):
+    """The compiler's contract/<name> module, from the checkout TORCHSIM_COMPILE_DIR names."""
+    try:
+        mod = importlib.import_module(f"{COMPILER_PKG}.contract.{name}")
+    except ImportError as e:
+        raise CompilerError(f"{COMPILER_PKG} is not importable here ({e}): install the checkout "
+                            f"at {compiler_dir()} (pip install -e)") from None
+    here = os.path.realpath(compiler_dir()) + os.sep
+    if not os.path.realpath(mod.__file__).startswith(here):
+        raise CompilerError(f"{COMPILER_PKG} imports from {mod.__file__}, and the compiler this "
+                            f"process runs is the checkout at {compiler_dir()}")
+    return mod
 
 
-def compiler_env():
-    """The environment for a compiler subprocess: this machine and this TOGSim, no PYTHONPATH, no
-    device backend autoload. The target is written from the TOGSim YAML this process runs, and
-    TOGSIM_DIR is the checkout whose header this process digests and whose Simulator it starts."""
+_TARGETS = {}
+
+
+def _bare_env():
+    """The environment a compiler subprocess starts from: no PYTHONPATH, no device backend autoload."""
     env = dict(os.environ)
     env.pop("PYTHONPATH", None)
     env["TORCH_DEVICE_BACKEND_AUTOLOAD"] = "0"
-    env["TORCHSIM_COMPILE_TARGET"] = target_path()
+    return env
+
+
+def target():
+    """The machine TORCHSIM_TARGET names, read by the compiler's target module: a bare name is
+    $TOGSIM_DIR/configs/<name>.yml, a relative path is the caller's. Once per (target, cwd)."""
+    if os.environ.get("TOGSIM_CONFIG"):
+        raise NoTarget(f"TOGSIM_CONFIG={os.environ['TOGSIM_CONFIG']} is retired: the machine is "
+                       f"one file, which TORCHSIM_TARGET names and TOGSim times on. Unset it")
+    said, here = config.CONFIG_TORCHSIM_TARGET, os.getcwd()
+    if (said, here) not in _TARGETS:
+        t = compiler_contract("target")
+        try:
+            _TARGETS[(said, here)] = t.load(said)
+        except t.TargetError as e:
+            raise NoTarget(f"TORCHSIM_TARGET={said}: {e}") from None
+    return _TARGETS[(said, here)]
+
+
+def model(manifest):
+    """The vcix model library a kernel object's accelerator runs on, found by its descriptor."""
+    v = compiler_contract("vcix_model")
+    try:
+        return v.find(config.CONFIG_VCIX_BUILD, manifest["run"]["accel"])
+    except v.ModelError as e:
+        raise NoTarget(f"{e}: {manifest['name']} was compiled for "
+                       f"{manifest['target'].get('name')}") from None
+
+
+def compiled_for(manifest):
+    """The machine a kernel object was compiled for: the file its manifest names, refused when that
+    file now states otherwise than the manifest recorded (the compiler's target.as_compiled)."""
+    t = compiler_contract("target")
+    try:
+        return t.as_compiled(manifest.get("target"), f"{manifest['name']}: manifest target")
+    except t.TargetError as e:
+        raise NoTarget(str(e)) from None
+
+
+def compiler_env():
+    """The environment for a compiler subprocess: this machine and this TOGSim. TOGSIM_DIR is the
+    checkout whose header this process digests and whose Simulator it starts."""
+    env = _bare_env()
+    env["TORCHSIM_COMPILE_TARGET"] = target().file
     env["TOGSIM_DIR"] = config.CONFIG_TOGSIM_DIR
     return env
 

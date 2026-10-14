@@ -14,6 +14,7 @@ import subprocess
 from pytorchsim import config
 
 from pytorchsim import contract
+from pytorchsim.driver import compiler_bridge
 from pytorchsim.simulator import wallclock
 
 logger = config.setup_logger()
@@ -48,7 +49,7 @@ def measure_tile_cycles(workdir, meta):
     try:
         with wallclock.span(wallclock.GEM5_RUN, kernel_name):
             return CycleSimulator().compile_and_simulate(
-                elf, int(config.vpu_num_lanes), silent_mode=True)
+                elf, workdir, contract.kernel_object(workdir), silent_mode=True)
     except Exception as e:
         logger.warning("[Gem5] sampling failed: %s", e)
         return None
@@ -251,12 +252,15 @@ class CycleSimulator():
     def __init__(self) -> None:
         pass
 
-    def compile_and_simulate(self, target_binary, vectorlane_size, silent_mode=False):
+    def compile_and_simulate(self, target_binary, obj_dir, manifest, silent_mode=False):
+        """gem5 over one tile of the kernel object in `obj_dir`, under what it was compiled for."""
         dir_path = os.path.join(os.path.dirname(target_binary), "m5out")
+        machine = compiler_bridge.compiled_for(manifest)
         gem5_cmd = [config.CONFIG_GEM5_PATH, "-r", "--stdout-file=sto.log", "-d", dir_path,
                     config.CONFIG_GEM5_SCRIPT, "-c", target_binary,
-                    "--model", config.CONFIG_VCIX_MODEL, "--vlane", str(vectorlane_size),
-                    "--vlen", str(config.vpu_vector_length_bits)]
+                    "--model", compiler_bridge.model(manifest),
+                    "--machine-config", contract.machine_config(obj_dir, manifest),
+                    "--vlane", str(machine.vector_lanes), "--vlen", str(machine.vlen_bits)]
 
         if not silent_mode:
             logger.debug(f"[Gem5] cmd> {' '.join(gem5_cmd)}")

@@ -247,7 +247,7 @@ def _size_conv_blocks_from_the_machine():
 
     from pytorchsim import config
 
-    lanes = int(config.vpu_num_lanes)
+    lanes = int(config.CONFIG_MACHINE.vector_lanes)
 
     class NPUConfigHeuristic(BaseConfigHeuristic):
         def __init__(self):

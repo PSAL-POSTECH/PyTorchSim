@@ -1,7 +1,7 @@
 """Per-kernel CPU cross-check for the functional (Spike) path.
 
-This is a sub-option of ``pytorchsim_functional_mode``: enable it with the YAML
-key ``pytorchsim_functional_verify_per_kernel: 1`` (auto-disabled when functional
+This is a sub-option of ``pytorchsim_functional_mode``: enable it with
+``TORCHSIM_FUNCTIONAL_VERIFY_PER_KERNEL=1`` (auto-disabled when functional
 mode is off -- there are no Spike values to verify otherwise).
 
 When enabled, the generated wrapper compares every realized buffer (the output of

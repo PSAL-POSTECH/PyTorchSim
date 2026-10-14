@@ -212,8 +212,8 @@ def set_tog_simulator(simulator):
 class simulator:
     """Open a TOGSim backend and make it this device's simulator for the block.
 
-    Compilation must read the same hardware YAML as the run, so the config path
-    is exported while the block is open and restored on exit.
+    The machine file TOGSim times on is the one kernels are compiled for, so its path
+    is exported as TORCHSIM_TARGET while the block is open and restored on exit.
     """
 
     _CONFIG_ENV_UNSET = object()
@@ -228,8 +228,8 @@ class simulator:
 
         self._backend = TOGSimulator(config_path=self.config_path,
                                      togsim_path=self.togsim_path)
-        self._old_config_env = os.environ.get("TOGSIM_CONFIG", self._CONFIG_ENV_UNSET)
-        os.environ["TOGSIM_CONFIG"] = os.path.abspath(self._backend.config_path)
+        self._old_config_env = os.environ.get("TORCHSIM_TARGET", self._CONFIG_ENV_UNSET)
+        os.environ["TORCHSIM_TARGET"] = os.path.abspath(self._backend.config_path)
         self._old_simulator = get_tog_simulator()
         set_tog_simulator(self._backend)
         return self._backend
@@ -242,9 +242,9 @@ class simulator:
         finally:
             set_tog_simulator(self._old_simulator)
             if self._old_config_env is self._CONFIG_ENV_UNSET:
-                os.environ.pop("TOGSIM_CONFIG", None)
+                os.environ.pop("TORCHSIM_TARGET", None)
             else:
-                os.environ["TOGSIM_CONFIG"] = self._old_config_env
+                os.environ["TORCHSIM_TARGET"] = self._old_config_env
         return False
 
 

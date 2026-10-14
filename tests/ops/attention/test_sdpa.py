@@ -13,10 +13,10 @@ device = torch.device("npu:0")
 # Default sweep configs - edit here to change what gets tested
 # ---------------------------------------------------------------------------
 SDPA_DEFAULTS = dict(
-    n_batch_list  = [1, 4, 8, 16],
-    n_head_list   = [4, 6, 8, 12],
-    n_token_list  = [128, 256, 512, 1024],
-    head_dim_list = [32, 64, 128],
+    n_batch_list  = [1, 4],
+    n_head_list   = [4, 12],
+    n_token_list  = [128, 512],
+    head_dim_list = [32, 128],
     is_causal     = False,
 )
 

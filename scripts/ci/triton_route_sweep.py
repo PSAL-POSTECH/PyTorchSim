@@ -23,17 +23,19 @@ import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
+from pytorchsim import contract  # noqa: E402
 HERE = os.path.dirname(os.path.abspath(__file__))
 PASSING = os.path.join(HERE, "triton_route_passing.txt")
 
-#: How far the kernel got. The stage a failure did not reach owns it.
+#: Each step and the IR file it writes last. A kernel stopped in the first step whose file is missing.
 STAGES = [
     ("01-ttir.mlir",        "1 triton-compile: frontend"),
     ("07-regularized.mlir", "1 triton-compile: TTGIR -> linalg"),
     ("08-transformed.mlir", "2 torchsim-compile: transform"),
-    ("09-custom.mlir",      "2 torchsim-compile: lower (DMA, lanes, spad)"),
-    ("tog.so",              "TOG"),
+    ("10-lowered.mlir",     "2 torchsim-compile: lower (DMA, lanes, spad)"),
 ]
+#: The steps after those, finished when the manifest (kernel.json) names their output.
+OUTPUTS = [("elf", "2 torchsim-compile: binary"), ("tog_so", "TOG")]
 
 #: First match wins. Each bucket names the layer that owns the fix.
 BUCKETS = [
@@ -114,23 +116,37 @@ def first_error(output):
     return ""
 
 
-def reached_stage(dump_dir):
-    """(label, workdir) of the furthest the compiler stage any kernel produced.
+def stopped_in(workdir, timing):
+    """The step the kernel in `workdir` did not finish, or None when it finished all the run asks for.
+    The compiler starts stage.log, so without one the kernel never reached it."""
+    if not os.path.isfile(os.path.join(workdir, "stage.log")):
+        return "0 kernel generated, not accepted"
+    for fname, label in STAGES:
+        if not os.path.isfile(os.path.join(workdir, fname)):
+            return label
+    for kind, label in OUTPUTS[:None if timing else 1]:
+        try:
+            done = contract.artifact(workdir, kind)
+        except contract.KernelObjectMismatch:
+            done = None
+        if done is None:
+            return label
+    return None
 
-    kernel.py alone still counts: a kernel was generated and rejected pre-stage-1.
+
+def failed_kernel(workdirs, timing, timed_out):
+    """(stage, workdir) of a failed test: the kernel whose compile did not finish, the last one
+    touched if several did not. No workdir when every kernel finished: the failure came after them.
     """
-    best, best_dir, fallback = None, None, None
-    for wd in glob.glob(os.path.join(dump_dir, "triton_*")):
-        if os.path.isfile(os.path.join(wd, "kernel.py")):
-            fallback = wd
-        for i, (fname, label) in enumerate(STAGES):
-            if os.path.isfile(os.path.join(wd, fname)):
-                if best is None or i > best[0]:
-                    best, best_dir = (i, label), wd
-    if best:
-        return best[1], best_dir
-    return ("0 kernel generated, not accepted" if fallback
-            else "0 nothing emitted"), fallback
+    unfinished = sorted((wd for wd in workdirs if stopped_in(wd, timing)),
+                        key=os.path.getmtime)
+    wd = unfinished[-1] if unfinished else None
+    if timed_out:
+        return (f"timed out in {stopped_in(wd, timing)}" if wd else "timed out"), wd
+    if wd:
+        return stopped_in(wd, timing), wd
+    return ("3 compiled, failed after the compiler" if workdirs
+            else "0 nothing emitted"), None
 
 
 def collect(test, dump_dir, out_root, output, bucket, stage, workdir):
@@ -142,7 +158,7 @@ def collect(test, dump_dir, out_root, output, bucket, stage, workdir):
         f.write("\n".join(output.strip().splitlines()[-60:]))
     if workdir:
         # The kernel to hand over, and the IR saying where it stopped.
-        for name in ("kernel.py", "stage.log", *(s[0] for s in STAGES[:-1])):
+        for name in ("kernel.py", "stage.log", *(s[0] for s in STAGES)):
             src = os.path.join(workdir, name)
             if os.path.isfile(src):
                 shutil.copy2(src, os.path.join(dest, name))
@@ -170,14 +186,16 @@ def run_one(test, timeout, artifacts, scratch):
         out, code, timed_out = pre + "\n__timeout__", 124, True
 
     ok = code == 0
-    stage, workdir = reached_stage(dump)
+    workdirs = glob.glob(os.path.join(dump, "triton_*"))
+    stage, workdir = (None, None) if ok else failed_kernel(
+        workdirs, int(env["TORCHSIM_TIMING_MODE"]), timed_out)
     r = {"test": test, "ok": ok, "returncode": code,
          "seconds": round(time.time() - t0, 1),
          "bucket": None if ok else classify(out, timed_out),
          "stage": stage,
          # No kernel emitted = the route was never used (CPU-only, eager
          # fallback, extern call), so it is not coverage.
-         "exercised": workdir is not None,
+         "exercised": bool(workdirs),
          "error": "" if ok else first_error(out)}
     if not ok and artifacts:
         r["artifacts"] = os.path.relpath(
@@ -223,7 +241,7 @@ def write_markdown(results, path):
             L.append(f"### {b} ({len(rs)})")
             L.append("")
             for r in sorted(rs, key=lambda r: r["test"]):
-                L.append(f"- `{r['test']}` — reached **{r['stage']}**")
+                L.append(f"- `{r['test']}` — **{r['stage']}**")
                 if r["error"]:
                     L.append(f"  - `{r['error'][:160]}`")
                 if r.get("artifacts"):
@@ -326,7 +344,7 @@ def main():
         print("\nfailures by cause:")
         for b, rs in sorted(by.items(), key=lambda kv: -len(kv[1])):
             print(f"  {b:16s} {len(rs):3d}")
-        print("\nhow far they got:")
+        print("\nwhere they stopped:")
         st = {}
         for r in failed:
             st[r["stage"]] = st.get(r["stage"], 0) + 1

@@ -4,8 +4,8 @@ __pycache__/
 output
 togsim_results/*
 outputs/*
-experiments/artifact/logs/*
 
+experiments/artifact/logs/*
 # tutorial generated artifacts
 
 # Per-worktree environment, documented as local and uncommitted in

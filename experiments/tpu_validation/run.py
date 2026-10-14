@@ -2,13 +2,15 @@
 
     python run.py gemm    --tag g1 [--keep KxN=768x768,2048x3072]
     python run.py softmax --tag s1 [--keep C=128,512,2048,8192] [--drop R=1]
-    python run.py softmax --tag s2 --set vpu_num_lanes=128 --set core_freq_mhz=1750
+    python run.py softmax --tag s2 --set core_freq_mhz=1750
 
 Shapes come from the tpu-perf-archive table data/v6e/<op>/torchxla.csv (cloned on first use, or
 $TPU_PERF_ARCHIVE), smallest work first. Everything of a
 tag lives in <out>/<tag>/:
 
-    config.yml    the config every shape ran on: --config with $TOGSIM_DIR expanded and --set applied
+    config.yml    the machine every shape is compiled for and timed on (TORCHSIM_TARGET): --config, a
+                  machine name under $TOGSIM_DIR/configs (default tpuv6e) or a file, with NO_L2 and
+                  --set applied and its relative paths made absolute
     meta.json     op, filters, frontend / compiler / archive commits, every invocation
     results.csv   one row per finished shape, written as it finishes, so a rerun skips what is done
     failed.csv    shapes that failed or timed out; they are retried on the next run
@@ -31,6 +33,8 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
+import yaml
+
 import compare
 from ops import OPS, table_path
 
@@ -42,19 +46,27 @@ PROCS = set()
 
 CYCLES = re.compile(r"Total execution cycles: (\d+)")
 DRAM = re.compile(r"channels 0\.\.\d+ combined .*\| (\d+) reads, (\d+) writes")
-SA = re.compile(r"Systolic(?: array \[\d+\])? utilization\(%\): ([\d.]+)")
+SA = None                                           # the machine's array unit, set in __main__
+# v6e has no cache between HBM and VMEM; applied before --set.
+NO_L2 = ["l2d_type=nocache"]
 
 
-def build_config(src, sets):
+def build_config(said, sets):
+    """The machine `said` names (a name under $TOGSIM_DIR/configs, or a file) with `sets` applied, and
+    its *_config_path entries made absolute so the copy in the tag directory still finds them."""
     sys.path.insert(0, os.environ["TORCHSIM_DIR"])
-    from pytorchsim.config import CONFIG_TOGSIM_DIR
-    text = os.path.expandvars(open(src).read().replace("$TOGSIM_DIR", CONFIG_TOGSIM_DIR))
+    from pytorchsim.config import CONFIG_TOGSIM_CONFIG_DIR
+    src = said if os.sep in said or said.endswith((".yml", ".yaml")) else \
+        os.path.join(CONFIG_TOGSIM_CONFIG_DIR, said + ".yml")
+    with open(src) as f:
+        cfg = yaml.safe_load(f)
     for s in sets:
         k, v = s.split("=", 1)
-        text, n = re.subn(rf"^{re.escape(k)}:.*$", f"{k}: {v}", text, flags=re.M)
-        if not n:
-            text += f"{k}: {v}\n"
-    return text
+        cfg[k] = yaml.safe_load(v)
+    for k, v in cfg.items():
+        if k.endswith("_config_path") and not os.path.isabs(v):
+            cfg[k] = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(src)), v))
+    return src, cfg, yaml.safe_dump(cfg, sort_keys=False)
 
 
 def parse_filters(specs):
@@ -106,7 +118,7 @@ def run(shape, timeout):
     job = os.path.join(TAG, "jobs", name)
     shutil.rmtree(job, ignore_errors=True)
     os.makedirs(job)
-    env = dict(os.environ, TOGSIM_CONFIG=CONFIG, TORCHSIM_TIMING_MODE="1",
+    env = dict(os.environ, TORCHSIM_TARGET=CONFIG, TORCHSIM_TIMING_MODE="1",
                TORCHSIM_DUMP_PATH=os.path.join(job, "dump"), TORCHSIM_LOG_PATH=os.path.join(job, "log"),
                TORCHINDUCTOR_CACHE_DIR=os.path.join(job, "inductor"))
     t0 = time.time()
@@ -133,7 +145,7 @@ def run(shape, timeout):
     if rc == 0 and c and "Simulation Done" in text:
         cyc = int(c.group(1))
         tail = text[text.rfind("===== Instructions count ====="):]      # the final block, not the periodic ones
-        sa = [float(x) for x in SA.findall(tail)]
+        sa = [float(x) for x in SA.findall(tail)] if SA else []
         append("results.csv", list(KEYS) + STATS,
                dict(zip(KEYS, shape), cycles=cyc, sim_ns=round(cyc * 1000 / CORE_MHZ),
                     dram_reads=d.group(1) if d else "", dram_writes=d.group(2) if d else "",
@@ -153,9 +165,9 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("op", choices=sorted(OPS))
     ap.add_argument("--tag", required=True, help="names the run: <out>/<tag>/")
-    ap.add_argument("--config", default=os.path.join(HERE, "configs", "tpuv6e_nocache.yml"))
+    ap.add_argument("--config", default="tpuv6e", help="machine name under $TOGSIM_DIR/configs, or a file")
     ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
-                    help="override one config line, e.g. --set vpu_num_lanes=128 (repeatable)")
+                    help="override one machine key after NO_L2, e.g. --set core_freq_mhz=1750 (repeatable)")
     ap.add_argument("--keep", action="append", default=[], metavar="COLS=VALUES",
                     help="only these shapes, e.g. C=128,512 or KxN=768x768,2048x3072 (repeatable: all must match)")
     ap.add_argument("--drop", action="append", default=[], metavar="COLS=VALUES", help="skip these shapes, e.g. R=1")
@@ -168,7 +180,7 @@ if __name__ == "__main__":
         raise SystemExit("TORCHSIM_DIR is not set: source your PyTorchSim environment first")
     OP, KEYS, TAG = a.op, OPS[a.op]["keys"], os.path.join(os.path.abspath(a.out), a.tag)
     table = os.path.abspath(a.table or table_path(OP))
-    text = build_config(a.config, a.set)
+    src, cfg, text = build_config(a.config, NO_L2 + a.set)
     CONFIG, meta_path = os.path.join(TAG, "config.yml"), os.path.join(TAG, "meta.json")
     here = dict(time=time.strftime("%Y-%m-%d %H:%M:%S"), argv=" ".join(sys.argv[1:]))
     if os.path.exists(meta_path):
@@ -180,12 +192,14 @@ if __name__ == "__main__":
         os.makedirs(TAG, exist_ok=True)
         open(CONFIG, "w").write(text)
         compile_dir = os.environ.get("TORCHSIM_COMPILE_DIR", "")
-        meta = dict(op=OP, table=table, table_sha=sha(os.path.dirname(table)), config_from=os.path.abspath(a.config),
-                    set=a.set, torchsim_dir=os.environ["TORCHSIM_DIR"], torchsim_sha=sha(os.environ["TORCHSIM_DIR"]),
+        meta = dict(op=OP, table=table, table_sha=sha(os.path.dirname(table)), config_from=os.path.abspath(src),
+                    set=NO_L2 + a.set, torchsim_dir=os.environ["TORCHSIM_DIR"], torchsim_sha=sha(os.environ["TORCHSIM_DIR"]),
                     compile_dir=compile_dir, compile_sha=sha(compile_dir) if compile_dir else "unknown",
                     invocations=[here])
     json.dump(meta, open(meta_path, "w"), indent=1)
-    CORE_MHZ = int(re.search(r"^core_freq_mhz:\s*(\d+)", text, re.M).group(1))
+    CORE_MHZ = int(cfg["core_freq_mhz"])
+    unit = cfg.get("systolic_array_unit")
+    SA = re.compile(rf"Core \[\d+\] : {re.escape(unit)} utilization\(%\): ([\d.]+)") if unit else None
 
     keep, drop = parse_filters(a.keep), parse_filters(a.drop)
     shapes = sorted({tuple(int(r[k]) for k in KEYS) for r in csv.DictReader(open(table))},

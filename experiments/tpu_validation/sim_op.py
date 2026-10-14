@@ -4,7 +4,7 @@ with fp16 standing in for the TPU's bf16 (same bytes).
     python sim_op.py gemm M K N       torch.matmul(a, b), fp16 in and out
     python sim_op.py softmax R C      torch.softmax(x, -1, dtype=float32).to(float16), fp16 in
 
-TOGSIM_CONFIG must name the timing config (run.py sets it).
+TORCHSIM_TARGET must name the machine file (run.py sets it to the tag's config.yml).
 """
 import os
 import sys
@@ -13,7 +13,8 @@ sys.path.insert(0, os.environ["TORCHSIM_DIR"])
 import torch  # noqa: E402
 
 op, shape = sys.argv[1], tuple(map(int, sys.argv[2:]))
-config = os.environ["TOGSIM_CONFIG"]
+if "TORCHSIM_TARGET" not in os.environ:
+    raise SystemExit("TORCHSIM_TARGET is not set: run.py sets it to the tag's config.yml")
 torch.manual_seed(0)
 
 if op == "gemm":
@@ -30,7 +31,7 @@ else:
 device = torch.device("npu:0")
 inputs = [t.to(device=device) for t in inputs]
 opt_fn = torch.compile(dynamic=False)(fn)
-with torch.npu.simulator(config_path=config), torch.no_grad():
+with torch.npu.simulator(), torch.no_grad():
     torch.npu.launch_model(opt_fn, *inputs, stream_index=0, timestamp=0)
     torch.npu.synchronize()
 print(f"{op} {'x'.join(map(str, shape))} Simulation Done")

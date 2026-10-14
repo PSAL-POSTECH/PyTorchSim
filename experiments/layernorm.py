@@ -7,10 +7,8 @@ sys.path.insert(0, base_path)
 
 import torch
 
-from pytorchsim.config import CONFIG_TOGSIM_CONFIG_DIR
-
-config = os.environ.get('TOGSIM_CONFIG', os.path.join(CONFIG_TOGSIM_CONFIG_DIR, 'systolic_ws_128x128_c2_simple_noc_tpuv4.yml'))
-os.environ['TOGSIM_CONFIG'] = config
+os.environ.setdefault("TORCHSIM_TARGET", "tpuv6e")
+os.environ.setdefault("TORCHSIM_TIMING_MODE", "1")
 
 if __name__ == "__main__":
     args = argparse.ArgumentParser()
@@ -24,7 +22,7 @@ if __name__ == "__main__":
     opt_fn = torch.compile(dynamic=False)(model)
     model_input = torch.randn(*size).to(device=device)
 
-    with torch.npu.simulator(config_path=config), torch.no_grad():
+    with torch.npu.simulator(), torch.no_grad():
         torch.npu.launch_model(opt_fn, model_input, stream_index=0, timestamp=0)
         torch.npu.synchronize()
     print(f"LayerNorm {size} Simulation Done")

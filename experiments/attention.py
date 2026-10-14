@@ -8,10 +8,8 @@ sys.path.insert(0, base_path)
 
 import torch
 
-from pytorchsim.config import CONFIG_TOGSIM_CONFIG_DIR
-
-config = os.environ.get('TOGSIM_CONFIG', os.path.join(CONFIG_TOGSIM_CONFIG_DIR, 'systolic_ws_256x256_c1_simple_noc_tpuv6e.yml'))
-os.environ['TOGSIM_CONFIG'] = config
+os.environ.setdefault("TORCHSIM_TARGET", "tpuv6e")
+os.environ.setdefault("TORCHSIM_TIMING_MODE", "1")
 
 def attention(query, key, value):
     d_k = query.size(-1)
@@ -31,7 +29,7 @@ if __name__ == "__main__":
     value = torch.randn(*size).to(device=device)
     opt_fn = torch.compile(dynamic=False)(attention)
 
-    with torch.npu.simulator(config_path=config), torch.no_grad():
+    with torch.npu.simulator(), torch.no_grad():
         torch.npu.launch_model(opt_fn, query, key, value, stream_index=0, timestamp=0)
         torch.npu.synchronize()
     print(f"Attention {size} Simulation Done")

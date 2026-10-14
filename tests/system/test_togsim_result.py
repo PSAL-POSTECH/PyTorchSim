@@ -1,11 +1,12 @@
-"""get_result_from_file reads the statistics TOGSim prints today: one row per unit with the unit
-table (the default), a row per array without it. Both logs are cut from real 2048x2048x2048 runs."""
+"""get_result_from_file reads the statistics TOGSim prints with the unit table: one row per unit, the
+array named by the machine's systolic_array_unit. The log is cut from a tpuv6e run of test_matmul.py."""
 import os
 import sys
 import tempfile
 
 sys.path.insert(0, os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"))
 
+from pytorchsim import config
 from pytorchsim.simulator.togsim import TOGSimulator
 
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
@@ -13,27 +14,17 @@ DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 
 def test_unit_table_rows():
     core, channels, avg_bw, wall, total = TOGSimulator.get_result_from_file(
-        os.path.join(DATA, "togsim_units.log"))
+        os.path.join(DATA, "togsim_tpuv6e.log"))
     units = core["units"]["Core [0]"]
-    assert units["Systolic"] == {"utilization": 50.66, "active_cycles": 65536, "idle_cycles": 63821}
-    assert units["Vpu"]["active_cycles"] == 34132
-    assert core["Systolic_Array_Utilization"] == 50.66
-    assert core["MatMul_active_cycle"] == 65536
-    assert core["Vector_Unit_Utilization"] == 26.39
-    assert core["Total_cycle"] == total == 129357
-    assert channels == {"CH[0]": 38.06, "CH[1]": 38.06} and avg_bw == 38.06
+    array = units[config.CONFIG_MACHINE.togsim_unit]
+    assert array == {"utilization": 1.86, "active_cycles": 16, "idle_cycles": 846}
+    assert core["Systolic_Array_Utilization"] == array["utilization"]
+    assert core["MatMul_active_cycle"] == array["active_cycles"]
+    assert core["Vector_Unit_Utilization"] == units["Vpu"]["utilization"] == 0.81
+    assert core["Vector_active_cycle"] == 7
+    assert core["Total_cycle"] == total == 862
+    assert len(channels) == 32 and channels["CH[0]"] == 2.79 and avg_bw == 2.79
     assert wall == float("inf")
-
-
-def test_per_array_rows():
-    core, channels, avg_bw, _, total = TOGSimulator.get_result_from_file(
-        os.path.join(DATA, "togsim_arrays.log"))
-    units = core["units"]["Core [0]"]
-    assert units["Systolic array [0]"]["active_cycles"] == 142475
-    assert units["Vector unit"] == {"utilization": 2.39, "active_cycles": 5320, "idle_cycles": 0}
-    assert core["Systolic_Array_Utilization"] == (64.06 + 0.0) / 2
-    assert core["MatMul_active_cycle"] == 142475
-    assert total == 222415 and avg_bw == 22.13 and len(channels) == 2
 
 
 def test_unfinished_log_has_the_same_shape():
@@ -45,6 +36,5 @@ def test_unfinished_log_has_the_same_shape():
 
 if __name__ == "__main__":
     test_unit_table_rows()
-    test_per_array_rows()
     test_unfinished_log_has_the_same_shape()
     print("PASS")

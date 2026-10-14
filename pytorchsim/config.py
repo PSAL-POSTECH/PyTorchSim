@@ -79,7 +79,11 @@ def __getattr__(name):
         }
 
     if name == "CONFIG_MACHINE":
+        # A config of the matrix unit says so (matmul_unit: mxu) and how many arrays it has
+        # (matmul_units); one that does not has the systolic array, and its target reads as before.
+        unit = {k: config_yaml[k] for k in ("matmul_unit", "matmul_units") if k in config_yaml}
         return {
+          **unit,
           "vector_lanes" : config_yaml["vpu_num_lanes"],
           "vlen_bits" : config_yaml["vpu_vector_length_bits"],
           "systolic_queue_entries" : config_yaml["tpu_systolic_queue_entries"],

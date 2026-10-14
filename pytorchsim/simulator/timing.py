@@ -253,9 +253,15 @@ class CycleSimulator():
 
     def compile_and_simulate(self, target_binary, vectorlane_size, silent_mode=False):
         dir_path = os.path.join(os.path.dirname(target_binary), "m5out")
+        # The model reads the machine from the same description Spike gets: its queues and, for
+        # the matrix unit, its arrays are not gem5 options.
+        from pytorchsim.simulator.functional import _write_machine_yaml
+        machine = dict(config.CONFIG_MACHINE)
+        yml = _write_machine_yaml(machine, os.path.join(os.path.dirname(target_binary), "gem5-machine.yml"))
         gem5_cmd = [config.CONFIG_GEM5_PATH, "-r", "--stdout-file=sto.log", "-d", dir_path,
                     config.CONFIG_GEM5_SCRIPT, "-c", target_binary,
-                    "--model", config.CONFIG_VCIX_MODEL, "--vlane", str(vectorlane_size),
+                    "--model", config.CONFIG_VCIX_MODEL, "--machine-config", yml,
+                    "--vlane", str(vectorlane_size),
                     "--vlen", str(config.vpu_vector_length_bits)]
 
         if not silent_mode:
@@ -316,7 +322,10 @@ def unit_rows(m5out):
         for name, u in units.items():
             if "admitted" not in u or "capacity" not in u:
                 raise ValueError(f"{m5out}/stats.txt: dump {tile}, unit {name} lacks admitted or capacity")
-            rows.append((tile, name, u["work"], int(u["capacity"]), int(u["admitted"])))
+            # The sample gem5 times drives the matrix unit's first array alone; the others take
+            # as many rows each in the same cycles.
+            arrays = int(config.CONFIG_MACHINE.get("matmul_units", 1)) if name == "Mxu" else 1
+            rows.append((tile, name, u["work"], int(u["capacity"]), int(u["admitted"]) * arrays))
     return rows
 
 

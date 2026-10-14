@@ -1,0 +1,43 @@
+# TPU v6e with its matrix unit as libtpu's bundles drive it, for the sim-vs-TPU comparison: tpuv6e_nocache.yml
+# with the machine the MXU target is -- registers of 128 lanes x 8 words of 32 bits (VLEN 256), the same 128 MB of
+# VMEM, the chip clock 1751 MHz at which a word of two bf16 rows enters an array a cycle, and two arrays (mxu0 and
+# mxu1 in every LLO dump). matmul_unit / matmul_units are the compile target's: the compiler lowers a dot for the
+# unit and feeds its K pairs to the arrays by turns. A tile is measured using every array, so TOGSim neither
+# splits it nor runs two tiles on two arrays: systolic_array_split none, one array a core. The unit's queues hold
+# what its delay line (4 x lanes - 1 cycles) lets out at two rows a cycle. Needs the accelerator model
+# libtpu_mxu.so: TORCHSIM_COMPILE_VCIX_MODEL.
+num_cores: 1
+core_freq_mhz: 1751
+core_stats_print_period_cycles: 200
+num_systolic_array_per_core: 1
+systolic_array_split: none
+
+matmul_unit: mxu
+matmul_units: 2
+
+vpu_num_lanes: 128
+vpu_spad_size_kb_per_lane: 1024
+vpu_vector_length_bits: 256
+tpu_systolic_queue_entries: 1024
+
+dram_type: ramulator2
+dram_channels: 32
+dram_stats_print_period_cycles: 200
+ramulator_config_path: $TOGSIM_DIR/configs/ramulator2_configs/HBM3_TPUv6e.yaml
+l2d_type: nocache
+
+icnt_type: simple
+icnt_latency_cycles: 10
+icnt_freq_mhz: 1751
+icnt_injection_ports_per_core: 32
+
+pytorchsim_functional_mode: 0
+pytorchsim_timing_mode: 1
+
+codegen_mapping_strategy: autotune
+codegen_external_mapping_file: ''
+codegen_autotune_max_retry: 10
+codegen_autotune_template_topk: 4
+codegen_compiler_optimization: all
+
+core_spad_size_kb: 131072

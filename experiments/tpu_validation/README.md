@@ -40,6 +40,18 @@ softmax 157), which takes many hours; the large shapes dominate.
 A tag is one op on one config. Reusing a tag with a different op or config is refused, so two
 settings never mix in one `results.csv`; use a new tag for each variant.
 
+## The matrix unit
+
+`configs/tpuv6e_mxu.yml` is the v6e with its MXU as the compiler's `matmul_unit: mxu` target lowers
+for it (two arrays, 128 lanes, VLEN 256, 1751 MHz). It needs the accelerator model with the unit:
+
+    export TORCHSIM_COMPILE_VCIX_MODEL=<vcix build>/libtpu_mxu.so
+    python run.py gemm --tag mxu --config configs/tpuv6e_mxu.yml
+
+The frontend reads `matmul_unit` and `matmul_units` from the config into the compile target, gives
+Spike and gem5 the unit's arrays and queues in their machine description, and asks the compiler for
+a TOG grouped by segment (the typed grouping does not know the unit's instructions).
+
 ## What a run leaves
 
     runs/<tag>/

@@ -102,6 +102,12 @@ def compiler_env():
     return env
 
 
+def _grouping(tog):
+    """The matrix unit's instructions are not ones the typed grouping knows: its TOG is grouped
+    by segment. Every other machine takes the compiler's default."""
+    return ["--tog-grouping", "segment"] if tog and machine().get("matmul_unit") == "mxu" else []
+
+
 def doctor():
     """Return (ok, output) for the compiler's own toolchain check."""
     proc = subprocess.run(
@@ -119,7 +125,7 @@ def run_pipeline(spec_path, workdir, to_stage="torchsim-compile", tog=False, tim
     """
     cmd = [config.CONFIG_TORCHSIM_COMPILE_PYTHON,
            os.path.join(compiler_dir(), "pytorchsim-triton-compiler"), spec_path,
-           "--from", "triton-compile", "--to", to_stage, "--workdir", workdir] + (["--tog"] if tog else [])
+           "--from", "triton-compile", "--to", to_stage, "--workdir", workdir] + (["--tog"] if tog else []) + _grouping(tog)
 
     proc = subprocess.run(cmd, capture_output=True, text=True,
                           cwd=compiler_dir(), env=compiler_env(), timeout=timeout)

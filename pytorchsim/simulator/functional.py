@@ -352,6 +352,10 @@ def _write_machine_yaml(t, path):
                 f"vpu_spad_size_kb_per_lane: {kb}\n"
                 f"vpu_spad_base_vaddr: 0x{t['spad_vaddr']:x}\n"
                 f"vpu_vector_length_bits: {t['vlen_bits']}\n")
+        if "systolic_queue_entries" in t:
+            f.write(f"tpu_systolic_queue_entries: {int(t['systolic_queue_entries'])}\n")
+        if t.get("matmul_unit") == "mxu":
+            f.write(f"tpu_mxu_units: {int(t.get('matmul_units', 1))}\n")
     return path
 
 

@@ -254,10 +254,11 @@ class CycleSimulator():
         """gem5 over one tile of the kernel object in `obj_dir`, under what it was compiled for."""
         dir_path = os.path.join(os.path.dirname(target_binary), "m5out")
         machine = compiler_bridge.compiled_for(manifest)
+        run = compiler_bridge.run_options(obj_dir, manifest)
         gem5_cmd = [config.CONFIG_GEM5_PATH, "-r", "--stdout-file=sto.log", "-d", dir_path,
-                    config.CONFIG_GEM5_SCRIPT, "-c", target_binary,
-                    "--model", compiler_bridge.model(manifest),
-                    "--machine-config", contract.machine_config(obj_dir, manifest),
+                    run["gem5_script"], "-c", target_binary,
+                    "--model", run["model"],
+                    "--machine-config", run["machine_config"],
                     "--vlane", str(machine.vector_lanes), "--vlen", str(machine.vlen_bits)]
 
         if not silent_mode:

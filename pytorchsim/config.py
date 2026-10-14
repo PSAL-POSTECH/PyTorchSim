@@ -12,7 +12,6 @@ CONFIG_GEM5_PATH = os.environ.get('GEM5_PATH', default=os.path.join(
 CONFIG_TORCHSIM_COMPILE_DIR = os.environ.get(
     "TORCHSIM_COMPILE_DIR", default=os.path.join(CONFIG_TORCHSIM_DIR, "pytorchsim-triton-compiler"))
 # Where the accelerator models are built (a kernel object's accelerator names which one it runs on).
-# The gem5 script every model is timed with is the compiler's contract.vcix_model.GEM5_SCRIPT.
 CONFIG_VCIX_BUILD = os.path.join(os.environ.get("TORCHSIM_PREFIX", "/workspace"), "vcix-build")
 # the compiler runs in its own process, under this interpreter unless overridden.
 CONFIG_TORCHSIM_COMPILE_PYTHON = os.environ.get("TORCHSIM_COMPILE_PYTHON", default=sys.executable)
@@ -70,10 +69,6 @@ def __getattr__(name):
     if name == "CONFIG_MACHINE_FILE":
         from pytorchsim.driver import compiler_bridge
         return compiler_bridge.target().file
-    if name == "CONFIG_GEM5_SCRIPT":
-        from pytorchsim.driver import compiler_bridge
-        return os.environ.get("TORCHSIM_GEM5_SCRIPT") or compiler_bridge.compiler_contract(
-            "vcix_model").GEM5_SCRIPT
     if name == "CONFIG_NUM_CORES":
         from pytorchsim.driver import compiler_bridge
         with open(compiler_bridge.target().file) as f:

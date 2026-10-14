@@ -121,7 +121,7 @@ def storage_span(size, stride, offset=0):
 KERNEL_MANIFEST = "kernel.json"
 
 
-KERNEL_FORMAT = 5
+KERNEL_FORMAT = 6
 
 
 def kernel_object(workdir):
@@ -155,20 +155,6 @@ def artifact(workdir, kind):
         return None
     full = os.path.join(workdir, rel)
     return full if os.path.exists(full) else None
-
-
-def spike_memory(manifest):
-    """Spike's -m: the memory regions the kernel object runs with, as Spike spells them."""
-    return ",".join(f"0x{base:x}:0x{size:x}" for base, size in manifest["run"]["memory"])
-
-
-def machine_config(workdir, manifest):
-    """The accelerator model's --machine-config: the machine.yml the compiler wrote beside the object."""
-    rel = manifest.get("artifacts", {}).get("machine_config")
-    path = rel and os.path.join(workdir, rel)
-    if not path or not os.path.isfile(path):
-        raise KernelObjectMismatch(f"{workdir}: the kernel object has no machine_config")
-    return path
 
 
 LAUNCH_DIR_PREFIX = "launch"

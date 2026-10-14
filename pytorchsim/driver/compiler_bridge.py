@@ -102,14 +102,19 @@ def target():
     return _TARGETS[(said, here)]
 
 
-def model(manifest):
-    """The vcix model library a kernel object's accelerator runs on, found by its descriptor."""
-    v = compiler_contract("vcix_model")
+def run_options(obj_dir, manifest):
+    """Spike's --isa and -m, the model library, its --machine-config and the gem5 script for the
+    kernel object in `obj_dir`: the compiler's kernel_object.run_options() of the machine it was
+    compiled for. TORCHSIM_GEM5_SCRIPT, when set, is taken for the script."""
+    ko, v = compiler_contract("kernel_object"), compiler_contract("vcix_model")
+    machine = compiled_for(manifest)
     try:
-        return v.find(config.CONFIG_VCIX_BUILD, manifest["run"]["accel"])
+        return ko.run_options(machine, obj_dir, config.CONFIG_VCIX_BUILD, manifest,
+                              gem5_script=os.environ.get("TORCHSIM_GEM5_SCRIPT"))
     except v.ModelError as e:
-        raise NoTarget(f"{e}: {manifest['name']} was compiled for "
-                       f"{manifest['target'].get('name')}") from None
+        raise NoTarget(f"{e}: {manifest['name']} was compiled for {machine.name}") from None
+    except ko.ObjectError as e:
+        raise NoTarget(str(e)) from None
 
 
 def compiled_for(manifest):

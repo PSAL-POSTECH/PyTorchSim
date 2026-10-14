@@ -68,32 +68,8 @@ def __getattr__(name):
     with open(config_path, 'r') as f:
         config_yaml = yaml.safe_load(f)
 
-    # Hardware info config
-    if name == "vpu_num_lanes":
-        return config_yaml["vpu_num_lanes"]
-    if name == "CONFIG_SPAD_INFO":
-        return {
-          "spad_vaddr" : 0xD0000000,
-          "spad_paddr" : 0x2000000000,
-          "spad_size" : config_yaml["vpu_spad_size_kb_per_lane"] << 10 # Note: spad size per lane
-        }
-
-    if name == "CONFIG_MACHINE":
-        return {
-          "vector_lanes" : config_yaml["vpu_num_lanes"],
-          "vlen_bits" : config_yaml["vpu_vector_length_bits"],
-          "systolic_queue_entries" : config_yaml["tpu_systolic_queue_entries"],
-          "spad_size" : config_yaml["vpu_spad_size_kb_per_lane"] << 10,
-          "spad_vaddr" : 0xD0000000,
-          "spad_paddr" : 0x2000000000,
-          "dram_base" : 0x80000000,
-          "dram_size" : 100 << 30,
-        }
-
     if name == "CONFIG_NUM_CORES":
         return config_yaml["num_cores"]
-    if name == "vpu_vector_length_bits":
-        return config_yaml["vpu_vector_length_bits"]
 
     if name == "pytorchsim_functional_mode":
         return config_yaml['pytorchsim_functional_mode']

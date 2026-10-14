@@ -245,9 +245,9 @@ def _size_conv_blocks_from_the_machine():
     from torch._inductor.template_heuristics.triton import (
         BaseConfigHeuristic, ConvConfig)
 
-    from pytorchsim import config
+    from pytorchsim.driver import compiler_bridge
 
-    lanes = int(config.vpu_num_lanes)
+    lanes = compiler_bridge.machine()["vector_lanes"]
 
     class NPUConfigHeuristic(BaseConfigHeuristic):
         def __init__(self):

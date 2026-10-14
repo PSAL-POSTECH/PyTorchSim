@@ -8,8 +8,8 @@ import re
 
 from torch._inductor.virtualized import V
 
-from pytorchsim import config
 from pytorchsim.contract import SpecIncomplete, block_name, parallel_axes, reduction_axes
+from pytorchsim.driver import compiler_bridge
 
 _REDUCTION_LIVE_TILES = 12
 
@@ -114,7 +114,7 @@ def reduction_block_for(extent, elem_bytes=4, lane_bytes=None):
     has is a kernel the compiler refuses as over budget, whatever XBLOCK shrinks to.
     """
     if lane_bytes is None:
-        lane_bytes = config.CONFIG_MACHINE["spad_size"]
+        lane_bytes = compiler_bridge.machine()["spad_size"]
     budget = lane_bytes // 2 // _REDUCTION_LIVE_TILES
     block = 1 << (int(extent) - 1).bit_length()
     while block * elem_bytes > budget and block > 1:
@@ -143,7 +143,7 @@ def fixed_config_for(kernel, numels, args):
     `numels` is the <prefix>numel-keyed dict, NOT kernel.numels. THESE ARE SIZES,
     NOT A LAYOUT -- the lane axis is the compiler's select_lane_axis, passes later.
     """
-    machine = config.CONFIG_MACHINE
+    machine = compiler_bridge.machine()
     lanes = machine["vector_lanes"]
     per_vector = max(1, machine["vlen_bits"] // _element_bits(args))
 
@@ -194,8 +194,9 @@ def gemm_tile_candidates(M, N, K, c_bytes, precision_bytes):
     """Every (tile_M, tile_N, tile_K) whose A, B and C are blocks Triton accepts and fit half the
     scratchpad, largest first. Each side is a lane multiple times a power of two (TTGIR's layouts
     need them), the tail masked."""
-    lanes = int(config.vpu_num_lanes)
-    spad_per_lane = config.CONFIG_SPAD_INFO["spad_size"]
+    machine = compiler_bridge.machine()
+    lanes = machine["vector_lanes"]
+    spad_per_lane = machine["spad_size"]
     max_spad = spad_per_lane * lanes // 2
     max_spad_per_lane = spad_per_lane // 2
     max_numel = triton_max_numel()

@@ -24,7 +24,7 @@ python3 tests/ops/elementwise/test_add.py
 [Spike] $ /workspace/vcix-env/spike/bin/spike --isa rv64gcv_zfh_xvcixaccel \
   --extlib=/workspace/vcix-build/libtpu.so \
   -m0x80000000:0x1900000000,0x2000000000:0x1000000 \
-  --machine-config=/tmp/torchinductor/tmp/g3smoqaa2r5/runtime_0000/machine.yml \
+  --machine-config=/workspace/PyTorchSim/outputs/model-systolic_ws_256x256_c1_simple_noc_tpuv6e_functional_only.yml \
   --kernel-addr=10404:10506 \
   --base-path=/tmp/torchinductor/tmp/g3smoqaa2r5/runtime_0000 \
   /workspace/vcix-env/pk/riscv64-unknown-elf/bin/pk \

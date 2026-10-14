@@ -16,6 +16,7 @@ from pytorchsim import config
 
 from pytorchsim import contract
 from pytorchsim.contract import storage_span
+from pytorchsim.driver import compiler_bridge
 
 logger = config.setup_logger()
 
@@ -342,19 +343,6 @@ def nbytes(arg):
     return n * ITEMSIZE[arg["dtype"]]
 
 
-def _write_machine_yaml(t, path):
-    """The machine in the spelling the vcix accelerator model reads (--machine-config)."""
-    kb, rem = divmod(t["spad_size"], 1024)
-    if rem:
-        raise SpikeError(f"scratchpad {t['spad_size']} B is not whole kilobytes")
-    with open(path, "w") as f:
-        f.write(f"vpu_num_lanes: {t['vector_lanes']}\n"
-                f"vpu_spad_size_kb_per_lane: {kb}\n"
-                f"vpu_spad_base_vaddr: 0x{t['spad_vaddr']:x}\n"
-                f"vpu_vector_length_bits: {t['vlen_bits']}\n")
-    return path
-
-
 def _machine(manifest):
     """The target fields this launch needs, as ints."""
     t = dict(manifest["target"])
@@ -391,15 +379,13 @@ def launch(obj_dir, manifest, runtime, raw_paths, log, jobs=None, scalars=()):
     t = _machine(manifest)
     spad_bytes = t["spad_size"] * t["vector_lanes"]
     lo, hi = manifest["abi"]["kernel_addr"]
-    from pytorchsim import config
-    yml = _write_machine_yaml(t, os.path.join(runtime, "machine.yml"))
     cmd = [
         SPIKE,
         "--isa", SPIKE_ISA,
         f"--extlib={config.CONFIG_VCIX_MODEL}",
         "-m" + f"0x{t['dram_base']:x}:0x{t['dram_size']:x},"
                f"0x{t['spad_paddr']:x}:0x{spad_bytes:x}",
-        f"--machine-config={yml}",
+        f"--machine-config={compiler_bridge.model_yaml()}",
         f"--kernel-addr={lo:x}:{hi:x}",
         f"--base-path={runtime}",
         PK, elf, *argv_paths, *scalars,

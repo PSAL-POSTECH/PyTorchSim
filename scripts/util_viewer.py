@@ -25,14 +25,10 @@ import sys
 _CMDLINE = re.compile(r"--(?:tog_so|trace_so) (\S+)")
 _CONFIG_INT = re.compile(r"^(\w+): (\d+)$")
 _PEAK_BW = re.compile(r"Total bandwidth ([\d.]+) GB/s, (\d+) MHz, (\d+) channels, (\d+) bytes")
-_SA = re.compile(r"Core \[(\d+)\] : Systolic array \[(\d+)\] utilization\(%\): ([\d.]+), "
-                 r"active_cycles: (\d+), idle_cycles: (\d+)")
 _DMA = re.compile(r"Core \[(\d+)\] : DMA active_cycles: (\d+), DMA idle_cycles: (\d+), "
                   r"DRAM BW: ([\d.]+) GB/s \((\d+) responses\)")
-_VU = re.compile(r"Core \[(\d+)\] : Vector unit [Uu]tilization\(%\): ([\d.]+), "
-                 r"active[ _]cycles?: (\d+), idle[ _]cycles?: (\d+)")
-_UNIT = re.compile(r"Core \[(\d+)\] : (Systolic|Msa|Vpu) [Uu]tilization\(%\): ([\d.]+), "
-                   r"active_cycles: (\d+), idle_cycles: (\d+)")
+_VPU = re.compile(r"Core \[(\d+)\] : Vpu utilization\(%\): ([\d.]+), "
+                  r"active_cycles: (\d+), idle_cycles: (\d+)")
 _TOTCYC = re.compile(r"Core \[(\d+)\] : Total_cycles: (\d+)")
 _INST = re.compile(r"Core \[(\d+)\] : (\w+) +inst_count: (\d+)"
                    r"(?: \(GEMM: (\d+), Vector: (\d+)(?:, XLU: (\d+))?\))?")
@@ -49,7 +45,7 @@ _FINAL_MARKERS = ("=== DRAM statistics ===", "[DRAM] Per-channel average bandwid
                   "===== Instructions count =====")
 
 _WANTED_CONFIG = ("num_cores", "core_freq_mhz", "core_stats_print_period_cycles",
-                  "num_systolic_array_per_core", "vpu_num_lanes", "vpu_vector_length_bits",
+                  "vpu_num_lanes", "vpu_vector_length_bits",
                   "vpu_spad_size_kb_per_lane", "dram_channels", "dram_freq_mhz",
                   "core_spad_size_kb")
 
@@ -68,7 +64,7 @@ def kernel_name(tog_so):
 
 
 def _blank_core():
-    return {"sa": {}, "vu": None, "dma": None, "cycles": 0, "inst": {}}
+    return {"vu": None, "dma": None, "cycles": 0, "inst": {}}
 
 
 def _core(cores, cid):
@@ -76,9 +72,8 @@ def _core(cores, cid):
 
 
 def parse_log(path):
-    """Parse one TOGSim info-level log into a run dict, or None if it has no stats. A run with the
-    unit table prints one array row (Systolic or its variant Msa, the other at zero), filed as
-    array 0, and Vpu as the vector unit; a run without it prints a row per array."""
+    """Parse one TOGSim info-level log into a run dict, or None if it has no stats. The vector
+    unit is the unit table's Vpu row."""
     with open(path, errors="replace") as fh:
         text = fh.read()
     if "Total execution cycles" not in text:
@@ -106,26 +101,14 @@ def parse_log(path):
     cur = None
     for line in head.splitlines():
         if "========= Core stat =========" in line:
-            cur = {"sa": {}, "vu": {}, "dma": {}, "dram_gbps": None, "dram_util": None}
+            cur = {"vu": {}, "dma": {}, "dram_gbps": None, "dram_util": None}
             run["windows"].append(cur)
             continue
         if cur is None:
             continue
-        m = _SA.search(line)
-        if m:
-            cur["sa"].setdefault(int(m.group(1)), {})[int(m.group(2))] = float(m.group(3))
-            continue
-        m = _VU.search(line)
+        m = _VPU.search(line)
         if m:
             cur["vu"][int(m.group(1))] = float(m.group(2))
-            continue
-        m = _UNIT.search(line)
-        if m and m.group(2) == "Vpu":
-            cur["vu"][int(m.group(1))] = float(m.group(3))
-            continue
-        if m:
-            per = cur["sa"].setdefault(int(m.group(1)), {})
-            per[0] = max(per.get(0, 0.0), float(m.group(3)))
             continue
         m = _DMA.search(line)
         if m:
@@ -144,17 +127,8 @@ def parse_log(path):
         c[m.group(2)] = int(m.group(3))
         if m.group(4) is not None:
             c["GEMM"], c["VECTOR"] = int(m.group(4)), int(m.group(5))
-    for m in _SA.finditer(tail):
-        _core(run["cores"], m.group(1))["sa"][int(m.group(2))] = {
-            "util": float(m.group(3)), "active": int(m.group(4))}
-    for m in _VU.finditer(tail):
+    for m in _VPU.finditer(tail):
         _core(run["cores"], m.group(1))["vu"] = {"util": float(m.group(2)), "active": int(m.group(3))}
-    for m in _UNIT.finditer(tail):
-        c, row = _core(run["cores"], m.group(1)), {"util": float(m.group(3)), "active": int(m.group(4))}
-        if m.group(2) == "Vpu":
-            c["vu"] = row
-        elif row["active"] >= c["sa"].get(0, row)["active"]:
-            c["sa"][0] = row
     for m in _DMA.finditer(tail):
         _core(run["cores"], m.group(1))["dma"] = {
             "active": int(m.group(2)), "gbps": float(m.group(4)), "responses": int(m.group(5))}
@@ -181,7 +155,6 @@ def summarize(run):
     """Fold a run's per-core totals into the numbers the page leads with."""
     cores = run["cores"]
     n = max(1, len(cores))
-    sa = [s["util"] for c in cores.values() for s in c["sa"].values()]
     vu = [c["vu"]["util"] for c in cores.values() if c["vu"]]
     dma = [c["dma"]["util"] for c in cores.values()]
     inst = {}
@@ -191,7 +164,6 @@ def summarize(run):
     freq = run["config"].get("core_freq_mhz", 0)
     return {"cycles": run["cycles"],
             "us": run["cycles"] / (freq * 1.0) if freq else 0.0,
-            "sa": sum(sa) / len(sa) if sa else 0.0, "sa_peak": max(sa) if sa else 0.0,
             "vu": sum(vu) / len(vu) if vu else 0.0,
             "dma": sum(dma) / len(dma) if dma else 0.0,
             "dram_gbps": run.get("dram_gbps", 0.0), "dram_util": run.get("dram_util", 0.0),
@@ -200,13 +172,11 @@ def summarize(run):
 
 def series(run):
     """Return the per-window utilization series, averaged across cores."""
-    out = {"cycle": [], "sa": [], "vu": [], "dma": [], "dram": [], "gbps": []}
+    out = {"cycle": [], "vu": [], "dma": [], "dram": [], "gbps": []}
     for i, w in enumerate(run["windows"]):
-        sa = [v for per in w["sa"].values() for v in per.values()]
         vu = list(w["vu"].values())
         dma = [d["util"] for d in w["dma"].values()]
         out["cycle"].append((i + 1) * run["interval"])
-        out["sa"].append(round(sum(sa) / len(sa), 2) if sa else 0.0)
         out["vu"].append(round(sum(vu) / len(vu), 2) if vu else 0.0)
         out["dma"].append(round(sum(dma) / len(dma), 2) if dma else 0.0)
         out["dram"].append(w["dram_util"] or 0.0)
@@ -360,7 +330,7 @@ def build_payload(runs, timing=None, breakdowns=None):
                 "workdir": os.path.dirname(os.path.abspath(r["tog_so"])) if r["tog_so"] else "",
                 "config": r["config"], "summary": summarize(r), "series": series(r),
                 "dram_channels": r["dram_channels"], "interval": r["interval"],
-                "cores": {str(k): {"sa": v["sa"], "vu": v["vu"], "dma": v["dma"],
+                "cores": {str(k): {"vu": v["vu"], "dma": v["dma"],
                                    "cycles": v["cycles"], "inst": v["inst"]}
                           for k, v in r["cores"].items()}}
         seen[key] = item
@@ -565,7 +535,7 @@ _PAGE_BODY = r"""
         <thead><tr>
           <th data-k="kernel">Kernel</th><th data-k="bound">Bound by</th>
           <th data-k="cycles">Cycles</th><th data-k="us">Time (us)</th>
-          <th data-k="sa">Systolic</th><th data-k="vu">Vector</th><th data-k="dma">DMA</th>
+          <th data-k="vu">Vector</th><th data-k="dma">DMA</th>
           <th data-k="dram_util">DRAM</th><th data-k="gbps">GB/s</th>
           <th data-k="compile">Compile</th><th data-k="comp">COMP</th>
           <th data-k="movin">MOVIN</th><th data-k="movout">MOVOUT</th>
@@ -612,7 +582,6 @@ const tip = document.getElementById('tip');
 const fmt = n => n.toLocaleString('en-US');
 const f1 = n => n.toFixed(1);
 const SERIES = [
-  {k:'sa',   label:'Systolic array', v:'--s1'},
   {k:'vu',   label:'Vector unit',    v:'--s2'},
   {k:'dma',  label:'DMA engine',     v:'--s3'},
   {k:'dram', label:'DRAM bandwidth', v:'--s4'},
@@ -638,7 +607,7 @@ function freshSvg(id) {
 
 function rowOf(r) {
   const s = r.summary, i = s.inst || {};
-  return {kernel: r.kernel, source: r.source, cycles: s.cycles, us: s.us, sa: s.sa,
+  return {kernel: r.kernel, source: r.source, cycles: s.cycles, us: s.us,
           vu: s.vu, dma: s.dma, dram_util: s.dram_util, gbps: s.dram_gbps,
           comp: i.COMP || 0, movin: i.MOVIN || 0, movout: i.MOVOUT || 0,
           gemm: i.GEMM || 0, vector: i.VECTOR || 0, bound: classify(s).name, s: s,
@@ -646,8 +615,7 @@ function rowOf(r) {
 }
 
 function classify(s) {
-  const cands = [{n: 'systolic-bound', v: s.sa, c: '--s1'},
-                 {n: 'vector-bound', v: s.vu, c: '--s2'},
+  const cands = [{n: 'vector-bound', v: s.vu, c: '--s2'},
                  {n: 'DRAM-bound', v: s.dram_util, c: '--s4'}];
   const top = cands.reduce((a, b) => (b.v > a.v ? b : a));
   if (top.v < 20) return {name: 'stalled', color: '--muted', top: top.n, v: top.v};
@@ -676,8 +644,6 @@ function drawKPIs() {
   const peak = r.config.peak_dram_gbps || 0;
   box.appendChild(kpi('Total cycles', fmt(s.cycles), '',
     s.us ? `${f1(s.us)} us @ ${r.config.core_freq_mhz} MHz` : '', null));
-  box.appendChild(kpi('Systolic array', f1(s.sa), '%',
-    `peak array ${f1(s.sa_peak)}%`, s.sa, '--s1'));
   box.appendChild(kpi('Vector unit', f1(s.vu), '%',
     `${fmt(i.VECTOR || 0)} vector ops`, s.vu, '--s2'));
   box.appendChild(kpi('DMA engine', f1(s.dma), '%',
@@ -687,7 +653,7 @@ function drawKPIs() {
     s.dram_util, '--s4'));
 
   const c = r.config, cfg = document.getElementById('cfg');
-  const rows = [['cores', c.num_cores], ['systolic arrays/core', c.num_systolic_array_per_core],
+  const rows = [['cores', c.num_cores],
     ['VPU lanes', c.vpu_num_lanes], ['vector bits', c.vpu_vector_length_bits],
     ['spad KB/lane', c.vpu_spad_size_kb_per_lane], ['DRAM channels', c.dram_channels]];
   cfg.innerHTML = rows.filter(x => x[1] != null)
@@ -873,7 +839,7 @@ function zoomable(svg, W, P, plotW, n, at) {
 function coactivity(s, z0, z1) {
   let compute = 0, memory = 0, both = 0, either = 0;
   for (let i = z0; i <= z1; i++) {
-    const c = s.sa[i] > BUSY || s.vu[i] > BUSY;
+    const c = s.vu[i] > BUSY;
     const m = s.dram[i] > BUSY || s.dma[i] > BUSY;
     if (c) compute++;
     if (m) memory++;
@@ -1061,7 +1027,7 @@ function drawTable() {
       (r.source ? `<br><span class="src">${r.source}</span>` : '') + `</td>` +
     `<td style="text-align:left">${chip(r.s)}</td>` +
     `<td>${fmt(r.cycles)}</td><td>${f1(r.us)}</td>` +
-    `<td>${bar(r.sa, '--s1')}</td><td>${bar(r.vu, '--s2')}</td>` +
+    `<td>${bar(r.vu, '--s2')}</td>` +
     `<td>${bar(r.dma, '--s3')}</td><td>${bar(r.dram_util, '--s4')}</td>` +
     `<td>${f1(r.gbps)}</td>` +
     `<td>${r.compile < 0 ? '<span class="src">-</span>' : secs(r.compile)}</td>` +

@@ -383,17 +383,16 @@ class TOGSimulator():
             logger.info(f'[TOGSim] Simulation log{model_path_log}is stored to "{result_path}"')
         return result_path
 
-    _UNIT_LINE = re.compile(r"\] (Core \[\d+\]|Total) : (.+?) [Uu]tilization\(%\): (\d+\.?\d*), "
-                            r"active[ _]cycles?: (\d+), idle[ _]cycles?: (\d+)")
+    _UNIT_LINE = re.compile(r"\] (Core \[\d+\]|Total) : (.+?) utilization\(%\): (\d+\.?\d*), "
+                            r"active_cycles: (\d+), idle_cycles: (\d+)")
     _DRAM_CHANNEL = re.compile(r"\[DRAM\] channel (\d+) \| .*?(\d+\.?\d*)% of utilization")
     _DRAM_COMBINED = re.compile(r"\[DRAM\] channels .* combined \| .*?(\d+\.?\d*)% of utilization")
-    _ARRAY_UNITS = ("Systolic", "Msa")
 
     @staticmethod
     def get_result_from_file(result_path):
         """(core_metrics, dram_channel_bw, avg_dram_bw, simulation_time, total_cycle) of a run's log.
         core_metrics["units"] holds every 'Core [i]' and 'Total' unit row; the flat keys read the
-        array and the vector unit off the Total row, else the one core."""
+        machine's array unit (its systolic_array_unit) and Vpu off the Total row, else the one core."""
         core_metrics = {}
         dram_channel_bw = {}
         avg_dram_bw = 0.0
@@ -439,13 +438,11 @@ class TOGSimulator():
         if units:
             core_metrics["units"] = units
             whole = units.get("Total") or next(iter(units.values()))
-            table = [whole[name] for name in TOGSimulator._ARRAY_UNITS if name in whole]
-            arrays = ([max(table, key=lambda u: u["active_cycles"])] if table else
-                      [u for name, u in whole.items() if name.startswith("Systolic array [")])
-            vector = whole.get("Vpu") or whole.get("Vector unit")
-            if arrays:
-                core_metrics["Systolic_Array_Utilization"] = sum(u["utilization"] for u in arrays) / len(arrays)
-                core_metrics["MatMul_active_cycle"] = sum(u["active_cycles"] for u in arrays)
+            array = whole.get(config.CONFIG_MACHINE.togsim_unit)
+            vector = whole.get("Vpu")
+            if array:
+                core_metrics["Systolic_Array_Utilization"] = array["utilization"]
+                core_metrics["MatMul_active_cycle"] = array["active_cycles"]
             if vector:
                 core_metrics["Vector_Unit_Utilization"] = vector["utilization"]
                 core_metrics["Vector_active_cycle"] = vector["active_cycles"]

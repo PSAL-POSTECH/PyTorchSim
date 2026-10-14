@@ -41,16 +41,6 @@ def get_dump_path():
     return dump_path
 
 
-def hash_prefix(hash_value):
-    return hash_value[1:12]
-
-
-def get_write_path(src_code):
-    """The per-source directory under the dump path that holds its artifacts."""
-    from torch._inductor.codecache import get_hash
-    return os.path.join(get_dump_path(), hash_prefix(get_hash(src_code.strip())))
-
-
 def __getattr__(name):
     # TOGSim config
     config_path = os.environ.get('TOGSIM_CONFIG', default=os.path.join(
@@ -71,9 +61,6 @@ def __getattr__(name):
     if name == "pytorchsim_functional_mode":
         return config_yaml['pytorchsim_functional_mode']
     if name == "pytorchsim_timing_mode":
-        # The config says whether this machine is being timed; TORCHSIM_TIMING_MODE
-        # overrides it for one run. Five configs never declared the key and 18 of
-        # the 23 that do say 1, so an absent key reads as 1.
         env = os.environ.get("TORCHSIM_TIMING_MODE")
         if env is not None:
             return int(env)

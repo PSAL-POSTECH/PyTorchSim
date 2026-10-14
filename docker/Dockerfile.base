@@ -4,8 +4,8 @@
 # one tag per commit) already carries Ubuntu 22.04 with python3.11, the vcix-accelerator environment
 # (RISC-V toolchain, pk, Spike, gem5), LLVM, Triton built with the torchsim backend, the accelerator
 # model, the compiler, its dialect and extension, and the TOGSim it pins, built. Nothing of
-# that is built here. Rebuilt when scripts/ci/third_party_base_pin.sh changes, i.e. when this file,
-# the compiler pin or third_party/github-releases.json moves.
+# that is built here. Rebuilt when scripts/ci/third_party_base_pin.sh changes, i.e. when this file
+# or the compiler pin moves.
 ARG PTB_IMAGE=ghcr.io/psal-postech/pytorchsim-triton-backend:main
 FROM ${PTB_IMAGE}
 
@@ -32,7 +32,6 @@ RUN python3.11 -m pip install --no-cache-dir \
 # (TORCHSIM_PREFIX=/workspace in the image). VCIX_ENV_ROOT comes from the environment image.
 ENV TORCHSIM_PREFIX=/workspace \
     TORCHSIM_COMPILE_DIR=/workspace/pytorchsim-triton-compiler \
-    TORCHSIM_COMPILE_TARGET=/workspace/pytorchsim-triton-compiler/tests/targets/tpuv6e.json \
     TORCHSIM_COMPILE_TRITON_SRC=/workspace/triton-src/python \
     TRITON_BACKENDS_IN_TREE=1 \
     TRITON_PLUGIN_PATHS=/workspace/torchsim-triton-ext-build/libtorchsim_triton_ext.so \

@@ -51,7 +51,7 @@ _FINAL_MARKERS = ("=== DRAM statistics ===", "[DRAM] Per-channel average bandwid
 _WANTED_CONFIG = ("num_cores", "core_freq_mhz", "core_stats_print_period_cycles",
                   "num_systolic_array_per_core", "vpu_num_lanes", "vpu_vector_length_bits",
                   "vpu_spad_size_kb_per_lane", "dram_channels", "dram_freq_mhz",
-                  "core_spad_size_kb", "pytorchsim_timing_mode", "pytorchsim_functional_mode")
+                  "pytorchsim_timing_mode", "pytorchsim_functional_mode")
 
 
 def kernel_name(tog_so):

@@ -28,8 +28,6 @@ TENSORS_TXT = "tog_tensors.txt"
 TENSOR_SHAPES_TXT = "tog_tensor_shapes.txt"
 META_JSON = "meta.json"
 
-PLACEHOLDER_CYCLE = 1
-
 AXES_TXT = "tog_axes.txt"
 
 LOCK_NAME = ".timing.lock"

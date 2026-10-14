@@ -84,7 +84,7 @@ so parallel worktrees do not share caches. But within a worktree, after
 editing anything that affects emitted MLIR or wrapper code
 (`pytorchsim/*`), the next
 `torch.compile` will replay the previously cached compile from
-`outputs/<hash>/` and your change silently does not take. Run:
+`outputs/` and your change silently does not take. Run:
 
 ```bash
 scripts/clear_codegen_cache.sh
@@ -92,9 +92,8 @@ scripts/clear_codegen_cache.sh
 
 between iterations. It wipes `outputs/.torchinductor` (Inductor's compile
 cache, set via `TORCHINDUCTOR_CACHE_DIR` inside `config.get_dump_path()`) and
-the per-source-hash dirs (`outputs/<11-char-hash>/`, keyed by
-`config.hash_prefix`). `togsim_results/` (run logs) is left
-alone.
+the per-kernel dirs (`outputs/triton_<hash>/`). `togsim_results/` (run logs)
+is left alone.
 
 Diagnostic for the other common gotcha: if a traceback mentions a path
 under `/workspace/PyTorchSim/...` while you are editing in a different

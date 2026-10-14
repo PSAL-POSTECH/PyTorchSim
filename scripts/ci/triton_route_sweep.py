@@ -48,7 +48,7 @@ BUCKETS = [
     ("reduction",      r"lane-aware|linalg\.reduce|no reduction path"),
     ("dynamic_shape",  r"ShapeMismatch|dynamic shape|size_hint returned None"),
     ("matmul_timing",  r"vcix\.iv|sf\.vc\.|no compute node"),
-    ("togsim",         r"TOGSim|tog\.so|SIGSEGV|Signals\.SIG|'vpu_num_lanes'"),
+    ("togsim",         r"TOGSim|tog\.so|SIGSEGV|Signals\.SIG"),
     ("wrong_values",   r"VALUES WRONG|allclose|Test Failed"),
     ("timeout",        r"^__timeout__$"),
 ]

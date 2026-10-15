@@ -174,7 +174,36 @@ def fixed_config_for(kernel, numels, args):
                 block //= 2
             cfg[block_name(p)] = block
             room //= max(1, block)
+        import os
+        if os.environ.get("TORCHSIM_BIG_BLOCKS") == "1":
+            _big_blocks(cfg, numels, lanes, lane_bytes)
     return cfg
+
+
+def _pow2_divisor(n, cap):
+    """The largest power of two that divides `n` and is at most `cap`."""
+    b = 1
+    while n % (b * 2) == 0 and b * 2 <= cap:
+        b *= 2
+    return b
+
+
+def _big_blocks(cfg, numels, lanes, lane_bytes):
+    """GEMV experiment: blocks as large as the scratchpad holds. The reduction block covers its
+    numel (the compiler cuts the padding, torchsim-fit-to-numel, and runs a big tile's reduce in
+    chunks that overlap their loads, torchsim-pipeline-reductions). XBLOCK -- the lane axis, which
+    the compiler cuts to whole rows a lane -- is the power of two covering xnumel (masked past it),
+    capped by half a lane's scratchpad (4 bytes a tile element: two bf16 operands, held twice)."""
+    r = [p for p in reduction_axes(numels) or ["r0_"] if numels.get(f"{p}numel")]
+    xn = numels.get("xnumel")
+    if len(r) != 1 or not xn or len(parallel_axes(numels)) > 1:
+        return
+    rb = cfg[block_name(r[0])] or 1
+    per_lane = lane_bytes // 2 // (4 * 2)               # tile elements a lane may hold
+    cap = max(lanes, lanes * per_lane // max(1, rb))
+    xb = _covers(1 << (cap.bit_length() - 1), int(xn))  # covering the numel, masked past it
+    if xb >= lanes:
+        cfg["XBLOCK"] = xb
 
 
 def gemm_tiles(m, n, k, dtype_size, out_size=None):

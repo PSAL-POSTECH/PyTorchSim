@@ -183,6 +183,73 @@ def autotune_template(src_code, meta, kernel_name, write_path):
     return best[1], best[2]
 
 
+#: What the compiler is asked, per candidate: into how many trips torchsim-pipeline-reductions cuts
+#: a reduction's tile (1 = whole). Passed through the compiler's environment.
+PIPE_STAGES = (1, 2, 4, 8, 16, 32, 64, 128)
+PIPE_ENV = "TORCHSIM_PIPE_STAGES"
+_GRAIN = 64                                  # the pass's chunk is a multiple of this
+
+
+class compile_env:
+    """The compiler environment a kernel's meta asks for (meta["compile_env"]), set around a
+    compiler run: what autotune chose beside the blocks reaches the final build the same way."""
+
+    def __init__(self, meta):
+        self.want = dict((meta or {}).get("compile_env") or {})
+        self.saved = {}
+
+    def __enter__(self):
+        for k, v in self.want.items():
+            self.saved[k] = os.environ.get(k)
+            os.environ[k] = str(v)
+
+    def __exit__(self, *exc):
+        for k, v in self.saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def _kernel_candidates(src_code, topk):
+    """The trips a reduction kernel's tile may be cut into: every power of two whose chunk divides
+    the reduction's numel and is a whole number of _GRAIN, 1 (the tile whole) first. The blocks
+    stay what the front end pinned -- as large as the scratchpad holds."""
+    m = re.search(r"r0_numel = (\d+)", src_code)
+    k = int(m.group(1)) if m else 0
+    return [s for s in PIPE_STAGES if s == 1 or (k and k % s == 0 and (k // s) % _GRAIN == 0)][:topk]
+
+
+def autotune_kernel(src_code, meta, kernel_name, write_path):
+    """The template autotune for every other reduction kernel, on one axis: how many trips the
+    compiler cuts its tile into (the blocks being the largest the scratchpad holds), each compiled
+    and simulated alone; the fewest cycles wins. Only in timing mode."""
+    if tiling.mm_template_shape(src_code, meta) is not None:
+        return meta
+    cfg = meta.get("fixed_config") or {}
+    if not any(k.startswith("R") and v for k, v in cfg.items()):
+        return meta
+    if "autotune" not in config.codegen_mapping_strategy or not config.pytorchsim_timing_mode:
+        return meta
+    topk = config.codegen_autotune_kernel_topk
+    if topk <= 1:
+        return meta
+    best, timeout = (float("inf"), meta), None
+    for stages in _kernel_candidates(src_code, topk):
+        mt = copy.deepcopy(meta)
+        mt["compile_env"] = {PIPE_ENV: stages}
+        t0 = time.perf_counter()
+        with compile_env(mt):
+            cycles = _time_tile(src_code, mt, kernel_name,
+                                os.path.join(write_path, "autotune", f"stages{stages}"), timeout)
+        if cycles != float("inf") and timeout is None:
+            timeout = time.perf_counter() - t0 + config.codegen_autotune_wall_slack_sec
+        logger.info("[autotune] %s stages=%d: %s cycles", kernel_name, stages, cycles)
+        if cycles < best[0]:
+            best = (cycles, mt)
+    return best[1]
+
+
 def _recorded_tile(m, n, k):
     """develop's external mapping: `{"M_N_K": {"TILE_M", "TILE_N", "TILE_K"}}`, else None."""
     path = config.codegen_external_mapping_file

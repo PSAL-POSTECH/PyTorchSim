@@ -148,14 +148,16 @@ def write_cycle_tables(workdir, meta):
         raise RuntimeError(
             f"[Gem5] sampling failed for {kernel}, so compute latency would "
             f"not be modelled at all")
-    table = cycle_table(offsets, list(cycles))
+    cycles = last_call(list(cycles), n_tiles)
+    table = cycle_table(offsets, cycles)
 
     if os.path.abspath(so_path) != os.path.abspath(os.path.join(workdir, TOG_SO)):
         shutil.copyfile(so_path, os.path.join(workdir, TOG_SO))
     with open(os.path.join(workdir, AXES_TXT), "w") as f:
         f.write(f"{len(axes)}\n")
 
-    rows = unit_rows(os.path.join(os.path.dirname(contract.artifact(workdir, "cycle_elf")), "m5out"))
+    rows = unit_rows(os.path.join(os.path.dirname(contract.artifact(workdir, "cycle_elf")), "m5out"),
+                     n_tiles)
     with open(os.path.join(workdir, UNITS_TSV), "w") as f:
         f.write("".join("\t".join(str(v) for v in r) + "\n" for r in rows))
     dump_cycle_table_tsv(table, os.path.join(workdir, CYCLE_TSV))
@@ -282,7 +284,17 @@ _COMMITTED = "system.cpu.commitStats0.numOps"
 _CPU_UNITS = "system.cpu.units."
 
 
-def unit_rows(m5out):
+def last_call(samples, n_tiles):
+    """The cycle binary's last (warm) call: it calls the program a whole number of times (the
+    compiler's CYCLE_CALLS) and gem5 dumps every call's tiles, so a count that is a multiple of
+    the tiles keeps the final n_tiles -- what TOGSim replays over the grid. Any other count is left
+    for cycle_table to refuse."""
+    if n_tiles and len(samples) > n_tiles and len(samples) % n_tiles == 0:
+        return samples[-n_tiles:]
+    return samples
+
+
+def unit_rows(m5out, n_tiles=None):
     """TOGSim's --unit_table rows of a gem5 run, one per sampled tile and unit: (tile_id, unit,
     unit_of_work, capacity per cycle, admitted). Issue is the committed micro-ops over the issue
     width; the end-of-run dump is left out, as the cycles leave it out."""
@@ -292,6 +304,8 @@ def unit_rows(m5out):
         width = int(json.load(f)["system"]["cpu"]["executeIssueLimit"])
     with open(os.path.join(m5out, "stats.txt")) as f:
         dumps = f.read().split("Begin Simulation Statistics")[1:-1]
+    if n_tiles:
+        dumps = last_call(dumps, n_tiles)
     rows = []
     for tile, dump in enumerate(dumps):
         units = {}

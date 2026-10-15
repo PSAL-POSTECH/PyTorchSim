@@ -83,9 +83,9 @@ def _lazy_init():
     register_interface_for_device(custom_device(), ExtensionDeviceInterface)
     _initialized = True
 
-    # Set default SDPA backend to math-only for this device.
+    # SDPA: the front end's fused kernel where _fused_sdp_choice takes it, math elsewhere.
     torch._C._set_sdp_use_flash(False)
-    torch._C._set_sdp_use_overrideable(False)
+    torch._C._set_sdp_use_overrideable(True)
     torch._C._set_sdp_use_math(True)
 
     # Create default streams for all devices

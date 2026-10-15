@@ -27,6 +27,18 @@ int64_t _fused_sdp_choice(
     return static_cast<int64_t>(sdp::SDPBackend::error);
   }
 
+  // A prefill or a decode with no mask and no dropout takes the front end's fused kernel.
+  const int64_t Hq = query.size(-3), H = key.size(-3);
+  const int64_t L = query.size(-2), S = key.size(-2);
+  const bool fused =
+      at::globalContext().userEnabledOverrideableSDP() &&
+      (L == S || L == 1) && H > 0 && Hq % H == 0 && (Hq == H || enable_gqa) &&
+      !attn_mask.has_value() &&
+      sdp::check_for_dropout(params, /*debug=*/false) &&
+      sdp::check_nested_tensor(params, /*debug=*/false);
+  if (fused) {
+    return static_cast<int64_t>(sdp::SDPBackend::overrideable);
+  }
   return static_cast<int64_t>(sdp::SDPBackend::math);
 }
 

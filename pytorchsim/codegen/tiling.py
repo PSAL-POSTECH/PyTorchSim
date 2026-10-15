@@ -137,11 +137,13 @@ def _covers(want, n):
     return min(want, cover)
 
 
-def fixed_config_for(kernel, numels, args):
+def fixed_config_for(kernel, numels, args, contiguous=None):
     """Block sizes pinned at codegen time, from the machine and the numels.
 
     `numels` is the <prefix>numel-keyed dict, NOT kernel.numels. THESE ARE SIZES,
     NOT A LAYOUT -- the lane axis is the compiler's select_lane_axis, passes later.
+    `contiguous` is the axis ('x' or 'r') the kernel's largest read is unit-stride along;
+    a reduction contiguous along x takes its blocks from kept_axis_contiguous_blocks.
     """
     machine = config.CONFIG_MACHINE
     lanes = machine.vector_lanes
@@ -174,7 +176,39 @@ def fixed_config_for(kernel, numels, args):
                 block //= 2
             cfg[block_name(p)] = block
             room //= max(1, block)
+        if contiguous == "x" and set(cfg) == {"XBLOCK", "R0_BLOCK"} \
+                and numels.get("xnumel") and numels.get("r0_numel"):
+            cfg["XBLOCK"], cfg["R0_BLOCK"] = kept_axis_contiguous_blocks(
+                numels["xnumel"], numels["r0_numel"], elem_bytes, lanes, lane_bytes,
+                triton_max_numel())
     return cfg
+
+
+def kept_axis_contiguous_blocks(xnumel, rnumel, elem_bytes, lanes, lane_bytes, max_numel):
+    """(XBLOCK, R0_BLOCK) for a reduction whose largest read is contiguous along the kept axis.
+
+    Power-of-two blocks whose tile fits the budget reduction_block_for gives one lane, times the
+    lanes, with XBLOCK at least the lane cover; ranked by no padding on x, then the longest
+    contiguous run (XBLOCK covered elements), then the larger R0_BLOCK. Padding on r is not
+    counted: the reduce stops at its mask. XBLOCK = lanes gives today's R0_BLOCK.
+    """
+    per_lane = reduction_block_for(1 << 62, elem_bytes, lane_bytes)
+    budget = min(lanes * per_lane, max_numel)
+    floor = _covers(lanes, xnumel)
+    best = None
+    x = floor
+    while x <= _covers(1 << 62, xnumel):
+        r = 1
+        while x * r <= budget and r <= _covers(1 << 62, rnumel):
+            pad = -(-xnumel // x) * x - xnumel
+            key = (-pad, min(x, xnumel), r)
+            if best is None or key > best[0]:
+                best = (key, x, r)
+            r *= 2
+        x *= 2
+    if best is None:
+        return floor, reduction_block_for(rnumel, elem_bytes, lane_bytes)
+    return best[1], best[2]
 
 
 def gemm_tiles(m, n, k, dtype_size, out_size=None):

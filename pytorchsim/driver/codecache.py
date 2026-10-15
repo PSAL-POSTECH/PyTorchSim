@@ -227,6 +227,7 @@ def torchsim_compile(src_code, meta, kernel_name):
         if elf is None:
             src_code, tuned = autotune.autotune_template(src_code, meta, kernel_name, write_path)
             meta.update(tuned)
+            meta.update(autotune.autotune_kernel(src_code, meta, kernel_name, write_path))
             with open(os.path.join(write_path, "kernel.py"), "w") as f:
                 f.write(src_code)
             timing.store_meta(write_path, meta)
@@ -235,7 +236,8 @@ def torchsim_compile(src_code, meta, kernel_name):
                 compiler_input.write(src_code, meta, spec_path,
                                             compiler_bridge.compiler_dir())
                 try:
-                    with wallclock.span(wallclock.TORCHSIM_COMPILE, kernel_name):
+                    with wallclock.span(wallclock.TORCHSIM_COMPILE, kernel_name), \
+                            autotune.compile_env(meta):
                         compiler_bridge.run_pipeline(
                             spec_path, write_path, to_stage="torchsim-compile",
                             tog=bool(config.pytorchsim_timing_mode))

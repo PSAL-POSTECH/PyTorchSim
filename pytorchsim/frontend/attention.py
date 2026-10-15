@@ -7,9 +7,9 @@ import torch
 import triton
 import triton.language as tl
 
-MAX_BLOCK = 1024
+MAX_BLOCK = 128
 MIN_ROWS = 4
-DECODE_BKV = 4096
+DECODE_BKV = 8192
 
 
 @triton.jit

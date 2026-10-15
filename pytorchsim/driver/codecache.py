@@ -225,9 +225,8 @@ def torchsim_compile(src_code, meta, kernel_name):
                         kernel_name)
             elf = None
         if elf is None:
-            src_code, tuned = autotune.autotune_template(src_code, meta, kernel_name, write_path)
+            src_code, tuned = autotune.tune(src_code, meta, kernel_name, write_path)
             meta.update(tuned)
-            meta.update(autotune.autotune_kernel(src_code, meta, kernel_name, write_path))
             with open(os.path.join(write_path, "kernel.py"), "w") as f:
                 f.write(src_code)
             timing.store_meta(write_path, meta)

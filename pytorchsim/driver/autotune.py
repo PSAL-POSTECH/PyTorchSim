@@ -1,7 +1,10 @@
-"""Which tile a template kernel is built at: autotuned on TOGSim, or retried smaller when the compiler refuses it.
+"""How a kernel is built: its candidates autotuned on TOGSim when Inductor's knobs ask for it, the
+first otherwise, and retried smaller when the compiler refuses it.
 
-Autotune simulates each candidate alone, so this is the one place a build runs the simulator; the
-retry on a too-big tile runs in every mode. A tile settled on is recorded in the external mapping.
+A template's candidates are its mapped tiles; every other kernel's are its XBLOCK, from the largest
+fixed_config_for pinned down to the lanes, and what the compiler is asked beside it. Autotune simulates each
+candidate alone, so this is the one place a build runs the simulator; the retry on a too-big tile
+runs in every mode. A template tile settled on is recorded in the external mapping.
 """
 
 import copy
@@ -94,10 +97,12 @@ def _retile(src_code, meta, mnk, tile):
     return src_code, meta
 
 
-def _time_tile(src_code, meta, kernel_name, workdir, timeout):
+def _time_tile(src_code, meta, kernel_name, workdir, timeout, seen=None):
     """TOGSim cycles of one candidate, simulated alone; inf if it does not compile or run --
     develop's autotune. TOGSim 1.3.0 refuses a tile over the spad at load, where an earlier one never
-    finishes it; the refusal and the timeout both reach here as RuntimeError."""
+    finishes it; the refusal and the timeout both reach here as RuntimeError. A candidate the
+    compiler built into the same kernel at the same grid as one in `seen` takes its cycles, not
+    another simulation (a pipelining count the compiler does not apply)."""
     from pytorchsim.simulator.togsim import TOGSimulator
     os.makedirs(workdir, exist_ok=True)
     spec_path = os.path.join(workdir, f"{kernel_name}_spec.py")
@@ -107,6 +112,11 @@ def _time_tile(src_code, meta, kernel_name, workdir, timeout):
     compiler_input.write(src_code, meta, spec_path, compiler_bridge.compiler_dir())
     try:
         compiler_bridge.run_pipeline(spec_path, workdir, to_stage="torchsim-compile", tog=True)
+        key = _build_key(workdir, meta)
+        if seen is not None and key is not None and key in seen:
+            logger.info("[autotune] %s %s: the same build as an earlier candidate", kernel_name,
+                        workdir)
+            return seen[key]
         timing.write_cycle_tables(workdir, meta)
         mine = contract.link_shared(workdir, timing.SHARED)
         timing.write_shape(workdir, meta)
@@ -114,11 +124,29 @@ def _time_tile(src_code, meta, kernel_name, workdir, timeout):
         result = TOGSimulator.run_standalone(os.path.join(mine, "tile_graph.onnx"),
                                              os.path.join(mine, "attribute"),
                                              autotune_mode=True, timeout_sec=timeout)
-        return TOGSimulator.get_result_from_file(result)[-1]
+        cycles = TOGSimulator.get_result_from_file(result)[-1]
+        if seen is not None and key is not None:
+            seen[key] = cycles
+        return cycles
     except (compiler_bridge.CompilerError, RuntimeError, FileNotFoundError) as exc:
         why = "scratchpad overflow" if _spad_overflow(exc) else type(exc).__name__
         logger.info("[autotune] %s %s: %s", kernel_name, workdir, why)
         return float("inf")
+
+
+def _build_key(workdir, meta):
+    """What the compiler built in `workdir` and the grid it runs over, or None: two candidates
+    with the same key time the same."""
+    import glob
+    import hashlib
+    asm = sorted(glob.glob(os.path.join(workdir, "11-*.s")))
+    if not asm:
+        return None
+    h = hashlib.sha256(json.dumps(meta.get("fixed_config") or {}, sort_keys=True).encode())
+    for path in asm:
+        with open(path, "rb") as f:
+            h.update(f.read())
+    return h.hexdigest()
 
 
 def _template_tiles(src_code, meta):
@@ -150,37 +178,56 @@ def smaller_tiles(src_code, meta):
         yield {k: v for k, v in tile.items() if k.endswith("BLOCK")}, src_code, meta
 
 
-def autotune_template(src_code, meta, kernel_name, write_path):
-    """develop's template autotune: the top-k mapped tiles, each compiled with what is fused
-    into it and simulated alone; the fewest cycles wins. Only in timing mode, since cycles
-    are what it ranks by; the first tile to finish limits the others' wall time."""
+def autotune_on(template):
+    """Whether Inductor's own knobs ask for autotune: torch.compile(mode="max-autotune") sets
+    max_autotune for every kernel, max_autotune_pointwise asks it for the kernels that are not a
+    template. max_autotune_gemm is not one of them: the front end sets it so mm lowers to the Triton
+    template at all. Cycles are what candidates rank by, so only in timing mode."""
+    from torch._inductor import config as inductor_config
+    asked = inductor_config.max_autotune or (
+        not template and inductor_config.max_autotune_pointwise)
+    return bool(asked) and bool(config.pytorchsim_timing_mode)
+
+
+def tune(src_code, meta, kernel_name, write_path):
+    """The (source, meta) a kernel is built at: its candidates, each compiled and simulated alone,
+    the fewest cycles winning; the first alone when there is one, or autotune is off. A template's
+    candidates are its mapped tiles, every other kernel's its XBLOCK from the largest down and what
+    the compiler is asked beside it. A template tile settled on is recorded in the external mapping."""
     shape = tiling.mm_template_shape(src_code, meta)
-    if shape is None:
-        return src_code, meta
-    m, n, k = shape[:3]
-    strategy = config.codegen_mapping_strategy
-    known = _recorded_tile(m, n, k) if "external" in strategy else None
+    if shape is not None:
+        cands = _template_candidates(src_code, meta, shape[:3], kernel_name)
+    else:
+        cands = _kernel_candidates(src_code, meta)
+    if len(cands) == 1:
+        return cands[0][1], cands[0][2]
+    best, timeout, seen = (float("inf"), cands[0]), None, {}
+    for label, s, mt in cands:
+        t0 = time.perf_counter()
+        cycles = _time_tile(s, mt, kernel_name, os.path.join(write_path, "autotune", label),
+                            timeout, seen)
+        if cycles != float("inf") and timeout is None:
+            timeout = time.perf_counter() - t0 + config.codegen_autotune_wall_slack_sec
+        logger.info("[autotune] %s %s: %s cycles", kernel_name, label, cycles)
+        if cycles < best[0]:
+            best = (cycles, (label, s, mt))
+    if shape is not None and best[0] != float("inf"):
+        _record_tile(*shape[:3], tuple(int(v) for v in best[1][0].split("x")))
+    return best[1][1], best[1][2]
+
+
+def _template_candidates(src_code, meta, mnk, kernel_name):
+    """(label, source, meta) per mapped tile of an mm template, best first: the external mapping's
+    tile alone when it has this shape, the top-k under autotune, else the source as codegen made it."""
+    known = _recorded_tile(*mnk) if "external" in config.codegen_mapping_strategy else None
     if known is not None:
         logger.info("[autotune] %s BLOCK_M/N/K=%s: from %s", kernel_name, known,
                     config.codegen_external_mapping_file)
-        return _retile(src_code, meta, (m, n, k), known)
-    if "autotune" not in strategy or not config.pytorchsim_timing_mode:
-        return src_code, meta
-    tiles = _template_tiles(src_code, meta)[:config.codegen_autotune_template_topk]
-    best, timeout = (float("inf"), src_code, meta, None), None
-    for tile in tiles:
-        s, mt = _retile(src_code, meta, (m, n, k), tile)
-        t0 = time.perf_counter()
-        cycles = _time_tile(s, mt, kernel_name,
-                            os.path.join(write_path, "autotune", "x".join(map(str, tile))), timeout)
-        if cycles != float("inf") and timeout is None:
-            timeout = time.perf_counter() - t0 + config.codegen_autotune_wall_slack_sec
-        logger.info("[autotune] %s BLOCK_M/N/K=%s: %s cycles", kernel_name, tile, cycles)
-        if cycles < best[0]:
-            best = (cycles, s, mt, tile)
-    if best[0] != float("inf"):
-        _record_tile(m, n, k, best[3])
-    return best[1], best[2]
+        return [("x".join(map(str, known)), *_retile(src_code, meta, mnk, known))]
+    if not autotune_on(template=True):
+        return [("as-made", src_code, meta)]
+    tiles = _template_tiles(src_code, meta)[:max(1, config.codegen_autotune_template_topk)]
+    return [("x".join(map(str, t)), *_retile(src_code, meta, mnk, t)) for t in tiles]
 
 
 #: What the compiler is asked, per candidate: into how many trips torchsim-pipeline-reductions cuts
@@ -211,43 +258,36 @@ class compile_env:
                 os.environ[k] = v
 
 
-def _kernel_candidates(src_code, topk):
-    """The trips a reduction kernel's tile may be cut into: every power of two whose chunk divides
-    the reduction's numel and is a whole number of _GRAIN, 1 (the tile whole) first. The blocks
-    stay what the front end pinned -- as large as the scratchpad holds."""
-    m = re.search(r"r0_numel = (\d+)", src_code)
-    k = int(m.group(1)) if m else 0
-    return [s for s in PIPE_STAGES if s == 1 or (k and k % s == 0 and (k // s) % _GRAIN == 0)][:topk]
-
-
-def autotune_kernel(src_code, meta, kernel_name, write_path):
-    """The template autotune for every other reduction kernel, on one axis: how many trips the
-    compiler cuts its tile into (the blocks being the largest the scratchpad holds), each compiled
-    and simulated alone; the fewest cycles wins. Only in timing mode."""
-    if tiling.mm_template_shape(src_code, meta) is not None:
-        return meta
+def _kernel_candidates(src_code, meta):
+    """(label, source, meta) per build of a kernel that is not a template; the first is the build
+    as made, its blocks what fixed_config_for pinned -- XBLOCK as large as a lane's scratchpad
+    holds. Under autotune, XBLOCK halves down to the lanes: a smaller block is more programs, one's
+    loads overlapping another's arithmetic, where one big program waits for its whole tile. Then a
+    reduction is asked into how many trips the compiler cuts its tile at the largest XBLOCK: every
+    power of two whose chunk divides the reduction's numel and is a whole number of _GRAIN."""
+    if not autotune_on(template=False):
+        return [("as-made", src_code, meta)]
     cfg = meta.get("fixed_config") or {}
-    if not any(k.startswith("R") and v for k, v in cfg.items()):
-        return meta
-    if "autotune" not in config.codegen_mapping_strategy or not config.pytorchsim_timing_mode:
-        return meta
-    topk = config.codegen_autotune_kernel_topk
-    if topk <= 1:
-        return meta
-    best, timeout = (float("inf"), meta), None
-    for stages in _kernel_candidates(src_code, topk):
+    lanes = int(config.CONFIG_MACHINE.vector_lanes)
+    xb = cfg.get("XBLOCK") or 0
+    builds = []
+    while xb >= lanes or not builds:
+        builds.append((xb, 1))
+        xb //= 2
+    if any(k.startswith("R") and v for k, v in cfg.items()):
+        m = re.search(r"r0_numel = (\d+)", src_code)
+        k = int(m.group(1)) if m else 0
+        builds += [(builds[0][0], n) for n in PIPE_STAGES[1:]
+                   if k and k % n == 0 and (k // n) % _GRAIN == 0]
+    out = []
+    for x, n in builds[:max(1, config.codegen_autotune_kernel_topk)]:
         mt = copy.deepcopy(meta)
-        mt["compile_env"] = {PIPE_ENV: stages}
-        t0 = time.perf_counter()
-        with compile_env(mt):
-            cycles = _time_tile(src_code, mt, kernel_name,
-                                os.path.join(write_path, "autotune", f"stages{stages}"), timeout)
-        if cycles != float("inf") and timeout is None:
-            timeout = time.perf_counter() - t0 + config.codegen_autotune_wall_slack_sec
-        logger.info("[autotune] %s stages=%d: %s cycles", kernel_name, stages, cycles)
-        if cycles < best[0]:
-            best = (cycles, mt)
-    return best[1]
+        if x:
+            mt["fixed_config"]["XBLOCK"] = x
+        if n > 1:
+            mt["compile_env"] = {PIPE_ENV: n}
+        out.append((f"x{x}-s{n}", src_code, mt))
+    return out
 
 
 def _recorded_tile(m, n, k):

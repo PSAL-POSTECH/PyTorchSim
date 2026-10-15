@@ -1,4 +1,5 @@
-"""Reduction blocks on a machine of 128 lanes and 1 MiB of scratchpad per lane: a reduction whose
+"""Reduction blocks on a machine of 128 lanes and 1 MiB of scratchpad per lane, double-buffered (a
+spad_budget of 512 KiB, what the blocks are sized to): a reduction whose
 largest read runs along the kept axis takes that axis as wide as its unpadded power-of-two part
 allows; any other reduction keeps today's blocks."""
 import os
@@ -10,7 +11,7 @@ from _pytorchsim_utils import test_result
 
 from pytorchsim.codegen import tiling
 
-LANES, LANE_BYTES = 128, 1 << 20
+LANES, LANE_BYTES = 128, 1 << 19
 
 
 def _blocks(xnumel, rnumel, elem_bytes=2):

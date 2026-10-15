@@ -106,16 +106,17 @@ def triton_max_numel():
 def reduction_block_for(extent, elem_bytes=4, lane_bytes=None):
     """The R0_BLOCK this backend pins for a reduction of `extent`.
 
-    Cover the extent and no more, then shrink to the budget: half of one lane's
-    scratchpad, shared by the tiles a reduction keeps live. Two callers must
+    Cover the extent and no more, then shrink to the budget: the share of one lane's
+    scratchpad a kernel may claim (the target's spad_budget), shared by the tiles a
+    reduction keeps live. Two callers must
     agree: this pins the block, inductor_patches asks if persistence matches.
     Both see the machine's scratchpad when `lane_bytes` is left to this
     function; a persistent reduction rendered for a bigger one than the target
     has is a kernel the compiler refuses as over budget, whatever XBLOCK shrinks to.
     """
     if lane_bytes is None:
-        lane_bytes = config.CONFIG_MACHINE.spad_size
-    budget = lane_bytes // 2 // _REDUCTION_LIVE_TILES
+        lane_bytes = config.CONFIG_MACHINE.spad_budget
+    budget = lane_bytes // _REDUCTION_LIVE_TILES
     block = 1 << (int(extent) - 1).bit_length()
     while block * elem_bytes > budget and block > 1:
         block //= 2
@@ -161,7 +162,7 @@ def fixed_config_for(kernel, numels, args, contiguous=None):
     cfg.setdefault("XBLOCK", _covers(lanes, numels.get("xnumel")))
 
     if getattr(kernel, "inside_reduction", False):
-        lane_bytes = machine.spad_size
+        lane_bytes = machine.spad_budget
         elem_bytes = max(1, _element_bits(args) // 8)
         room = triton_max_numel()
         for v in cfg.values():
@@ -181,7 +182,39 @@ def fixed_config_for(kernel, numels, args, contiguous=None):
             cfg["XBLOCK"], cfg["R0_BLOCK"] = kept_axis_contiguous_blocks(
                 numels["xnumel"], numels["r0_numel"], elem_bytes, lanes, lane_bytes,
                 triton_max_numel())
+        else:
+            _fill_the_lanes(cfg, numels, args)
+    else:
+        _fill_the_lanes(cfg, numels, args)
     return cfg
+
+
+def _fill_the_lanes(cfg, numels, args):
+    """XBLOCK as large as a lane's scratchpad holds: a lane takes as many rows as fit beside the
+    other blocks, so the grid runs few programs, each with one DMA and setup, not numel / lanes of
+    them (a pointwise kernel at XBLOCK = lanes held one element a lane). How large pays is the
+    machine's: autotune tries it halved down to the lanes.
+
+    A lane's budget is the share of its scratchpad the compiler gives a kernel (the target's
+    spad_budget; the rest is its double buffer), shared by one tile of each tensor argument.
+    XBLOCK stays a power of two covering xnumel, masked past it: a lane walks its rows in turn,
+    however many there are. A reduction contiguous along x has its blocks from
+    kept_axis_contiguous_blocks instead."""
+    xn = numels.get("xnumel")
+    machine = config.CONFIG_MACHINE
+    lanes = machine.vector_lanes
+    if not xn:
+        return
+    row_bytes = sum(_DTYPE_BITS[a["dtype"]] // 8 for a in (args or [])
+                    if a.get("dtype") in _DTYPE_BITS) or 4
+    others = 1
+    for k, v in cfg.items():
+        if k != "XBLOCK":
+            others *= max(1, v or 1)
+    cap = lanes * max(1, machine.spad_budget // (row_bytes * others))
+    xb = _covers(1 << (cap.bit_length() - 1), int(xn))
+    if xb > cfg["XBLOCK"]:
+        cfg["XBLOCK"] = xb
 
 
 def kept_axis_contiguous_blocks(xnumel, rnumel, elem_bytes, lanes, lane_bytes, max_numel):
@@ -229,9 +262,8 @@ def gemm_tile_candidates(M, N, K, c_bytes, precision_bytes):
     scratchpad, largest first. Each side is a lane multiple times a power of two (TTGIR's layouts
     need them), the tail masked."""
     lanes = int(config.CONFIG_MACHINE.vector_lanes)
-    spad_per_lane = config.CONFIG_MACHINE.spad_size
-    max_spad = spad_per_lane * lanes // 2
-    max_spad_per_lane = spad_per_lane // 2
+    max_spad_per_lane = config.CONFIG_MACHINE.spad_budget
+    max_spad = max_spad_per_lane * lanes
     max_numel = triton_max_numel()
 
     def per_lane(rows, cols):

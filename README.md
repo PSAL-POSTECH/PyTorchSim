@@ -315,14 +315,9 @@ Depending on tensor shape, use different convolution template:
 ## Mapping
 PyTorchSim provides three mapping strategies.
 ### Heuristic-based mapping
-We adopted and modified heuristic-based mapping from [GEMMINI](https://github.com/ucb-bar/gemmini) by default, which maximizes the utilization of scratchpad memory.
+By default every kernel is built at blocks as large as a lane's scratchpad holds (the target's `spad_budget`: `vpu_spad_size_kb_per_lane` over `vpu_spad_buffers`), and a GEMM at its first mapped tile.
 ### Auto-tuning
-The heuristic method may not be optimal for all cases. PyTorchSim provides auto-tuning to find the best mapping for GEMM, CONV, and vector operations. It reduces the search space by sorting candidates based on scratchpad memory utilization and picking the top-k candidates. Search parameters include tile shape and vector lane stride.
-
-To enable this, update your configuration file as follows:
-```bash
-"codegen_mapping_strategy" : "autotune"
-```
+Auto-tuning is Inductor's own switch. With `torch.compile(mode="max-autotune")` (`TORCHINDUCTOR_MAX_AUTOTUNE=1`) every kernel's candidates are compiled and simulated alone in timing mode, and the fewest cycles win: a GEMM's top-k mapped tiles (`codegen_autotune_template_topk`), a reduction's pipelining trips (`codegen_autotune_kernel_topk`). `max_autotune_pointwise` (`TORCHINDUCTOR_MAX_AUTOTUNE_POINTWISE=1`) asks it for the kernels that are not a GEMM only.
 ### Manual setting
 Users can use third-party mapping tools (e.g., Timeloop). You can explicitly set the mapping file path in the configuration file to apply your own mapping strategies.
 ```bash
@@ -440,7 +435,7 @@ pytorchsim_functional_mode: 1  # 1 = run Spike validation, 0 = skip for faster r
 pytorchsim_timing_mode: 1
 
 # --- Compiler mapping / optimizations (same YAML) ---
-codegen_mapping_strategy: heuristic   # heuristic | autotune | external-then-heuristic | external-then-autotune
+codegen_mapping_strategy: heuristic   # heuristic | external (autotune: torch.compile(mode="max-autotune"))
 codegen_external_mapping_file: ''
 codegen_autotune_max_retry: 10
 codegen_autotune_template_topk: 4

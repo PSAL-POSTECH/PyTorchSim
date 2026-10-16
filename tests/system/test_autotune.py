@@ -1,6 +1,7 @@
 """How a kernel's build is chosen and reused: every candidate asks the compiler its options outright,
-trip counts are offered and the compiler decides which it applies, and identical builds are
-recognised by the kernel object's artifacts."""
+trip counts are offered and the compiler decides which it applies, identical builds are recognised by
+the kernel object's artifacts, and a cached build is reused only under the policy that chose it and
+launched at the blocks it was built at."""
 import json
 import os
 import sys
@@ -13,7 +14,7 @@ os.environ["TORCHSIM_CODEGEN_AUTOTUNE_KERNEL_TOPK"] = "64"
 from torch._inductor import config as inductor_config
 
 from pytorchsim import contract
-from pytorchsim.driver import autotune
+from pytorchsim.driver import autotune, codecache
 
 FAILED = []
 
@@ -85,11 +86,37 @@ def test_identical_builds_are_recognised_by_the_kernel_object():
                                                                         None])
 
 
+def test_a_cached_build_launches_at_its_own_blocks():
+    """A cache hit takes the blocks, grid and compiler options the build was made with: softmax 2048^2
+    tuned to XBLOCK 256 is 8 programs, not codegen's one."""
+    d = tempfile.mkdtemp()
+    built = dict(_softmax_meta(256), compile_env={autotune.PIPE_ENV: 2})
+    with open(os.path.join(d, "meta.json"), "w") as f:
+        json.dump(built, f)
+    meta = codecache.restore_tuned(d, _softmax_meta(2048))
+    check("CachedGrid", [list(contract.grid_of(meta)), meta.get("compile_env")],
+          [[8], {autotune.PIPE_ENV: 2}])
+
+
+def test_the_cache_key_carries_the_build_policy():
+    """A max-autotune run never reuses an as-made build of the same source, nor the reverse."""
+    src = "def triton_softmax(): pass"
+    off = codecache._write_path(src)
+    with inductor_config.patch(max_autotune=True):
+        on = codecache._write_path(src)
+    with inductor_config.patch(max_autotune_pointwise=True):
+        pointwise = codecache._write_path(src)
+    check("PolicyInKey", [off != on, on != pointwise, codecache._write_path(src) == off],
+          [True, True, True])
+
+
 if __name__ == "__main__":
     for test in (test_every_trip_count_is_offered_and_asked_outright,
                  test_a_dynamic_reduction_asks_no_trips,
                  test_an_exported_option_never_reaches_a_build,
-                 test_identical_builds_are_recognised_by_the_kernel_object):
+                 test_identical_builds_are_recognised_by_the_kernel_object,
+                 test_a_cached_build_launches_at_its_own_blocks,
+                 test_the_cache_key_carries_the_build_policy):
         try:
             test()
         except Exception as e:  # noqa: BLE001

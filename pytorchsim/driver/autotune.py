@@ -198,6 +198,25 @@ def autotune_on(template):
     return bool(asked) and bool(config.pytorchsim_timing_mode)
 
 
+def build_policy():
+    """What decides which candidate a kernel is built at, besides its source: part of the cache key,
+    so a build chosen under one policy is never reused under another (an as-made build by a
+    max-autotune run, or the reverse)."""
+    on = {"template": autotune_on(template=True), "kernel": autotune_on(template=False)}
+    policy = {"autotune": on, "mapping": config.codegen_mapping_strategy}
+    if "external" in policy["mapping"]:
+        policy["mapping_file"] = config.codegen_external_mapping_file
+    if on["template"]:
+        policy["template_topk"] = config.codegen_autotune_template_topk
+    if on["kernel"]:
+        policy["kernel_topk"] = config.codegen_autotune_kernel_topk
+    return policy
+
+
+#: The meta keys tune() and the too-big retry choose. A cached build is launched with the stored
+#: ones: the grid TOGSim replays is computed from fixed_config, or is the template's own.
+TUNED_KEYS = ("fixed_config", "template_grid", "compile_env")
+
 #: A hung simulator, not a slow candidate: every candidate gets this same TOGSim wall limit, the
 #: bound a compile gets (compiler_bridge.run_pipeline).
 CANDIDATE_TIMEOUT_SEC = 1800

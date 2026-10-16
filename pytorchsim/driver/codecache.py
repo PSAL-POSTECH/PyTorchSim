@@ -28,8 +28,26 @@ LOCK_TIMEOUT = 600
 
 
 def _write_path(src_code):
+    """The cache directory of a kernel: its source and the policy that picks its build."""
+    policy = json.dumps(autotune.build_policy(), sort_keys=True)
     return os.path.join(config.get_dump_path(),
-                        "triton_" + get_hash(src_code.strip())[1:12])
+                        "triton_" + get_hash(src_code.strip() + "\n" + policy)[1:12])
+
+
+def restore_tuned(write_path, meta):
+    """Put the build choices a cached kernel was built at (autotune.TUNED_KEYS, from its stored
+    meta) into `meta`: codegen's meta carries the untuned ones, and the grid follows them."""
+    stored = os.path.join(write_path, timing.META_JSON)
+    if not os.path.isfile(stored):
+        return meta
+    with open(stored) as f:
+        built = json.load(f)
+    for key in autotune.TUNED_KEYS:
+        if key in built:
+            meta[key] = built[key]
+        else:
+            meta.pop(key, None)
+    return meta
 
 
 STAMP_NAME = "provenance.json"
@@ -259,10 +277,6 @@ def torchsim_compile(src_code, meta, kernel_name):
             timing.store_meta(write_path, meta)
             store_identity(write_path)
         else:
-            # a cached template may have been autotuned to another block: its grid is the stored one
-            stored = os.path.join(write_path, timing.META_JSON)
-            if meta.get("template_grid") is not None and os.path.isfile(stored):
-                with open(stored) as f:
-                    meta["template_grid"] = json.load(f)["template_grid"]
+            restore_tuned(write_path, meta)
         logger.info("[torchsim-compile] %s -> %s", kernel_name, write_path)
         return TritonNPULauncher(kernel_name, write_path, meta)

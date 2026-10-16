@@ -6,12 +6,14 @@ when that op can carry it (no mask, no dropout, no gradient, H dividing Hq). Its
 the one place that decides whether a fused kernel takes the call (`fused_plan`); everything it
 declines runs `aten._scaled_dot_product_attention_math`, the op SDPA's math backend runs.
 
-The route is public torch.library throughout: the op's npu kernel is registered at
-AutogradPrivateUse1, so it runs above functionalization when torch.compile traces, and calls
+The route is registered through torch.library: the op's npu kernel is registered at
+AutogradPrivateUse1, so it runs above functionalization when torch.compile traces (and at
+PrivateUse1 too, which is where a call lands under inference_mode, which skips autograd), and calls
 `torchsim::sdpa_fused`, a `triton_op` whose body launches the kernel through `wrap_triton`.
 Inductor traces into that body and gets a user-defined Triton kernel, which the npu wrapper
 compiles with torchsim_compile. Eagerly the same op computes by math, since a Triton kernel
-cannot launch on the npu outside a compiled graph.
+cannot launch on the npu outside a compiled graph. A call fused_plan declines is logged with its
+shape; ROUTED counts the route each traced or eager call took.
 """
 
 import math
@@ -22,6 +24,11 @@ import triton.language as tl
 from torch.library import triton_op, wrap_triton
 
 from pytorchsim import config
+
+logger = config.setup_logger()
+
+#: Which way each traced or eager call went, by kernel name or "math".
+ROUTED = {}
 
 
 @triton.jit
@@ -205,6 +212,7 @@ def sdpa_fused(query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, is_c
     B, Hq, L, D = q.shape
     H, S = k.shape[1], k.shape[2]
     o = torch.empty_like(q)
+    ROUTED[kernel] = ROUTED.get(kernel, 0) + 1
     if kernel == "decode":
         wrap_triton(_decode_kernel)[(B * H, 1, 1)](
             q, k, v, o, H, Hq // H, rows, S, D, block_kv, scale)
@@ -216,11 +224,8 @@ def sdpa_fused(query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, is_c
 
 @sdpa_fused.register_kernel("npu")
 def _sdpa_fused_eager(query, key, value, is_causal, scale, kernel, block_q, block_kv, rows):
+    ROUTED["math"] = ROUTED.get("math", 0) + 1
     return _math(query, key, value, is_causal=is_causal, scale=scale)
-
-
-#: Which way each traced or eager call went, by kernel name or "math".
-ROUTED = {}
 
 
 def _overrideable(query, key, value, attn_bias=None, dropout_p=0.0, is_causal=False,
@@ -236,12 +241,14 @@ def _overrideable(query, key, value, attn_bias=None, dropout_p=0.0, is_causal=Fa
               or torch.is_grad_enabled() and any(t.requires_grad for t in (query, key, value)))
     plan = None if direct else fused_plan(query, key, value, is_causal)
     if plan is None:
+        logger.info("SDPA on the npu runs math, not a fused kernel: q %s k %s %s causal=%s%s",
+                    tuple(query.shape), tuple(key.shape), query.dtype, is_causal,
+                    " (mask, dropout or grad)" if direct else "")
         out = _math(query, key, value, attn_bias, dropout_p, is_causal, scale=scale)
         ROUTED["math"] = ROUTED.get("math", 0) + 1
     else:
         out = sdpa_fused(query, key, value, is_causal, scale, plan["kernel"],
                          plan.get("BQ", 1), plan["BKV"], plan.get("GP", 1))
-        ROUTED[plan["kernel"]] = ROUTED.get(plan["kernel"], 0) + 1
     empty = lambda dtype: torch.empty(0, dtype=dtype, device=query.device)
     lse = torch.empty(B, Hq, L, dtype=torch.float32, device=query.device)
     return (out, lse, empty(torch.int32), empty(torch.int32), L, S,
@@ -252,9 +259,10 @@ _lib = None
 
 
 def install():
-    """Register the overrideable op's npu kernel, above autograd and functionalization."""
+    """Register the overrideable op's npu kernel above autograd and functionalization, and at the
+    backend key, where a call made under inference_mode lands."""
     global _lib
     if _lib is None:
         _lib = torch.library.Library("aten", "IMPL")
-        _lib.impl("_scaled_dot_product_fused_attention_overrideable", _overrideable,
-                  "AutogradPrivateUse1")
+        for key in ("AutogradPrivateUse1", "PrivateUse1"):
+            _lib.impl("_scaled_dot_product_fused_attention_overrideable", _overrideable, key)

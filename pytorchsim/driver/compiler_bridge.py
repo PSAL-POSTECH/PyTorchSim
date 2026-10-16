@@ -145,8 +145,10 @@ def doctor():
     return proc.returncode == 0, proc.stdout + proc.stderr
 
 
-def run_pipeline(spec_path, workdir, to_stage="torchsim-compile", tog=False, timeout=1800):
-    """Drive the compiler's stages over `spec_path`, writing artifacts into `workdir`.
+def run_pipeline(spec_path, workdir, to_stage="torchsim-compile", tog=False, timeout=1800,
+                 env=None):
+    """Drive the compiler's stages over `spec_path`, writing artifacts into `workdir`, with `env`
+    (the options a build asks the compiler, autotune.compile_env) over compiler_env().
 
     Stops at `to_stage`, by default `torchsim-compile` -- the ELF: spike and verify
     want tensors and a per-kernel reference this route has no graph-level answer for.
@@ -156,7 +158,8 @@ def run_pipeline(spec_path, workdir, to_stage="torchsim-compile", tog=False, tim
            "--from", "triton-compile", "--to", to_stage, "--workdir", workdir] + (["--tog"] if tog else [])
 
     proc = subprocess.run(cmd, capture_output=True, text=True,
-                          cwd=compiler_dir(), env=compiler_env(), timeout=timeout)
+                          cwd=compiler_dir(), env=dict(compiler_env(), **(env or {})),
+                          timeout=timeout)
     output = proc.stdout + proc.stderr
     if proc.returncode != 0:
         log = os.path.join(workdir, "stage.log")

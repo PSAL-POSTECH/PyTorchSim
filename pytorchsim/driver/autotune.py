@@ -5,6 +5,10 @@ A template's candidates are its mapped tiles; every other kernel's are its XBLOC
 fixed_config_for pinned down to the lanes, and what the compiler is asked beside it. Autotune simulates each
 candidate alone, so this is the one place a build runs the simulator; the retry on a too-big tile
 runs in every mode. A template tile settled on is recorded in the external mapping.
+
+What the search does not do: it times candidates on TOGSim only (none is run on Spike, so a candidate
+fast because it is wrong is not caught here), never moves R0_BLOCK or YBLOCK, and asks a reduction's
+trips only at its largest XBLOCK.
 """
 
 import copy
@@ -12,7 +16,6 @@ import itertools
 import json
 import os
 import re
-import time
 
 from filelock import FileLock
 
@@ -111,7 +114,8 @@ def _time_tile(src_code, meta, kernel_name, workdir, timeout, seen=None):
     timing.store_meta(workdir, meta)
     compiler_input.write(src_code, meta, spec_path, compiler_bridge.compiler_dir())
     try:
-        compiler_bridge.run_pipeline(spec_path, workdir, to_stage="torchsim-compile", tog=True)
+        compiler_bridge.run_pipeline(spec_path, workdir, to_stage="torchsim-compile", tog=True,
+                                     env=compile_env(meta))
         key = _build_key(workdir, meta)
         if seen is not None and key is not None and key in seen:
             logger.info("[autotune] %s %s: the same build as an earlier candidate", kernel_name,
@@ -134,16 +138,21 @@ def _time_tile(src_code, meta, kernel_name, workdir, timeout, seen=None):
         return float("inf")
 
 
+#: The kernel object's artifacts a candidate's cycles depend on: the program Spike runs, the one gem5
+#: times, and the TOG TOGSim replays. Read by the kind the manifest names them, not by file name.
+BUILD_ARTIFACTS = ("elf", "cycle_elf", "tog_so")
+
+
 def _build_key(workdir, meta):
     """What the compiler built in `workdir` and the grid it runs over, or None: two candidates
-    with the same key time the same."""
-    import glob
+    with the same key time the same. The bytes of each of BUILD_ARTIFACTS, as the kernel object
+    names them, and the launch grid."""
     import hashlib
-    asm = sorted(glob.glob(os.path.join(workdir, "11-*.s")))
-    if not asm:
+    paths = [contract.artifact(workdir, kind) for kind in BUILD_ARTIFACTS]
+    if any(p is None for p in paths):
         return None
-    h = hashlib.sha256(json.dumps(meta.get("fixed_config") or {}, sort_keys=True).encode())
-    for path in asm:
+    h = hashlib.sha256(json.dumps(contract.grid_of(meta)).encode())
+    for path in paths:
         with open(path, "rb") as f:
             h.update(f.read())
     return h.hexdigest()
@@ -189,11 +198,20 @@ def autotune_on(template):
     return bool(asked) and bool(config.pytorchsim_timing_mode)
 
 
+#: A hung simulator, not a slow candidate: every candidate gets this same TOGSim wall limit, the
+#: bound a compile gets (compiler_bridge.run_pipeline).
+CANDIDATE_TIMEOUT_SEC = 1800
+
+
 def tune(src_code, meta, kernel_name, write_path):
     """The (source, meta) a kernel is built at: its candidates, each compiled and simulated alone,
     the fewest cycles winning; the first alone when there is one, or autotune is off. A template's
     candidates are its mapped tiles, every other kernel's its XBLOCK from the largest down and what
-    the compiler is asked beside it. A template tile settled on is recorded in the external mapping."""
+    the compiler is asked beside it. A template tile settled on is recorded in the external mapping.
+
+    Every candidate gets the same wall limit, CANDIDATE_TIMEOUT_SEC: a limit taken from an earlier
+    candidate's wall time would rank by host load and by order, and the first candidate (the
+    largest block, the fewest programs) is the quickest to simulate."""
     shape = tiling.mm_template_shape(src_code, meta)
     if shape is not None:
         cands = _template_candidates(src_code, meta, shape[:3], kernel_name)
@@ -201,13 +219,10 @@ def tune(src_code, meta, kernel_name, write_path):
         cands = _kernel_candidates(src_code, meta)
     if len(cands) == 1:
         return cands[0][1], cands[0][2]
-    best, timeout, seen = (float("inf"), cands[0]), None, {}
+    best, seen = (float("inf"), cands[0]), {}
     for label, s, mt in cands:
-        t0 = time.perf_counter()
         cycles = _time_tile(s, mt, kernel_name, os.path.join(write_path, "autotune", label),
-                            timeout, seen)
-        if cycles != float("inf") and timeout is None:
-            timeout = time.perf_counter() - t0 + config.codegen_autotune_wall_slack_sec
+                            CANDIDATE_TIMEOUT_SEC, seen)
         logger.info("[autotune] %s %s: %s cycles", kernel_name, label, cycles)
         if cycles < best[0]:
             best = (cycles, (label, s, mt))
@@ -231,31 +246,24 @@ def _template_candidates(src_code, meta, mnk, kernel_name):
 
 
 #: What the compiler is asked, per candidate: into how many trips torchsim-pipeline-reductions cuts
-#: a reduction's tile (1 = whole). Passed through the compiler's environment.
+#: a reduction's tile (1 = whole). Passed through the compiler's environment. Which counts the pass
+#: applies is the compiler's to decide: one it does not apply builds the same kernel as 1, and
+#: _time_tile takes that build's cycles without simulating it again.
 PIPE_STAGES = (1, 2, 4, 8, 16, 32, 64, 128)
 PIPE_ENV = "TORCHSIM_PIPE_STAGES"
-_GRAIN = 64                                  # the pass's chunk is a multiple of this
+
+#: Every compiler option a build may be asked through the environment, at the value a build that
+#: does not ask gets. Each is set on every compile, so an exported one never reaches a candidate
+#: or the final build unasked.
+COMPILE_ENV_DEFAULTS = {PIPE_ENV: 1}
 
 
-class compile_env:
-    """The compiler environment a kernel's meta asks for (meta["compile_env"]), set around a
-    compiler run: what autotune chose beside the blocks reaches the final build the same way."""
-
-    def __init__(self, meta):
-        self.want = dict((meta or {}).get("compile_env") or {})
-        self.saved = {}
-
-    def __enter__(self):
-        for k, v in self.want.items():
-            self.saved[k] = os.environ.get(k)
-            os.environ[k] = str(v)
-
-    def __exit__(self, *exc):
-        for k, v in self.saved.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
+def compile_env(meta):
+    """The compiler environment a build runs with: COMPILE_ENV_DEFAULTS, overridden by what autotune
+    chose for it (meta["compile_env"]), as strings."""
+    env = dict(COMPILE_ENV_DEFAULTS)
+    env.update((meta or {}).get("compile_env") or {})
+    return {k: str(v) for k, v in env.items()}
 
 
 def _kernel_candidates(src_code, meta):
@@ -263,10 +271,11 @@ def _kernel_candidates(src_code, meta):
     as made, its blocks what fixed_config_for pinned -- XBLOCK as large as a lane's scratchpad
     holds. Under autotune, XBLOCK halves down to the lanes: a smaller block is more programs, one's
     loads overlapping another's arithmetic, where one big program waits for its whole tile. Then a
-    reduction is asked into how many trips the compiler cuts its tile at the largest XBLOCK: every
-    power of two whose chunk divides the reduction's numel and is a whole number of _GRAIN."""
+    reduction is asked each of PIPE_STAGES trips at the largest XBLOCK. The first
+    codegen_autotune_kernel_topk are kept, in that order, and the rest are logged as dropped."""
     if not autotune_on(template=False):
         return [("as-made", src_code, meta)]
+    kernel_name = meta.get("kernel_name")
     cfg = meta.get("fixed_config") or {}
     lanes = int(config.CONFIG_MACHINE.vector_lanes)
     xb = cfg.get("XBLOCK") or 0
@@ -275,17 +284,21 @@ def _kernel_candidates(src_code, meta):
         builds.append((xb, 1))
         xb //= 2
     if any(k.startswith("R") and v for k, v in cfg.items()):
-        m = re.search(r"r0_numel = (\d+)", src_code)
-        k = int(m.group(1)) if m else 0
-        builds += [(builds[0][0], n) for n in PIPE_STAGES[1:]
-                   if k and k % n == 0 and (k // n) % _GRAIN == 0]
+        if any(n is None for p, n in (meta.get("numels") or {}).items() if p.startswith("r")):
+            logger.info("[autotune] %s: a reduction numel is not static, so no trip count is "
+                        "asked", kernel_name)
+        else:
+            builds += [(builds[0][0], n) for n in PIPE_STAGES[1:]]
+    keep = max(1, config.codegen_autotune_kernel_topk)
+    if len(builds) > keep:
+        logger.info("[autotune] %s: codegen_autotune_kernel_topk=%d drops %s", kernel_name, keep,
+                    " ".join(f"x{x}-s{n}" for x, n in builds[keep:]))
     out = []
-    for x, n in builds[:max(1, config.codegen_autotune_kernel_topk)]:
+    for x, n in builds[:keep]:
         mt = copy.deepcopy(meta)
         if x:
             mt["fixed_config"]["XBLOCK"] = x
-        if n > 1:
-            mt["compile_env"] = {PIPE_ENV: n}
+        mt["compile_env"] = {PIPE_ENV: n}
         out.append((f"x{x}-s{n}", src_code, mt))
     return out
 

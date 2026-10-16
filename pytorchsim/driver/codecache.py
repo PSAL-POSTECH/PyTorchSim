@@ -235,11 +235,11 @@ def torchsim_compile(src_code, meta, kernel_name):
                 compiler_input.write(src_code, meta, spec_path,
                                             compiler_bridge.compiler_dir())
                 try:
-                    with wallclock.span(wallclock.TORCHSIM_COMPILE, kernel_name), \
-                            autotune.compile_env(meta):
+                    with wallclock.span(wallclock.TORCHSIM_COMPILE, kernel_name):
                         compiler_bridge.run_pipeline(
                             spec_path, write_path, to_stage="torchsim-compile",
-                            tog=bool(config.pytorchsim_timing_mode))
+                            tog=bool(config.pytorchsim_timing_mode),
+                            env=autotune.compile_env(meta))
                     wallclock.ingest_compile(write_path, kernel_name)
                     break
                 except compiler_bridge.CompilerError as exc:

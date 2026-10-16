@@ -27,9 +27,15 @@ logger = config.setup_logger()
 LOCK_TIMEOUT = 600
 
 
-def _write_path(src_code):
+def _write_path(src_code, meta):
+    """The kernel's workdir, keyed by everything its ELF is built from: the source, and the
+    constexprs, grid and arguments the spec bakes in. A user-defined Triton kernel's source is
+    the same for every launch; its constexprs and grid are not."""
+    baked = (meta.get("signature"), meta.get("constants"), meta.get("fixed_config"),
+             meta.get("template_grid"),
+             [(a["name"], a["role"], a["dtype"], a["numel"]) for a in meta.get("args", ())])
     return os.path.join(config.get_dump_path(),
-                        "triton_" + get_hash(src_code.strip())[1:12])
+                        "triton_" + get_hash(src_code.strip() + repr(baked))[1:12])
 
 
 STAMP_NAME = "provenance.json"
@@ -212,7 +218,7 @@ def torchsim_compile(src_code, meta, kernel_name):
     Called from the generated wrapper at module import time. Synchronous, on
     purpose: a thread pool buys nothing until the pipeline itself is proven.
     """
-    write_path = _write_path(src_code)
+    write_path = _write_path(src_code, meta)
     os.makedirs(write_path, exist_ok=True)
 
     lock = FileLock(os.path.join(write_path, ".compile.lock"), timeout=LOCK_TIMEOUT)

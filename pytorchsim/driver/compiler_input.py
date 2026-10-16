@@ -339,6 +339,9 @@ SPEC = KernelSpec(
 def write(src_code, meta, path, compiler_dir):
     """Write the rewritten Triton source and the kernel file for this Inductor kernel. Returns `path`.
 
+    A user-defined kernel's source (meta["user_defined"]) is written as it is: the rewriters read
+    Inductor's generated source, not a model's.
+
     A block Inductor fixed in the kernel BODY rather than taking as a parameter
     is skipped: passing it would not match the signature.
     """
@@ -370,7 +373,7 @@ def write(src_code, meta, path, compiler_dir):
 
     triton_module = f"{meta['kernel_name']}_triton.py"
     with open(os.path.join(os.path.dirname(path), triton_module), "w") as f:
-        f.write(clamp_instead_of_wrap(
+        f.write(src_code if meta.get("user_defined") else clamp_instead_of_wrap(
             strip_for_compiler(src_code), meta["kernel_name"]))
 
     scalars = scalar_args(meta)

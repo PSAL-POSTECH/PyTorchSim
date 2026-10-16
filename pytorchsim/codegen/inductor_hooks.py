@@ -16,7 +16,10 @@ from torch._inductor.ir import GraphPartitionSignature
 from torch._inductor.utils import Placeholder, get_fused_kernel_name
 from torch._inductor.virtualized import V
 
+from pytorchsim import config
 from pytorchsim.codegen import kernel_metadata, verify
+
+_logger = config.setup_logger()
 
 
 class TritonNPUKernel(TritonKernel):
@@ -197,8 +200,9 @@ class TritonNPUWrapperCodegen(verify.VerifyLines, wrapper.PythonWrapperCodegen):
                                           launch_kwargs):
         """A Triton kernel a model registers (torch.library.triton_op, wrap_triton) is compiled by
         torchsim_compile like Inductor's own. Inductor names it and builds its triton_meta; the
-        async_compile.triton it would emit for a GPU is not written, and the compile call is
-        built from the kernel object, that triton_meta and the launch's IR arguments."""
+        async_compile.triton it would emit for a GPU is not written. Inductor's cache keys the name
+        by triton_meta alone; the spec also bakes each launch's spans and grid, so a launch that
+        differs in those gets a name and compile call of its own."""
         if len(grids) != 1 or configs:
             raise NotImplementedError(
                 f"{kernel.__name__}: a user-defined Triton kernel autotuned over configs; the npu "
@@ -214,10 +218,18 @@ class TritonNPUWrapperCodegen(verify.VerifyLines, wrapper.PythonWrapperCodegen):
             defined = self._npu_user_kernel
         finally:
             self._npu_user_kernel = None
+        notes = self.__dict__.setdefault("_npu_user_notes", {})
         for _, metadata in defined:
-            body = user_kernel_compile(name, kernel, kwargs, triton_meta, grids[0])
-            super().define_kernel(name, body, metadata)
-        return name, triton_meta, inductor_meta, extra
+            notes[name] = metadata
+        meta = user_kernel_meta(kernel, kwargs, triton_meta, grids[0])
+        variants = self.__dict__.setdefault("_npu_user_variants", {})
+        key = (name, repr(meta))
+        if key not in variants:
+            count = sum(1 for n, _ in variants if n == name)
+            variants[key] = name if count == 0 else f"{name}_npu{count}"
+            kernel_metadata.record_roles(variants[key], meta)
+            super().define_kernel(variants[key], user_kernel_compile(kernel, meta), notes[name])
+        return variants[key], triton_meta, inductor_meta, extra
 
     def define_kernel(self, kernel_name, kernel_body, metadata=None, gpu=True,
                       cpp_definition=None):
@@ -266,23 +278,21 @@ class TritonNPUWrapperCodegen(verify.VerifyLines, wrapper.PythonWrapperCodegen):
 def _user_kernel_writes(kwargs):
     """The formal arguments the launch writes, as torch's analysis of the kernel's TTIR found them
     for its IR node (UserDefinedTritonKernel.arg_accesses, every tensor when the analysis failed),
-    or None when the node is not the one being generated."""
+    or None, with a warning, when the node being generated is not the launch's."""
     from torch._inductor import ir
     node = getattr(getattr(V.graph.scheduler, "current_node", None), "node", None)
     if not isinstance(node, ir.UserDefinedTritonKernel) or node.kwargs is not kwargs:
+        _logger.warning("a user-defined Triton kernel's IR node is not the scheduler's current "
+                        "node; every pointer argument is taken as written (inout)")
         return None
     return {dep.name for dep in node.arg_accesses.read_writes.writes}
 
 
-def user_kernel_compile(name, kernel, kwargs, triton_meta, grid):
-    """The torchsim_compile call for a user-defined Triton kernel, with no source text read back:
-    the source is the kernel's own and its jit helpers' (Inductor's transitive closure), the
-    signature and constants Inductor's triton_meta, each pointer's dtype and storage span its IR
-    argument, and its role written (inout) where torch's mutation analysis says the launch
-    writes it, read (in) elsewhere; every pointer inout when that analysis is not at hand."""
-    from torch._inductor.codegen.wrapper import (
-        user_defined_triton_kernel_transitive_closure_source_code)
-
+def user_kernel_meta(kernel, kwargs, triton_meta, grid):
+    """The spec meta of one launch of a user-defined Triton kernel: the signature and constants
+    Inductor's triton_meta, each pointer's dtype and storage span its IR argument, its role
+    written (inout) where torch's mutation analysis says the launch writes it, read (in)
+    elsewhere, every pointer inout when that analysis is not at hand."""
     from pytorchsim.contract import storage_span
 
     hint = V.graph.sizevars.optimization_hint
@@ -305,14 +315,23 @@ def user_kernel_compile(name, kernel, kwargs, triton_meta, grid):
             "numel": storage_span([int(hint(s)) for s in layout.size],
                                   [int(hint(s)) for s in layout.stride]),
         })
-    meta = {
+    return {
         "kernel_name": kernel.__name__, "signature": signature,
         "constants": dict(triton_meta.get("constants") or {}),
         "args": args, "call_params": call_params, "numels": {},
         "inside_reduction": False, "fixed_config": {},
         "template_grid": ([int(hint(g)) for g in grid] + [1, 1, 1])[:3],
+        "user_defined": True,
     }
-    kernel_metadata.record_roles(name, meta)
+
+
+def user_kernel_compile(kernel, meta):
+    """The torchsim_compile call for a user-defined Triton kernel, with no source text read back:
+    the source is the kernel's own and its jit helpers' (Inductor's transitive closure), written
+    as it is (meta["user_defined"] keeps the Inductor-source rewriters off it)."""
+    from torch._inductor.codegen.wrapper import (
+        user_defined_triton_kernel_transitive_closure_source_code)
+
     src = IndentedBuffer()
     src.splice("""
         import triton

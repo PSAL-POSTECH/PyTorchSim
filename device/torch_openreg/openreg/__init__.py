@@ -83,7 +83,8 @@ def _lazy_init():
     register_interface_for_device(custom_device(), ExtensionDeviceInterface)
     _initialized = True
 
-    # SDPA: the front end's fused kernel where _fused_sdp_choice takes it, math elsewhere.
+    # SDPA: the overrideable op where _fused_sdp_choice sends it (the front end's fused kernel or
+    # math, attention.fused_plan decides), math elsewhere.
     torch._C._set_sdp_use_flash(False)
     torch._C._set_sdp_use_overrideable(True)
     torch._C._set_sdp_use_math(True)

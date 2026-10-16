@@ -1,5 +1,7 @@
 #include "Extra.h"
 
+#include <ATen/core/grad_mode.h>
+
 namespace at::native::openreg {
 
 at::Tensor quantize_per_tensor(
@@ -27,16 +29,19 @@ int64_t _fused_sdp_choice(
     return static_cast<int64_t>(sdp::SDPBackend::error);
   }
 
-  // A prefill or a decode with no mask and no dropout takes the front end's fused kernel.
+  // The overrideable op carries a call it can state whole: no mask, no dropout, no gradient (its
+  // npu kernel has no backward), H dividing Hq. Whether a fused kernel then takes it is
+  // pytorchsim/frontend/attention.py's fused_plan alone; what that declines runs SDPA's math.
   const int64_t Hq = query.size(-3), H = key.size(-3);
-  const int64_t L = query.size(-2), S = key.size(-2);
-  const bool fused =
+  const bool grad = at::GradMode::is_enabled() &&
+      (query.requires_grad() || key.requires_grad() || value.requires_grad());
+  const bool carried =
       at::globalContext().userEnabledOverrideableSDP() &&
-      (L == S || L == 1) && H > 0 && Hq % H == 0 && (Hq == H || enable_gqa) &&
-      !attn_mask.has_value() &&
+      H > 0 && Hq % H == 0 && (Hq == H || enable_gqa) &&
+      !attn_mask.has_value() && !grad &&
       sdp::check_for_dropout(params, /*debug=*/false) &&
       sdp::check_nested_tensor(params, /*debug=*/false);
-  if (fused) {
+  if (carried) {
     return static_cast<int64_t>(sdp::SDPBackend::overrideable);
   }
   return static_cast<int64_t>(sdp::SDPBackend::math);
@@ -67,11 +72,11 @@ _scaled_dot_product_fused_attention_overrideable_backward(
     const at::Tensor& philox_seed,
     const at::Tensor& philox_offset,
     std::optional<double> scale) {
-  return std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor>(
-      at::empty_like(query),
-      at::empty_like(key),
-      at::empty_like(value),
-      at::empty_like(attn_bias));
+  TORCH_CHECK(
+      false,
+      "_scaled_dot_product_fused_attention_overrideable has no backward on the npu: "
+      "_fused_sdp_choice sends a call with a gradient to math");
+  return {};
 }
 
 namespace {

@@ -148,14 +148,15 @@ def write_cycle_tables(workdir, meta):
         raise RuntimeError(
             f"[Gem5] sampling failed for {kernel}, so compute latency would "
             f"not be modelled at all")
-    table = cycle_table(offsets, list(cycles))
+    table = cycle_table(offsets, last_call(list(cycles), n_tiles, "cycle sample(s)"))
 
     if os.path.abspath(so_path) != os.path.abspath(os.path.join(workdir, TOG_SO)):
         shutil.copyfile(so_path, os.path.join(workdir, TOG_SO))
     with open(os.path.join(workdir, AXES_TXT), "w") as f:
         f.write(f"{len(axes)}\n")
 
-    rows = unit_rows(os.path.join(os.path.dirname(contract.artifact(workdir, "cycle_elf")), "m5out"))
+    rows = unit_rows(os.path.join(os.path.dirname(contract.artifact(workdir, "cycle_elf")), "m5out"),
+                     n_tiles)
     with open(os.path.join(workdir, UNITS_TSV), "w") as f:
         f.write("".join("\t".join(str(v) for v in r) + "\n" for r in rows))
     dump_cycle_table_tsv(table, os.path.join(workdir, CYCLE_TSV))
@@ -282,16 +283,29 @@ _COMMITTED = "system.cpu.commitStats0.numOps"
 _CPU_UNITS = "system.cpu.units."
 
 
-def unit_rows(m5out):
-    """TOGSim's --unit_table rows of a gem5 run, one per sampled tile and unit: (tile_id, unit,
-    unit_of_work, capacity per cycle, admitted). Issue is the committed micro-ops over the issue
+def last_call(samples, n_tiles, what):
+    """The warm call's samples: the cycle binary calls its program the compiler's CYCLE_CALLS times,
+    n_tiles markers each, and gem5 times the last. Any other count is refused: samples are matched to
+    tiles by position only, so a marker that fired once too often or too rarely would shift them."""
+    calls = compiler_bridge.compiler_contract("kernel_object").CYCLE_CALLS
+    if len(samples) != calls * n_tiles:
+        raise ValueError(
+            f"gem5 returned {len(samples)} {what} where the cycle binary's {calls} call(s) of "
+            f"{n_tiles} compute tile(s) make {calls * n_tiles}: a marker fired a different number "
+            f"of times than there are tiles, so the table would be keyed by the wrong samples")
+    return samples[(calls - 1) * n_tiles:]
+
+
+def unit_rows(m5out, n_tiles):
+    """TOGSim's --unit_table rows of a gem5 run's warm call, one per sampled tile and unit: (tile_id,
+    unit, unit_of_work, capacity per cycle, admitted). Issue is the committed micro-ops over the issue
     width; the end-of-run dump is left out, as the cycles leave it out."""
     import json
 
     with open(os.path.join(m5out, "config.json")) as f:
         width = int(json.load(f)["system"]["cpu"]["executeIssueLimit"])
     with open(os.path.join(m5out, "stats.txt")) as f:
-        dumps = f.read().split("Begin Simulation Statistics")[1:-1]
+        dumps = last_call(f.read().split("Begin Simulation Statistics")[1:-1], n_tiles, "stats dump(s)")
     rows = []
     for tile, dump in enumerate(dumps):
         units = {}

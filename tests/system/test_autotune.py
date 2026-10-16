@@ -37,8 +37,8 @@ def test_every_trip_count_is_offered_and_asked_outright():
     counts torchsim-pipeline-reductions applies is the compiler's to decide, not a front-end _GRAIN."""
     with inductor_config.patch(max_autotune=True):
         cands = autotune._kernel_candidates("", _softmax_meta())
-    trips = [mt["compile_env"].get(autotune.PIPE_ENV) for label, _, mt in cands
-             if mt["fixed_config"]["XBLOCK"] == 2048]
+    trips = [c.meta["compile_env"].get(autotune.PIPE_ENV) for c in cands
+             if c.meta["fixed_config"]["XBLOCK"] == 2048]
     check("TripsOffered", trips, list(autotune.PIPE_STAGES))
 
 
@@ -47,7 +47,7 @@ def test_a_dynamic_reduction_asks_no_trips():
     meta["numels"]["r0_numel"] = None
     with inductor_config.patch(max_autotune=True):
         cands = autotune._kernel_candidates("", meta)
-    check("DynamicNoTrips", sorted({mt["compile_env"][autotune.PIPE_ENV] for _, _, mt in cands}),
+    check("DynamicNoTrips", sorted({c.meta["compile_env"][autotune.PIPE_ENV] for c in cands}),
           [1])
 
 
@@ -59,6 +59,76 @@ def test_an_exported_option_never_reaches_a_build():
     finally:
         os.environ.pop(autotune.PIPE_ENV)
     check("NoAmbientStages", got, [{autotune.PIPE_ENV: "1"}, {autotune.PIPE_ENV: "8"}])
+
+
+def test_the_default_cap_keeps_the_largest_blocks_first():
+    """Under the default codegen_autotune_kernel_topk (8), softmax 2048^2 is timed at XBLOCK 2048 down
+    to the lanes and then trips 2, 4, 8 at 2048; trips 16..128 are cut (and logged)."""
+    os.environ.pop("TORCHSIM_CODEGEN_AUTOTUNE_KERNEL_TOPK")
+    try:
+        with inductor_config.patch(max_autotune=True):
+            labels = [c.label for c in autotune._kernel_candidates("", _softmax_meta())]
+    finally:
+        os.environ["TORCHSIM_CODEGEN_AUTOTUNE_KERNEL_TOPK"] = "64"
+    lanes = int(autotune.config.CONFIG_MACHINE.vector_lanes)
+    xs = [x for x in (2048, 1024, 512, 256, 128, 64, 32) if x >= lanes]
+    want = ([f"x{x}-s1" for x in xs] + [f"x2048-s{n}" for n in autotune.PIPE_STAGES[1:]])[:8]
+    check("DefaultTopK", labels, want)
+
+
+class _Stop(Exception):
+    pass
+
+
+def _recording_pipeline(seen, then=_Stop):
+    def run_pipeline(*args, **kwargs):
+        seen.append(kwargs.get("env"))
+        raise then("stop")
+    return run_pipeline
+
+
+def test_each_candidate_and_the_final_build_reach_the_compiler_with_their_options():
+    """The compiler subprocess is handed each candidate's compile_env (TORCHSIM_PIPE_STAGES), and the
+    final build its own: a trip count only in meta never reaches the compiler, so every trip
+    candidate would build as 1."""
+    from pytorchsim.driver import compiler_bridge, compiler_input
+    seen, real = [], (compiler_bridge.run_pipeline, compiler_input.write, autotune.tune)
+    compiler_input.write = lambda *a, **k: None
+    try:
+        compiler_bridge.run_pipeline = _recording_pipeline(seen, FileNotFoundError)
+        for n in (4, None):
+            meta = _softmax_meta()
+            if n:
+                meta["compile_env"] = {autotune.PIPE_ENV: n}
+            autotune._time_tile("", meta, "triton_softmax", tempfile.mkdtemp(), 1)
+        compiler_bridge.run_pipeline = _recording_pipeline(seen)
+        os.environ["TORCHSIM_DUMP_PATH"] = tempfile.mkdtemp()
+        autotune.tune = lambda s, m, k, w: (s, {"compile_env": {autotune.PIPE_ENV: 8}})
+        try:
+            codecache.torchsim_compile("def triton_softmax(): pass", _softmax_meta(),
+                                       "triton_softmax")
+        except _Stop:
+            pass
+    finally:
+        compiler_bridge.run_pipeline, compiler_input.write, autotune.tune = real
+    check("EnvReachesCompiler", seen, [{autotune.PIPE_ENV: "4"}, {autotune.PIPE_ENV: "1"},
+                                       {autotune.PIPE_ENV: "8"}])
+
+
+def test_a_retired_mapping_strategy_is_refused():
+    """codegen_mapping_strategy=autotune (the old default) no longer turns autotune on, so it is
+    refused instead of building heuristic tiles under a config that says autotune."""
+    got = []
+    for value in ("autotune", "external-then-autotune", "heuristic", "external"):
+        os.environ["TORCHSIM_CODEGEN_MAPPING_STRATEGY"] = value
+        try:
+            autotune.build_policy()
+            got.append("ok")
+        except ValueError:
+            got.append("refused")
+        finally:
+            os.environ.pop("TORCHSIM_CODEGEN_MAPPING_STRATEGY")
+    check("RetiredStrategy", got, ["refused", "refused", "ok", "ok"])
 
 
 def _kernel_object(blobs):
@@ -113,6 +183,9 @@ def test_the_cache_key_carries_the_build_policy():
 if __name__ == "__main__":
     for test in (test_every_trip_count_is_offered_and_asked_outright,
                  test_a_dynamic_reduction_asks_no_trips,
+                 test_the_default_cap_keeps_the_largest_blocks_first,
+                 test_each_candidate_and_the_final_build_reach_the_compiler_with_their_options,
+                 test_a_retired_mapping_strategy_is_refused,
                  test_an_exported_option_never_reaches_a_build,
                  test_identical_builds_are_recognised_by_the_kernel_object,
                  test_a_cached_build_launches_at_its_own_blocks,

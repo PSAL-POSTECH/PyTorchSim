@@ -16,6 +16,7 @@ import itertools
 import json
 import os
 import re
+from typing import NamedTuple, Optional
 
 from filelock import FileLock
 
@@ -191,11 +192,26 @@ def autotune_on(template):
     """Whether Inductor's own knobs ask for autotune: torch.compile(mode="max-autotune") sets
     max_autotune for every kernel, max_autotune_pointwise asks it for the kernels that are not a
     template. max_autotune_gemm is not one of them: the front end sets it so mm lowers to the Triton
-    template at all. Cycles are what candidates rank by, so only in timing mode."""
+    template at all. Cycles are what candidates rank by, so only in timing mode. The knobs live in
+    torch._inductor.config, a private module: torch.compile writes mode= and options= there and
+    offers no public way to read them back."""
     from torch._inductor import config as inductor_config
     asked = inductor_config.max_autotune or (
         not template and inductor_config.max_autotune_pointwise)
     return bool(asked) and bool(config.pytorchsim_timing_mode)
+
+
+def mapping_strategy():
+    """codegen_mapping_strategy, refused when it still asks for autotune: that value no longer turns
+    anything on (autotune is Inductor's max_autotune), and accepting it would build heuristic tiles
+    under a config that says autotune."""
+    strategy = config.codegen_mapping_strategy
+    if "autotune" in strategy:
+        raise ValueError(
+            f"codegen_mapping_strategy={strategy!r}: autotune is no longer a mapping strategy; use "
+            f"torch.compile(mode='max-autotune') or TORCHINDUCTOR_MAX_AUTOTUNE=1, and "
+            f"'heuristic' or 'external' here")
+    return strategy
 
 
 def build_policy():
@@ -203,7 +219,7 @@ def build_policy():
     so a build chosen under one policy is never reused under another (an as-made build by a
     max-autotune run, or the reverse)."""
     on = {"template": autotune_on(template=True), "kernel": autotune_on(template=False)}
-    policy = {"autotune": on, "mapping": config.codegen_mapping_strategy}
+    policy = {"autotune": on, "mapping": mapping_strategy()}
     if "external" in policy["mapping"]:
         policy["mapping_file"] = config.codegen_external_mapping_file
     if on["template"]:
@@ -218,8 +234,8 @@ def build_policy():
 TUNED_KEYS = ("fixed_config", "template_grid", "compile_env")
 
 #: A hung simulator, not a slow candidate: every candidate gets this same TOGSim wall limit, the
-#: bound a compile gets (compiler_bridge.run_pipeline).
-CANDIDATE_TIMEOUT_SEC = 1800
+#: bound a compile gets.
+CANDIDATE_TIMEOUT_SEC = compiler_bridge.COMPILE_TIMEOUT_SEC
 
 
 def tune(src_code, meta, kernel_name, write_path):
@@ -237,31 +253,41 @@ def tune(src_code, meta, kernel_name, write_path):
     else:
         cands = _kernel_candidates(src_code, meta)
     if len(cands) == 1:
-        return cands[0][1], cands[0][2]
+        return cands[0].src, cands[0].meta
     best, seen = (float("inf"), cands[0]), {}
-    for label, s, mt in cands:
-        cycles = _time_tile(s, mt, kernel_name, os.path.join(write_path, "autotune", label),
+    for cand in cands:
+        cycles = _time_tile(cand.src, cand.meta, kernel_name,
+                            os.path.join(write_path, "autotune", cand.label),
                             CANDIDATE_TIMEOUT_SEC, seen)
-        logger.info("[autotune] %s %s: %s cycles", kernel_name, label, cycles)
+        logger.info("[autotune] %s %s: %s cycles", kernel_name, cand.label, cycles)
         if cycles < best[0]:
-            best = (cycles, (label, s, mt))
+            best = (cycles, cand)
     if shape is not None and best[0] != float("inf"):
-        _record_tile(*shape[:3], tuple(int(v) for v in best[1][0].split("x")))
-    return best[1][1], best[1][2]
+        _record_tile(*shape[:3], best[1].tile)
+    return best[1].src, best[1].meta
+
+
+class Candidate(NamedTuple):
+    """One build tune() may pick: its label (the autotune workdir), source and meta, and for an mm
+    template the (BLOCK_M, BLOCK_N, BLOCK_K) tile it is built at."""
+    label: str
+    src: str
+    meta: dict
+    tile: Optional[tuple] = None
 
 
 def _template_candidates(src_code, meta, mnk, kernel_name):
     """(label, source, meta) per mapped tile of an mm template, best first: the external mapping's
     tile alone when it has this shape, the top-k under autotune, else the source as codegen made it."""
-    known = _recorded_tile(*mnk) if "external" in config.codegen_mapping_strategy else None
+    known = _recorded_tile(*mnk) if "external" in mapping_strategy() else None
     if known is not None:
         logger.info("[autotune] %s BLOCK_M/N/K=%s: from %s", kernel_name, known,
                     config.codegen_external_mapping_file)
-        return [("x".join(map(str, known)), *_retile(src_code, meta, mnk, known))]
+        return [Candidate("x".join(map(str, known)), *_retile(src_code, meta, mnk, known), known)]
     if not autotune_on(template=True):
-        return [("as-made", src_code, meta)]
+        return [Candidate("as-made", src_code, meta)]
     tiles = _template_tiles(src_code, meta)[:max(1, config.codegen_autotune_template_topk)]
-    return [("x".join(map(str, t)), *_retile(src_code, meta, mnk, t)) for t in tiles]
+    return [Candidate("x".join(map(str, t)), *_retile(src_code, meta, mnk, t), t) for t in tiles]
 
 
 #: What the compiler is asked, per candidate: into how many trips torchsim-pipeline-reductions cuts
@@ -293,7 +319,7 @@ def _kernel_candidates(src_code, meta):
     reduction is asked each of PIPE_STAGES trips at the largest XBLOCK. The first
     codegen_autotune_kernel_topk are kept, in that order, and the rest are logged as dropped."""
     if not autotune_on(template=False):
-        return [("as-made", src_code, meta)]
+        return [Candidate("as-made", src_code, meta)]
     kernel_name = meta.get("kernel_name")
     cfg = meta.get("fixed_config") or {}
     lanes = int(config.CONFIG_MACHINE.vector_lanes)
@@ -318,7 +344,7 @@ def _kernel_candidates(src_code, meta):
         if x:
             mt["fixed_config"]["XBLOCK"] = x
         mt["compile_env"] = {PIPE_ENV: n}
-        out.append((f"x{x}-s{n}", src_code, mt))
+        out.append(Candidate(f"x{x}-s{n}", src_code, mt))
     return out
 
 

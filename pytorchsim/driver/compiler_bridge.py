@@ -145,8 +145,12 @@ def doctor():
     return proc.returncode == 0, proc.stdout + proc.stderr
 
 
-def run_pipeline(spec_path, workdir, to_stage="torchsim-compile", tog=False, timeout=1800,
-                 env=None):
+#: Wall seconds a compile may take before it is killed as hung.
+COMPILE_TIMEOUT_SEC = 1800
+
+
+def run_pipeline(spec_path, workdir, to_stage="torchsim-compile", tog=False,
+                 timeout=COMPILE_TIMEOUT_SEC, env=None):
     """Drive the compiler's stages over `spec_path`, writing artifacts into `workdir`, with `env`
     (the options a build asks the compiler, autotune.compile_env) over compiler_env().
 

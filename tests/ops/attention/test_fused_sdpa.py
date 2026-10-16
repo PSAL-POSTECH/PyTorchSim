@@ -9,6 +9,12 @@ took, so a gate that silently sends a fused case to math, or a math case to a ke
   math     a causal decode (SDPA's is_causal is top-left: an L == 1 query attends key 0 alone),
            a non-power-of-two S, and a call whose inputs require grad (whose gradients are checked
            against the CPU's: the overrideable op has no backward)
+  eager    a prefill-shaped call outside torch.compile runs math (no Triton launch outside a
+           compiled graph) and says so in ROUTED; under inference_mode too, which skips the
+           autograd key the op's npu kernel is registered at, eagerly and compiled
+
+On a tree without attention.ROUTED the route checks are skipped and only the values are checked,
+so the value failures a fix removes show on the tree before it.
 
 Usage: test_fused_sdpa.py [case ...]   (all cases when none is named)
 """
@@ -51,19 +57,33 @@ def _err(out, ref):
     return ((out.float() - ref).abs().max() / ref.abs().max()).item()
 
 
-def run_case(name):
+def _routed():
     from pytorchsim.frontend import attention
+    return getattr(attention, "ROUTED", None)
+
+
+def _route_ok(want):
+    routed = _routed()
+    return routed is None or set(routed) == want
+
+
+def _clear():
+    if _routed() is not None:
+        _routed().clear()
+
+
+def run_case(name):
     route, B, Hq, H, L, S, D, causal = CASES[name]
     q, k, v = _inputs(B, Hq, H, L, S, D)
     ref = _sdpa(q.float(), k.float(), v.float(), causal)
-    attention.ROUTED.clear()
+    _clear()
     torch._dynamo.reset()
     f = torch.compile(lambda q, k, v: _sdpa(q, k, v, causal), dynamic=False)
     with torch.no_grad():
         out = f(q.to(device), k.to(device), v.to(device)).cpu()
     err = _err(out, ref)
-    took = dict(attention.ROUTED)
-    ok = err < TOL and set(took) == {route}
+    took = dict(_routed() or {})
+    ok = err < TOL and _route_ok({route})
     print(f"{name}: route={took} want={route} err={err:.3e} {'PASS' if ok else 'FAIL'}",
           flush=True)
     return ok
@@ -71,23 +91,56 @@ def run_case(name):
 
 def run_grad():
     """A call whose inputs require grad stays off the overrideable op, and its gradients match."""
-    from pytorchsim.frontend import attention
     q, k, v = _inputs(1, 2, 2, 128, 128, 64, dtype=torch.float32)
     ref_in = [t.clone().requires_grad_() for t in (q, k, v)]
     _sdpa(*ref_in, True).sum().backward()
     dev_in = [t.to(device).requires_grad_() for t in (q, k, v)]
-    attention.ROUTED.clear()
-    out = _sdpa(*dev_in, True)
-    out.sum().backward()
-    errs = [_err(d.grad.cpu(), r.grad) for d, r in zip(dev_in, ref_in)]
-    ok = not attention.ROUTED and max(errs) < 1e-4
-    print(f"requires_grad: route={dict(attention.ROUTED)} want={{}} grad err "
+    _clear()
+    try:
+        out = _sdpa(*dev_in, True)
+        out.sum().backward()
+        errs = [_err(d.grad.cpu(), r.grad) for d, r in zip(dev_in, ref_in)]
+    except Exception as exc:  # the backward of a route without one
+        print(f"requires_grad: {type(exc).__name__}: {str(exc)[:200]} FAIL", flush=True)
+        return False
+    ok = _route_ok(set()) and max(errs) < 1e-4
+    print(f"requires_grad: route={dict(_routed() or {})} want={{}} grad err "
           f"{max(errs):.3e} {'PASS' if ok else 'FAIL'}", flush=True)
     return ok
 
 
+def run_eager(name):
+    """A prefill-shaped bf16 call outside torch.compile (under no_grad or inference_mode), or
+    compiled under inference_mode: the values match, and an eager call says it ran math."""
+    q, k, v = _inputs(1, 2, 2, 256, 256, 64)
+    ref = _sdpa(q.float(), k.float(), v.float(), True)
+    _clear()
+    torch._dynamo.reset()
+    compiled = name == "inference_mode_compiled"
+    f = (torch.compile(lambda q, k, v: _sdpa(q, k, v, True), dynamic=False) if compiled
+         else lambda q, k, v: _sdpa(q, k, v, True))
+    ctx = torch.no_grad() if name == "eager" else torch.inference_mode()
+    try:
+        with ctx:
+            out = f(q.to(device), k.to(device), v.to(device)).cpu()
+    except Exception as exc:
+        print(f"{name}: {type(exc).__name__}: {str(exc)[:200]} FAIL", flush=True)
+        return False
+    err = _err(out, ref)
+    want = {"prefill"} if compiled else {"math"}
+    ok = err < TOL and _route_ok(want)
+    print(f"{name}: route={dict(_routed() or {})} want={want} err={err:.3e} "
+          f"{'PASS' if ok else 'FAIL'}", flush=True)
+    return ok
+
+
+EXTRA = {"requires_grad": run_grad, "eager": run_eager, "inference_mode": run_eager,
+         "inference_mode_compiled": run_eager}
+
+
 if __name__ == "__main__":
-    names = sys.argv[1:] or [*CASES, "requires_grad"]
-    results = [run_grad() if n == "requires_grad" else run_case(n) for n in names]
+    names = sys.argv[1:] or [*CASES, *EXTRA]
+    results = [run_grad() if n == "requires_grad" else EXTRA[n](n) if n in EXTRA
+               else run_case(n) for n in names]
     print(f"{sum(results)}/{len(results)} passed")
     sys.exit(0 if all(results) else 1)

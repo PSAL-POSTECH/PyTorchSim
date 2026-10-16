@@ -196,67 +196,37 @@ class TritonNPUWrapperCodegen(verify.VerifyLines, wrapper.PythonWrapperCodegen):
                                           reset_to_zero_args, grids, epilogue_fusion,
                                           launch_kwargs):
         """A Triton kernel a model registers (torch.library.triton_op, wrap_triton) is compiled by
-        torchsim_compile like Inductor's own. Inductor writes its source and names it; its launch
-        grid is fixed at codegen (one grid, no configs), its tensors are every pointer argument,
-        written where the source stores to them."""
-        self._npu_user_kernel = {"kwargs": kwargs, "grids": grids}
+        torchsim_compile like Inductor's own. Inductor names it and builds its triton_meta; the
+        async_compile.triton it would emit for a GPU is not written, and the compile call is
+        built from the kernel object, that triton_meta and the launch's IR arguments."""
+        if len(grids) != 1 or configs:
+            raise NotImplementedError(
+                f"{kernel.__name__}: a user-defined Triton kernel autotuned over configs; the npu "
+                f"launches one grid fixed at codegen")
+        if epilogue_fusion is not None:
+            raise NotImplementedError(
+                f"{kernel.__name__}: an epilogue fused into a user-defined Triton kernel")
+        self._npu_user_kernel = []
         try:
-            return super().define_user_defined_triton_kernel(
+            name, triton_meta, inductor_meta, extra = super().define_user_defined_triton_kernel(
                 kernel, configs, kwargs, restore_value_args, reset_to_zero_args, grids,
                 epilogue_fusion, launch_kwargs)
+            defined = self._npu_user_kernel
         finally:
             self._npu_user_kernel = None
+        for _, metadata in defined:
+            body = user_kernel_compile(name, kernel, kwargs, triton_meta, grids[0])
+            super().define_kernel(name, body, metadata)
+        return name, triton_meta, inductor_meta, extra
 
     def define_kernel(self, kernel_name, kernel_body, metadata=None, gpu=True,
                       cpp_definition=None):
-        """Inductor's own, except a user-defined Triton kernel's async_compile.triton becomes our
-        torchsim_compile call."""
-        pending = getattr(self, "_npu_user_kernel", None)
-        if pending is not None and kernel_body.lstrip().startswith("async_compile.triton("):
-            kernel_body = self._npu_user_kernel_compile(kernel_name, kernel_body, pending)
+        """Inductor's own, except the async_compile.triton of the user-defined Triton kernel
+        being defined, which define_user_defined_triton_kernel replaces."""
+        if getattr(self, "_npu_user_kernel", None) is not None:
+            self._npu_user_kernel.append((kernel_name, metadata))
+            return None
         return super().define_kernel(kernel_name, kernel_body, metadata, gpu, cpp_definition)
-
-    def _npu_user_kernel_compile(self, kernel_name, kernel_body, pending):
-        import re
-
-        from torch._inductor import ir
-
-        src = kernel_body[kernel_body.index("'''") + 3:kernel_body.rindex("'''")]
-        sig = dict(re.findall(r"'(\w+)': '([^']+)'",
-                              re.search(r"'signature': \{([^}]*)\}", src).group(1)))
-        grids = pending["grids"]
-        if len(grids) != 1:
-            raise NotImplementedError(
-                f"{kernel_name}: a user-defined Triton kernel autotuned over configs; the npu "
-                f"launches one grid fixed at codegen")
-        grid = [int(V.graph.sizevars.optimization_hint(g)) for g in grids[0]] + [1, 1, 1]
-        kwargs = pending["kwargs"]
-        constants, args, call_params = {}, [], []
-        for name, token in sig.items():
-            value = kwargs.get(name)
-            if token == "constexpr":
-                constants[name] = value
-                continue
-            call_params.append(name)
-            if not token.startswith("*"):
-                continue
-            node = value
-            args.append({
-                "name": name, "role": "inout",
-                "buffer": node.get_name() if isinstance(node, ir.IRNode) else name,
-                "dtype": str(node.get_dtype()).replace("torch.", ""),
-                "numel": int(V.graph.sizevars.optimization_hint(node.get_numel())),
-            })
-        meta = {
-            "kernel_name": kernel_name, "signature": sig, "constants": constants,
-            "args": args, "call_params": call_params, "numels": {},
-            "inside_reduction": False, "fixed_config": {}, "template_grid": grid[:3],
-        }
-        src = re.sub(rf"def \w+\(", f"def {kernel_name}(", src, count=1)
-        kernel_metadata.demote_unwritten_inout(meta, src)
-        kernel_metadata.record_roles(kernel_name, meta)
-        return (f"torchsim_compile('''{src}''',\n    meta={meta!r},\n"
-                f"    kernel_name={kernel_name!r})")
 
     def _generate_kernel_call_helper(self, kernel_name, call_args, *, device=None, triton=True,
                                      **kwargs):
@@ -291,3 +261,64 @@ class TritonNPUWrapperCodegen(verify.VerifyLines, wrapper.PythonWrapperCodegen):
                 checks = []
             lines.extend(verify.VerifyLine(c) for c in checks)
         self.lines = lines
+
+
+def _user_kernel_writes(kwargs):
+    """The formal arguments the launch writes, as torch's analysis of the kernel's TTIR found them
+    for its IR node (UserDefinedTritonKernel.arg_accesses, every tensor when the analysis failed),
+    or None when the node is not the one being generated."""
+    from torch._inductor import ir
+    node = getattr(getattr(V.graph.scheduler, "current_node", None), "node", None)
+    if not isinstance(node, ir.UserDefinedTritonKernel) or node.kwargs is not kwargs:
+        return None
+    return {dep.name for dep in node.arg_accesses.read_writes.writes}
+
+
+def user_kernel_compile(name, kernel, kwargs, triton_meta, grid):
+    """The torchsim_compile call for a user-defined Triton kernel, with no source text read back:
+    the source is the kernel's own and its jit helpers' (Inductor's transitive closure), the
+    signature and constants Inductor's triton_meta, each pointer's dtype and storage span its IR
+    argument, and its role written (inout) where torch's mutation analysis says the launch
+    writes it, read (in) elsewhere; every pointer inout when that analysis is not at hand."""
+    from torch._inductor.codegen.wrapper import (
+        user_defined_triton_kernel_transitive_closure_source_code)
+
+    from pytorchsim.contract import storage_span
+
+    hint = V.graph.sizevars.optimization_hint
+    signature = {str(k): str(v) for k, v in triton_meta["signature"].items()}
+    writes = _user_kernel_writes(kwargs)
+    args, call_params = [], []
+    for arg, token in signature.items():
+        if token == "constexpr":
+            continue
+        call_params.append(arg)
+        if not token.startswith("*"):
+            continue
+        node = kwargs[arg]
+        layout = node.get_layout()
+        args.append({
+            "name": arg,
+            "role": "inout" if writes is None or arg in writes else "in",
+            "buffer": node.get_name(),
+            "dtype": kernel_metadata._DTYPE[token],
+            "numel": storage_span([int(hint(s)) for s in layout.size],
+                                  [int(hint(s)) for s in layout.stride]),
+        })
+    meta = {
+        "kernel_name": kernel.__name__, "signature": signature,
+        "constants": dict(triton_meta.get("constants") or {}),
+        "args": args, "call_params": call_params, "numels": {},
+        "inside_reduction": False, "fixed_config": {},
+        "template_grid": ([int(hint(g)) for g in grid] + [1, 1, 1])[:3],
+    }
+    kernel_metadata.record_roles(name, meta)
+    src = IndentedBuffer()
+    src.splice("""
+        import triton
+        import triton.language as tl
+    """, strip=True)
+    src.writeline("@triton.jit")
+    src.splice(user_defined_triton_kernel_transitive_closure_source_code(kernel), strip=True)
+    return (f"torchsim_compile({src.getvalue()!r},\n    meta={meta!r},\n"
+            f"    kernel_name={kernel.__name__!r})")

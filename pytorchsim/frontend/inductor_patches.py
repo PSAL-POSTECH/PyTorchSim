@@ -374,32 +374,24 @@ def _kept_axis_contiguous(features):
     return "x" if hint == ReductionHint.OUTER else None
 
 
-_BITS_DTYPE = {64: "float64", 32: "float32", 16: "float16", 8: "int8"}
-
-
 def _buffer_args(features):
-    """fixed_config_for's args for a kernel not yet generated: one {"dtype"} per buffer a scheduled
-    node of it reads or writes, so a block is sized for a tile of each. Which of them become kernel
-    arguments Inductor decides when it generates the kernel, so a buffer made and consumed inside it
-    is counted too."""
+    """fixed_config_for's args for a kernel not yet generated: one {"dtype"} (a torch.dtype) per
+    buffer a scheduled node of it reads or writes, so a block is sized for a tile of each. Which of
+    them become kernel arguments Inductor decides when it generates the kernel, so a buffer made and
+    consumed inside it is counted too: an overcount, never an undercount -- a buffer whose dtype the
+    graph cannot state raises rather than being left out. V (torch._inductor.virtualized) is private;
+    InductorChoices hands this hook no other view of the graph's dtypes."""
     import itertools
 
     from torch._inductor.virtualized import V
-    bits = {torch.float64: 64, torch.float32: 32, torch.float16: 16, torch.bfloat16: 16,
-            torch.int64: 64, torch.int32: 32, torch.int16: 16, torch.int8: 8, torch.uint8: 8,
-            torch.bool: 8}
     seen = {}
     for nd in features.scheduler_nodes():
         rw = getattr(nd, "read_writes", None)
         for dep in itertools.chain(getattr(rw, "reads", ()) or (), getattr(rw, "writes", ()) or ()):
             name = getattr(dep, "name", None)
-            if name is None or name in seen:
-                continue
-            try:
-                seen[name] = bits.get(V.graph.get_dtype(name), 32)
-            except Exception:  # noqa: BLE001
-                continue
-    return [{"dtype": _BITS_DTYPE[b]} for b in seen.values()]
+            if name is not None and name not in seen:
+                seen[name] = V.graph.get_dtype(name)
+    return [{"dtype": d} for d in seen.values()]
 
 
 def _npu_choices_class():
@@ -413,7 +405,7 @@ def _npu_choices_class():
     class NPUChoices(InductorChoices):
         def uuid(self):
             """This class's part of Inductor's cache key."""
-            return "pytorchsim-npu-choices-3"
+            return "pytorchsim-npu-choices-4"
 
         def triton_kernel_kwargs(self, kernel_cls, features, groups, kernel_kwargs):
             """Pin this machine's blocks as a FixedTritonConfig, before the kernel is generated.
@@ -448,7 +440,8 @@ def _npu_choices_class():
                 cfg = tiling.fixed_config_for(shim, numels, args,
                                               contiguous=_kept_axis_contiguous(features)) or {}
             except Exception as e:  # noqa: BLE001
-                logger.info("[torchsim-compile] no fixed_config for this kernel: %s", e)
+                logger.warning("[torchsim-compile] no fixed_config for this kernel, Inductor's "
+                               "own blocks are used: %s: %s", type(e).__name__, e)
                 return kw
             cfg = {k: int(v) for k, v in cfg.items()
                    if v and k.endswith("BLOCK")}

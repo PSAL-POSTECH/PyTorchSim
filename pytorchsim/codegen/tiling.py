@@ -6,19 +6,25 @@ tiles this machine can take are decided here, from the machine and the kernel.
 
 import re
 
+import torch
 from torch._inductor.virtualized import V
 
 from pytorchsim import config
 from pytorchsim.contract import SpecIncomplete, block_name, parallel_axes, reduction_axes
 
+logger = config.setup_logger(__name__)
+
+#: The tiles a reduction keeps live in a lane: R0_BLOCK (reduction_block_for) and XBLOCK
+#: (live_row_bytes) are both sized for this many tiles of its widest element.
 _REDUCTION_LIVE_TILES = 12
 
 
-_DTYPE_BITS = {"float64": 64, "float32": 32, "float16": 16, "bfloat16": 16,
-               "float8_e5m2": 8, "float8_e4m3fn": 8,
-               "int64": 64, "int32": 32, "int16": 16, "int8": 8,
-               "uint64": 64, "uint32": 32, "uint16": 16, "uint8": 8,
-               "bool": 8}
+def element_bytes(dtype):
+    """Bytes of one element of `dtype` -- a torch.dtype, or its torch attribute name as kernel
+    metadata spells it ("float32", "bfloat16") -- from torch's own itemsize; None if not a dtype."""
+    if isinstance(dtype, str):
+        dtype = getattr(torch, dtype, None)
+    return dtype.itemsize if isinstance(dtype, torch.dtype) else None
 
 
 def template_grid(kernel):
@@ -89,8 +95,7 @@ def _element_bits(args):
     Widest, not narrowest: the block has to be one register's worth for EVERY
     operand. A kernel with no typed tensor argument falls back to 32.
     """
-    bits = [_DTYPE_BITS[a["dtype"]] for a in (args or [])
-            if a.get("dtype") in _DTYPE_BITS]
+    bits = [8 * b for b in (element_bytes(a.get("dtype")) for a in (args or [])) if b]
     return max(bits) if bits else 32
 
 
@@ -183,27 +188,39 @@ def fixed_config_for(kernel, numels, args, contiguous=None):
                 numels["xnumel"], numels["r0_numel"], elem_bytes, lanes, lane_bytes,
                 triton_max_numel())
             return cfg
-    _fill_the_lanes(cfg, numels, args, lanes, machine.spad_budget, triton_max_numel())
+    _fill_the_lanes(cfg, numels, live_row_bytes(args, getattr(kernel, "inside_reduction", False)),
+                    lanes, machine.spad_budget, triton_max_numel())
     return cfg
 
 
-def _fill_the_lanes(cfg, numels, args, lanes, lane_bytes, max_numel):
+def live_row_bytes(args, reduction):
+    """Bytes one element of a block takes across the tiles a kernel keeps live in a lane: a
+    reduction keeps _REDUCTION_LIVE_TILES tiles of its widest element (what R0_BLOCK and XBLOCK
+    are both sized by), any other kernel one tile per buffer in `args`, each at its own width."""
+    if reduction:
+        return _REDUCTION_LIVE_TILES * max(1, _element_bits(args) // 8)
+    widths = [b for b in (element_bytes(a.get("dtype")) for a in (args or [])) if b]
+    if not widths:
+        logger.info("[torchsim-compile] no typed buffer: a block is sized for one %d-bit tile",
+                    _element_bits(args))
+    return sum(widths) or max(1, _element_bits(args) // 8)
+
+
+def _fill_the_lanes(cfg, numels, row_bytes, lanes, lane_bytes, max_numel):
     """XBLOCK as large as a lane's scratchpad holds: a lane takes as many rows as fit beside the
     other blocks, so the grid runs few programs, each with one DMA and setup, not numel / lanes of
     them (a pointwise kernel at XBLOCK = lanes held one element a lane). How large pays is the
     machine's: autotune tries it halved down to the lanes.
 
     `lane_bytes` is the share of a lane's scratchpad the compiler gives a kernel (the target's
-    spad_budget; the rest is its double buffer), shared by one tile of each of `args` -- one entry
-    per tensor the kernel reads or writes, each tile XBLOCK times the other blocks of its dtype.
+    spad_budget; the rest is its double buffer); `row_bytes` is what one element of the block takes
+    across the kernel's live tiles (live_row_bytes), each tile XBLOCK times the other blocks.
     The block also stays within Triton's `max_numel` elements. XBLOCK stays a power of two covering
     xnumel, masked past it: a lane walks its rows in turn, however many there are. A reduction
     contiguous along x has its blocks from kept_axis_contiguous_blocks instead."""
     xn = numels.get("xnumel")
     if not xn:
         return
-    row_bytes = sum(_DTYPE_BITS[a["dtype"]] // 8 for a in (args or [])
-                    if a.get("dtype") in _DTYPE_BITS) or 4
     others = 1
     for k, v in cfg.items():
         if k != "XBLOCK":

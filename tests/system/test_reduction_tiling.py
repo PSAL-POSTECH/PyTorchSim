@@ -64,32 +64,65 @@ def test_other_reductions_keep_todays_blocks():
 
 
 def test_lanes_are_filled_for_a_tile_of_every_argument():
-    """XBLOCK fills the lane budget with one tile of each tensor argument, and stays within Triton's
-    block numel: 2048-element fp32 rows on 512 KiB a lane are 64 rows a lane for one tensor (XBLOCK
-    8192), 21 -> 16 for three (2048), and 512 rows in all under a 2^20-element block."""
+    """XBLOCK fills the lane budget with one tile of each tensor argument of a pointwise kernel, and
+    stays within Triton's block numel: 2048-element fp32 rows on 512 KiB a lane are 64 rows a lane for
+    one tensor (XBLOCK 8192), 21 -> 16 for three (2048), and 512 rows in all under a 2^20-element block."""
     def xblock(n_args, max_numel=1 << 26):
         cfg = {"XBLOCK": LANES, "R0_BLOCK": 2048}
-        tiling._fill_the_lanes(cfg, {"xnumel": 1 << 20, "r0_numel": 2048},
-                               [{"dtype": "float32"}] * n_args, LANES, LANE_BYTES, max_numel)
+        row = tiling.live_row_bytes([{"dtype": "float32"}] * n_args, reduction=False)
+        tiling._fill_the_lanes(cfg, {"xnumel": 1 << 20, "r0_numel": 2048}, row, LANES, LANE_BYTES,
+                               max_numel)
         return cfg["XBLOCK"]
     got = [xblock(1), xblock(3), xblock(1, max_numel=1 << 20)]
     test_result("FillTheLanes", torch.tensor(got), torch.tensor([8192, 2048, 512]))
 
 
+def test_a_reduction_sizes_both_blocks_for_the_same_live_tiles():
+    """R0_BLOCK and XBLOCK of a row reduction are sized for the same _REDUCTION_LIVE_TILES tiles:
+    softmax 2048^2 fp32 on tpuv6e (128 lanes, 512 KiB) is R0_BLOCK 2048 and XBLOCK 512 (5 rows a lane -> 4), so
+    XBLOCK * R0_BLOCK * live tiles stays within lanes * spad_budget. Breaks if XBLOCK is grown for one
+    tile per buffer while R0_BLOCK keeps the live-tile count (XBLOCK 2048, 4x over)."""
+    from pytorchsim import config
+    machine = config.CONFIG_MACHINE
+    kernel = type("K", (), {"inside_reduction": True})()
+    cfg = tiling.fixed_config_for(kernel, {"xnumel": 2048, "r0_numel": 2048},
+                                  [{"dtype": "float32"}] * 4)
+    live = cfg["XBLOCK"] * cfg["R0_BLOCK"] * tiling._REDUCTION_LIVE_TILES * 4
+    test_result("ReductionLiveTiles",
+                torch.tensor([cfg["R0_BLOCK"], cfg["XBLOCK"],
+                              int(live <= machine.vector_lanes * machine.spad_budget)]),
+                torch.tensor([2048, 512, 1]))
+
+
+def test_element_widths_are_torchs_own():
+    """One source of element widths, torch's itemsize, for a dtype or its metadata name."""
+    got = [tiling.element_bytes(d) for d in ("float32", "bfloat16", "float8_e5m2", "bool", "uint16",
+                                              torch.complex64, torch.float64, "*fp32", None)]
+    test_result("ElementBytes", torch.tensor([g or 0 for g in got]),
+                torch.tensor([4, 2, 1, 1, 2, 8, 8, 0, 0]))
+
+
 def test_every_buffer_a_node_touches_is_an_argument():
-    """Before the kernel is generated, its args are one per distinct buffer its nodes read or write."""
+    """Before the kernel is generated, its args are one per distinct buffer its nodes read or write,
+    each at its own width; a buffer whose dtype the graph cannot state raises, never drops out."""
     from torch._inductor.virtualized import V
     from pytorchsim.frontend.inductor_patches import _buffer_args
     dtypes = {"arg0": torch.float32, "buf0": torch.float32, "buf1": torch.bfloat16}
     dep = lambda n: type("D", (), {"name": n})()
     node = lambda r, w: type("N", (), {"read_writes": type("RW", (), {
         "reads": [dep(x) for x in r], "writes": [dep(x) for x in w]})()})()
-    feats = type("F", (), {"scheduler_nodes": lambda self: [node(["arg0"], ["buf0"]),
-                                                          node(["arg0", "buf0"], ["buf1"])]})()
+    feats = lambda extra=(): type("F", (), {"scheduler_nodes": lambda self: [
+        node(["arg0"], ["buf0"]), node(["arg0", "buf0", *extra], ["buf1"])]})()
     graph = type("G", (), {"get_dtype": lambda self, n: dtypes[n]})()
     with V.set_graph_handler(graph):
-        got = _buffer_args(feats)
-    test_result("BufferArgs", torch.tensor(len(got)), torch.tensor(3))
+        got = _buffer_args(feats())
+        try:
+            _buffer_args(feats(["unknown"]))
+            raised = 0
+        except KeyError:
+            raised = 1
+    test_result("BufferArgs", torch.tensor([len(got), tiling.live_row_bytes(got, False), raised]),
+                torch.tensor([3, 10, 1]))
 
 
 if __name__ == "__main__":
@@ -98,4 +131,6 @@ if __name__ == "__main__":
     test_only_an_outer_hint_reads_as_kept_axis_contiguous()
     test_other_reductions_keep_todays_blocks()
     test_lanes_are_filled_for_a_tile_of_every_argument()
+    test_a_reduction_sizes_both_blocks_for_the_same_live_tiles()
+    test_element_widths_are_torchs_own()
     test_every_buffer_a_node_touches_is_an_argument()

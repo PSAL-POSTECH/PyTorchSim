@@ -182,27 +182,24 @@ def fixed_config_for(kernel, numels, args, contiguous=None):
             cfg["XBLOCK"], cfg["R0_BLOCK"] = kept_axis_contiguous_blocks(
                 numels["xnumel"], numels["r0_numel"], elem_bytes, lanes, lane_bytes,
                 triton_max_numel())
-        else:
-            _fill_the_lanes(cfg, numels, args)
-    else:
-        _fill_the_lanes(cfg, numels, args)
+            return cfg
+    _fill_the_lanes(cfg, numels, args, lanes, machine.spad_budget, triton_max_numel())
     return cfg
 
 
-def _fill_the_lanes(cfg, numels, args):
+def _fill_the_lanes(cfg, numels, args, lanes, lane_bytes, max_numel):
     """XBLOCK as large as a lane's scratchpad holds: a lane takes as many rows as fit beside the
     other blocks, so the grid runs few programs, each with one DMA and setup, not numel / lanes of
     them (a pointwise kernel at XBLOCK = lanes held one element a lane). How large pays is the
     machine's: autotune tries it halved down to the lanes.
 
-    A lane's budget is the share of its scratchpad the compiler gives a kernel (the target's
-    spad_budget; the rest is its double buffer), shared by one tile of each tensor argument.
-    XBLOCK stays a power of two covering xnumel, masked past it: a lane walks its rows in turn,
-    however many there are. A reduction contiguous along x has its blocks from
-    kept_axis_contiguous_blocks instead."""
+    `lane_bytes` is the share of a lane's scratchpad the compiler gives a kernel (the target's
+    spad_budget; the rest is its double buffer), shared by one tile of each of `args` -- one entry
+    per tensor the kernel reads or writes, each tile XBLOCK times the other blocks of its dtype.
+    The block also stays within Triton's `max_numel` elements. XBLOCK stays a power of two covering
+    xnumel, masked past it: a lane walks its rows in turn, however many there are. A reduction
+    contiguous along x has its blocks from kept_axis_contiguous_blocks instead."""
     xn = numels.get("xnumel")
-    machine = config.CONFIG_MACHINE
-    lanes = machine.vector_lanes
     if not xn:
         return
     row_bytes = sum(_DTYPE_BITS[a["dtype"]] // 8 for a in (args or [])
@@ -211,7 +208,7 @@ def _fill_the_lanes(cfg, numels, args):
     for k, v in cfg.items():
         if k != "XBLOCK":
             others *= max(1, v or 1)
-    cap = lanes * max(1, machine.spad_budget // (row_bytes * others))
+    cap = min(lanes * max(1, lane_bytes // (row_bytes * others)), max(1, max_numel // others))
     xb = _covers(1 << (cap.bit_length() - 1), int(xn))
     if xb > cfg["XBLOCK"]:
         cfg["XBLOCK"] = xb

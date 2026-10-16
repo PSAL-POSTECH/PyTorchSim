@@ -374,6 +374,34 @@ def _kept_axis_contiguous(features):
     return "x" if hint == ReductionHint.OUTER else None
 
 
+_BITS_DTYPE = {64: "float64", 32: "float32", 16: "float16", 8: "int8"}
+
+
+def _buffer_args(features):
+    """fixed_config_for's args for a kernel not yet generated: one {"dtype"} per buffer a scheduled
+    node of it reads or writes, so a block is sized for a tile of each. Which of them become kernel
+    arguments Inductor decides when it generates the kernel, so a buffer made and consumed inside it
+    is counted too."""
+    import itertools
+
+    from torch._inductor.virtualized import V
+    bits = {torch.float64: 64, torch.float32: 32, torch.float16: 16, torch.bfloat16: 16,
+            torch.int64: 64, torch.int32: 32, torch.int16: 16, torch.int8: 8, torch.uint8: 8,
+            torch.bool: 8}
+    seen = {}
+    for nd in features.scheduler_nodes():
+        rw = getattr(nd, "read_writes", None)
+        for dep in itertools.chain(getattr(rw, "reads", ()) or (), getattr(rw, "writes", ()) or ()):
+            name = getattr(dep, "name", None)
+            if name is None or name in seen:
+                continue
+            try:
+                seen[name] = bits.get(V.graph.get_dtype(name), 32)
+            except Exception:  # noqa: BLE001
+                continue
+    return [{"dtype": _BITS_DTYPE[b]} for b in seen.values()]
+
+
 def _npu_choices_class():
     """NPUChoices, built once: InductorChoices with this machine's blocks and reduction policy."""
     global _NPU_CHOICES
@@ -382,31 +410,10 @@ def _npu_choices_class():
     from torch._inductor.choices import InductorChoices
 
 
-    _DT_BITS = {torch.float64: 64, torch.float32: 32, torch.float16: 16,
-                torch.bfloat16: 16, torch.int64: 64, torch.int32: 32,
-                torch.int16: 16, torch.int8: 8, torch.uint8: 8, torch.bool: 8}
-
-    def _elem_args(features):
-        """The widest tensor a scheduled node makes or reads, as fixed_config_for's args."""
-        from torch._inductor.virtualized import V
-        bits = []
-        for nd in features.scheduler_nodes():
-            try:
-                bits.append(_DT_BITS.get(nd.node.get_dtype(), 32))
-            except Exception:
-                pass
-            for dep in getattr(getattr(nd, "read_writes", None), "reads", ()) or ():
-                try:
-                    bits.append(_DT_BITS.get(V.graph.get_dtype(dep.name), 32))
-                except Exception:
-                    pass
-        return ([{"dtype": {64: "float64", 32: "float32", 16: "float16",
-                            8: "int8"}[max(bits)]}] if bits else [])
-
     class NPUChoices(InductorChoices):
         def uuid(self):
             """This class's part of Inductor's cache key."""
-            return "pytorchsim-npu-choices-2"
+            return "pytorchsim-npu-choices-3"
 
         def triton_kernel_kwargs(self, kernel_cls, features, groups, kernel_kwargs):
             """Pin this machine's blocks as a FixedTritonConfig, before the kernel is generated.
@@ -434,7 +441,7 @@ def _npu_choices_class():
                         pass
             if not numels:
                 return kw
-            args = _elem_args(features)
+            args = _buffer_args(features)
             shim = type("K", (), {"inside_reduction": bool(features.is_reduction()),
                                   "numels": numels})()
             try:
@@ -468,7 +475,7 @@ def _npu_choices_class():
             try:
                 numels = {"xnumel": int(features.numel), "r0_numel": extent}
                 shim = type("K", (), {"inside_reduction": True, "numels": numels})()
-                pinned = tiling.fixed_config_for(shim, numels, _elem_args(features),
+                pinned = tiling.fixed_config_for(shim, numels, _buffer_args(features),
                                                  contiguous=_kept_axis_contiguous(features))
                 return persistent <= int(pinned["R0_BLOCK"])
             except Exception:  # noqa: BLE001

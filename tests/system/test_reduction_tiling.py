@@ -63,8 +63,39 @@ def test_other_reductions_keep_todays_blocks():
     test_result("RowReductionUnchanged", torch.tensor(same), torch.tensor([True, True]))
 
 
+def test_lanes_are_filled_for_a_tile_of_every_argument():
+    """XBLOCK fills the lane budget with one tile of each tensor argument, and stays within Triton's
+    block numel: 2048-element fp32 rows on 512 KiB a lane are 64 rows a lane for one tensor (XBLOCK
+    8192), 21 -> 16 for three (2048), and 512 rows in all under a 2^20-element block."""
+    def xblock(n_args, max_numel=1 << 26):
+        cfg = {"XBLOCK": LANES, "R0_BLOCK": 2048}
+        tiling._fill_the_lanes(cfg, {"xnumel": 1 << 20, "r0_numel": 2048},
+                               [{"dtype": "float32"}] * n_args, LANES, LANE_BYTES, max_numel)
+        return cfg["XBLOCK"]
+    got = [xblock(1), xblock(3), xblock(1, max_numel=1 << 20)]
+    test_result("FillTheLanes", torch.tensor(got), torch.tensor([8192, 2048, 512]))
+
+
+def test_every_buffer_a_node_touches_is_an_argument():
+    """Before the kernel is generated, its args are one per distinct buffer its nodes read or write."""
+    from torch._inductor.virtualized import V
+    from pytorchsim.frontend.inductor_patches import _buffer_args
+    dtypes = {"arg0": torch.float32, "buf0": torch.float32, "buf1": torch.bfloat16}
+    dep = lambda n: type("D", (), {"name": n})()
+    node = lambda r, w: type("N", (), {"read_writes": type("RW", (), {
+        "reads": [dep(x) for x in r], "writes": [dep(x) for x in w]})()})()
+    feats = type("F", (), {"scheduler_nodes": lambda self: [node(["arg0"], ["buf0"]),
+                                                          node(["arg0", "buf0"], ["buf1"])]})()
+    graph = type("G", (), {"get_dtype": lambda self, n: dtypes[n]})()
+    with V.set_graph_handler(graph):
+        got = _buffer_args(feats)
+    test_result("BufferArgs", torch.tensor(len(got)), torch.tensor(3))
+
+
 if __name__ == "__main__":
     test_gemv_blocks_follow_the_contiguous_kept_axis()
     test_lane_cover_and_budget_are_never_crossed()
     test_only_an_outer_hint_reads_as_kept_axis_contiguous()
     test_other_reductions_keep_todays_blocks()
+    test_lanes_are_filled_for_a_tile_of_every_argument()
+    test_every_buffer_a_node_touches_is_an_argument()

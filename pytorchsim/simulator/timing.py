@@ -35,9 +35,8 @@ LOCK_TIMEOUT = 1800
 
 
 
-def measure_tile_cycles(workdir, meta):
-    """Per-compute-node cycle counts for ONE tile: the compiler's cycle ELF, measured under gem5.
-    None on any failure."""
+def run_cycle_binary(workdir, meta):
+    """The m5out of the compiler's cycle ELF run under gem5, or None when gem5 could not run it."""
 
     kernel_name = meta["kernel_name"]
     elf = contract.artifact(workdir, "cycle_elf")
@@ -51,6 +50,13 @@ def measure_tile_cycles(workdir, meta):
     except Exception as e:
         logger.warning("[Gem5] sampling failed: %s", e)
         return None
+
+
+def tile_tables(m5out, overlap_offsets):
+    """The cycle table and the unit rows of a gem5 run, from the warm call's dump of each tile as the
+    compiler's gem5_samples reads them; whatever that reader refuses is raised, not sampled around."""
+    warm = compiler_bridge.compiler_contract("gem5_samples").read(m5out, len(overlap_offsets))
+    return cycle_table(overlap_offsets, [w["cycles"] for w in warm]), unit_rows(warm)
 
 
 def write_tensors(workdir):
@@ -143,19 +149,18 @@ def write_cycle_tables(workdir, meta):
     axes = tiles["parallel_axes"]
     n_tiles = len(offsets)
 
-    cycles = measure_tile_cycles(workdir, meta)
-    if cycles is None:
+    m5out = run_cycle_binary(workdir, meta)
+    if m5out is None:
         raise RuntimeError(
             f"[Gem5] sampling failed for {kernel}, so compute latency would "
             f"not be modelled at all")
-    table = cycle_table(offsets, list(cycles))
+    table, rows = tile_tables(m5out, offsets)
 
     if os.path.abspath(so_path) != os.path.abspath(os.path.join(workdir, TOG_SO)):
         shutil.copyfile(so_path, os.path.join(workdir, TOG_SO))
     with open(os.path.join(workdir, AXES_TXT), "w") as f:
         f.write(f"{len(axes)}\n")
 
-    rows = unit_rows(os.path.join(os.path.dirname(contract.artifact(workdir, "cycle_elf")), "m5out"))
     with open(os.path.join(workdir, UNITS_TSV), "w") as f:
         f.write("".join("\t".join(str(v) for v in r) + "\n" for r in rows))
     dump_cycle_table_tsv(table, os.path.join(workdir, CYCLE_TSV))
@@ -269,71 +274,26 @@ class CycleSimulator():
         if proc.returncode != 0:
             raise RuntimeError(_gem5_failure(proc, os.path.join(dir_path, "sto.log")))
 
-        with open(f"{dir_path}/stats.txt", "r") as stat_file:
-            raw_list = stat_file.readlines()
-            cycle_per_tick = [int(line.split()[1]) for line in raw_list if "system.clk_domain.clock" in line][0]
-            cycle_list = [int(line.split()[1]) for line in raw_list if "system.cpu.numCycles" in line]
-        cycle_list = cycle_list[:-1]
-        return cycle_list
+        return dir_path
 
 
-_ISSUE = "Issue"
-_COMMITTED = "system.cpu.commitStats0.numOps"
-_CPU_UNITS = "system.cpu.units."
-
-
-def unit_rows(m5out):
-    """TOGSim's --unit_table rows of a gem5 run, one per sampled tile and unit: (tile_id, unit,
-    unit_of_work, capacity per cycle, admitted). Issue is the committed micro-ops over the issue
-    width; the end-of-run dump is left out, as the cycles leave it out."""
-    import json
-
-    with open(os.path.join(m5out, "config.json")) as f:
-        width = int(json.load(f)["system"]["cpu"]["executeIssueLimit"])
-    with open(os.path.join(m5out, "stats.txt")) as f:
-        dumps = f.read().split("Begin Simulation Statistics")[1:-1]
+def unit_rows(warm):
+    """TOGSim's --unit_table rows, one per tile and unit, from the warm call's dumps in tile id order:
+    (tile_id, unit, unit_of_work, capacity per cycle, admitted)."""
     rows = []
-    for tile, dump in enumerate(dumps):
-        units = {}
-        for line in dump.splitlines():
-            field = line.split()
-            if len(field) < 2 or line[0].isspace():
-                continue
-            name = field[0]
-            if name == _COMMITTED:
-                units[_ISSUE] = {"admitted": field[1], "capacity": width, "work": "micro-ops"}
-            elif name.startswith(_CPU_UNITS):
-                part = name[len(_CPU_UNITS):].split(".")
-            elif ".vcix." in name:
-                part = name.split(".vcix.", 1)[1].split(".")
-            else:
-                continue
-            if name == _COMMITTED or len(part) != 2 or part[1] not in ("admitted", "capacity"):
-                continue
-            unit = units.setdefault(part[0], {})
-            unit[part[1]] = field[1]
-            if part[1] == "admitted":
-                unit["work"] = line.split("#", 1)[1].split()[0]
-        if _ISSUE not in units:
-            raise ValueError(f"{m5out}/stats.txt: dump {tile} has no {_COMMITTED}")
-        for name, u in units.items():
+    for tile, dump in enumerate(warm):
+        for name, u in dump["units"].items():
             if "admitted" not in u or "capacity" not in u:
-                raise ValueError(f"{m5out}/stats.txt: dump {tile}, unit {name} lacks admitted or capacity")
-            rows.append((tile, name, u["work"], int(u["capacity"]), int(u["admitted"])))
+                raise ValueError(f"gem5 dump of tile {tile}: unit {name} lacks admitted or capacity")
+            rows.append((tile, name, u["unit_of_work"], int(u["capacity"]), int(u["admitted"])))
     return rows
 
 
 def cycle_table(overlap_offsets, cycle_list):
     """[(cycle, overlapping_cycle), ...] indexed by tile_id. The compiler states each tile's
-    overlap offset (None where nothing of it overlaps); gem5 gives the cycles."""
-    if len(cycle_list) != len(overlap_offsets):
-        raise ValueError(
-            f"gem5 returned {len(cycle_list)} cycle sample(s) for "
-            f"{len(overlap_offsets)} compute tile(s): a marker fired a different "
-            f"number of times than there are tiles, so the table would be keyed "
-            f"by the wrong samples")
+    overlap offset (None where nothing of it overlaps); gem5 gives the cycles, one per tile."""
     return [(int(c), 0 if off is None else max(int(c) - int(off), 0))
-            for c, off in zip(cycle_list, overlap_offsets)]
+            for c, off in zip(cycle_list, overlap_offsets, strict=True)]
 
 
 def dump_cycle_table_tsv(table, path, origins=None):

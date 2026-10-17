@@ -17,11 +17,11 @@ def test_matmul_reduce(device, M=512, N=512, K=512):
     #weight = torch.eye(K, dtype=torch.float32)
     x1 = input.to(device=device)
     w1 = weight.to(device=device)
-    x2 = input.to("cpu")
-    w2 = weight.to("cpu")
+    x2 = input.to("cpu", torch.float64)
+    w2 = weight.to("cpu", torch.float64)
     opt_fn = torch.compile(dynamic=False)(matmul_fused)
     res = opt_fn(x1, w1)
-    y = matmul_fused(x2, w2)
+    y = [t.float() for t in matmul_fused(x2, w2)]
     test_result("Matmul Reduction Fusion activation", res[0], y[0])
     test_result("Matmul Reduction Fusion reduction", res[1], y[1])
 
@@ -37,7 +37,7 @@ def test_matmul_reduce_last_dim(device, M=256, N=96, K=96):
     weight = torch.randn(K, N)
     opt_fn = torch.compile(dynamic=False)(matmul_fused)
     res = opt_fn(input.to(device=device), weight.to(device=device))
-    y = matmul_fused(input.to("cpu"), weight.to("cpu"))
+    y = matmul_fused(input.to("cpu", torch.float64), weight.to("cpu", torch.float64)).float()
     test_result("Matmul reduce over contiguous axis", res, y)
 
 def test_matmul_var_mean(device, size=512):
@@ -53,12 +53,12 @@ def test_matmul_var_mean(device, size=512):
     #weight = torch.eye(N, dtype=torch.float32)
     x1 = input.to(device=device)
     w1 = weight.to(device=device)
-    x2 = input.to("cpu")
-    w2 = weight.to("cpu")
+    x2 = input.to("cpu", torch.float64)
+    w2 = weight.to("cpu", torch.float64)
     c = 7
     opt_fn = torch.compile(dynamic=False)(matmul_fused)
     res = opt_fn(x1, w1, c)
-    y = matmul_fused(x2, w2, c)
+    y = [t.float() for t in matmul_fused(x2, w2, c)]
     test_result("Matmul var_mean Fusion activation", res[0], y[0])
     test_result("Matmul var_mean Fusion reduction", res[1], y[1])
     test_result("Matmul var_mean Fusion reduction", res[2], y[2])
@@ -77,13 +77,13 @@ def test_matmul_add_var_mean(device, M=768, N=512, K=3072):
     w1 = weight.to(device=device)
     b1 = bias.to(device=device)
     r1 = residual.to(device=device)
-    x2 = input.to("cpu")
-    w2 = weight.to("cpu")
-    b2 = bias.to("cpu")
-    r2 = residual.to("cpu")
+    x2 = input.to("cpu", torch.float64)
+    w2 = weight.to("cpu", torch.float64)
+    b2 = bias.to("cpu", torch.float64)
+    r2 = residual.to("cpu", torch.float64)
     opt_fn = torch.compile(dynamic=False)(matmul_fused)
     res = opt_fn(x1, w1, b1, r1)
-    y = matmul_fused(x2, w2, b2, r2)
+    y = [t.float() for t in matmul_fused(x2, w2, b2, r2)]
     test_result("Matmul+residual+var_mean Fusion activation", res[0], y[0])
     test_result("Matmul+residual+var_mean Fusion reduction", res[1], y[1])
     test_result("Matmul+residual+var_mean Fusion reduction", res[2], y[2])

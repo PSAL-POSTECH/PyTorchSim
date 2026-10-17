@@ -121,8 +121,9 @@ _DOT_DTYPES = (torch.bfloat16, torch.float16, torch.float32)
 
 
 def _register_rows(dtype):
-    """Rows of `dtype` in one vector register: the least a dot dimension may be. A dot whose M, K
-    or N is a whole number of registers never ends in a short one, which the matrix unit refuses."""
+    """Rows of `dtype` in one vector register, the least a dot dimension may be here. PTB refuses
+    only a last register under MIN_VEC = 2 words; padding dots to whole registers is our choice
+    (measured not slower), not the compiler's rule."""
     return int(config.CONFIG_MACHINE.vlen_bits) // (8 * dtype.itemsize)
 
 

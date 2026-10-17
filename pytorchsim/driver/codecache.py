@@ -26,6 +26,18 @@ logger = config.setup_logger()
 
 LOCK_TIMEOUT = 600
 
+_LAUNCH_OBSERVERS = {}
+
+
+def user_kernel_id(kernel):
+    """A user-defined Triton kernel's name in its launch meta: its module and qualified name."""
+    return f"{kernel.__module__}.{kernel.__qualname__}"
+
+
+def observe_launches(kernel, callback):
+    """Call `callback()` at every launch of the user-defined Triton kernel `kernel`."""
+    _LAUNCH_OBSERVERS[user_kernel_id(kernel)] = callback
+
 
 def _write_path(src_code, meta):
     """The kernel's workdir, keyed by everything its ELF is built from: the source, and the
@@ -187,6 +199,9 @@ class TritonNPULauncher:
         self.meta = meta
 
     def __call__(self, *args):
+        observer = _LAUNCH_OBSERVERS.get(self.meta.get("user_kernel"))
+        if observer is not None:
+            observer()
         if config.pytorchsim_functional_mode:
             with wallclock.span(wallclock.SPIKE, self.kernel_name):
                 written = functional.run(self.workdir, self.meta, args)

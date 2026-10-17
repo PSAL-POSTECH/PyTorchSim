@@ -13,7 +13,8 @@ PrivateUse1 too, which is where a call lands under inference_mode, which skips a
 Inductor traces into that body and gets a user-defined Triton kernel, which the npu wrapper
 compiles with torchsim_compile. Eagerly the same op computes by math, since a Triton kernel
 cannot launch on the npu outside a compiled graph. A call fused_plan declines is logged with its
-shape; ROUTED counts the route each traced or eager call took.
+shape. ROUTED counts the calls that ran each route: a fused kernel's launches, and the math calls
+made outside a compiled graph (math compiled into one is Inductor's own kernels, not counted).
 """
 
 import math
@@ -27,8 +28,12 @@ from pytorchsim import config
 
 logger = config.setup_logger()
 
-#: Which way each traced or eager call went, by kernel name or "math".
+#: The calls that ran each route, by kernel name or "math"; a trace is not a call.
 ROUTED = {}
+
+
+def _count(route):
+    ROUTED[route] = ROUTED.get(route, 0) + 1
 
 
 @triton.jit
@@ -212,7 +217,6 @@ def sdpa_fused(query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, is_c
     B, Hq, L, D = q.shape
     H, S = k.shape[1], k.shape[2]
     o = torch.empty_like(q)
-    ROUTED[kernel] = ROUTED.get(kernel, 0) + 1
     if kernel == "decode":
         wrap_triton(_decode_kernel)[(B * H, 1, 1)](
             q, k, v, o, H, Hq // H, rows, S, D, block_kv, scale)
@@ -224,7 +228,7 @@ def sdpa_fused(query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, is_c
 
 @sdpa_fused.register_kernel("npu")
 def _sdpa_fused_eager(query, key, value, is_causal, scale, kernel, block_q, block_kv, rows):
-    ROUTED["math"] = ROUTED.get("math", 0) + 1
+    _count("math")
     return _math(query, key, value, is_causal=is_causal, scale=scale)
 
 
@@ -245,7 +249,8 @@ def _overrideable(query, key, value, attn_bias=None, dropout_p=0.0, is_causal=Fa
                     tuple(query.shape), tuple(key.shape), query.dtype, is_causal,
                     " (mask, dropout or grad)" if direct else "")
         out = _math(query, key, value, attn_bias, dropout_p, is_causal, scale=scale)
-        ROUTED["math"] = ROUTED.get("math", 0) + 1
+        if not torch.compiler.is_compiling():
+            _count("math")
     else:
         out = sdpa_fused(query, key, value, is_causal, scale, plan["kernel"],
                          plan.get("BQ", 1), plan["BKV"], plan.get("GP", 1))
@@ -260,9 +265,12 @@ _lib = None
 
 def install():
     """Register the overrideable op's npu kernel above autograd and functionalization, and at the
-    backend key, where a call made under inference_mode lands."""
+    backend key, where a call made under inference_mode lands. Count each fused kernel launch."""
     global _lib
     if _lib is None:
+        from pytorchsim.driver import codecache
+        codecache.observe_launches(_prefill_kernel, lambda: _count("prefill"))
+        codecache.observe_launches(_decode_kernel, lambda: _count("decode"))
         _lib = torch.library.Library("aten", "IMPL")
         for key in ("AutogradPrivateUse1", "PrivateUse1"):
             _lib.impl("_scaled_dot_product_fused_attention_overrideable", _overrideable, key)

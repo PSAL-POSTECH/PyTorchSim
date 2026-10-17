@@ -294,6 +294,7 @@ def user_kernel_meta(kernel, kwargs, triton_meta, grid):
     written (inout) where torch's mutation analysis says the launch writes it, read (in)
     elsewhere, every pointer inout when that analysis is not at hand."""
     from pytorchsim.contract import storage_span
+    from pytorchsim.driver.codecache import user_kernel_id
 
     hint = V.graph.sizevars.optimization_hint
     signature = {str(k): str(v) for k, v in triton_meta["signature"].items()}
@@ -321,7 +322,7 @@ def user_kernel_meta(kernel, kwargs, triton_meta, grid):
         "args": args, "call_params": call_params, "numels": {},
         "inside_reduction": False, "fixed_config": {},
         "template_grid": ([int(hint(g)) for g in grid] + [1, 1, 1])[:3],
-        "user_defined": True,
+        "user_defined": True, "user_kernel": user_kernel_id(kernel),
     }
 
 

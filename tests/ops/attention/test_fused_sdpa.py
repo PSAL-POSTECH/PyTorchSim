@@ -1,8 +1,10 @@
 """SDPA on the npu through the overrideable backend: the fused prefill and decode kernels where
 attention.fused_plan takes the call, SDPA's math where it does not, against a float32 CPU reference.
 
-Each case states the route it must take (prefill, decode or math) and checks the route the trace
-took, so a gate that silently sends a fused case to math, or a math case to a kernel, fails here:
+Each case states the route it must take (prefill, decode or math) and checks attention.ROUTED, the
+calls that ran each route: one launch per compiled call that takes a fused kernel, one count per
+math call run outside a compiled graph, nothing for math compiled into the graph (Inductor's own
+kernels). So a gate that silently sends a fused case to math, or a math case to a kernel, fails:
 
   prefill  causal GQA and non-causal, L == S
   decode   GQA, L == 1, not causal
@@ -15,6 +17,8 @@ took, so a gate that silently sends a fused case to math, or a math case to a ke
   spad     doubling a fused prefill's S, attention.fused_plan declines it at some S while every
            tile is still the same block, so only the scratchpad bound declines it (checked on
            the plan: a math run of that S on Spike takes far longer than this file)
+  counts   a compiled prefill called twice counts two launches, not its traces; under
+           backend="eager" the call runs math, and only math is counted
 
 On a tree without attention.ROUTED the route checks are skipped and only the values are checked,
 so the value failures a fix removes show on the tree before it.
@@ -67,7 +71,7 @@ def _routed():
 
 def _route_ok(want):
     routed = _routed()
-    return routed is None or set(routed) == want
+    return routed is None or dict(routed) == want
 
 
 def _clear():
@@ -86,7 +90,7 @@ def run_case(name):
         out = f(q.to(device), k.to(device), v.to(device)).cpu()
     err = _err(out, ref)
     took = dict(_routed() or {})
-    ok = err < TOL and _route_ok({route})
+    ok = err < TOL and _route_ok({} if route == "math" else {route: 1})
     print(f"{name}: route={took} want={route} err={err:.3e} {'PASS' if ok else 'FAIL'}",
           flush=True)
     return ok
@@ -106,7 +110,7 @@ def run_grad():
     except Exception as exc:  # the backward of a route without one
         print(f"requires_grad: {type(exc).__name__}: {str(exc)[:200]} FAIL", flush=True)
         return False
-    ok = _route_ok(set()) and max(errs) < 1e-4
+    ok = _route_ok({}) and max(errs) < 1e-4
     print(f"requires_grad: route={dict(_routed() or {})} want={{}} grad err "
           f"{max(errs):.3e} {'PASS' if ok else 'FAIL'}", flush=True)
     return ok
@@ -130,7 +134,7 @@ def run_eager(name):
         print(f"{name}: {type(exc).__name__}: {str(exc)[:200]} FAIL", flush=True)
         return False
     err = _err(out, ref)
-    want = {"prefill"} if compiled else {"math"}
+    want = {"prefill": 1} if compiled else {"math": 1}
     ok = err < TOL and _route_ok(want)
     print(f"{name}: route={dict(_routed() or {})} want={want} err={err:.3e} "
           f"{'PASS' if ok else 'FAIL'}", flush=True)
@@ -157,8 +161,29 @@ def run_spad(name):
     return ok
 
 
+def run_counts(name):
+    """A compiled prefill called twice records two launches, and the same call compiled with
+    backend="eager" (Dynamo traces it, then runs it as eager ops) records the math it ran."""
+    q, k, v = _inputs(1, 2, 2, 256, 256, 64)
+    ref = _sdpa(q.float(), k.float(), v.float(), True)
+    args = (q.to(device), k.to(device), v.to(device))
+    took, errs = [], []
+    for backend, calls in (("inductor", 2), ("eager", 1)):
+        _clear()
+        torch._dynamo.reset()
+        f = torch.compile(lambda q, k, v: _sdpa(q, k, v, True), backend=backend, dynamic=False)
+        with torch.no_grad():
+            errs += [_err(f(*args).cpu(), ref) for _ in range(calls)]
+        took.append(dict(_routed() or {}))
+    routed = _routed()
+    ok = max(errs) < TOL and (routed is None or took == [{"prefill": 2}, {"math": 1}])
+    print(f"{name}: inductor x2 route={took[0]} want={{'prefill': 2}}, eager route={took[1]} "
+          f"want={{'math': 1}} err={max(errs):.3e} {'PASS' if ok else 'FAIL'}", flush=True)
+    return ok
+
+
 EXTRA = {"spad": run_spad, "requires_grad": run_grad, "eager": run_eager,
-         "inference_mode": run_eager, "inference_mode_compiled": run_eager}
+         "inference_mode": run_eager, "inference_mode_compiled": run_eager, "counts": run_counts}
 
 
 if __name__ == "__main__":

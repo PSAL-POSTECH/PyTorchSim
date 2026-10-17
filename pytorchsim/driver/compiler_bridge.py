@@ -4,7 +4,6 @@ that same checkout; what a compile leaves is read through contract.py."""
 
 import importlib
 import os
-import re
 import subprocess
 
 from pytorchsim import config
@@ -14,33 +13,12 @@ logger = config.setup_logger()
 
 class CompilerError(RuntimeError):
     """A compiler stage failed. Inductor reports only str(exc), so the stage's own
-    diagnostic has to travel in the message."""
-    _SIGNAL = re.compile(
-        r"^(?!\s|Traceback|During handling|The above)"
-        r"(.*\berror:\s.*|.*failed to legalize.*|"
-        r"[\w.]*(?:Error|Exception)\b.*|.*Assertion.*|"
-        r"[A-Za-z_]\w*(?:\.\w+)+: .+|\[(?:transform|lower|binary)\] .*(?:refused|not allowed).*)$", re.M)
-    _FRAME = re.compile(r'^\s|^\s*File "|^\s*\^')
-    _STAGE_FAIL = re.compile(r"^\[\d+/\d+\] \S+\s+FAIL\s.*\n\n(  \S.*)$", re.M)
-    _STDERR_BLOCK = re.compile(r"^  stderr  :\n((?:    .*\n?)+)", re.M)
+    diagnostic travels in the message; `failure` is what the compiler left in the
+    workdir's failure.json (contract/failure), None when it stopped outside every stage."""
 
-    def __init__(self, message, cmd=None, output=None):
+    def __init__(self, message, cmd=None, failure=None):
         self.cmd = cmd
-        self.output = output
-        if output:
-            hits = [h.strip() for h in self._STAGE_FAIL.findall(output)]
-            if hits:
-                said = "\n".join(l.strip() for b in self._STDERR_BLOCK.findall(output)
-                                 for l in b.splitlines())
-                hits += [h.strip() for h in self._SIGNAL.findall(said)
-                         if not self._FRAME.match(h) and h.strip() not in hits[-1]][-2:]
-            if not hits:
-                hits = [h.strip() for h in self._SIGNAL.findall(output)
-                        if not self._FRAME.match(h)]
-            if not hits:
-                hits = [l for l in output.strip().splitlines()
-                        if l.strip() and not self._FRAME.match(l)]
-            message = message + "\n  " + "\n  ".join(l[:300] for l in hits[-3:])
+        self.failure = failure
         super().__init__(message)
 
 
@@ -157,13 +135,11 @@ def run_pipeline(spec_path, workdir, to_stage="torchsim-compile", tog=False, tim
 
     proc = subprocess.run(cmd, capture_output=True, text=True,
                           cwd=compiler_dir(), env=compiler_env(), timeout=timeout)
-    output = proc.stdout + proc.stderr
     if proc.returncode != 0:
-        log = os.path.join(workdir, "stage.log")
-        if os.path.isfile(log):
-            with open(log, errors="replace") as fh:
-                output += "\n" + fh.read()
-        raise CompilerError(f"the compiler pipeline failed (exit {proc.returncode})",
-                        cmd=" ".join(cmd), output=output)
-    logger.debug("[torchsim-compile] %s", output)
+        failure = compiler_contract("failure").read(workdir)
+        said = (f"at {failure['stage']} ({failure['kind']}): {failure['message']}" if failure
+                else f"outside every stage:\n{proc.stderr}")
+        raise CompilerError(f"the compiler pipeline failed (exit {proc.returncode}) {said}",
+                            cmd=" ".join(cmd), failure=failure)
+    logger.debug("[torchsim-compile] %s", proc.stdout + proc.stderr)
     return workdir

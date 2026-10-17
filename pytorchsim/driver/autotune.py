@@ -8,7 +8,6 @@ import copy
 import itertools
 import json
 import os
-import re
 import time
 
 from filelock import FileLock
@@ -24,33 +23,16 @@ logger = config.setup_logger()
 MAPPING_LOCK_TIMEOUT = 600
 
 
-#: THE MARKER IS A TEXT CONTRACT ACROSS A PROCESS BOUNDARY. The compiler runs
-#: as a subprocess, so this string cannot be imported from it -- it is spelled
-#: `spad.SPAD_OVERFLOW_MARKER` there and pinned by tile_spad_over_budget_marker.
-_SPAD_OVERFLOW_RE = re.compile(r"torchsim-spad-overflow: usage=(\d+) budget=(\d+)")
-
-
-def _spad_overflow(exc):
-    """(usage, budget) if this failure was the scratchpad, else None.
-
-    Read off `exc.output`, NOT `str(exc)`: CompilerError's message keeps only lines
-    that look like a diagnostic, and this marker is addressed to this function.
-    """
-    m = _SPAD_OVERFLOW_RE.search(getattr(exc, "output", None) or str(exc))
-    return (int(m.group(1)), int(m.group(2))) if m else None
-
-
 def too_big(exc):
-    """Why this failure means the tile is too big, else None: the scratchpad budget it broke, the
-    register file (llc spilled, which the compiler's ELF refuses) or Triton's own block size."""
-    over = _spad_overflow(exc)
-    if over is not None:
-        return "%d bytes/lane over a budget of %d" % over
-    said = getattr(exc, "output", None) or str(exc)
-    if "spill not allowed" in said:
+    """Why this failure means the tile is too big, else None: the scratchpad budget it broke or the
+    register file (llc spilled, which the compiler's ELF refuses), as the compiler's failure.json
+    names it. Triton's own block limit is never the reason: every block tiling pins is under it."""
+    got = getattr(exc, "failure", None) or {}
+    kinds = compiler_bridge.compiler_contract("failure")
+    if got.get("kind") == kinds.SPAD_OVERFLOW:
+        return "%d bytes/lane over a budget of %d" % (got["usage"], got["budget"])
+    if got.get("kind") == kinds.SPILL_NOT_ALLOWED:
         return "the vector register file spills"
-    if "exceeds triton maximum tensor numel" in said:
-        return "a block holds more elements than Triton accepts"
     return None
 
 
@@ -116,7 +98,7 @@ def _time_tile(src_code, meta, kernel_name, workdir, timeout):
                                              autotune_mode=True, timeout_sec=timeout)
         return TOGSimulator.get_result_from_file(result)[-1]
     except (compiler_bridge.CompilerError, RuntimeError, FileNotFoundError) as exc:
-        why = "scratchpad overflow" if _spad_overflow(exc) else type(exc).__name__
+        why = too_big(exc) or type(exc).__name__
         logger.info("[autotune] %s %s: %s", kernel_name, workdir, why)
         return float("inf")
 

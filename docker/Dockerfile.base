@@ -38,7 +38,7 @@ ENV TORCHSIM_PREFIX=/workspace \
     PYTHONPATH=/workspace/triton-src/python \
     GEM5_PATH=${VCIX_ENV_ROOT}/gem5/build/RISCV/gem5.opt \
     PATH=/workspace/pytorchsim-triton-compiler:${VCIX_ENV_ROOT}/riscv/bin:/root/.local/bin:${PATH} \
-    LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH} \
+    LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/usr/lib/aarch64-linux-gnu:${LD_LIBRARY_PATH} \
     TORCHSIM_DIR=/workspace/PyTorchSim
 
 RUN python3 /workspace/pytorchsim-triton-compiler/pytorchsim-triton-compiler doctor

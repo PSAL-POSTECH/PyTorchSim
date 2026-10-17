@@ -8,6 +8,10 @@ stage, and per-failure artifacts for reporting upstream.
   python scripts/ci/triton_route_sweep.py --all            # every test, reports
   python scripts/ci/triton_route_sweep.py --all --artifacts triton-failures
   python scripts/ci/triton_route_sweep.py --all --order-from results.json
+
+An entry is a test file, or a test file and its arguments when the allowlist runs one file as
+several entries (`tests/models/Gemma/test_gemma.py --preset 7b`): each is its own process, so a
+long file does not hold the last slot alone.
 """
 
 import argparse
@@ -16,6 +20,7 @@ import glob
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -60,13 +65,25 @@ NOISE = re.compile(
     r"^During handling|^The above exception|for more information|^\s*\^+\s*$")
 
 
-def discover():
+def discover(allow):
+    """Every test file, each one the allowlist runs as entries with arguments replaced by those."""
+    split = {}
+    for entry in allow:
+        file, *argv = shlex.split(entry)
+        if argv:
+            split.setdefault(file, []).append(entry)
     out = []
     for dirpath, _dirs, files in os.walk(os.path.join(ROOT, "tests")):
         for f in files:
             if f.startswith("test_") and f.endswith(".py"):
-                out.append(os.path.relpath(os.path.join(dirpath, f), ROOT))
+                path = os.path.relpath(os.path.join(dirpath, f), ROOT)
+                out.extend(split.get(path, [path]))
     return sorted(out)
+
+
+def _slug(entry):
+    """A directory name for an entry."""
+    return re.sub(r"[^\w.-]+", "_", entry.removesuffix(".py"))
 
 
 def load_allowlist():
@@ -151,7 +168,7 @@ def failed_kernel(workdirs, timing, timed_out):
 
 def collect(test, dump_dir, out_root, output, bucket, stage, workdir):
     """One directory per failing test: the kernel, the last IR, the error."""
-    dest = os.path.join(out_root, test.replace("/", "_").removesuffix(".py"))
+    dest = os.path.join(out_root, _slug(test))
     os.makedirs(dest, exist_ok=True)
     with open(os.path.join(dest, "error.txt"), "w") as f:
         f.write(f"test:   {test}\nbucket: {bucket}\nstage:  {stage}\n\n")
@@ -168,7 +185,7 @@ def collect(test, dump_dir, out_root, output, bucket, stage, workdir):
 def run_one(test, timeout, artifacts, scratch):
     # Private per test: a shared dump lets one test's cached kernel answer for
     # another's.
-    dump = os.path.join(scratch, test.replace("/", "_").removesuffix(".py"))
+    dump = os.path.join(scratch, _slug(test))
     shutil.rmtree(dump, ignore_errors=True)
     os.makedirs(dump, exist_ok=True)
     env = dict(os.environ, TORCHSIM_DUMP_PATH=dump)
@@ -178,7 +195,7 @@ def run_one(test, timeout, artifacts, scratch):
 
     t0, timed_out = time.time(), False
     try:
-        p = subprocess.run([sys.executable, test], cwd=ROOT, env=env,
+        p = subprocess.run([sys.executable, *shlex.split(test)], cwd=ROOT, env=env,
                            capture_output=True, text=True, timeout=timeout)
         out, code = p.stdout + p.stderr, p.returncode
     except subprocess.TimeoutExpired as e:
@@ -284,7 +301,7 @@ def main():
     args = ap.parse_args()
 
     allow = load_allowlist()
-    tests = discover() if args.all else allow
+    tests = discover(allow) if args.all else allow
     if not tests:
         print("no tests selected; the allowlist is empty and --all was not given")
         return 1

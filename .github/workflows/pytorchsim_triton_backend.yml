@@ -63,7 +63,7 @@ jobs:
         run: |
           PTB_REF=$(jq -r '.pytorchsim_triton_backend.ref' third_party/pytorchsim-triton-backend.json)
           PIN="$(bash scripts/ci/third_party_base_pin.sh)"
-          echo "PTB_IMAGE=${PTB_IMAGE_REPO}:${PTB_REF}" >> "$GITHUB_ENV"
+          echo "PTB_IMAGE=${PTB_IMAGE_REPO}:${PTB_REF}-runtime" >> "$GITHUB_ENV"
           echo "BASE_IMAGE=${BASE_IMAGE_REPO}:third_party-${PIN}" >> "$GITHUB_ENV"
       - name: The compiler has published an image for the pin
         run: |

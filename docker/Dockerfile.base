@@ -1,12 +1,13 @@
 # syntax=docker/dockerfile:1.7
-# CI's base image: the compiler's own published image at the pinned commit, plus PyTorch and what
-# the tests import. The compiler image (PSAL-POSTECH/PyTorchSim-Triton-Backend, workflow images.yml,
-# one tag per commit) already carries Ubuntu 22.04 with python3.11, the vcix-accelerator environment
-# (RISC-V toolchain, pk, Spike, gem5), LLVM, Triton built with the torchsim backend, the accelerator
+# CI's base image: the compiler's own published runtime image at the pinned commit, plus PyTorch and
+# what the tests import. The runtime image (PSAL-POSTECH/PyTorchSim-Triton-Backend, workflow images.yml,
+# <commit>-runtime: the compiler image less what only builds it, and less its torch) already carries
+# Ubuntu 22.04 with python3.11, the vcix-accelerator environment (RISC-V toolchain, pk, Spike, gem5),
+# LLVM's llc, opt, mlir-translate and MLIR bindings, Triton built with the torchsim backend, the accelerator
 # model, the compiler, its dialect and extension, and the TOGSim it pins, built. Nothing of
 # that is built here. Rebuilt when scripts/ci/third_party_base_pin.sh changes, i.e. when this file,
 # the compiler pin or third_party/github-releases.json moves.
-ARG PTB_IMAGE=ghcr.io/psal-postech/pytorchsim-triton-backend:main
+ARG PTB_IMAGE=ghcr.io/psal-postech/pytorchsim-triton-backend:main-runtime
 FROM ${PTB_IMAGE}
 
 WORKDIR /workspace

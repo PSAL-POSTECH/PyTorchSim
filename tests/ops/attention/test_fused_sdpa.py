@@ -12,6 +12,9 @@ took, so a gate that silently sends a fused case to math, or a math case to a ke
   eager    a prefill-shaped call outside torch.compile runs math (no Triton launch outside a
            compiled graph) and says so in ROUTED; under inference_mode too, which skips the
            autograd key the op's npu kernel is registered at, eagerly and compiled
+  spad     doubling a fused prefill's S, attention.fused_plan declines it at some S while every
+           tile is still the same block, so only the scratchpad bound declines it (checked on
+           the plan: a math run of that S on Spike takes far longer than this file)
 
 On a tree without attention.ROUTED the route checks are skipped and only the values are checked,
 so the value failures a fix removes show on the tree before it.
@@ -134,8 +137,28 @@ def run_eager(name):
     return ok
 
 
-EXTRA = {"requires_grad": run_grad, "eager": run_eager, "inference_mode": run_eager,
-         "inference_mode_compiled": run_eager}
+def run_spad(name):
+    """Double prefill_causal_gqa's S, on meta tensors, until fused_plan declines it: the block
+    stays vector_lanes, so the tiles do not grow and the scratchpad bound is what declines."""
+    from pytorchsim.frontend import attention
+    _, B, Hq, H, _, S, D, causal = CASES["prefill_causal_gqa"]
+    plans = []
+    while S <= 1 << 20:
+        q, k, v = (torch.empty(B, h, S, D, dtype=torch.bfloat16, device="meta")
+                   for h in (Hq, H, H))
+        plans.append((S, attention.fused_plan(q, k, v, causal)))
+        if plans[-1][1] is None:
+            break
+        S *= 2
+    declined = plans[-1][1] is None and len(plans) > 1
+    ok = declined and all(p == plans[0][1] for _, p in plans[:-1])
+    print(f"{name}: S={plans[0][0]} {plans[0][1]}, S={plans[-1][0]} {plans[-1][1]} "
+          f"{'PASS' if ok else 'FAIL'}", flush=True)
+    return ok
+
+
+EXTRA = {"spad": run_spad, "requires_grad": run_grad, "eager": run_eager,
+         "inference_mode": run_eager, "inference_mode_compiled": run_eager}
 
 
 if __name__ == "__main__":

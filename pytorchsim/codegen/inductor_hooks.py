@@ -8,7 +8,7 @@ kernel calls of the Python module Inductor generates per graph.
 import contextlib
 from typing import Optional
 
-from torch._inductor.codecache import get_hash
+from torch._inductor.codecache import PyCodeCache, get_hash
 from torch._inductor.codegen import wrapper
 from torch._inductor.codegen.common import BackendFeature, IndentedBuffer
 from torch._inductor.codegen.triton import TritonKernel, TritonScheduling
@@ -16,7 +16,7 @@ from torch._inductor.ir import GraphPartitionSignature
 from torch._inductor.utils import Placeholder, get_fused_kernel_name
 from torch._inductor.virtualized import V
 
-from pytorchsim.codegen import tiling, kernel_metadata, verify
+from pytorchsim.codegen import kernel_metadata, verify
 
 
 class TritonNPUKernel(TritonKernel):
@@ -25,6 +25,14 @@ class TritonNPUKernel(TritonKernel):
     Upstream emits `kernel.run(..., grid=..., stream=...)`, resolved at runtime.
     There is no autotuner here, which is why the blocks are fixed at codegen.
     """
+    def __init__(self, tiling, *args, fixed_config=None, **kwargs):
+        """Pin this machine's blocks here, where every kernel of this class is made: the one
+        Inductor emits and the one its fusion benchmark times are then the same kernel."""
+        if fixed_config is None:
+            from pytorchsim.frontend.inductor_patches import pinned_blocks
+            fixed_config = pinned_blocks(tiling, kwargs.get("features"))
+        super().__init__(tiling, *args, fixed_config=fixed_config, **kwargs)
+
     def call_kernel(self, name: str, node=None, **kwargs):
         wrapper = V.graph.wrapper_code
         _, call_args, _, arg_types = self.args.python_argdefs()
@@ -33,7 +41,14 @@ class TritonNPUKernel(TritonKernel):
 
 
 class TritonNPUScheduling(TritonScheduling):
+    """Triton's scheduling, emitting torchsim_compile calls, and timing on TOGSim the modules
+    Inductor's epilogue-fusion benchmark writes."""
     kernel_type = TritonNPUKernel
+
+    def __init__(self, scheduler):
+        super().__init__(scheduler)
+        self._codegen_kernel = None
+        self._benchmarked = {}
 
     @classmethod
     def get_backend_features(cls, device):
@@ -41,6 +56,38 @@ class TritonNPUScheduling(TritonScheduling):
         machine has no launch to amortise, and a combo kernel picks its tensors by program id,
         a branch the TOG cannot time."""
         return super().get_backend_features(device) - {BackendFeature.FOREACH}
+
+    def codegen_node_schedule_with_kernel(self, node_schedule, kernel):
+        self._codegen_kernel = kernel
+        return super().codegen_node_schedule_with_kernel(node_schedule, kernel)
+
+    def _codegen_single_template(self, kernel, render, template_node, epilogue_nodes,
+                                 prologue_nodes, *, only_gen_src_code=False):
+        self._codegen_kernel = kernel
+        return super()._codegen_single_template(kernel, render, template_node, epilogue_nodes,
+                                                prologue_nodes, only_gen_src_code=only_gen_src_code)
+
+    def generate_kernel_code_from_nodes(self, nodes, benchmark_kernel=False, hint_override=None,
+                                        **kwargs):
+        """The source Inductor benchmarks a fusion with, without its benchmark harness (the
+        compiler takes the kernel alone), and its metadata, read off the kernel object as
+        define_kernel reads it, kept for benchmark_codegened_module by the path the source loads
+        from."""
+        src_code = super().generate_kernel_code_from_nodes(nodes, False, hint_override, **kwargs)
+        meta = kernel_metadata.collect_meta(self._codegen_kernel, "triton_")
+        self._benchmarked[PyCodeCache.write(src_code)[1]] = (src_code, meta)
+        return src_code
+
+    def benchmark_codegened_module(self, mod, n_spills_threshold=8, node_names=None,
+                                   skip_perf_cache=False):
+        """(TOGSim cycles, path) of a module generate_kernel_code_from_nodes wrote: Inductor
+        compares these with the cycles select.time_choices gave the unfused choices."""
+        from pytorchsim.driver import select
+
+        got = self._benchmarked.get(mod.__file__)
+        if got is None:
+            return float("inf"), mod.__file__
+        return select.time_module(*got, mod.__file__), mod.__file__
 
     def define_kernel(self, src_code, node_schedule, kernel):
         """Name the kernel by its source, capture its metadata, and emit our compile call.
@@ -63,9 +110,9 @@ class TritonNPUScheduling(TritonScheduling):
         meta = kernel_metadata.collect_meta(kernel, kernel_name)
         kernel_metadata.demote_unwritten_inout(meta, src_code)
         kernel_metadata.record_roles(kernel_name, meta)
-        tiles = tiling.template_tiles(src_code, meta)
-        if tiles:
-            meta["template_tiles"] = [list(t) for t in tiles]
+        source = _tile_source(node_schedule)
+        if source is not None:
+            meta["tile_source"] = source
 
         compile_wrapper = IndentedBuffer()
         compile_wrapper.writeline(f"torchsim_compile('''{src_code}''',")
@@ -79,6 +126,27 @@ class TritonNPUScheduling(TritonScheduling):
         wrapper.define_kernel(kernel_name, compile_wrapper.getvalue(),
                               f"# origins: {origins}")
         return kernel_name
+
+
+def _tile_source(node_schedule):
+    """How a template kernel's config was chosen, one of select's sources; None for any other
+    kernel. A recorded config is the pick without an epilogue, so built with one fused it is
+    RECORDED_UNFUSED; a MultiTemplateBuffer is only made for choices timed in cycles."""
+    from torch._inductor.ir import MultiTemplateBuffer
+
+    from pytorchsim.driver import select
+
+    nodes = [n for n in node_schedule if hasattr(n, "is_template")]
+    template = next((n for n in nodes if n.is_template()), None)
+    if template is None:
+        return None
+    if isinstance(template.node, MultiTemplateBuffer):
+        return select.TIMED
+    ktc = getattr(template.node, "annotations", {}).get("ktc")
+    source = ktc.annotations.get(select.SOURCE) if ktc is not None else None
+    if source == select.RECORDED and len(nodes) > 1:
+        return select.RECORDED_UNFUSED
+    return source or select.HEURISTIC
 
 
 class TritonNPUWrapperCodegen(verify.VerifyLines, wrapper.PythonWrapperCodegen):

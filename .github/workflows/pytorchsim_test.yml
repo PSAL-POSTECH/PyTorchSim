@@ -75,6 +75,7 @@ jobs:
           - tests/system/test_eager.py
           - tests/system/test_patch_scope.py
           - tests/system/test_reduction_tiling.py
+          - tests/system/test_select.py
           - tests/system/test_togsim_exit.py
           - tests/system/test_togsim_result.py
     steps:

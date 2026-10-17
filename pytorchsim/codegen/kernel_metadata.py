@@ -179,6 +179,41 @@ def collect_meta(kernel, kernel_name):
     }
 
 
+def benchmark_request_meta(req):
+    """(source, meta) of a template choice as Inductor rendered it to benchmark: the module's
+    source as written, the signature off its loaded kernel, the roles and spans off the request's
+    TensorMeta (inputs, then the output). The same fields collect_meta gives the kernel the choice
+    becomes."""
+    from torch._inductor.codecache import PyCodeCache
+
+    mod = PyCodeCache.load_by_key_path(req.module_cache_key, req.module_path)
+    triton_meta = getattr(mod, req.kernel_name).triton_meta
+    with open(req.module_path) as f:
+        src = f.read()
+    signature = {str(k): str(v) for k, v in triton_meta["signature"].items()}
+    tensors = list(req.input_tensor_meta) + [req.output_tensor_meta]
+    roles = ["in"] * len(req.input_tensor_meta) + ["out"]
+    ptrs = [n for n, t in signature.items() if t.startswith("*")]
+    args = [{"name": n, "role": r, "buffer": t.name, "dtype": _DTYPE.get(signature[n]),
+             "numel": storage_span(list(t.sizes), list(t.strides), t.offset)}
+            for n, r, t in zip(ptrs, roles, tensors)]
+    xnumel = 1
+    for s in req.output_tensor_meta.sizes:
+        xnumel *= s
+    numels = {"xnumel": xnumel, "r0_numel": 1}
+    return src, {
+        "kernel_name": req.kernel_name,
+        "signature": signature,
+        "constants": {str(k): v for k, v in (triton_meta.get("constants") or {}).items()},
+        "args": args,
+        "call_params": list(signature),
+        "numels": numels,
+        "inside_reduction": False,
+        "fixed_config": tiling.fixed_config_for(None, numels, args),
+        "template_grid": [int(g) for g in req.extra_args],
+    }
+
+
 def _signature_from_argdefs(arg_defs, arg_types):
     """Triton signature tokens read off the ARG TYPES, for a kernel with no
     `triton_meta`.

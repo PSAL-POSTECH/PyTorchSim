@@ -45,9 +45,7 @@ RUN_SETTINGS = {
     "pytorchsim_functional_mode": ("TORCHSIM_FUNCTIONAL_MODE", 1, int),
     "pytorchsim_timing_mode": ("TORCHSIM_TIMING_MODE", 0, int),
     "pytorchsim_functional_verify_per_kernel": ("TORCHSIM_FUNCTIONAL_VERIFY_PER_KERNEL", 0, int),
-    "codegen_mapping_strategy": ("TORCHSIM_CODEGEN_MAPPING_STRATEGY", "autotune", str),
     "codegen_autotune_template_topk": ("TORCHSIM_CODEGEN_AUTOTUNE_TEMPLATE_TOPK", 4, int),
-    "codegen_external_mapping_file": ("TORCHSIM_CODEGEN_EXTERNAL_MAPPING_FILE", "", str),
     "codegen_autotune_wall_slack_sec": ("TORCHSIM_CODEGEN_AUTOTUNE_WALL_SLACK_SEC", 15, float),
 }
 

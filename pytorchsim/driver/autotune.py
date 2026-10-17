@@ -1,26 +1,14 @@
-"""Which tile a template kernel is built at: autotuned on TOGSim, or retried smaller when the compiler refuses it.
+"""A kernel the compiler refuses as too big is retried at smaller blocks.
 
-Autotune simulates each candidate alone, so this is the one place a build runs the simulator; the
-retry on a too-big tile runs in every mode. A tile settled on is recorded in the external mapping.
+A kernel's pinned blocks (its fixed_config) halve when the compiler says they do not fit. A
+template's own blocks are its config, which Inductor chose (driver/select.py), and are built as
+rendered.
 """
 
 import copy
 import itertools
-import json
-import os
-import time
 
-from filelock import FileLock
-
-from pytorchsim import config
-from pytorchsim.codegen import tiling
-from pytorchsim import contract
-from pytorchsim.driver import compiler_bridge, compiler_input
-from pytorchsim.simulator import timing
-
-logger = config.setup_logger()
-
-MAPPING_LOCK_TIMEOUT = 600
+from pytorchsim.driver import compiler_bridge
 
 
 def too_big(exc):
@@ -64,124 +52,12 @@ def _get_tile_candidates(meta):
     return tiles
 
 
-def _retile(src_code, meta, mnk, tile):
-    """The same mm or bmm kernel at block `tile` (M, N, K): its constexprs and its grid, the batch
-    axes of the grid kept."""
-    (m, n, k), (bm, bn, bk) = mnk, tile
-    vals = {"BLOCK_M": bm, "BLOCK_N": bn, "BLOCK_K": bk, "EVEN_K": k % bk == 0}
-    for key, v in vals.items():
-        src_code = tiling.TILE_RE[key].sub(lambda mt, v=v: f"{mt.group(1)}{v}", src_code)
-    meta = copy.deepcopy(meta)
-    meta["template_grid"] = [-(-m // bm) * -(-n // bn)] + list(meta["template_grid"][1:])
-    return src_code, meta
-
-
-def _time_tile(src_code, meta, kernel_name, workdir, timeout):
-    """TOGSim cycles of one candidate, simulated alone; inf if it does not compile or run --
-    develop's autotune. TOGSim 1.3.0 refuses a tile over the spad at load, where an earlier one never
-    finishes it; the refusal and the timeout both reach here as RuntimeError."""
-    from pytorchsim.simulator.togsim import TOGSimulator
-    os.makedirs(workdir, exist_ok=True)
-    spec_path = os.path.join(workdir, f"{kernel_name}_spec.py")
-    with open(os.path.join(workdir, "kernel.py"), "w") as f:
-        f.write(src_code)
-    timing.store_meta(workdir, meta)
-    compiler_input.write(src_code, meta, spec_path, compiler_bridge.compiler_dir())
-    try:
-        compiler_bridge.run_pipeline(spec_path, workdir, to_stage="torchsim-compile", tog=True)
-        timing.write_cycle_tables(workdir, meta)
-        mine = contract.link_shared(workdir, timing.SHARED)
-        timing.write_shape(workdir, meta)
-        timing.write_tensors(workdir)
-        result = TOGSimulator.run_standalone(os.path.join(mine, "tile_graph.onnx"),
-                                             os.path.join(mine, "attribute"),
-                                             autotune_mode=True, timeout_sec=timeout)
-        return TOGSimulator.get_result_from_file(result)[-1]
-    except (compiler_bridge.CompilerError, RuntimeError, FileNotFoundError) as exc:
-        why = too_big(exc) or type(exc).__name__
-        logger.info("[autotune] %s %s: %s", kernel_name, workdir, why)
-        return float("inf")
-
-
-def _template_tiles(src_code, meta):
-    """The mapped tiles of an mm template kernel, best first: the ones codegen recorded, else worked out here."""
-    tiles = meta.get("template_tiles")
-    if tiles is None:
-        tiles = tiling.template_tiles(src_code, meta)
-    return [tuple(t) for t in tiles]
-
-
 def smaller_tiles(src_code, meta):
-    """(tile, source, meta) to retry with after a scratchpad overflow, in order: the other
-    mapped tiles of an mm template, else each smaller fixed_config tile."""
-    shape = tiling.mm_template_shape(src_code, meta)
-    if shape is not None:
-        mnk = shape[:3]
-        now = tuple(int(tiling.TILE_RE[k].search(src_code).group(2))
-                    for k in ("BLOCK_M", "BLOCK_N", "BLOCK_K"))
-        for tile in _template_tiles(src_code, meta):
-            if tile != now:
-                yield (dict(zip(("BLOCK_M", "BLOCK_N", "BLOCK_K"), tile)),
-                       *_retile(src_code, meta, mnk, tile))
-        return
+    """(tile, source, meta) to retry with after the compiler refuses a kernel as too big: each
+    smaller fixed_config tile."""
     tiles = iter(_get_tile_candidates(meta))
     next(tiles, None)
     for tile in tiles:
         meta = copy.deepcopy(meta)
         meta["fixed_config"].update(tile)
         yield {k: v for k, v in tile.items() if k.endswith("BLOCK")}, src_code, meta
-
-
-def autotune_template(src_code, meta, kernel_name, write_path):
-    """develop's template autotune: the top-k mapped tiles, each compiled with what is fused
-    into it and simulated alone; the fewest cycles wins. Only in timing mode, since cycles
-    are what it ranks by; the first tile to finish limits the others' wall time."""
-    shape = tiling.mm_template_shape(src_code, meta)
-    if shape is None:
-        return src_code, meta
-    m, n, k = shape[:3]
-    strategy = config.codegen_mapping_strategy
-    known = _recorded_tile(m, n, k) if "external" in strategy else None
-    if known is not None:
-        logger.info("[autotune] %s BLOCK_M/N/K=%s: from %s", kernel_name, known,
-                    config.codegen_external_mapping_file)
-        return _retile(src_code, meta, (m, n, k), known)
-    if "autotune" not in strategy or not config.pytorchsim_timing_mode:
-        return src_code, meta
-    tiles = _template_tiles(src_code, meta)[:config.codegen_autotune_template_topk]
-    best, timeout = (float("inf"), src_code, meta, None), None
-    for tile in tiles:
-        s, mt = _retile(src_code, meta, (m, n, k), tile)
-        t0 = time.perf_counter()
-        cycles = _time_tile(s, mt, kernel_name,
-                            os.path.join(write_path, "autotune", "x".join(map(str, tile))), timeout)
-        if cycles != float("inf") and timeout is None:
-            timeout = time.perf_counter() - t0 + config.codegen_autotune_wall_slack_sec
-        logger.info("[autotune] %s BLOCK_M/N/K=%s: %s cycles", kernel_name, tile, cycles)
-        if cycles < best[0]:
-            best = (cycles, s, mt, tile)
-    if best[0] != float("inf"):
-        _record_tile(m, n, k, best[3])
-    return best[1], best[2]
-
-
-def _recorded_tile(m, n, k):
-    """develop's external mapping: `{"M_N_K": {"TILE_M", "TILE_N", "TILE_K"}}`, else None."""
-    path = config.codegen_external_mapping_file
-    if not path or not os.path.isfile(path):
-        return None
-    with open(path) as f:
-        t = json.load(f).get(f"{m}_{n}_{k}")
-    return None if t is None else (t["TILE_M"], t["TILE_N"], t["TILE_K"])
-
-
-def _record_tile(m, n, k, tile):
-    """Add an autotuned tile to the external mapping file, so the next compile reads it."""
-    path = config.codegen_external_mapping_file
-    if not path:
-        return
-    with FileLock(path + ".lock", timeout=MAPPING_LOCK_TIMEOUT):
-        data = json.load(open(path)) if os.path.isfile(path) else {}
-        data[f"{m}_{n}_{k}"] = dict(zip(("TILE_M", "TILE_N", "TILE_K"), map(int, tile)))
-        with open(path, "w") as f:
-            json.dump(data, f, indent=2, sort_keys=True)

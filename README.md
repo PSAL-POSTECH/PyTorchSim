@@ -313,42 +313,22 @@ Depending on tensor shape, use different convolution template:
 - Multi-channel optimization
 
 ## Mapping
-PyTorchSim provides three mapping strategies.
-### Heuristic-based mapping
-We adopted and modified heuristic-based mapping from [GEMMINI](https://github.com/ucb-bar/gemmini) by default, which maximizes the utilization of scratchpad memory.
-### Auto-tuning
-The heuristic method may not be optimal for all cases. PyTorchSim provides auto-tuning to find the best mapping for GEMM, CONV, and vector operations. It reduces the search space by sorting candidates based on scratchpad memory utilization and picking the top-k candidates. Search parameters include tile shape and vector lane stride.
+A GEMM's tile is chosen the way Inductor chooses any template config: the mm/bmm/addmm/baddbmm
+template is offered at this machine's tiles (the `TORCHSIM_CODEGEN_AUTOTUNE_TEMPLATE_TOPK`
+largest that fit the scratchpad, 4 by default), and the selection keeps one.
 
-To enable this, update your configuration file as follows:
-```bash
-"codegen_mapping_strategy" : "autotune"
-```
-### Manual setting
-Users can use third-party mapping tools (e.g., Timeloop). You can explicitly set the mapping file path in the configuration file to apply your own mapping strategies.
-```bash
-"codegen_mapping_strategy" : "external",
-"codegen_external_mapping_file" : "path/to/mapping_file.json",
-```
-Key: "M_N_K" for GEMM
-```
-{
-    "512_2048_8192" : {
-        "TILE_M" : 512,
-        "TILE_K" : 512,
-        "TILE_N" : 1024
-    },
-    "512_2048_2048" : {
-        "TILE_M" : 512,
-        "TILE_K" : 512,
-        "TILE_N" : 1024
-    },
-    "2048_2048_512" : {
-        "TILE_M" : 1024,
-        "TILE_K" : 512,
-        "TILE_N" : 512
-    }
-}
-```
+- **Timing mode** (`TORCHSIM_TIMING_MODE=1`): each offered config is compiled and simulated on
+  TOGSim, and the fewest cycles wins. A template with an epilogue (bias, activation) is picked by
+  Inductor's epilogue-fusion benchmark, which simulates the top configs with the epilogue fused.
+- **Otherwise**: the first offered config, the largest tile.
+- **Recorded picks**: `pytorchsim/selection/<machine>.json` holds picks in Inductor's lookup-table
+  format, for the compiler, machine and TOGSim they were timed with. A recorded config is the only
+  one offered, in either mode. A timed run appends its picks to `$TORCHSIM_DUMP_PATH/selection.jsonl`;
+  `python scripts/selection_merge.py <selection.jsonl>...` folds them into the record. A record
+  holds the pick without an epilogue.
+
+Each kernel's `meta.json` says where its tile came from: `tile_source` is `timed`, `recorded`,
+`recorded_unfused` (a recorded pick built with an epilogue fused) or `heuristic`.
 
 ## L2 Cache
 It supports L2 cache as persistent cache. User can provide software-managed allocation/eviction strategy for tensors with persistent cache.
@@ -440,9 +420,6 @@ pytorchsim_functional_mode: 1  # 1 = run Spike validation, 0 = skip for faster r
 pytorchsim_timing_mode: 1
 
 # --- Compiler mapping / optimizations (same YAML) ---
-codegen_mapping_strategy: heuristic   # heuristic | autotune | external-then-heuristic | external-then-autotune
-codegen_external_mapping_file: ''
-codegen_autotune_max_retry: 10
 codegen_autotune_template_topk: 4
 codegen_compiler_optimization: all    # all | none | list of option names
 
@@ -467,7 +444,7 @@ One-line meaning for each group (details in the YAML block above).
 - **VPU (`vpu_*`)**: vector lane count, per-lane scratchpad (KB), and vector register width—**compiler** uses these for tiling/codegen.
 - **DRAM (`dram_type`, `dram_channels`, …)**: `ramulator2` uses `ramulator_config_path`; `simple` uses fixed latency and optional bandwidth caps (`dram_bandwidth_gbps_*`, `dram_freq_mhz` when capped). `dram_num_partitions` splits channels for NUMA-style addressing.
 - **Interconnect (`icnt_*`, `booksim_config_path`)**: `simple` adds fixed hop latency (`icnt_latency_cycles`); `booksim2` points at a BookSim2 topology file.
-- **Codegen (`codegen_*`)**: mapping strategy (heuristic / autotune / external-hybrid), external JSON path, autotune search limits, and fusion/optimization set for the PyTorch compiler path.
+- **Codegen (`codegen_*`)**: how many of this machine's GEMM tiles are offered to the selection (see Mapping), and the fusion/optimization set for the PyTorch compiler path.
 - **L2 (`l2d_type`, `l2d_config`, optional `l2d_hit_latency`)**: optional data cache between cores and DRAM; `l2d_config` uses AccelSim-style cache geometry strings.
 - **Scheduler (`scheduler`, `num_partition`, `partition`)**: request queues per partition and `core_i` → queue index mapping for multi-tenant / `launch_model` routing.
 - **`pytorchsim_functional_mode`**: **`1`** runs **Spike** on generated code; **`0`** skips it for faster iteration.

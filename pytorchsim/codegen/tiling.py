@@ -4,8 +4,6 @@ The compiler builds one binary per kernel and nothing tunes it later, so block s
 tiles this machine can take are decided here, from the machine and the kernel.
 """
 
-import re
-
 from torch._inductor.virtualized import V
 
 from pytorchsim import config
@@ -261,37 +259,3 @@ def gemm_tile_candidates(M, N, K, c_bytes, precision_bytes):
 def _pow2_ceil(v):
     """The smallest power of two at or above v."""
     return 1 << (int(v) - 1).bit_length()
-
-
-TILE_RE = {k: re.compile(rf"^(\s*{k}\s*:\s*tl\.constexpr\s*=\s*)(\S+)$", re.M)
-            for k in ("BLOCK_M", "BLOCK_N", "BLOCK_K", "EVEN_K")}
-
-
-DIM_RE = {k: re.compile(rf"^\s*{k} = (\d+)$", re.M) for k in "MNK"}
-
-
-def mm_template_shape(src_code, meta):
-    """(M, N, K, input bytes, output bytes) of an mm or bmm template kernel -- one program per output
-    tile (and batch), its blocks stated as constexprs -- else None."""
-    if (meta.get("template_grid") is None
-            or not all(r.search(src_code) for r in TILE_RE.values())):
-        return None
-    dims = [DIM_RE[k].search(src_code) for k in "MNK"]
-    if not all(dims):
-        return None
-    import torch
-    nbytes = {a["role"]: getattr(torch, a["dtype"]).itemsize for a in meta["args"]}
-    return tuple(int(d.group(1)) for d in dims) + (nbytes["in"], nbytes.get("out", nbytes["in"]))
-
-
-def template_tiles(src_code, meta):
-    """Every mapped tile of an mm template kernel this source can take, best first, as (M, N, K)
-    blocks; [] for any other kernel. A body rendered with EVEN_K loads K unmasked, so it takes only
-    a BLOCK_K that divides K."""
-    shape = mm_template_shape(src_code, meta)
-    if shape is None:
-        return []
-    m, n, k, size, out_size = shape
-    even = TILE_RE["EVEN_K"].search(src_code).group(2) == "True"
-    return [(c.block_m, c.block_n, c.block_k) for c in gemm_tiles(m, n, k, size, out_size)
-            if not even or k % c.block_k == 0]

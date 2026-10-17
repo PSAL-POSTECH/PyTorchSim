@@ -1,7 +1,9 @@
 """Our patches to Inductor so its Triton codegen serves npu.
 
 npu counts as a Triton GPU, mm/bmm/conv go to the Triton templates with this machine's tiles,
-every kernel's blocks are pinned (NPUChoices), and selection skips benchmarking.
+every kernel's blocks are pinned (pinned_blocks), and a template's config is Inductor's own
+selection: timed on TOGSim in timing mode, the offered order otherwise, a recorded pick when there
+is one (driver/select.py).
 """
 
 import torch
@@ -84,7 +86,8 @@ def _register_template_heuristics():
     @register_template_heuristic(bmm_template.uid, "npu")
     class NPUMMTemplateConfigHeuristic(MMTemplateConfigMixin, BaseConfigHeuristic):
         def _get_config_generator(self):
-            """Configs for one m, n, k: gemm_tiles first, then the generic set."""
+            """Configs for one m, n, k: the first codegen_autotune_template_topk of gemm_tiles,
+            or the generic set when none of this machine's tiles is a legal block."""
             generic = super()._get_config_generator()
 
             def configs(m, n, k, **kwargs):
@@ -99,8 +102,10 @@ def _register_template_heuristics():
                     logger.warning(
                         "[torchsim-compile] no mapped tile for %sx%sx%s is a legal "
                         "Triton block; falling back to the generic set", *mnk)
-                yield from self._finalize_mm_configs(mapped)
-                yield from generic(m, n, k, **kwargs)
+                    yield from generic(m, n, k, **kwargs)
+                    return
+                yield from self._finalize_mm_configs(
+                    mapped[:config.codegen_autotune_template_topk])
 
             return configs
 
@@ -374,82 +379,90 @@ def _kept_axis_contiguous(features):
     return "x" if hint == ReductionHint.OUTER else None
 
 
+_DT_BITS = {torch.float64: 64, torch.float32: 32, torch.float16: 16,
+            torch.bfloat16: 16, torch.int64: 64, torch.int32: 32,
+            torch.int16: 16, torch.int8: 8, torch.uint8: 8, torch.bool: 8}
+
+
+def _elem_args(features):
+    """The widest tensor a scheduled node makes or reads, as fixed_config_for's args."""
+    from torch._inductor.virtualized import V
+    bits = []
+    for nd in features.scheduler_nodes():
+        try:
+            bits.append(_DT_BITS.get(nd.node.get_dtype(), 32))
+        except Exception:
+            pass
+        for dep in getattr(getattr(nd, "read_writes", None), "reads", ()) or ():
+            try:
+                bits.append(_DT_BITS.get(V.graph.get_dtype(dep.name), 32))
+            except Exception:
+                pass
+    return ([{"dtype": {64: "float64", 32: "float32", 16: "float16",
+                        8: "int8"}[max(bits)]}] if bits else [])
+
+
+def pinned_blocks(kernel_tiling, features):
+    """This machine's blocks for a kernel of `kernel_tiling` as a FixedTritonConfig, or None.
+
+    The numels come from the tiling; the dtype width from the widest tensor a scheduled node makes
+    or reads; whether the kept axis is the contiguous one from Inductor's hint.
+    """
+    from torch._inductor.codegen.triton import FixedTritonConfig
+
+    numels = {}
+    for prefix, n in (kernel_tiling or {}).items():
+        try:
+            numels[f"{prefix}numel"] = int(n)
+        except Exception:
+            pass
+    if not numels or features is None:
+        return None
+    args = _elem_args(features)
+    shim = type("K", (), {"inside_reduction": bool(features.is_reduction()),
+                          "numels": numels})()
+    try:
+        cfg = tiling.fixed_config_for(shim, numels, args,
+                                      contiguous=_kept_axis_contiguous(features)) or {}
+    except Exception as e:  # noqa: BLE001
+        logger.info("[torchsim-compile] no fixed_config for this kernel: %s", e)
+        return None
+    cfg = {k: int(v) for k, v in cfg.items() if v and k.endswith("BLOCK")}
+    return FixedTritonConfig(cfg) if cfg else None
+
+
 def _npu_choices_class():
-    """NPUChoices, built once: InductorChoices with this machine's blocks and reduction policy."""
+    """NPUChoices, built once: Inductor's lookup-table choices, with this machine's reduction
+    policy and its recorded template picks."""
     global _NPU_CHOICES
     if _NPU_CHOICES is not None:
         return _NPU_CHOICES
     from torch._inductor.choices import InductorChoices
+    from torch._inductor.lookup_table import LookupTableChoices
 
+    from pytorchsim.driver import select
 
-    _DT_BITS = {torch.float64: 64, torch.float32: 32, torch.float16: 16,
-                torch.bfloat16: 16, torch.int64: 64, torch.int32: 32,
-                torch.int16: 16, torch.int8: 8, torch.uint8: 8, torch.bool: 8}
-
-    def _elem_args(features):
-        """The widest tensor a scheduled node makes or reads, as fixed_config_for's args."""
-        from torch._inductor.virtualized import V
-        bits = []
-        for nd in features.scheduler_nodes():
-            try:
-                bits.append(_DT_BITS.get(nd.node.get_dtype(), 32))
-            except Exception:
-                pass
-            for dep in getattr(getattr(nd, "read_writes", None), "reads", ()) or ():
-                try:
-                    bits.append(_DT_BITS.get(V.graph.get_dtype(dep.name), 32))
-                except Exception:
-                    pass
-        return ([{"dtype": {64: "float64", 32: "float32", 16: "float16",
-                            8: "int8"}[max(bits)]}] if bits else [])
-
-    class NPUChoices(InductorChoices):
+    class NPUChoices(LookupTableChoices):
         def uuid(self):
-            """This class's part of Inductor's cache key."""
-            return "pytorchsim-npu-choices-2"
+            """This class's part of Inductor's cache key, with the recorded picks it hands out."""
+            return f"pytorchsim-npu-choices-3-{select.record_digest()}"
 
-        def triton_kernel_kwargs(self, kernel_cls, features, groups, kernel_kwargs):
-            """Pin this machine's blocks as a FixedTritonConfig, before the kernel is generated.
+        def _get_lookup_table(self):
+            """This machine's recorded picks; Inductor's own looks only on CUDA."""
+            return select.lookup_table()
 
-            The numels come from `groups`; the dtype width from the widest tensor a scheduled
-            node makes or reads; whether the kept axis is the contiguous one from Inductor's hint.
-            """
-            kw = super().triton_kernel_kwargs(kernel_cls, features, groups,
-                                              kernel_kwargs)
-            if not _lowering_npu():
-                return kw
-            from torch._inductor.codegen.triton import FixedTritonConfig
-            from torch._inductor.virtualized import V
+        @staticmethod
+        def _get_device_key(device):
+            if getattr(device, "type", None) == "npu":
+                return select.device_key()
+            return LookupTableChoices._get_device_key(device)
 
-            numels = {}
-            for g in (groups or []):
-                try:
-                    items = dict(g).items()
-                except Exception:
-                    continue
-                for prefix, n in items:
-                    try:
-                        numels[f"{prefix}numel"] = int(n)
-                    except Exception:
-                        pass
-            if not numels:
-                return kw
-            args = _elem_args(features)
-            shim = type("K", (), {"inside_reduction": bool(features.is_reduction()),
-                                  "numels": numels})()
-            try:
-                cfg = tiling.fixed_config_for(shim, numels, args,
-                                              contiguous=_kept_axis_contiguous(features)) or {}
-            except Exception as e:  # noqa: BLE001
-                logger.info("[torchsim-compile] no fixed_config for this kernel: %s", e)
-                return kw
-            cfg = {k: int(v) for k, v in cfg.items()
-                   if v and k.endswith("BLOCK")}
-            if not cfg:
-                return kw
-            kw = dict(kw)
-            kw["fixed_config"] = FixedTritonConfig(cfg)
-            return kw
+        def _create_lookup_choices(self, *args, **kwargs):
+            """Inductor's choices from the recorded configs, each marked as recorded."""
+            ktcs = super()._create_lookup_choices(*args, **kwargs)
+            for ktc in ktcs:
+                ktc.annotations[select.SOURCE] = select.RECORDED
+            return ktcs
 
         @staticmethod
         def should_use_persistent_reduction(features, cooperative_reduction):
@@ -563,10 +576,17 @@ def _decompose_convolution_for_npu():
 
 
 def _install_selection():
-    """Patch algorithm selection for npu choices: no precompile, no benchmark, allocate-only examples."""
+    """Patch algorithm selection for npu choices: cycles from TOGSim in timing mode, the offered
+    order otherwise; no precompile; allocate-only examples. A recorded pick is the only choice,
+    and a timed one is recorded."""
+    from torch._inductor import config as inductor_config
+    from torch._inductor import select_algorithm
     from torch._inductor.select_algorithm import AlgorithmSelectorCache
 
+    from pytorchsim.driver import select
+
     orig_benchmark = AlgorithmSelectorCache.__dict__["benchmark_choices"].__func__
+    orig_call = AlgorithmSelectorCache.__call__
     orig_precompile = AlgorithmSelectorCache.make_precompile_fn
     orig_example = AlgorithmSelectorCache.__dict__["generate_example_value"].__func__
 
@@ -576,7 +596,20 @@ def _install_selection():
     def benchmark_choices(cls, choices, autotune_args, is_collective=False):
         if not _choices_are_npu(choices):
             return orig_benchmark(cls, choices, autotune_args, is_collective)
+        timed = bool(config.pytorchsim_timing_mode)
+        if timed != inductor_config.benchmark_epilogue_fusion:
+            raise RuntimeError(
+                "TORCHSIM_TIMING_MODE changed after pytorchsim was installed: Inductor's "
+                "epilogue-fusion benchmark follows the mode the process started in")
+        if timed and select.times(choices):
+            return select.time_choices(choices)
         return pick_config(choices)
+
+    def __call__(self, name, choices, *args, **kwargs):
+        """Inductor's selection; a fusion is benchmarked only for choices timed in cycles."""
+        if _choices_are_npu(choices) and not select.times(choices):
+            kwargs["return_multi_template"] = False
+        return orig_call(self, name, choices, *args, **kwargs)
 
     def make_precompile_fn(self, choices, *args, **kwargs):
         if not _choices_are_npu(choices):
@@ -598,9 +631,12 @@ def _install_selection():
         return view if tuple(shape) == tuple(size) else view.as_strided(size, stride)
 
     AlgorithmSelectorCache.benchmark_choices = classmethod(benchmark_choices)
+    AlgorithmSelectorCache.__call__ = __call__
     AlgorithmSelectorCache.make_precompile_fn = make_precompile_fn
     AlgorithmSelectorCache.generate_example_value = staticmethod(
         generate_example_value)
+    select_algorithm.add_preprocessing_fn(select.keep_recorded)
+    select_algorithm.add_feedback_saver(select.record)
 
 
 def install():
@@ -625,6 +661,14 @@ def install():
     inductor_config.max_autotune_gemm_backends = "ATEN,TRITON"
     inductor_config.max_autotune_conv_backends = "ATEN,TRITON"
     inductor_config.triton.autotune_at_compile_time = False
-    inductor_config.benchmark_epilogue_fusion = False
+    # In timing mode a template with an epilogue is picked by its fused cycles: Inductor times the
+    # top configs fused (TritonNPUScheduling.benchmark_codegened_module), one at a time in this
+    # process. Picks are recorded by select, so Inductor's own autotune cache stays off.
+    timed = bool(config.pytorchsim_timing_mode)
+    inductor_config.benchmark_epilogue_fusion = timed
+    inductor_config.max_epilogue_benchmarked_choices = config.codegen_autotune_template_topk
+    inductor_config.autotune_local_cache = False
+    if timed:
+        inductor_config.compile_threads = 1
 
     _installed = True

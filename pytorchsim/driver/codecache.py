@@ -225,8 +225,6 @@ def torchsim_compile(src_code, meta, kernel_name):
                         kernel_name)
             elf = None
         if elf is None:
-            src_code, tuned = autotune.autotune_template(src_code, meta, kernel_name, write_path)
-            meta.update(tuned)
             with open(os.path.join(write_path, "kernel.py"), "w") as f:
                 f.write(src_code)
             timing.store_meta(write_path, meta)
@@ -257,11 +255,5 @@ def torchsim_compile(src_code, meta, kernel_name):
                 f.write(src_code)
             timing.store_meta(write_path, meta)
             store_identity(write_path)
-        else:
-            # a cached template may have been autotuned to another block: its grid is the stored one
-            stored = os.path.join(write_path, timing.META_JSON)
-            if meta.get("template_grid") is not None and os.path.isfile(stored):
-                with open(stored) as f:
-                    meta["template_grid"] = json.load(f)["template_grid"]
         logger.info("[torchsim-compile] %s -> %s", kernel_name, write_path)
         return TritonNPULauncher(kernel_name, write_path, meta)

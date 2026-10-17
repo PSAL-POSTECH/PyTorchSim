@@ -42,7 +42,10 @@ env:
 jobs:
   route:
     name: Triton route (smoke gate + coverage sweep)
-    runs-on: [self-hosted, slurm, big, x86_64]
+    # PoC: the aarch64 runners (Mac Studio nodes, rootless podman behind `docker`). No buildx there,
+    # so the registry is asked with curl and the base is built with plain docker build/push, as the
+    # compiler's own images workflow does on aarch64. The base tag carries -arm64 so the x64 tag is untouched.
+    runs-on: [self-hosted, slurm, big, aarch64]
     timeout-minutes: 180
     permissions:
       contents: read
@@ -53,43 +56,50 @@ jobs:
         with:
           ref: ${{ env.SOURCE_SHA }}
           persist-credentials: false
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+      # Credentials in the job's temp directory, gone with it -- not in the runner's home.
+      - name: Registry login
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/docker"
+          { echo "DOCKER_CONFIG=$RUNNER_TEMP/docker"; echo "REGISTRY_AUTH_FILE=$RUNNER_TEMP/docker/auth.json"; } >> "$GITHUB_ENV"
+          export DOCKER_CONFIG="$RUNNER_TEMP/docker" REGISTRY_AUTH_FILE="$RUNNER_TEMP/docker/auth.json"
+          printf %s "$TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          uname -m; nproc; docker --version
       - name: Pins
         id: pin
         run: |
           PTB_REF=$(jq -r '.pytorchsim_triton_backend.ref' third_party/pytorchsim-triton-backend.json)
           PIN="$(bash scripts/ci/third_party_base_pin.sh)"
           echo "PTB_IMAGE=${PTB_IMAGE_REPO}:${PTB_REF}-runtime" >> "$GITHUB_ENV"
-          echo "BASE_IMAGE=${BASE_IMAGE_REPO}:third_party-${PIN}" >> "$GITHUB_ENV"
+          echo "BASE_IMAGE=${BASE_IMAGE_REPO}:third_party-${PIN}-arm64" >> "$GITHUB_ENV"
       - name: The compiler has published an image for the pin
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if ! docker buildx imagetools inspect "${PTB_IMAGE}" > /dev/null 2> inspect.err; then
-            echo "docker buildx imagetools inspect: $(cat inspect.err)"
+          code=$(bash scripts/ci/ghcr_manifest_code.sh "${PTB_IMAGE}")
+          echo "registry says $code for ${PTB_IMAGE}"
+          if [ "$code" != 200 ]; then
             echo "::error::${PTB_IMAGE} is not in the registry: the compiler's images workflow pushes one tag per commit on its main and develop, and a pin elsewhere has none. If the tag exists, this repository has lost read access to the package."
             exit 1
           fi
       - name: Check base image exists
         id: exists
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if docker buildx imagetools inspect "${BASE_IMAGE}" > /dev/null 2>&1; then
+          code=$(bash scripts/ci/ghcr_manifest_code.sh "${BASE_IMAGE}")
+          echo "registry says $code for ${BASE_IMAGE}"
+          if [ "$code" = 200 ]; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
             echo "ok=false" >> "$GITHUB_OUTPUT"
           fi
       - name: Build and push base image (missing pin)
         if: steps.exists.outputs.ok != 'true'
-        uses: docker/build-push-action@v4
-        with:
-          context: .
-          file: ./docker/Dockerfile.base
-          push: true
-          build-args: |
-            PTB_IMAGE=${{ env.PTB_IMAGE }}
-          tags: ${{ env.BASE_IMAGE }}
+        run: |
+          docker build -f docker/Dockerfile.base --build-arg PTB_IMAGE="${PTB_IMAGE}" -t "${BASE_IMAGE}" .
+          docker push "${BASE_IMAGE}"
 
       - name: Pull the base image
         id: pull
@@ -161,6 +171,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: triton-route-coverage
+          # Not triton-route-coverage: the x64 sweep must not order itself by arm64 durations.
+          name: triton-route-coverage-arm64
           path: sweep/
           if-no-files-found: warn

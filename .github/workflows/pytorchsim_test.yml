@@ -51,6 +51,7 @@ jobs:
           - tests/models/test_swinv2.py
           - tests/models/test_transformer.py
           - tests/models/test_vit.py
+          - tests/ops/attention/test_fused_sdpa.py
           - tests/ops/attention/test_gqa.py
           - tests/ops/elementwise/test_activation.py
           - tests/ops/elementwise/test_add.py
@@ -68,6 +69,7 @@ jobs:
           - tests/ops/misc/test_indirect_access.py
           - tests/ops/misc/test_inplace_partial_write.py
           - tests/ops/misc/test_polar.py
+          - tests/ops/misc/test_user_triton_kernel.py
           - tests/ops/misc/test_widen_dtype.py
           - tests/ops/reduce/test_batchnorm.py
           - tests/ops/view/test_view3D_2D.py

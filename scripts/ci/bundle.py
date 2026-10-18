@@ -9,7 +9,10 @@ one Inductor picks by TOGSim cycles, or the one the selection record holds:
 
   OUT/bundle.json                     the PyTorchSim commit, torch, the compiler pin, the machine
   OUT/<workload>/manifest.json        suite, shape, dtype and the launches in order
-  OUT/<workload>/<NN>_<kernel>/       <kernel>_spec.py, <kernel>_triton.py, meta.json
+  OUT/<workload>/<NN>_<kernel>/       <kernel>_spec.py, <kernel>_triton.py
+
+Only what the compiler builds from: how a config was chosen (timed now, or recorded by an earlier run)
+is not in the bundle, so the same kernels are the same bundle.
 
 A template kernel neither timed nor recorded (tile_source "heuristic") fails the bundle: it is not the
 kernel a timed run picks. One recorded without its fused epilogue ("recorded_unfused") is kept and
@@ -30,7 +33,6 @@ import torch  # noqa: E402  (first: its device autoload installs pytorchsim)
 
 from pytorchsim import config  # noqa: E402
 from pytorchsim.driver import codecache, compiler_bridge, select  # noqa: E402
-from pytorchsim.simulator import timing  # noqa: E402
 
 #: The head dimension the compiler's attention measurements were taken at.
 HEAD_DIM = 128
@@ -96,7 +98,7 @@ codecache.observe_every_launch(LAUNCHED.append)
 
 def kernel_files(launcher):
     name = launcher.kernel_name
-    return [f"{name}_spec.py", f"{name}_triton.py", timing.META_JSON]
+    return [f"{name}_spec.py", f"{name}_triton.py"]
 
 
 def capture(name, fn, shapes, out):
@@ -114,9 +116,8 @@ def capture(name, fn, shapes, out):
             for f in kernel_files(launcher):
                 shutil.copy(os.path.join(launcher.workdir, f), os.path.join(out, name, d, f))
             dirs[launcher.workdir] = d
-        launches.append({"kernel": launcher.kernel_name, "dir": dirs[launcher.workdir],
-                         "tile_source": launcher.meta.get("tile_source")})
-    return launches
+        launches.append({"kernel": launcher.kernel_name, "dir": dirs[launcher.workdir]})
+    return launches, [launcher.meta.get("tile_source") for launcher in LAUNCHED]
 
 
 def pts_commit():
@@ -131,13 +132,12 @@ def main(out, suites=None):
     unpicked, unfused = [], []
     for name, suite, dims, fn, shapes in workloads(suites):
         shutil.rmtree(os.path.join(out, name), ignore_errors=True)
-        launches = capture(name, fn, shapes, out)
+        launches, sources = capture(name, fn, shapes, out)
         with open(os.path.join(out, name, "manifest.json"), "w") as f:
             json.dump({"workload": name, "suite": suite, **dims, "dtype": DTYPE, "launches": launches},
                       f, indent=1)
-        unpicked += [(name, la["kernel"]) for la in launches if la["tile_source"] == select.HEURISTIC]
-        unfused += [(name, la["kernel"]) for la in launches
-                    if la["tile_source"] == select.RECORDED_UNFUSED]
+        unpicked += [(name, la["kernel"]) for la, s in zip(launches, sources) if s == select.HEURISTIC]
+        unfused += [(name, la["kernel"]) for la, s in zip(launches, sources) if s == select.RECORDED_UNFUSED]
         print(f"[bundle] {name}: {[la['kernel'] for la in launches]}", flush=True)
     with open(os.path.join(out, "bundle.json"), "w") as f:
         json.dump({"pytorchsim": pts_commit(), "torch": torch.__version__, **select.identity()}, f,

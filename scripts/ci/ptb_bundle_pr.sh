@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Proposes the kernel bundle scripts/ci/bundle.py wrote (BUNDLE) to the compiler as BUNDLE_DIR on its
 # main: one branch (BOT_BRANCH) force-pushed from main's tip, one open pull request on it. Nothing is
-# proposed when the kernels are main's; bundle.json alone (the commit that wrote them) is no change.
+# proposed when the kernels are main's, and nothing pushed when they are what the open pull request
+# already proposes, so the compiler's CI runs only for kernels it has not timed; bundle.json alone
+# (the commit that wrote them) is no change.
 # DRY_RUN=1 makes only read calls and prints the writes it would make.
 set -euo pipefail
 
@@ -44,6 +46,12 @@ if git diff --cached --quiet -- "$BUNDLE_DIR" ":!$BUNDLE_DIR/bundle.json"; then
     api POST "issues/$OURS/comments" "$(jq -nc --arg b "PyTorchSim ${SOURCE_SHA:0:7} builds the kernels $PTB_BASE already holds." '{body:$b}')" >/dev/null
     api PATCH "pulls/$OURS" '{"state":"closed"}' >/dev/null
   fi
+  exit 0
+fi
+
+if [ -n "$OURS" ] && git fetch -q --depth 1 origin "$BOT_BRANCH" 2>/dev/null \
+   && git diff --cached --quiet FETCH_HEAD -- "$BUNDLE_DIR" ":!$BUNDLE_DIR/bundle.json"; then
+  echo "#$OURS already proposes these kernels: nothing to push"
   exit 0
 fi
 

@@ -172,7 +172,8 @@ def test_a_refused_config_is_inf_and_none_left_is_an_error():
     a, b = _choice("a"), _choice("b")
     with mock.patch.object(select.kernel_metadata, "benchmark_request_meta",
                            return_value=("", {})), \
-         mock.patch.object(select, "_time_tile", side_effect=[float("inf"), 7.0]):
+         mock.patch.object(select, "_time_tile",
+                           side_effect=lambda src, meta, name, wd, cut: 7.0 if wd.endswith("b") else float("inf")):
         assert select.time_choices([a, b]) == {a: float("inf"), b: 7.0}
     with mock.patch.object(select.kernel_metadata, "benchmark_request_meta",
                            return_value=("", {})), \
@@ -185,7 +186,27 @@ def test_a_refused_config_is_inf_and_none_left_is_an_error():
             raise AssertionError("every config refused, and time_choices returned")
 
 
+def test_a_config_running_past_the_cut_is_inf():
+    """The configs run at once; one still simulating CUT_FACTOR times after the first finished is cut."""
+    import time
+
+    def tile(src, meta, name, wd, cut):
+        if wd.endswith("fast"):
+            time.sleep(0.2)
+            return 5.0
+        while not cut():
+            time.sleep(0.05)
+        return float("inf")
+    fast, slow = _choice("fast"), _choice("slow")
+    with mock.patch.object(select.kernel_metadata, "benchmark_request_meta", return_value=("", {})), \
+         mock.patch.object(select, "_time_tile", side_effect=tile):
+        t0 = time.monotonic()
+        assert select.time_choices([slow, fast]) == {slow: float("inf"), fast: 5.0}
+        assert time.monotonic() - t0 < 0.2 * select.CUT_FACTOR + 1
+
+
 if __name__ == "__main__":
+    test_a_config_running_past_the_cut_is_inf()
     test_a_refused_config_is_inf_and_none_left_is_an_error()
     test_select_record_and_rebuild()
     print("PASS")

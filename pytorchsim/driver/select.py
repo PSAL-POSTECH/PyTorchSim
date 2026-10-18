@@ -10,6 +10,7 @@ recorded config is the only choice offered the next time, timed or not. What it 
 without an epilogue, so a recorded template built with one fused is `RECORDED_UNFUSED`.
 """
 
+import concurrent.futures
 import hashlib
 import json
 import os
@@ -37,17 +38,17 @@ TIMED = "timed"
 HEURISTIC = "heuristic"
 
 
-def _time_tile(src_code, meta, kernel_name, workdir, timeout):
-    """TOGSim cycles of one kernel, simulated alone; inf if it does not compile or run. TOGSim
-    refuses a tile over the spad at load, and that refusal and the timeout both reach here as
-    RuntimeError."""
-    from pytorchsim.simulator.togsim import TOGSimulator
+def _time_tile(src_code, meta, kernel_name, workdir, cut=None):
+    """TOGSim cycles of one kernel, simulated alone; inf if it does not compile or run, or `cut`
+    stops its simulation. TOGSim refuses a tile over the spad at load, and that refusal and a cut
+    reach here as RuntimeError."""
+    from pytorchsim.simulator.togsim import Cut, TOGSimulator
     os.makedirs(workdir, exist_ok=True)
     spec_path = os.path.join(workdir, f"{kernel_name}_spec.py")
     with open(os.path.join(workdir, "kernel.py"), "w") as f:
         f.write(src_code)
     timing.store_meta(workdir, meta)
-    compiler_input.write(src_code, meta, spec_path, compiler_bridge.compiler_dir())
+    compiler_input.write(src_code, meta, spec_path)
     try:
         compiler_bridge.run_pipeline(spec_path, workdir, to_stage="torchsim-compile", tog=True)
         timing.write_cycle_tables(workdir, meta)
@@ -56,10 +57,10 @@ def _time_tile(src_code, meta, kernel_name, workdir, timeout):
         timing.write_tensors(workdir)
         result = TOGSimulator.run_standalone(os.path.join(mine, "tile_graph.onnx"),
                                              os.path.join(mine, "attribute"),
-                                             autotune_mode=True, timeout_sec=timeout)
+                                             autotune_mode=True, cut=cut)
         return TOGSimulator.get_result_from_file(result)[-1]
     except (compiler_bridge.CompilerError, RuntimeError, FileNotFoundError) as exc:
-        why = autotune.too_big(exc) or type(exc).__name__
+        why = autotune.too_big(exc) or (f"cut, {exc}" if isinstance(exc, Cut) else type(exc).__name__)
         logger.info("[select] %s %s: %s", kernel_name, workdir, why)
         return float("inf")
 
@@ -80,24 +81,39 @@ def times(choices):
     return any(_timed(c) for c in choices)
 
 
+#: A config still simulating this many times the wall time the first config to finish took is cut.
+#: The configs run at once, so a loaded host slows them alike and the ratio stands.
+CUT_FACTOR = 3
+
+
 def time_choices(choices):
     """Cycles per choice for AlgorithmSelectorCache: each config of a timed template as Inductor
-    rendered it, every other choice inf. The first to finish bounds the others' wall time."""
+    rendered it, all at once, every other choice inf. A config whose simulation runs past
+    CUT_FACTOR times the wall time of the first one timed is cut, and is inf."""
     out = {c: float("inf") for c in choices}
-    timeout = None
-    for c in choices:
-        if not _timed(c):
-            continue
-        src, meta = kernel_metadata.benchmark_request_meta(c.bmreq)
-        t0 = time.perf_counter()
-        cycles = _time_tile(src, meta, c.bmreq.kernel_name, _workdir(c.bmreq.module_cache_key),
-                            timeout)
-        if cycles != float("inf") and timeout is None:
-            timeout = time.perf_counter() - t0 + config.codegen_autotune_wall_slack_sec
-        logger.info("[select] %s %s: %s cycles", c.name, c.description, cycles)
-        c.annotations["ktc"].annotations[SOURCE] = TIMED
-        out[c] = cycles
     timed = [c for c in choices if _timed(c)]
+    # Rendered here: the meta reads Inductor's state, which the worker threads do not carry.
+    jobs = [(c, *kernel_metadata.benchmark_request_meta(c.bmreq)) for c in timed]
+    t0, first = time.monotonic(), []
+
+    def cut():
+        if first and time.monotonic() - t0 > CUT_FACTOR * first[0]:
+            return f"past {CUT_FACTOR}x the {first[0]:.0f} s the first config took"
+        return None
+
+    def one(job):
+        c, src, meta = job
+        got = _time_tile(src, meta, c.bmreq.kernel_name, _workdir(c.bmreq.module_cache_key), cut)
+        if got != float("inf") and not first:
+            first.append(time.monotonic() - t0)
+        return got
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(len(jobs), 1)) as pool:
+        cycles = pool.map(one, jobs)
+        for (c, _, _), got in zip(jobs, cycles):
+            logger.info("[select] %s %s: %s cycles", c.name, c.description, got)
+            c.annotations["ktc"].annotations[SOURCE] = TIMED
+            out[c] = got
     if timed and all(out[c] == float("inf") for c in timed):
         raise RuntimeError(
             f"no template config of {[c.name for c in timed]} compiled and ran on TOGSim; "
@@ -108,7 +124,7 @@ def time_choices(choices):
 def time_module(src_code, meta, path):
     """TOGSim cycles of a kernel module Inductor wrote to benchmark a fusion, named by its path."""
     name = os.path.splitext(os.path.basename(path))[0]
-    cycles = _time_tile(src_code, meta, meta["kernel_name"], _workdir(name), None)
+    cycles = _time_tile(src_code, meta, meta["kernel_name"], _workdir(name))
     logger.info("[select] %s: %s cycles", path, cycles)
     return cycles
 

@@ -22,6 +22,11 @@ logger = config.setup_logger()
 from tqdm import tqdm
 
 
+
+class Cut(RuntimeError):
+    """A standalone run its caller stopped; the reason is the message."""
+
+
 class ProgressBar:
     def __init__(self, desc, silent_mode=False, update_interval=0.5):
         self.desc = desc
@@ -287,7 +292,7 @@ class TOGSimulator():
         autotune_mode=False,
         config_path=None,
         togsim_path=None,
-        timeout_sec=None,
+        cut=None,
     ):
         """
         Run a single kernel simulation in standalone mode.
@@ -301,15 +306,15 @@ class TOGSimulator():
             autotune_mode: If True, run in autotune mode (silent)
             config_path: the machine file TOGSim times on (default: the one TORCHSIM_TARGET names)
             togsim_path: TOGSim repository root (optional, defaults to config.CONFIG_TOGSIM_DIR)
-            timeout_sec: If set, terminate the Simulator subprocess after this many seconds
-                (autotune uses this to skip very slow tile candidates).
+            cut: called while the Simulator runs; when it returns a reason, the Simulator is
+                killed and the run raises Cut with it (autotune cuts a slow candidate)
 
         Returns:
             Path to the simulation result log file
 
         Raises:
-            RuntimeError: the Simulator timed out, or exited non-zero (a kernel it refuses);
-                the message carries its exit status and the last line it printed
+            RuntimeError: the Simulator exited non-zero (a kernel it refuses), the message
+                carrying its exit status and the last line it printed; or `cut` gave a reason
         """
         if config_path is None:
             config_path = config.CONFIG_MACHINE_FILE
@@ -351,19 +356,20 @@ class TOGSimulator():
                 logger.debug(f"[TOGSim] cmd> {cmd}")
                 logger.info("[TOGSim] TOGSim simulation started")
             with ProgressBar("[TOGSim] Running simulation", silent_mode=autotune_mode):
-                completed = subprocess.run(
-                    shlex.split(cmd),
-                    capture_output=True,
-                    check=True,
-                    timeout=timeout_sec,
-                )
-                result = completed.stdout
-        except subprocess.TimeoutExpired as e:
-            logger.warning(
-                "[TOGSim] Simulator subprocess exceeded timeout (%.1f s); terminating.",
-                float(timeout_sec) if timeout_sec is not None else -1.0,
-            )
-            raise RuntimeError("TOGSim subprocess timeout") from e
+                proc = subprocess.Popen(shlex.split(cmd), stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE)
+                while True:
+                    try:
+                        result, err = proc.communicate(timeout=1)
+                        break
+                    except subprocess.TimeoutExpired:
+                        why = cut() if cut else None
+                        if why:
+                            proc.kill()
+                            proc.communicate()
+                            raise Cut(why) from None
+                if proc.returncode:
+                    raise subprocess.CalledProcessError(proc.returncode, cmd, result, err)
         except subprocess.CalledProcessError as e:
             said = (e.stdout + e.stderr).decode(errors="replace").strip().splitlines()
             if not autotune_mode:

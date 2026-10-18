@@ -46,7 +46,6 @@ RUN_SETTINGS = {
     "pytorchsim_timing_mode": ("TORCHSIM_TIMING_MODE", 0, int),
     "pytorchsim_functional_verify_per_kernel": ("TORCHSIM_FUNCTIONAL_VERIFY_PER_KERNEL", 0, int),
     "codegen_autotune_template_topk": ("TORCHSIM_CODEGEN_AUTOTUNE_TEMPLATE_TOPK", 4, int),
-    "codegen_autotune_wall_slack_sec": ("TORCHSIM_CODEGEN_AUTOTUNE_WALL_SLACK_SEC", 15, float),
 }
 
 

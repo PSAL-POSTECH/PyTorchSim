@@ -4,8 +4,7 @@
 the numels, the pinned blocks and the grid.
 """
 
-import re
-
+from torch._inductor.codegen.common import InplacedBuffer, is_buffer_removed
 from torch._inductor.virtualized import V
 
 from pytorchsim.codegen import tiling
@@ -52,52 +51,43 @@ def _buffer_numel(name):
         return None
 
 
+def _writes(kernel):
+    """names -> whether `kernel` stores to any of them: the stores Inductor renders."""
+    stored = set()
+    for k in [kernel, *(getattr(kernel, "sub_kernels", None) or ())]:
+        with V.set_kernel_handler(k):
+            stored |= {n for n in getattr(k, "store_buffer_names", ()) if not is_buffer_removed(n)}
+    scheduler = getattr(V.graph, "scheduler", None)
+    real = scheduler.mutation_real_name if scheduler else {}
+    stored |= {real.get(n, n) for n in stored}
+    return lambda names: any(n in stored or real.get(n, n) in stored for n in names)
+
+
 def _roles(kernel):
     """arg name -> ('in'|'out'|'inout', buffer), from the kernel's tables.
 
     `inplace_buffers` IS NOT THE WHOLE OF `inout`: a kernel can mutate a buffer
     an EARLIER kernel produced, and `kernel.mutations` is what names that.
+
+    An `inout` the kernel never stores to is an `in`.
     """
+    writes = _writes(kernel)
     out = {}
     for buf, arg in getattr(kernel.args, "input_buffers", {}).items():
         out[arg] = ("in", buf)
     for buf, arg in getattr(kernel.args, "output_buffers", {}).items():
         out[arg] = ("out", buf)
     for buf, arg in getattr(kernel.args, "inplace_buffers", {}).items():
+        names = arg.other_names if isinstance(arg, InplacedBuffer) else (buf,)
         name = getattr(arg, "inner_name", arg)
-        out[name] = ("inout", buf)
+        out[name] = ("inout" if writes(names) else "in", buf)
     outputs = getattr(kernel.args, "output_buffers", {})
     for buf in getattr(kernel, "mutations", ()):
         arg = outputs.get(buf)
         name = getattr(arg, "inner_name", arg)
         if isinstance(name, str) and name in out:
-            out[name] = ("inout", buf)
+            out[name] = ("inout" if writes((buf,)) else "in", buf)
     return out
-
-
-_STORE_RE = re.compile(r"\btl\.(store|atomic_\w+)\s*\(\s*([A-Za-z_]\w*)")
-
-
-def stored_args(src_code):
-    """The argument names `src_code` actually WRITES.
-
-    Read off the source, not Inductor's tables: two of SD1.5's twelve
-    in_out_ptr0 kernels never store to it, and the verify then reports a ghost.
-    """
-    return {m.group(2) for m in _STORE_RE.finditer(src_code)}
-
-
-def demote_unwritten_inout(meta, src_code):
-    """Turn an `inout` the kernel never stores to back into a plain `in`.
-
-    In place, and returns it. Only `inout` is touched: an `out` with no store
-    is a kernel that produces nothing, which is a different fact.
-    """
-    stores = stored_args(src_code)
-    for a in meta.get("args", ()):
-        if a.get("role") == "inout" and a.get("name") not in stores:
-            a["role"] = "in"
-    return meta
 
 
 ROLES_BY_KERNEL = {}

@@ -27,6 +27,7 @@ logger = config.setup_logger()
 LOCK_TIMEOUT = 600
 
 _LAUNCH_OBSERVERS = {}
+_EVERY_LAUNCH = []
 
 
 def user_kernel_id(kernel):
@@ -37,6 +38,11 @@ def user_kernel_id(kernel):
 def observe_launches(kernel, callback):
     """Call `callback()` at every launch of the user-defined Triton kernel `kernel`."""
     _LAUNCH_OBSERVERS[user_kernel_id(kernel)] = callback
+
+
+def observe_every_launch(callback):
+    """Call `callback(launcher)` at every launch of any kernel."""
+    _EVERY_LAUNCH.append(callback)
 
 
 def _write_path(src_code, meta):
@@ -202,6 +208,8 @@ class TritonNPULauncher:
         observer = _LAUNCH_OBSERVERS.get(self.meta.get("user_kernel"))
         if observer is not None:
             observer()
+        for callback in _EVERY_LAUNCH:
+            callback(self)
         if config.pytorchsim_functional_mode:
             with wallclock.span(wallclock.SPIKE, self.kernel_name):
                 written = functional.run(self.workdir, self.meta, args)
@@ -251,8 +259,7 @@ def torchsim_compile(src_code, meta, kernel_name):
             timing.store_meta(write_path, meta)
             retries = autotune.smaller_tiles(src_code, meta)
             while True:
-                compiler_input.write(src_code, meta, spec_path,
-                                            compiler_bridge.compiler_dir())
+                compiler_input.write(src_code, meta, spec_path)
                 try:
                     with wallclock.span(wallclock.TORCHSIM_COMPILE, kernel_name):
                         compiler_bridge.run_pipeline(

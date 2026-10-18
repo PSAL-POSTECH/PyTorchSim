@@ -22,6 +22,8 @@ on:
       - 'docker/Dockerfile.base'
       - 'scripts/ci/third_party_base_pin.sh'
       - 'scripts/ci/triton_route_*'
+      - 'scripts/ci/bundle.py'
+      - 'scripts/ci/ptb_bundle_pr.sh'
       - '.github/workflows/pytorchsim_triton_backend.yml'
   workflow_dispatch:
     inputs:
@@ -176,3 +178,69 @@ jobs:
           name: triton-route-coverage
           path: sweep/
           if-no-files-found: warn
+
+  # The kernels PyTorchSim builds for the compiler's validation workloads, at the configs the
+  # selection record holds (scripts/ci/bundle.py), proposed to the compiler as a pull request
+  # when they changed. After the route job, which builds the base image a pin needs.
+  bundle:
+    name: Validation kernel bundle
+    needs: route
+    runs-on: [self-hosted, slurm, big, aarch64]
+    timeout-minutes: 240
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          persist-credentials: false
+      - name: Registry login
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/docker"
+          { echo "DOCKER_CONFIG=$RUNNER_TEMP/docker"; echo "REGISTRY_AUTH_FILE=$RUNNER_TEMP/docker/auth.json"; } >> "$GITHUB_ENV"
+          export DOCKER_CONFIG="$RUNNER_TEMP/docker" REGISTRY_AUTH_FILE="$RUNNER_TEMP/docker/auth.json"
+          printf %s "$TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Pull the base image
+        run: |
+          BASE_IMAGE="${BASE_IMAGE_REPO}:third_party-$(bash scripts/ci/third_party_base_pin.sh)-arm64"
+          echo "BASE_IMAGE=$BASE_IMAGE" >> "$GITHUB_ENV"
+          docker pull "$BASE_IMAGE"
+      # The GEMMs in timing mode, their configs picked by TOGSim cycles, beside the other suites without
+      # it: two processes, since a process keeps the timing mode it started in. The picks are folded into
+      # a selection record (bundle/record), for whoever wants to commit it.
+      - name: Build the bundle
+        run: |
+          mkdir -p bundle && chmod 777 bundle
+          docker run --rm -e PTS_COMMIT="$SOURCE_SHA" -e TORCHSIM_FUNCTIONAL_MODE=0 \
+            -v "$PWD:/src:ro" -v "$PWD/bundle:/bundle" "${BASE_IMAGE}" bash -lc '
+              set -euo pipefail
+              mkdir -p "$TORCHSIM_DIR"
+              tar -C /src --exclude=./.git --exclude=./.github -cf - . | tar -C "$TORCHSIM_DIR" -xf -
+              (cd "$TORCHSIM_DIR/device" && python -m pip install -q --no-build-isolation -e .)
+              cd "$TORCHSIM_DIR"
+              TORCHSIM_TIMING_MODE=1 TORCHSIM_DUMP_PATH=/tmp/gemm python3 scripts/ci/bundle.py /bundle/out gemm \
+                > /bundle/gemm.log 2>&1 & gemm=$!
+              TORCHSIM_DUMP_PATH=/tmp/rest python3 scripts/ci/bundle.py /bundle/out vector attention \
+                > /bundle/rest.log 2>&1 & rest=$!
+              rc=0; wait $gemm || rc=1; wait $rest || rc=1
+              grep "^\[bundle\]" /bundle/gemm.log /bundle/rest.log || true
+              if [ -s /tmp/gemm/selection.jsonl ]; then
+                python3 scripts/selection_merge.py /tmp/gemm/selection.jsonl
+                mkdir -p /bundle/record && cp pytorchsim/selection/*.json /bundle/record/
+              fi
+              exit $rc'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pts-bundle
+          path: bundle/
+      - name: Propose it to the compiler
+        if: github.event_name == 'push'
+        env:
+          PTB_TOKEN: ${{ secrets.PTB_BUNDLE_TOKEN }}
+        run: |
+          if [ -z "$PTB_TOKEN" ]; then echo "::error::the PTB_BUNDLE_TOKEN secret is not set: no bundle pull request for the compiler"; exit 1; fi
+          BUNDLE=bundle/out bash scripts/ci/ptb_bundle_pr.sh

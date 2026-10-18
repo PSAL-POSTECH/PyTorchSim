@@ -6,12 +6,13 @@ name: Triton codegen route (PyTorchSim-Triton-Backend)
 # Separate from the main CI on purpose: it runs when the compiler pin moves, and
 # its sweep reports rather than gates.
 #
-# One job, one image pull. The base image is the compiler's published image at the pin plus the
-# test stack (docker/Dockerfile.base); the compiler's package grants this repository read access,
-# so the workflow's own token pulls it. The commit under test is not baked into an image: the checkout is
-# mounted read-only and scripts/ci/triton_route_in_container.sh builds its device extension there.
-# What fails the run: no compiler image, the base build or its pull, the smoke kernels, the device
-# extension, the job's time limit.
+# The base job makes sure of the base image; the route job (smoke + sweep) and the bundle job
+# (the validation kernels for the compiler) then run beside each other in it. The base image is
+# the compiler's published image at the pin plus the test stack (docker/Dockerfile.base); the
+# compiler's package grants this repository read access, so the workflow's own token pulls it. The
+# commit under test is not baked into an image: the checkout is mounted read-only and its device
+# extension built in the container. What fails the route: no compiler image, the base build or its
+# pull, the smoke kernels, the device extension, the job's time limit.
 
 on:
   push:
@@ -43,19 +44,22 @@ env:
   SOURCE_SHA: ${{ github.sha }}
 
 jobs:
-  route:
-    name: Triton route (smoke gate + coverage sweep)
+  # The base image the route and the bundle both run in, built and pushed when the pin has none; they
+  # run beside each other after it.
+  base:
+    name: Base image
     # The aarch64 runners: the sweep takes half the time it takes on the x86_64 ones, and the pull a
     # sixth. They run rootless podman behind `docker`, without buildx, so the registry is asked with
     # curl and the base is built with plain docker build/push, as the compiler's own images workflow
     # does on aarch64. The base tag carries -arm64: docker-image.yml and tag_release.yml build the
     # x86_64 base under third_party-<PIN>.
     runs-on: [self-hosted, slurm, big, aarch64]
-    timeout-minutes: 180
+    timeout-minutes: 120
     permissions:
       contents: read
       packages: write
-      actions: read
+    outputs:
+      image: ${{ steps.pin.outputs.base }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -78,6 +82,7 @@ jobs:
           PIN="$(bash scripts/ci/third_party_base_pin.sh)"
           echo "PTB_IMAGE=${PTB_IMAGE_REPO}:${PTB_REF}-runtime" >> "$GITHUB_ENV"
           echo "BASE_IMAGE=${BASE_IMAGE_REPO}:third_party-${PIN}-arm64" >> "$GITHUB_ENV"
+          echo "base=${BASE_IMAGE_REPO}:third_party-${PIN}-arm64" >> "$GITHUB_OUTPUT"
       - name: The compiler has published an image for the pin
         env:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -105,6 +110,33 @@ jobs:
         run: |
           docker build -f docker/Dockerfile.base --build-arg PTB_IMAGE="${PTB_IMAGE}" -t "${BASE_IMAGE}" .
           docker push "${BASE_IMAGE}"
+
+  route:
+    name: Triton route (smoke gate + coverage sweep)
+    needs: base
+    runs-on: [self-hosted, slurm, big, aarch64]
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      packages: read
+      actions: read
+    env:
+      BASE_IMAGE: ${{ needs.base.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          persist-credentials: false
+      # Credentials in the job's temp directory, gone with it -- not in the runner's home.
+      - name: Registry login
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/docker"
+          { echo "DOCKER_CONFIG=$RUNNER_TEMP/docker"; echo "REGISTRY_AUTH_FILE=$RUNNER_TEMP/docker/auth.json"; } >> "$GITHUB_ENV"
+          export DOCKER_CONFIG="$RUNNER_TEMP/docker" REGISTRY_AUTH_FILE="$RUNNER_TEMP/docker/auth.json"
+          printf %s "$TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          uname -m; nproc; docker --version
 
       - name: Pull the base image
         id: pull
@@ -182,16 +214,18 @@ jobs:
 
   # The kernels PyTorchSim builds for the compiler's validation workloads, at the configs the
   # selection record holds (scripts/ci/bundle.py), proposed to the compiler as a pull request
-  # when they changed. After the route job, which builds the base image a pin needs.
+  # when they changed. Beside the route job, in the base image the base job made sure of.
   bundle:
     name: Validation kernel bundle
-    needs: route
+    needs: base
     runs-on: [self-hosted, slurm, big, aarch64]
     timeout-minutes: 240
     permissions:
       contents: read
       packages: read
       actions: read
+    env:
+      BASE_IMAGE: ${{ needs.base.outputs.image }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -206,10 +240,7 @@ jobs:
           export DOCKER_CONFIG="$RUNNER_TEMP/docker" REGISTRY_AUTH_FILE="$RUNNER_TEMP/docker/auth.json"
           printf %s "$TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
       - name: Pull the base image
-        run: |
-          BASE_IMAGE="${BASE_IMAGE_REPO}:third_party-$(bash scripts/ci/third_party_base_pin.sh)-arm64"
-          echo "BASE_IMAGE=$BASE_IMAGE" >> "$GITHUB_ENV"
-          docker pull "$BASE_IMAGE"
+        run: docker pull "$BASE_IMAGE"
       # The record the last bundle on the branch left: a config it holds is taken without timing it.
       - name: Previous picks
         env:

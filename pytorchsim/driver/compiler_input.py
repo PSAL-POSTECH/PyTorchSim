@@ -160,10 +160,8 @@ sizes pinned as constexprs, so the launch shape is static. See compiler_input.py
 """
 import importlib.util
 import os
-import sys
 
-sys.path.insert(0, {compiler_dir!r})
-from {spec_module} import KernelSpec, Arg  # noqa: E402
+from {spec_module} import KernelSpec, Arg
 
 #: The kernel's module, beside this file. It must be a REAL file on
 #: disk, not an exec'd string: triton's @jit reads the function back with
@@ -217,7 +215,7 @@ SPEC = KernelSpec(
 '''
 
 
-def write(src_code, meta, path, compiler_dir):
+def write(src_code, meta, path):
     """Write the kernel's module and the kernel file for this Inductor kernel. Returns `path`.
 
     A user-defined kernel's source (meta["user_defined"]) is written as it is: the rewriter reads
@@ -260,7 +258,6 @@ def write(src_code, meta, path, compiler_dir):
     scalars = scalar_args(meta)
     text = SPEC_TEMPLATE.format(
         kernel_name=meta["kernel_name"],
-        compiler_dir=compiler_dir,
         spec_module=f"{compiler_bridge.COMPILER_PKG}.contract.kernel_spec",
         triton_module=triton_module,
         jit_fn="" if meta.get("user_defined") else ".fn",

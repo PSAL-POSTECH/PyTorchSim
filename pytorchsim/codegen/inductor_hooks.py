@@ -111,7 +111,6 @@ class TritonNPUScheduling(TritonScheduling):
         src_code = src_code.replace(str(Placeholder.KERNEL_NAME), kernel_name)
 
         meta = kernel_metadata.collect_meta(kernel, kernel_name)
-        kernel_metadata.demote_unwritten_inout(meta, src_code)
         kernel_metadata.record_roles(kernel_name, meta)
         source = _tile_source(node_schedule)
         if source is not None:

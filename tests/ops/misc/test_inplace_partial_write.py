@@ -21,10 +21,9 @@ WHERE IT COMES FROM. Inductor plans this as two kernels and its plan is right:
 
 The second kernel MUTATES buf0. `mutated_arg_names` is where Inductor says so,
 and `pytorchsim/codegen/kernel_metadata.py` deliberately does not read it -- it decides
-each argument's role from the stores in the source instead, because the table
-overstates on SD1.5 (two kernels list an `in_out_ptr0` they never write, and
-believing it produced eight divergence reports about values nothing
-materialised).
+each argument's role from the stores Inductor renders instead, because the table
+overstates (an `in_out_ptr0` whose store Inductor removed is still listed, and
+believing it produced divergence reports about values nothing materialised).
 
 That reasoning is sound in the direction it was measured and blind in the other.
 A store tells you the argument WAS written; it cannot tell you whether all of it

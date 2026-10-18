@@ -24,6 +24,7 @@ on:
       - 'scripts/ci/triton_route_*'
       - 'scripts/ci/bundle.py'
       - 'scripts/ci/ptb_bundle_pr.sh'
+      - 'scripts/ci/previous_picks.sh'
       - '.github/workflows/pytorchsim_triton_backend.yml'
   workflow_dispatch:
     inputs:
@@ -190,6 +191,7 @@ jobs:
     permissions:
       contents: read
       packages: read
+      actions: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -208,19 +210,27 @@ jobs:
           BASE_IMAGE="${BASE_IMAGE_REPO}:third_party-$(bash scripts/ci/third_party_base_pin.sh)-arm64"
           echo "BASE_IMAGE=$BASE_IMAGE" >> "$GITHUB_ENV"
           docker pull "$BASE_IMAGE"
-      # The GEMMs in timing mode, their configs picked by TOGSim cycles, beside the other suites without
-      # it: two processes, since a process keeps the timing mode it started in. The picks are folded into
-      # a selection record (bundle/record), for whoever wants to commit it.
+      # The record the last bundle on the branch left: a config it holds is taken without timing it.
+      - name: Previous picks
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: rm -rf picks && bash scripts/ci/previous_picks.sh picks
+      # The GEMMs in timing mode, their configs picked by TOGSim cycles where the record has none, beside
+      # the other suites without it: two processes, since a process keeps the timing mode it started in.
+      # The record, with this run's picks folded in, is uploaded beside the bundle (bundle/record) for the
+      # next run.
       - name: Build the bundle
         run: |
           mkdir -p bundle && chmod 777 bundle
           docker run --rm -e PTS_COMMIT="$SOURCE_SHA" -e TORCHSIM_FUNCTIONAL_MODE=0 \
-            -v "$PWD:/src:ro" -v "$PWD/bundle:/bundle" "${BASE_IMAGE}" bash -lc '
+            -v "$PWD:/src:ro" -v "$PWD/picks:/picks:ro" -v "$PWD/bundle:/bundle" "${BASE_IMAGE}" bash -lc '
               set -euo pipefail
               mkdir -p "$TORCHSIM_DIR"
               tar -C /src --exclude=./.git --exclude=./.github -cf - . | tar -C "$TORCHSIM_DIR" -xf -
               (cd "$TORCHSIM_DIR/device" && python -m pip install -q --no-build-isolation -e .)
               cd "$TORCHSIM_DIR"
+              mkdir -p pytorchsim/selection && cp /picks/*.json pytorchsim/selection/ 2>/dev/null || true
               TORCHSIM_TIMING_MODE=1 TORCHSIM_DUMP_PATH=/tmp/gemm python3 scripts/ci/bundle.py /bundle/out gemm \
                 > /bundle/gemm.log 2>&1 & gemm=$!
               TORCHSIM_DUMP_PATH=/tmp/rest python3 scripts/ci/bundle.py /bundle/out vector attention \
@@ -229,8 +239,8 @@ jobs:
               grep "^\[bundle\]" /bundle/gemm.log /bundle/rest.log || true
               if [ -s /tmp/gemm/selection.jsonl ]; then
                 python3 scripts/selection_merge.py /tmp/gemm/selection.jsonl
-                mkdir -p /bundle/record && cp pytorchsim/selection/*.json /bundle/record/
               fi
+              mkdir -p /bundle/record && cp pytorchsim/selection/*.json /bundle/record/ 2>/dev/null || true
               exit $rc'
       - uses: actions/upload-artifact@v4
         if: always()

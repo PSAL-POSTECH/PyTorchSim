@@ -15,7 +15,8 @@ three things that make it different are the three this file exists for:
   * M-ROPE.  ``rope_scaling={"mrope_section": [...]}`` splits head_dim/2 into
     three bands -- temporal, height, width -- and each band takes its position
     from a different axis.  Inductor lowers the band selection to
-    ``triton_helpers.select_one``, which is why compiler_input vendors it.
+    ``triton_helpers.select_one``, which the compiler takes from torch with the
+    kernel's module.
 
   * MASKED_SCATTER.  The image embeddings are spliced into the text sequence
     at the image-token positions.  Inductor lowers that to a running index --

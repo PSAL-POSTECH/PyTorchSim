@@ -1,10 +1,9 @@
-"""What the compiler is handed for one kernel: its Triton source, rewritten, and the KernelSpec file beside it.
+"""What the compiler is handed for one kernel: the module Inductor generated, and the KernelSpec file beside it.
 
-The source loses what a torch-free venv cannot import and has the mm/bmm templates' modulo wrap
-turned into a load mask; `write` then puts both files in the kernel's workdir.
+The module is Inductor's own, imported the way Inductor imports it; the only rewrite is the mm/bmm
+templates' modulo wrap turned into a load mask. `write` puts both files in the kernel's workdir.
 """
 
-import inspect
 import os
 import re
 
@@ -14,126 +13,6 @@ from pytorchsim.contract import SpecIncomplete
 from pytorchsim.driver import compiler_bridge
 
 logger = config.setup_logger()
-
-_HEURISTIC_RE = re.compile(r"^@triton_heuristics\.")
-
-
-_DROP_IMPORT_RE = re.compile(
-    r"^\s*(import torch|from torch\b|from __future__|import __main__)")
-
-
-_DROP_CALL_RE = re.compile(r"^\s*triton_helpers\.set_driver_to_gpu\(\)")
-
-
-_HELPER_USE_RE = re.compile(r"\btriton_helpers\.(\w+)")
-
-
-def strip_for_compiler(src):
-    """Remove everything the torch-free compiler venv cannot import.
-
-    Drops torch/inductor imports and the @triton_heuristics decorator, then
-    re-adds the imports and torch's triton_helpers the stripped body still needs.
-    """
-    lines = src.splitlines()
-    out, i = [], 0
-    while i < len(lines):
-        line = lines[i]
-        if _HEURISTIC_RE.match(line.strip()):
-            while i < len(lines) and lines[i].strip() != "@triton.jit":
-                i += 1
-            continue
-        if _DROP_IMPORT_RE.match(line) or _DROP_CALL_RE.match(line):
-            i += 1
-            continue
-        out.append(line)
-        i += 1
-    body = "\n".join(out)
-
-    used = sorted(set(_HELPER_USE_RE.findall(body)))
-
-    prefix = ""
-    if "import triton.language as tl" not in body:
-        prefix = "import triton\nimport triton.language as tl\n\n"
-    if re.search(r"\btl_math\.", body):
-        prefix += "from triton.language import math as tl_math\n"
-    if re.search(r"\blibdevice\.", body):
-        prefix += "from triton.language.extra import libdevice\n"
-    if used:
-        prefix += _helper_source(used)
-    return prefix + body
-
-
-_PREAMBLE = """import types as _types
-import math as _torchsim_pymath
-import triton
-import triton.language as tl
-from triton.language import math
-from triton.language.extra import libdevice
-from triton.language.standard import _log2
-_LOG_2_E: tl.constexpr = tl.constexpr(_torchsim_pymath.log2(_torchsim_pymath.e))
-"""
-
-
-_PREAMBLE_NAMES = {"triton", "tl", "math", "libdevice", "_log2", "_LOG_2_E", "pymath"}
-
-
-def _helpers_module():
-    """torch._inductor.runtime.triton_helpers."""
-    from torch._inductor.runtime import triton_helpers
-    return triton_helpers
-
-
-def _jit_helpers(mod):
-    """{name: source} of every @triton.jit function the module itself defines."""
-    out = {}
-    for name, obj in vars(mod).items():
-        fn = getattr(obj, "fn", None)
-        if fn is not None and getattr(fn, "__module__", None) == mod.__name__:
-            out[name] = inspect.getsource(fn)
-    return out
-
-
-def _names(src):
-    """Bare (non-attribute) identifiers a source refers to."""
-    return set(re.findall(r"(?<![\w.])([A-Za-z_]\w*)\b", src))
-
-
-def _helper_source(used):
-    """Source defining the `triton_helpers` module object for the helpers `used`.
-
-    Raises SpecIncomplete for a name that is no @triton.jit helper or needs a global this cannot supply.
-    """
-    mod = _helpers_module()
-    helpers = _jit_helpers(mod)
-    missing = sorted(set(used) - set(helpers))
-    if missing:
-        raise SpecIncomplete(
-            f"kernel uses triton_helpers.{{{','.join(missing)}}}, which is not a "
-            f"@triton.jit helper in torch's triton_helpers")
-
-    need, todo = set(), list(used)
-    while todo:
-        name = todo.pop()
-        if name in need:
-            continue
-        need.add(name)
-        todo.extend(n for n in _names(helpers[name]) if n in helpers and n not in need)
-
-    module_globals = set(vars(mod)) - set(helpers) - _PREAMBLE_NAMES
-    for name in sorted(need):
-        unknown = sorted(_names(helpers[name]) & module_globals)
-        if unknown:
-            raise SpecIncomplete(
-                f"triton_helpers.{name} needs {unknown} from torch, which the "
-                f"compiler venv has no copy of")
-
-    rename = re.compile(r"(?<![\w.])(" + "|".join(sorted(need, key=len, reverse=True)) + r")\b")
-    body = "\n".join(rename.sub(r"_torchsim_\1", helpers[n].replace("pymath.", "_torchsim_pymath."))
-                     for n in sorted(need))
-    binds = "\n".join(f"triton_helpers.{n} = _torchsim_{n}" for n in sorted(used))
-    return (f"\n{_PREAMBLE}\n{body}\n"
-            f"triton_helpers = _types.ModuleType('triton_helpers')\n{binds}\n")
-
 
 _WRAP_TRIPLES = (("rm", "M", "BLOCK_M"), ("rn", "N", "BLOCK_N"))
 
@@ -276,9 +155,8 @@ def scalar_args(meta):
 SPEC_TEMPLATE = '''\
 """Generated by pytorchsim/driver/compiler_input.py -- do not edit.
 
-Inductor kernel {kernel_name!r}, rewritten for the compiler pipeline: the
-triton_heuristics autotuner decorator is stripped and its block sizes are pinned
-as constexprs, so the launch shape is static. See compiler_input.py for why.
+Inductor kernel {kernel_name!r}: the compiler takes its @triton.jit function, with the block
+sizes pinned as constexprs, so the launch shape is static. See compiler_input.py for why.
 """
 import importlib.util
 import os
@@ -287,7 +165,7 @@ import sys
 sys.path.insert(0, {compiler_dir!r})
 from {spec_module} import KernelSpec, Arg  # noqa: E402
 
-#: The rewritten Triton source, beside this file. It must be a REAL file on
+#: The kernel's module, beside this file. It must be a REAL file on
 #: disk, not an exec'd string: triton's @jit reads the function back with
 #: inspect.getsourcefile and rejects anything else ("@jit functions should be
 #: defined in a Python file").
@@ -296,11 +174,14 @@ TRITON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 
 def kernel():
+    # As torch/_inductor/runtime/compile_tasks.py loads it.
+    from torch._inductor.runtime.triton_helpers import skip_gpu_driver_setup
     spec = importlib.util.spec_from_file_location(
         {kernel_name!r} + "_triton", TRITON_PATH)
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return getattr(mod, {kernel_name!r})
+    with skip_gpu_driver_setup():
+        spec.loader.exec_module(mod)
+    return getattr(mod, {kernel_name!r}){jit_fn}
 
 
 def make_inputs(torch, seed=0):
@@ -337,9 +218,9 @@ SPEC = KernelSpec(
 
 
 def write(src_code, meta, path, compiler_dir):
-    """Write the rewritten Triton source and the kernel file for this Inductor kernel. Returns `path`.
+    """Write the kernel's module and the kernel file for this Inductor kernel. Returns `path`.
 
-    A user-defined kernel's source (meta["user_defined"]) is written as it is: the rewriters read
+    A user-defined kernel's source (meta["user_defined"]) is written as it is: the rewriter reads
     Inductor's generated source, not a model's.
 
     A block Inductor fixed in the kernel BODY rather than taking as a parameter
@@ -374,7 +255,7 @@ def write(src_code, meta, path, compiler_dir):
     triton_module = f"{meta['kernel_name']}_triton.py"
     with open(os.path.join(os.path.dirname(path), triton_module), "w") as f:
         f.write(src_code if meta.get("user_defined") else clamp_instead_of_wrap(
-            strip_for_compiler(src_code), meta["kernel_name"]))
+            src_code, meta["kernel_name"]))
 
     scalars = scalar_args(meta)
     text = SPEC_TEMPLATE.format(
@@ -382,6 +263,7 @@ def write(src_code, meta, path, compiler_dir):
         compiler_dir=compiler_dir,
         spec_module=f"{compiler_bridge.COMPILER_PKG}.contract.kernel_spec",
         triton_module=triton_module,
+        jit_fn="" if meta.get("user_defined") else ".fn",
         signature=signature,
         constexprs=constexprs,
         args_body=args_body,

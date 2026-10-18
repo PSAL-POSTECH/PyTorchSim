@@ -52,8 +52,8 @@ WHAT IS ABSENT, and what was measured about each rather than assumed:
     checkpoint), and compile 16 kernels here before stopping in triton_shared:
     the ``masked_scatter`` that splices image embeddings into the text
     sequence lowers to a ``tts.get_structured_state`` whose operand type that
-    pass rejects.  Getting that far needed ``triton_helpers.select_one``
-    vendored into compiler_input (M-RoPE emits it); that is in this branch.
+    pass rejects.  M-RoPE emits ``triton_helpers.select_one``, which the
+    compiler takes from torch with the kernel's module.
   * Qwen2-Audio stops in tnpu's p13_bank_vectorize, on the check that counts
     audio tokens against audio features: one operand is ONE_LANE and the other
     is banked across 128 lanes.

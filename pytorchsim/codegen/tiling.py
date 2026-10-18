@@ -157,6 +157,9 @@ def fixed_config_for(kernel, numels, args, contiguous=None):
         else:
             cfg[block_name(p)] = 1
     cfg.setdefault("XBLOCK", _covers(lanes, numels.get("xnumel")))
+    if not getattr(kernel, "inside_reduction", False) and axes == ["x"] and numels.get("xnumel"):
+        cfg["XBLOCK"] = pointwise_block(numels["xnumel"], max(1, _element_bits(args) // 8), lanes,
+                                        machine.spad_size, triton_max_numel())
 
     if getattr(kernel, "inside_reduction", False):
         lane_bytes = machine.spad_size
@@ -180,6 +183,15 @@ def fixed_config_for(kernel, numels, args, contiguous=None):
                 numels["xnumel"], numels["r0_numel"], elem_bytes, lanes, lane_bytes,
                 triton_max_numel())
     return cfg
+
+
+def pointwise_block(xnumel, elem_bytes, lanes, lane_bytes, max_numel):
+    """The XBLOCK of a pointwise kernel over one axis: the extent covered, up to the tile the budget
+    reduction_block_for gives one lane fills on every lane, and no more than Triton takes in one block.
+    At least the lane cover, as any block here. A block of one lane's width instead runs a program per
+    `lanes` elements, and a program's fixed cost then outweighs its data many times over."""
+    per_lane = reduction_block_for(1 << 62, elem_bytes, lane_bytes)
+    return max(_covers(lanes, xnumel), min(_covers(1 << 62, xnumel), lanes * per_lane, max_numel))
 
 
 def kept_axis_contiguous_blocks(xnumel, rnumel, elem_bytes, lanes, lane_bytes, max_numel):

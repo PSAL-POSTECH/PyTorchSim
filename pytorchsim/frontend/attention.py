@@ -119,6 +119,12 @@ def _is_p2(n):
 
 _DOT_DTYPES = (torch.bfloat16, torch.float16, torch.float32)
 
+#: The query and key block of the splash kernel the prefill is measured against: the v6e
+#: runs of PyTorchSim-Triton-Backend's validation archive name it
+#: splash_mha_fwd_..._block_kv_compute_1024_..._block_q_1024. A smaller block runs the same
+#: rows as more, shorter steps, each paying the matrix unit's fill and drain again.
+SPLASH_BLOCK = 1024
+
 
 def _register_rows(dtype):
     """Rows of `dtype` in one vector register, the least a dot dimension may be here. PTB refuses
@@ -162,8 +168,9 @@ def fused_plan(query, key, value, is_causal):
     """The fused kernel and its blocks that take this unmasked, dropout-free call, or None for
     SDPA's math. The one predicate: _fused_sdp_choice only says which op carries the call.
 
-    prefill  L == S. One program per (batch, query head); BQ = BKV is one row per lane, and the
-             static query loop keeps all S / BQ blocks' scratch live, so S is bounded by the budget.
+    prefill  L == S. One program per (batch, query head); BQ = BKV is splash's block, min(S,
+             SPLASH_BLOCK), halved while the static query loop's S / BQ blocks of scratch, all
+             live at once, overrun the budget, down to one row per lane, below which it declines.
     decode   L == 1, not causal (a causal L == 1 attends key 0 alone, SDPA's top-left mask). One
              program per (batch, KV head), its G query heads padded to GP rows; one KV step of the
              largest power of two that fits, since every further step adds its own DMAs.
@@ -183,7 +190,11 @@ def fused_plan(query, key, value, is_causal):
         return None
     esize = dtype.itemsize
     if L == S:
-        block = min(S, int(config.CONFIG_MACHINE.vector_lanes))
+        floor = min(S, int(config.CONFIG_MACHINE.vector_lanes))
+        block = min(S, SPLASH_BLOCK)
+        while block > floor and not _fits(_prefill_tiles(block, block, D, esize, is_causal),
+                                          copies=S // block):
+            block //= 2
         if block % rows or not _fits(_prefill_tiles(block, block, D, esize, is_causal),
                                      copies=S // block):
             return None

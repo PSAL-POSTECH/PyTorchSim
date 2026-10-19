@@ -14,9 +14,10 @@ kernels). So a gate that silently sends a fused case to math, or a math case to 
   eager    a prefill-shaped call outside torch.compile runs math (no Triton launch outside a
            compiled graph) and says so in ROUTED; under inference_mode too, which skips the
            autograd key the op's npu kernel is registered at, eagerly and compiled
-  spad     doubling a fused prefill's S, attention.fused_plan declines it at some S while every
-           tile is still the same block, so only the scratchpad bound declines it (checked on
-           the plan: a math run of that S on Spike takes far longer than this file)
+  spad     doubling a fused prefill's S, attention.fused_plan starts at splash's block, halves it
+           as the scratchpad bound binds, and declines only once one row per lane overruns the
+           bound (checked on the plan: a math run of that S on Spike takes far longer than this
+           file)
   counts   a compiled prefill called twice counts two launches, not its traces; under
            backend="eager" the call runs math, and only math is counted
 
@@ -143,7 +144,9 @@ def run_eager(name):
 
 def run_spad(name):
     """Double prefill_causal_gqa's S, on meta tensors, until fused_plan declines it: the block
-    stays vector_lanes, so the tiles do not grow and the scratchpad bound is what declines."""
+    starts at min(S, SPLASH_BLOCK), never grows as S does once the bound binds, and is one row per
+    lane when the scratchpad bound declines the next S."""
+    from pytorchsim import config
     from pytorchsim.frontend import attention
     _, B, Hq, H, _, S, D, causal = CASES["prefill_causal_gqa"]
     plans = []
@@ -155,7 +158,12 @@ def run_spad(name):
             break
         S *= 2
     declined = plans[-1][1] is None and len(plans) > 1
-    ok = declined and all(p == plans[0][1] for _, p in plans[:-1])
+    fused = [(S, p) for S, p in plans[:-1]]
+    blocks = [p["BQ"] for _, p in fused]
+    ok = (declined and all(p["BQ"] == p["BKV"] for _, p in fused)
+          and blocks[0] == min(fused[0][0], attention.SPLASH_BLOCK)
+          and all(b <= min(S, attention.SPLASH_BLOCK) for (S, _), b in zip(fused, blocks))
+          and blocks[-1] == int(config.CONFIG_MACHINE.vector_lanes))
     print(f"{name}: S={plans[0][0]} {plans[0][1]}, S={plans[-1][0]} {plans[-1][1]} "
           f"{'PASS' if ok else 'FAIL'}", flush=True)
     return ok

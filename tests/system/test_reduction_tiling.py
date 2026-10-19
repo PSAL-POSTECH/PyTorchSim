@@ -1,6 +1,7 @@
 """Reduction blocks on a machine of 128 lanes and 1 MiB of scratchpad per lane: a reduction whose
 largest read runs along the kept axis takes that axis as wide as its unpadded power-of-two part
-allows; any other reduction keeps today's blocks."""
+allows; a reduction whose rows fill fewer lanes than the machine has takes the reduced axis on the
+lanes and budgets it over all of them; any other reduction keeps today's blocks."""
 import os
 import sys
 
@@ -62,8 +63,26 @@ def test_other_reductions_keep_todays_blocks():
     test_result("RowReductionUnchanged", torch.tensor(same), torch.tensor([True, True]))
 
 
+def test_few_rows_budget_the_reduced_axis_over_every_lane():
+    """A full reduction (XBLOCK 1) and a few rows' reduction take R0_BLOCK up to every lane's budget
+    over the rows, covering the extent; rows that fill the lanes keep today's block."""
+    kernel = type("K", (), {"inside_reduction": True})()
+    args = [{"dtype": "float32"}]
+    per_lane = tiling.reduction_block_for(1 << 62, 4, LANE_BYTES)
+    whole = min(LANES * per_lane, tiling.triton_max_numel())
+    cases = [({"xnumel": 1, "r0_numel": 4096 * 4096}, whole),
+             ({"xnumel": 1, "r0_numel": 96 * 128}, 16384),
+             ({"xnumel": 8, "r0_numel": 16384}, 16384),
+             ({"xnumel": 8, "r0_numel": 1 << 24}, whole // 8),
+             ({"xnumel": 4096, "r0_numel": 1024},
+              tiling.fixed_config_for(kernel, {"xnumel": 4096, "r0_numel": 1024}, args)["R0_BLOCK"])]
+    got = [tiling.fixed_config_for(kernel, n, args)["R0_BLOCK"] for n, _ in cases]
+    test_result("FewRowsLaneBlocks", torch.tensor(got), torch.tensor([w for _, w in cases]))
+
+
 if __name__ == "__main__":
     test_gemv_blocks_follow_the_contiguous_kept_axis()
     test_lane_cover_and_budget_are_never_crossed()
     test_only_an_outer_hint_reads_as_kept_axis_contiguous()
     test_other_reductions_keep_todays_blocks()
+    test_few_rows_budget_the_reduced_axis_over_every_lane()

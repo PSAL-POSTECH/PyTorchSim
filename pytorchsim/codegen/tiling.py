@@ -142,6 +142,8 @@ def fixed_config_for(kernel, numels, args, contiguous=None):
     NOT A LAYOUT -- the lane axis is the compiler's select_lane_axis, passes later.
     `contiguous` is the axis ('x' or 'r') the kernel's largest read is unit-stride along;
     a reduction contiguous along x takes its blocks from kept_axis_contiguous_blocks.
+    A reduction whose rows are too few to fill the lanes takes its R0_BLOCK from
+    lane_axis_reduction_block.
     """
     machine = config.CONFIG_MACHINE
     lanes = machine.vector_lanes
@@ -182,6 +184,11 @@ def fixed_config_for(kernel, numels, args, contiguous=None):
             cfg["XBLOCK"], cfg["R0_BLOCK"] = kept_axis_contiguous_blocks(
                 numels["xnumel"], numels["r0_numel"], elem_bytes, lanes, lane_bytes,
                 triton_max_numel())
+        elif set(cfg) == {"XBLOCK", "R0_BLOCK"} and cfg["XBLOCK"] < lanes \
+                and (numels.get("r0_numel") or 0) >= lanes:
+            cfg["R0_BLOCK"] = lane_axis_reduction_block(
+                cfg["XBLOCK"], numels["r0_numel"], elem_bytes, lanes, lane_bytes,
+                triton_max_numel())
     return cfg
 
 
@@ -192,6 +199,23 @@ def pointwise_block(xnumel, elem_bytes, lanes, lane_bytes, max_numel):
     `lanes` elements, and a program's fixed cost then outweighs its data many times over."""
     per_lane = reduction_block_for(1 << 62, elem_bytes, lane_bytes)
     return max(_covers(lanes, xnumel), min(_covers(1 << 62, xnumel), lanes * per_lane, max_numel))
+
+
+def lane_axis_reduction_block(xblock, rnumel, elem_bytes, lanes, lane_bytes, max_numel):
+    """R0_BLOCK of a reduction whose reduced axis rides the lanes.
+
+    The compiler lays a reduction's axis across the lanes when its rows fill fewer lanes than the
+    machine has, whatever it combines by (PTB TorchsimAnchorLayouts.cpp anchorReduce). A lane then holds
+    `xblock` rows of R0_BLOCK / lanes elements, so the tile takes the budget reduction_block_for
+    gives one lane, times the lanes, and no more than Triton takes in one block -- as
+    kept_axis_contiguous_blocks and pointwise_block do -- covering the extent and no more.
+    """
+    per_lane = reduction_block_for(1 << 62, elem_bytes, lane_bytes)
+    budget = min(lanes * per_lane, max_numel) // max(1, xblock)
+    block = _covers(1 << 62, rnumel)
+    while block > budget and block > 1:
+        block //= 2
+    return block
 
 
 def kept_axis_contiguous_blocks(xnumel, rnumel, elem_bytes, lanes, lane_bytes, max_numel):

@@ -247,8 +247,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
         run: rm -rf picks && bash scripts/ci/previous_picks.sh picks
-      # The GEMMs in timing mode, their configs picked by TOGSim cycles where the record has none, beside
-      # the other suites without it: two processes, since a process keeps the timing mode it started in.
+      # The GEMMs and the layer (its projections are mm templates) in timing mode, their configs picked by
+      # TOGSim cycles where the record has none, beside the other suites without it: three processes, since a
+      # process keeps the timing mode it started in.
       # The record, with this run's picks folded in, is uploaded beside the bundle (bundle/record) for the
       # next run.
       - name: Build the bundle
@@ -264,12 +265,15 @@ jobs:
               mkdir -p pytorchsim/selection && cp /picks/*.json pytorchsim/selection/ 2>/dev/null || true
               TORCHSIM_TIMING_MODE=1 TORCHSIM_DUMP_PATH=/tmp/gemm python3 scripts/ci/bundle.py /bundle/out gemm \
                 > /bundle/gemm.log 2>&1 & gemm=$!
+              TORCHSIM_TIMING_MODE=1 TORCHSIM_DUMP_PATH=/tmp/layer python3 scripts/ci/bundle.py /bundle/out layer \
+                > /bundle/layer.log 2>&1 & layer=$!
               TORCHSIM_DUMP_PATH=/tmp/rest python3 scripts/ci/bundle.py /bundle/out vector attention \
                 > /bundle/rest.log 2>&1 & rest=$!
-              rc=0; wait $gemm || rc=1; wait $rest || rc=1
-              grep "^\[bundle\]" /bundle/gemm.log /bundle/rest.log || true
-              if [ -s /tmp/gemm/selection.jsonl ]; then
-                python3 scripts/selection_merge.py /tmp/gemm/selection.jsonl
+              rc=0; wait $gemm || rc=1; wait $layer || rc=1; wait $rest || rc=1
+              grep "^\[bundle\]" /bundle/gemm.log /bundle/layer.log /bundle/rest.log || true
+              picks=""; for f in /tmp/gemm/selection.jsonl /tmp/layer/selection.jsonl; do if [ -s "$f" ]; then picks="$picks $f"; fi; done
+              if [ -n "$picks" ]; then
+                python3 scripts/selection_merge.py $picks
               fi
               mkdir -p /bundle/record && cp pytorchsim/selection/*.json /bundle/record/ 2>/dev/null || true
               exit $rc'

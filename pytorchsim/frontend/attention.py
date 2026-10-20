@@ -155,13 +155,12 @@ def _decode_tiles(GP, BKV, D, esize):
     return _prefill_tiles(GP, BKV, D, esize, causal=False)
 
 
-def _fits(tiles, copies=1):
-    """Whether `copies` sets of `tiles` fit one lane's scratchpad budget, and each is a tensor
-    Triton builds."""
+def _fits(tiles):
+    """Whether `tiles` fit one lane's scratchpad budget, and each is a tensor Triton builds."""
     from pytorchsim.codegen import tiling
     big = tiling.triton_max_numel()
     return (all(r * c <= big for r, c, _ in tiles)
-            and copies * _lane_bytes(tiles) <= int(config.CONFIG_MACHINE.spad_budget))
+            and _lane_bytes(tiles) <= int(config.CONFIG_MACHINE.spad_budget))
 
 
 def fused_plan(query, key, value, is_causal):
@@ -169,8 +168,9 @@ def fused_plan(query, key, value, is_causal):
     SDPA's math. The one predicate: _fused_sdp_choice only says which op carries the call.
 
     prefill  L == S. One program per (batch, query head); BQ = BKV is splash's block, min(S,
-             SPLASH_BLOCK), halved while the static query loop's S / BQ blocks of scratch, all
-             live at once, overrun the budget, down to one row per lane, below which it declines.
+             SPLASH_BLOCK), halved while one query block's scratch overruns the budget (the compiler
+             gives the static query loop's blocks one set), down to one row per lane, below which
+             it declines.
     decode   L == 1, not causal (a causal L == 1 attends key 0 alone, SDPA's top-left mask). One
              program per (batch, KV head), its G query heads padded to GP rows; one KV step of the
              largest power of two that fits, since every further step adds its own DMAs.
@@ -192,11 +192,9 @@ def fused_plan(query, key, value, is_causal):
     if L == S:
         floor = min(S, int(config.CONFIG_MACHINE.vector_lanes))
         block = min(S, SPLASH_BLOCK)
-        while block > floor and not _fits(_prefill_tiles(block, block, D, esize, is_causal),
-                                          copies=S // block):
+        while block > floor and not _fits(_prefill_tiles(block, block, D, esize, is_causal)):
             block //= 2
-        if block % rows or not _fits(_prefill_tiles(block, block, D, esize, is_causal),
-                                     copies=S // block):
+        if block % rows or not _fits(_prefill_tiles(block, block, D, esize, is_causal)):
             return None
         return {"kernel": "prefill", "BQ": block, "BKV": block}
     if L == 1 and not is_causal:

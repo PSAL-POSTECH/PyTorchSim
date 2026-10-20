@@ -28,6 +28,7 @@ LOCK_TIMEOUT = 600
 
 _LAUNCH_OBSERVERS = {}
 _EVERY_LAUNCH = []
+_EVERY_EXTERN = []
 
 
 def user_kernel_id(kernel):
@@ -43,6 +44,18 @@ def observe_launches(kernel, callback):
 def observe_every_launch(callback):
     """Call `callback(launcher)` at every launch of any kernel."""
     _EVERY_LAUNCH.append(callback)
+
+
+def observe_every_extern(callback):
+    """Call `callback(call)` at every call Inductor leaves to aten (an extern kernel or a fallback):
+    `call` is its op, e.g. "aten.sort.stable". It runs as aten does, not on the simulator."""
+    _EVERY_EXTERN.append(callback)
+
+
+def torchsim_extern(call):
+    """The generated wrapper's note before an extern call; see observe_every_extern."""
+    for callback in _EVERY_EXTERN:
+        callback(call)
 
 
 def _write_path(src_code, meta):

@@ -176,12 +176,48 @@ class TritonNPUWrapperCodegen(verify.VerifyLines, wrapper.PythonWrapperCodegen):
             f"""
                 from pytorchsim.config import setup_logger
                 from pytorchsim.codegen import verify as _fverify
-                from pytorchsim.driver.codecache import torchsim_compile
+                from pytorchsim.driver.codecache import torchsim_compile, torchsim_extern
 
                 _logger = setup_logger("pytorchsim.codegen.generated_wrapper")
                 _logger.info(f'Wrapper Codegen Path = {{__file__}}')
             """
         )
+
+    def note_extern(self, op, python_kernel_name):
+        """Before an extern call, a torchsim_extern line naming its op: the op Inductor's IR node
+        holds (aten.sort.stable), else the Python callable it calls (extern_kernels.mm)."""
+        call = python_kernel_name if op is None else str(op)
+        self.writeline(f"torchsim_extern({call!r})")
+
+    def generate_extern_kernel_out(self, node):
+        self.note_extern(node.op_overload, node.python_kernel_name)
+        super().generate_extern_kernel_out(node)
+
+    def generate_extern_kernel_alloc(self, node):
+        self.note_extern(node.op_overload, node.python_kernel_name)
+        super().generate_extern_kernel_alloc(node)
+
+    def generate_extern_kernel_multi_out(self, node):
+        self.note_extern(node.op_overload, node.python_kernel_name)
+        super().generate_extern_kernel_multi_out(node)
+
+    def generate_fallback_kernel(self, node):
+        self.note_extern(node.op_overload, node.python_kernel_name)
+        super().generate_fallback_kernel(node)
+
+    def generate_fallback_kernel_with_runtime_lookup(self, buf_name, python_kernel_name, get_args,
+                                                     op_overload, raw_args, outputs):
+        self.note_extern(op_overload, python_kernel_name)
+        super().generate_fallback_kernel_with_runtime_lookup(
+            buf_name, python_kernel_name, get_args, op_overload, raw_args, outputs)
+
+    def generate_scatter_fallback(self, node):
+        self.note_extern(node.op_overload, node.python_kernel_name)
+        super().generate_scatter_fallback(node)
+
+    def generate_index_put_fallback(self, node):
+        self.note_extern(node.op_overload, node.python_kernel_name)
+        super().generate_index_put_fallback(node)
 
     def write_args(self, input_names):
         """Unpack the inputs as Inductor does, then (per-kernel verify on) build the CPU golden from them."""

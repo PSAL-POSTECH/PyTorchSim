@@ -1,5 +1,5 @@
 """Write the kernels PyTorchSim builds for the compiler's validation workloads:
-    python scripts/ci/bundle.py OUT [SUITE...]      (every suite when none is named)
+    python scripts/ci/bundle.py OUT [SUITE...] [--jobs N]     (every suite when none is named)
 
 The workloads are the rows of the compiler's TPU measurements (validation/<suite>/tpu_v6e_*.csv), so
 the bundle covers what the compiler compares against and nothing else. Each one is compiled and run
@@ -8,8 +8,14 @@ in timing mode (TORCHSIM_TIMING_MODE=1, which a process keeps from its start), s
 is the one Inductor picks by TOGSim cycles, or the one the selection record holds:
 
   OUT/bundle.json                     the PyTorchSim commit, torch, the compiler pin, the machine
-  OUT/<workload>/manifest.json        suite, shape, dtype and the launches in order
+  OUT/<workload>/manifest.json        suite, shape, dtype, the launches in order, and the externs:
+                                      each call Inductor left to aten (not simulated), with `at`, the
+                                      launches before it
   OUT/<workload>/<NN>_<kernel>/       <kernel>_spec.py, <kernel>_triton.py
+
+The layer suite holds only the rows under the compiler's CI cap (validation/layer/simulate_shapes.py
+under_cap). --jobs N builds the workloads in N processes, each taking the next one, largest first by
+the compiler's rank for the suite (token_pairs for the layer); a process keeps its timing mode.
 
 Only what the compiler builds from: how a config was chosen (timed now, or recorded by an earlier run)
 is not in the bundle, so the same kernels are the same bundle.
@@ -20,8 +26,11 @@ named in a warning. The picks the GEMMs were timed to are appended to selection.
 path, for scripts/selection_merge.py.
 """
 
+import argparse
 import csv
+import importlib.util
 import json
+import multiprocessing
 import os
 import shutil
 import subprocess
@@ -234,17 +243,34 @@ SUITES = [
 TEXT_COLUMNS = {"program", "kind", "section", "name"}
 
 
+def compiler_suite(suite):
+    """The compiler's validation/<suite>/simulate_shapes.py, which defines its CI cap and rank."""
+    path = os.path.join(compiler_bridge.compiler_dir(), "validation", suite, "simulate_shapes.py")
+    spec = importlib.util.spec_from_file_location(f"{suite}_simulate_shapes", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+#: The suites the bundle holds only under the compiler's CI cap, by the compiler's own definition.
+CAPPED = ("layer",)
+
+
 def workloads(suites=None):
-    """(name, suite, dims, fn, inputs maker) per measured row of `suites` (default all)."""
+    """(name, suite, dims, fn, inputs maker) per measured row of `suites` (default all); a CAPPED
+    suite's rows over the compiler's CI cap are left out."""
     for suite, csv_name, keys, program, call in SUITES:
         if suites and suite not in suites:
             continue
+        under_cap = compiler_suite(suite).under_cap if suite in CAPPED else None
         with open(os.path.join(compiler_bridge.compiler_dir(), "validation", suite, csv_name)) as f:
             for row in csv.DictReader(f):
                 if row["dtype_in"] != DTYPE:
                     continue
                 row = dict(row, program=program) if program else row
                 dims = {k: row[k] if k in TEXT_COLUMNS else int(row[k]) for k in keys}
+                if under_cap and not under_cap(dims):
+                    continue
                 fn, make = call(dims)
                 name = "_".join([suite, *(dims[k] for k in keys if k in TEXT_COLUMNS),
                                  "x".join(str(dims[k]) for k in keys if k not in TEXT_COLUMNS), DTYPE])
@@ -253,6 +279,8 @@ def workloads(suites=None):
 
 LAUNCHED = []
 codecache.observe_every_launch(LAUNCHED.append)
+EXTERNS = []
+codecache.observe_every_extern(lambda call: EXTERNS.append({"call": call, "at": len(LAUNCHED)}))
 
 
 def kernel_files(launcher):
@@ -261,8 +289,10 @@ def kernel_files(launcher):
 
 
 def capture(name, fn, make, out):
-    """Run `fn` once on make's inputs and copy each kernel it launches into out/<name>; its launches in order."""
+    """Run `fn` once on make's inputs and copy each kernel it launches into out/<name>; its launches in
+    order, their tile sources and the extern calls."""
     LAUNCHED.clear()
+    EXTERNS.clear()
     torch._dynamo.reset()
     xs = [x.to("npu:0") for x in make(torch.Generator().manual_seed(0))]
     torch.compile(fn, dynamic=False)(*xs)
@@ -275,7 +305,7 @@ def capture(name, fn, make, out):
                 shutil.copy(os.path.join(launcher.workdir, f), os.path.join(out, name, d, f))
             dirs[launcher.workdir] = d
         launches.append({"kernel": launcher.kernel_name, "dir": dirs[launcher.workdir]})
-    return launches, [launcher.meta.get("tile_source") for launcher in LAUNCHED]
+    return launches, [launcher.meta.get("tile_source") for launcher in LAUNCHED], list(EXTERNS)
 
 
 def pts_commit():
@@ -284,19 +314,47 @@ def pts_commit():
         cwd=config.CONFIG_TORCHSIM_DIR).stdout.strip()
 
 
-def main(out, suites=None):
-    """Write `suites`' workloads (default all) into `out`, replacing each one's directory there."""
+def build(out, suite, name):
+    """Build `suite`'s workload `name` into out/<name>: (name, kernels launched, unpicked, unfused, externs)."""
+    dims, fn, make = next(w[2:] for w in workloads({suite}) if w[0] == name)
+    shutil.rmtree(os.path.join(out, name), ignore_errors=True)
+    launches, sources, externs = capture(name, fn, make, out)
+    with open(os.path.join(out, name, "manifest.json"), "w") as f:
+        json.dump({"workload": name, "suite": suite, **dims, "dtype": DTYPE, "launches": launches,
+                   "externs": externs}, f, indent=1)
+    unpicked = [la["kernel"] for la, s in zip(launches, sources) if s == select.HEURISTIC]
+    unfused = [la["kernel"] for la, s in zip(launches, sources) if s == select.RECORDED_UNFUSED]
+    return name, [la["kernel"] for la in launches], unpicked, unfused, [e["call"] for e in externs]
+
+
+def largest_first(suites):
+    """(suite, workload name) of `suites`, each suite's ordered by the compiler's rank where it has one."""
+    names = []
+    for suite in dict.fromkeys(s[0] for s in SUITES if not suites or s[0] in suites):
+        mine = [(n, d) for n, s, d, _, _ in workloads({suite})]
+        rank = getattr(compiler_suite(suite), "token_pairs", None) if suite in CAPPED else None
+        names += [(suite, n) for n, d in (sorted(mine, key=lambda w: -rank(w[1])) if rank else mine)]
+    return names
+
+
+def main(out, suites=None, jobs=1):
+    """Write `suites`' workloads (default all) into `out`, replacing each one's directory there, in
+    `jobs` processes."""
     os.makedirs(out, exist_ok=True)
     unpicked, unfused = [], []
-    for name, suite, dims, fn, make in workloads(suites):
-        shutil.rmtree(os.path.join(out, name), ignore_errors=True)
-        launches, sources = capture(name, fn, make, out)
-        with open(os.path.join(out, name, "manifest.json"), "w") as f:
-            json.dump({"workload": name, "suite": suite, **dims, "dtype": DTYPE, "launches": launches},
-                      f, indent=1)
-        unpicked += [(name, la["kernel"]) for la, s in zip(launches, sources) if s == select.HEURISTIC]
-        unfused += [(name, la["kernel"]) for la, s in zip(launches, sources) if s == select.RECORDED_UNFUSED]
-        print(f"[bundle] {name}: {[la['kernel'] for la in launches]}", flush=True)
+    names = largest_first(suites)
+    if jobs > 1:
+        pool = multiprocessing.get_context("spawn").Pool(jobs)
+        built = pool.imap_unordered(_build, [(out, *n) for n in names])
+    else:
+        pool, built = None, (build(out, *n) for n in names)
+    for name, kernels, up, uf, externs in built:
+        unpicked += [(name, k) for k in up]
+        unfused += [(name, k) for k in uf]
+        print(f"[bundle] {name}: {kernels}" + (f" extern {externs}" if externs else ""), flush=True)
+    if pool is not None:
+        pool.close()
+        pool.join()
     with open(os.path.join(out, "bundle.json"), "w") as f:
         json.dump({"pytorchsim": pts_commit(), "torch": torch.__version__, **select.identity()}, f,
                   indent=1, sort_keys=True)
@@ -306,5 +364,14 @@ def main(out, suites=None):
         sys.exit(f"[bundle] neither timed nor recorded: {unpicked}")
 
 
+def _build(args):
+    return build(*args)
+
+
 if __name__ == "__main__":
-    main(os.path.abspath(sys.argv[1]), set(sys.argv[2:]))
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("out")
+    ap.add_argument("suites", nargs="*", help="suites to build (default: all)")
+    ap.add_argument("--jobs", type=int, default=1, help="processes building workloads at once")
+    a = ap.parse_args()
+    main(os.path.abspath(a.out), set(a.suites), a.jobs)

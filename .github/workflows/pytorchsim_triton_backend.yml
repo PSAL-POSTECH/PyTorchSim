@@ -248,8 +248,9 @@ jobs:
           REPO: ${{ github.repository }}
         run: rm -rf picks && bash scripts/ci/previous_picks.sh picks
       # The GEMMs and the layer (its projections are mm templates) in timing mode, their configs picked by
-      # TOGSim cycles where the record has none, beside the other suites without it: three processes, since a
-      # process keeps the timing mode it started in.
+      # TOGSim cycles where the record has none, beside the other suites without it: three runs, since a
+      # process keeps the timing mode it started in. The layer, only its rows under the compiler's CI cap,
+      # builds in four processes (87 min measured, against ~3.8 h in one: its prefill at S 4096 alone is ~85 min).
       # The record, with this run's picks folded in, is uploaded beside the bundle (bundle/record) for the
       # next run.
       - name: Build the bundle
@@ -265,7 +266,7 @@ jobs:
               mkdir -p pytorchsim/selection && cp /picks/*.json pytorchsim/selection/ 2>/dev/null || true
               TORCHSIM_TIMING_MODE=1 TORCHSIM_DUMP_PATH=/tmp/gemm python3 scripts/ci/bundle.py /bundle/out gemm \
                 > /bundle/gemm.log 2>&1 & gemm=$!
-              TORCHSIM_TIMING_MODE=1 TORCHSIM_DUMP_PATH=/tmp/layer python3 scripts/ci/bundle.py /bundle/out layer \
+              TORCHSIM_TIMING_MODE=1 TORCHSIM_DUMP_PATH=/tmp/layer python3 scripts/ci/bundle.py /bundle/out layer --jobs 4 \
                 > /bundle/layer.log 2>&1 & layer=$!
               TORCHSIM_DUMP_PATH=/tmp/rest python3 scripts/ci/bundle.py /bundle/out vector attention \
                 > /bundle/rest.log 2>&1 & rest=$!

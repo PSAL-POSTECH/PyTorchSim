@@ -37,7 +37,8 @@ from pytorchsim.driver import codecache, compiler_bridge, select  # noqa: E402
 #: The head dimension the compiler's attention measurements were taken at.
 HEAD_DIM = 128
 
-DTYPE = "bf16"
+#: The input dtypes the measurements name (their dtype_in) and the torch dtype each is built as.
+DTYPES = {"bf16": torch.bfloat16, "f32": torch.float32}
 
 
 def _attention(kind, Hq, Hkv, S):
@@ -56,19 +57,23 @@ PROGRAMS = {
     "sum": lambda x: x.float().sum(),
     "add1": lambda x: x + 1,
     "slice": lambda x: x[:1, :1].float() + 1,
+    "topk": lambda x, K: torch.topk(x, K, dim=-1),
 }
 
 #: (suite, the csv under validation/<suite>/, the columns that name a workload, the program a row
-#: without a `program` column runs, the function and its input shapes). The suite is the compiler's.
+#: without a `program` column runs, the function and its input shapes, the input dtype). The suite is
+#: the compiler's. A (dimension, column) pair names a dimension read from a column of another name.
 SUITES = [
     ("gemm", "tpu_v6e_torchxla.csv", ("M", "K", "N"), None,
-     lambda d: (torch.matmul, [(d["M"], d["K"]), (d["K"], d["N"])])),
+     lambda d: (torch.matmul, [(d["M"], d["K"]), (d["K"], d["N"])]), "bf16"),
     ("vector", "tpu_v6e_softmax_torchxla.csv", ("program", "R", "C"), "softmax",
-     lambda d: (PROGRAMS[d["program"]], [(d["R"], d["C"])])),
+     lambda d: (PROGRAMS[d["program"]], [(d["R"], d["C"])]), "bf16"),
     ("vector", "tpu_v6e_load_torchxla.csv", ("program", "R", "C"), None,
-     lambda d: (PROGRAMS[d["program"]], [(d["R"], d["C"])])),
+     lambda d: (PROGRAMS[d["program"]], [(d["R"], d["C"])]), "bf16"),
+    ("vector", "tpu_v6e_topk_torchxla.csv", ("program", ("R", "T"), ("C", "E"), "K"), "topk",
+     lambda d: (lambda x: PROGRAMS["topk"](x, d["K"]), [(d["R"], d["C"])]), "f32"),
     ("attention", "tpu_v6e_attention_torchxla.csv", ("kind", "Hq", "Hkv", "S"), None,
-     lambda d: _attention(**d)),
+     lambda d: _attention(**d), "bf16"),
 ]
 
 #: Columns that name a program or a kind rather than a size.
@@ -76,20 +81,21 @@ TEXT_COLUMNS = {"program", "kind"}
 
 
 def workloads(suites=None):
-    """(name, suite, dims, fn, input shapes) per measured row of `suites` (default all)."""
-    for suite, csv_name, keys, program, call in SUITES:
+    """(name, suite, dims, fn, input shapes, dtype) per measured row of `suites` (default all)."""
+    for suite, csv_name, keys, program, call, dtype in SUITES:
         if suites and suite not in suites:
             continue
+        cols = [k if isinstance(k, tuple) else (k, k) for k in keys]
         with open(os.path.join(compiler_bridge.compiler_dir(), "validation", suite, csv_name)) as f:
             for row in csv.DictReader(f):
-                if row["dtype_in"] != DTYPE:
+                if row["dtype_in"] != dtype:
                     continue
                 row = dict(row, program=program) if program else row
-                dims = {k: row[k] if k in TEXT_COLUMNS else int(row[k]) for k in keys}
+                dims = {k: row[c] if k in TEXT_COLUMNS else int(row[c]) for k, c in cols}
                 fn, shapes = call(dims)
-                name = "_".join([suite, *(dims[k] for k in keys if k in TEXT_COLUMNS),
-                                 "x".join(str(dims[k]) for k in keys if k not in TEXT_COLUMNS), DTYPE])
-                yield name, suite, dims, fn, shapes
+                name = "_".join([suite, *(dims[k] for k, _ in cols if k in TEXT_COLUMNS),
+                                 "x".join(str(dims[k]) for k, _ in cols if k not in TEXT_COLUMNS), dtype])
+                yield name, suite, dims, fn, shapes, dtype
 
 
 LAUNCHED = []
@@ -101,12 +107,12 @@ def kernel_files(launcher):
     return [f"{name}_spec.py", f"{name}_triton.py"]
 
 
-def capture(name, fn, shapes, out):
+def capture(name, fn, shapes, dtype, out):
     """Run `fn` once and copy each kernel it launches into out/<name>; its launches in order."""
     LAUNCHED.clear()
     torch._dynamo.reset()
     g = torch.Generator().manual_seed(0)
-    xs = [torch.randn(*s, generator=g).to(torch.bfloat16).to("npu:0") for s in shapes]
+    xs = [torch.randn(*s, generator=g).to(DTYPES[dtype]).to("npu:0") for s in shapes]
     torch.compile(fn, dynamic=False)(*xs)
     dirs, launches = {}, []
     for launcher in LAUNCHED:
@@ -130,11 +136,11 @@ def main(out, suites=None):
     """Write `suites`' workloads (default all) into `out`, replacing each one's directory there."""
     os.makedirs(out, exist_ok=True)
     unpicked, unfused = [], []
-    for name, suite, dims, fn, shapes in workloads(suites):
+    for name, suite, dims, fn, shapes, dtype in workloads(suites):
         shutil.rmtree(os.path.join(out, name), ignore_errors=True)
-        launches, sources = capture(name, fn, shapes, out)
+        launches, sources = capture(name, fn, shapes, dtype, out)
         with open(os.path.join(out, name, "manifest.json"), "w") as f:
-            json.dump({"workload": name, "suite": suite, **dims, "dtype": DTYPE, "launches": launches},
+            json.dump({"workload": name, "suite": suite, **dims, "dtype": dtype, "launches": launches},
                       f, indent=1)
         unpicked += [(name, la["kernel"]) for la, s in zip(launches, sources) if s == select.HEURISTIC]
         unfused += [(name, la["kernel"]) for la, s in zip(launches, sources) if s == select.RECORDED_UNFUSED]

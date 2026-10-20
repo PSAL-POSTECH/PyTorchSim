@@ -63,6 +63,8 @@ PROGRAMS = {
 SUITES = [
     ("gemm", "tpu_v6e_torchxla.csv", ("M", "K", "N"), None,
      lambda d: (torch.matmul, [(d["M"], d["K"]), (d["K"], d["N"])])),
+    ("gemm", "tpu_v6e_qwen3moe_torchxla.csv", ("M", "K", "N"), None,
+     lambda d: (torch.matmul, [(d["M"], d["K"]), (d["K"], d["N"])])),
     ("vector", "tpu_v6e_softmax_torchxla.csv", ("program", "R", "C"), "softmax",
      lambda d: (PROGRAMS[d["program"]], [(d["R"], d["C"])])),
     ("vector", "tpu_v6e_load_torchxla.csv", ("program", "R", "C"), None,

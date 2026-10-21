@@ -145,7 +145,8 @@ def combine(y, ids, w):
 
 
 def silu_mul(gu):
-    g, u = gu[:, :FF], gu[:, FF:]
+    f = gu.shape[-1] // 2
+    g, u = gu[:, :f], gu[:, f:]
     return (torch.nn.functional.silu(g.float()) * u.float()).to(gu.dtype)
 
 
@@ -227,6 +228,72 @@ def _qwen_layer(section, name, T, S):
     return _layer(name, T, S) if section == "layer" else _op(name, T)
 
 
+#: Qwen3-8B's decoder layer as validation/qwen3_8b measured it (tpu-perf-archive harness/qwen3_8b_layer_v1.py):
+#: its config, and each piece written as that harness writes it; rmsnorm, rope and silu_mul are the 30B's.
+D8_HID, D8_HQ, D8_HKV, D8_FF = 4096, 32, 8, 12288
+D8_GEMMS = {"q_proj": (D8_HID, D8_HQ * HEAD_DIM), "k_proj": (D8_HID, D8_HKV * HEAD_DIM),
+            "v_proj": (D8_HID, D8_HKV * HEAD_DIM), "o_proj": (D8_HQ * HEAD_DIM, D8_HID),
+            "gate_up": (D8_HID, 2 * D8_FF), "down": (D8_FF, D8_HID)}
+D8_WEIGHTS = {"ln1": ((D8_HID,), 0.1, 1), "ln2": ((D8_HID,), 0.1, 1), "qn": ((HEAD_DIM,), 0.1, 1),
+              "kn": ((HEAD_DIM,), 0.1, 1), "wq": ((D8_HID, D8_HQ * HEAD_DIM), D8_HID ** -0.5, 0),
+              "wk": ((D8_HID, D8_HKV * HEAD_DIM), D8_HID ** -0.5, 0),
+              "wv": ((D8_HID, D8_HKV * HEAD_DIM), D8_HID ** -0.5, 0),
+              "wo": ((D8_HQ * HEAD_DIM, D8_HID), (D8_HQ * HEAD_DIM) ** -0.5, 0),
+              "wgu": ((D8_HID, 2 * D8_FF), D8_HID ** -0.5, 0), "wd": ((D8_FF, D8_HID), D8_FF ** -0.5, 0)}
+
+
+def _dense_layer(name, T, S):
+    """Qwen3-8B's decoder layer, inputs (x, cos, sin, weights..., decode's K and V cache): the 30B's attention
+    half, cache layout and decode as _layer has them, then one dense MLP."""
+    def run(x, cos, sin, *rest):
+        W = dict(zip(D8_WEIGHTS, rest))
+        t = x.shape[0]
+        h = rmsnorm(x, W["ln1"])
+        q = (h @ W["wq"]).view(t, D8_HQ, HEAD_DIM)
+        k = (h @ W["wk"]).view(t, D8_HKV, HEAD_DIM)
+        v = (h @ W["wv"]).view(t, D8_HKV, HEAD_DIM)
+        q = rope(rmsnorm(q, W["qn"]), cos, sin)
+        k = rope(rmsnorm(k, W["kn"]), cos, sin)
+        if name == "prefill":
+            k, v = k.transpose(0, 1)[None], v.transpose(0, 1)[None]
+        else:
+            k, v = rest[len(D8_WEIGHTS):]
+        a = torch.nn.functional.scaled_dot_product_attention(
+            q.transpose(0, 1)[None], k, v, is_causal=name == "prefill", enable_gqa=True)
+        a = a[0].transpose(0, 1).reshape(t, D8_HQ * HEAD_DIM)
+        x2 = x + a @ W["wo"]
+        return x2 + silu_mul(rmsnorm(x2, W["ln2"]) @ W["wgu"]) @ W["wd"]
+
+    def make(g):
+        W = [randn(s, scale=k)(g)[0] + b for s, k, b in D8_WEIGHTS.values()]
+        cache = randn((1, D8_HKV, S, HEAD_DIM), (1, D8_HKV, S, HEAD_DIM))(g) if name == "decode" else []
+        return randn((T, D8_HID))(g) + rope_tables(T, start=S - T) + W + cache
+    return run, make
+
+
+def _dense_op(name, T, S):
+    """One piece of Qwen3-8B's layer alone for T tokens (an attention op over S), with the harness's operands."""
+    if name in D8_GEMMS:
+        k, n = D8_GEMMS[name]
+        return torch.matmul, lambda g: randn((T, k))(g) + randn((k, n), scale=k ** -0.5)(g)
+    if name in ("attn_prefill", "attn_decode"):
+        return _attention(name[len("attn_"):], D8_HQ, D8_HKV, S)
+    norm = lambda g: randn((HEAD_DIM,), scale=0.1)(g)[0] + 1
+    return {
+        "rmsnorm": (rmsnorm, lambda g: randn((T, D8_HID))(g) + [randn((D8_HID,), scale=0.1)(g)[0] + 1]),
+        "q_norm": (rmsnorm, lambda g: randn((T, D8_HQ, HEAD_DIM))(g) + [norm(g)]),
+        "k_norm": (rmsnorm, lambda g: randn((T, D8_HKV, HEAD_DIM))(g) + [norm(g)]),
+        "rope_q": (rope, lambda g: randn((T, D8_HQ, HEAD_DIM))(g) + rope_tables(T)),
+        "rope_k": (rope, lambda g: randn((T, D8_HKV, HEAD_DIM))(g) + rope_tables(T)),
+        "residual": (lambda a, b: a + b, randn((T, D8_HID), (T, D8_HID))),
+        "silu_mul": (silu_mul, randn((T, 2 * D8_FF))),
+    }[name]
+
+
+def _dense_qwen_layer(section, name, T, S):
+    return _dense_layer(name, T, S) if section == "layer" else _dense_op(name, T, S)
+
+
 #: (suite, the csv under validation/<suite>/, the columns that name a workload, the program a row
 #: without a `program` column runs, the function and the maker of its inputs from a generator). The
 #: suite is the compiler's.
@@ -243,6 +310,8 @@ SUITES = [
      lambda d: _attention(**d)),
     ("layer", "tpu_v6e_qwen3moe_layer_torchxla.csv", ("section", "name", "T", "S"), None,
      lambda d: _qwen_layer(**d)),
+    ("qwen3_8b", "tpu_v6e_qwen3_8b_layer_torchxla.csv", ("section", "name", "T", "S"), None,
+     lambda d: _dense_qwen_layer(**d)),
 ]
 
 #: Columns that name a program, a kind or a piece of a model rather than a size.
@@ -259,7 +328,7 @@ def compiler_suite(suite):
 
 
 #: The suites the bundle holds only under the compiler's CI cap, by the compiler's own definition.
-CAPPED = ("layer",)
+CAPPED = ("layer", "qwen3_8b")
 
 
 def workloads(suites=None):

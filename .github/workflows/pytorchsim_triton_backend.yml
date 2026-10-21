@@ -268,7 +268,7 @@ jobs:
               mkdir -p pytorchsim/selection && cp /picks/*.json pytorchsim/selection/ 2>/dev/null || true
               TORCHSIM_TIMING_MODE=1 TORCHSIM_DUMP_PATH=/tmp/gemm python3 scripts/ci/bundle.py /bundle/out gemm --jobs 4 --reuse /prev \
                 > /bundle/gemm.log 2>&1 & gemm=$!
-              TORCHSIM_TIMING_MODE=1 TORCHSIM_DUMP_PATH=/tmp/layer python3 scripts/ci/bundle.py /bundle/out layer --jobs 4 --reuse /prev \
+              TORCHSIM_TIMING_MODE=1 TORCHSIM_DUMP_PATH=/tmp/layer python3 scripts/ci/bundle.py /bundle/out layer qwen3_8b --jobs 4 --reuse /prev \
                 > /bundle/layer.log 2>&1 & layer=$!
               TORCHSIM_DUMP_PATH=/tmp/rest python3 scripts/ci/bundle.py /bundle/out vector attention --reuse /prev \
                 > /bundle/rest.log 2>&1 & rest=$!

@@ -370,13 +370,27 @@ def _num_cores():
 
 
 def _kept_axis_contiguous(features):
-    """'x' when Inductor's own reduction hint is OUTER (no read runs along the reduced axis)."""
-    try:
-        from torch._inductor.runtime.hints import ReductionHint
-        hint = features.get_reduction_hint() if features.is_reduction() else None
-    except Exception:  # noqa: BLE001
+    """'x' when the largest read (in bytes) over every index of a reduction runs unit-stride along a
+    kept axis, from its MemoryDep strides; else None. Inductor's OUTER hint is not used: it is left
+    DEFAULT for any kernel of at least num_sm * 64 rows, whatever its strides."""
+    from torch._inductor.dependencies import MemoryDep
+    from torch._inductor.virtualized import V
+    if not features.is_reduction():
         return None
-    return "x" if hint == ReductionHint.OUTER else None
+    best = None
+    for node in features.reduction_nodes():
+        kept, reduced = node._sizes
+        for dep in node.read_writes.reads:
+            if not isinstance(dep, MemoryDep) or len(dep.var_names) != len(kept) + len(reduced):
+                continue
+            strides = V.graph.sizevars.stride_hints(dep.index, dep.var_names)
+            unit = [i for i, s in enumerate(strides) if s == 1]
+            if not unit:
+                continue
+            size = dep.numbytes_hint()
+            if best is None or size > best[0]:
+                best = (size, unit[0] < len(kept))
+    return "x" if best and best[1] else None
 
 
 _DT_BITS = {torch.float64: 64, torch.float32: 32, torch.float16: 16,

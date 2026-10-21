@@ -143,7 +143,7 @@ def fixed_config_for(kernel, numels, args, contiguous=None):
     `contiguous` is the axis ('x' or 'r') the kernel's largest read is unit-stride along;
     a reduction contiguous along x takes its blocks from kept_axis_contiguous_blocks.
     A reduction whose rows are too few to fill the lanes takes its R0_BLOCK from
-    lane_axis_reduction_block.
+    lane_axis_reduction_block, any other its XBLOCK from kept_axis_rows_block.
     """
     machine = config.CONFIG_MACHINE
     lanes = machine.vector_lanes
@@ -189,7 +189,24 @@ def fixed_config_for(kernel, numels, args, contiguous=None):
             cfg["R0_BLOCK"] = lane_axis_reduction_block(
                 cfg["XBLOCK"], numels["r0_numel"], elem_bytes, lanes, lane_bytes,
                 triton_max_numel())
+        elif set(cfg) == {"XBLOCK", "R0_BLOCK"} and cfg["R0_BLOCK"] and numels.get("xnumel"):
+            cfg["XBLOCK"] = kept_axis_rows_block(
+                numels["xnumel"], cfg["R0_BLOCK"], elem_bytes, lanes, lane_bytes,
+                triton_max_numel())
     return cfg
+
+
+def kept_axis_rows_block(xnumel, rblock, elem_bytes, lanes, lane_bytes, max_numel):
+    """XBLOCK of a reduction along its contiguous axis: rows of `rblock` filling the tile budget
+    the other blocks here take (one lane's, times the lanes), at least the lane cover and no more
+    than covers `xnumel` or Triton takes in one block."""
+    per_lane = reduction_block_for(1 << 62, elem_bytes, lane_bytes)
+    rows = min(lanes * per_lane, max_numel) // max(1, rblock)
+    floor = _covers(lanes, xnumel)
+    block = floor
+    while block * 2 <= rows and block < _covers(1 << 62, xnumel):
+        block *= 2
+    return block
 
 
 def pointwise_block(xnumel, elem_bytes, lanes, lane_bytes, max_numel):

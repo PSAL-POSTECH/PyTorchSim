@@ -15,7 +15,8 @@ is the one Inductor picks by TOGSim cycles, or the one the selection record hold
 
 The layer suite holds only the rows under the compiler's CI cap (validation/layer/simulate_shapes.py
 under_cap). --jobs N builds the workloads in N processes, each taking the next one, largest first by
-the compiler's rank for the suite (token_pairs for the layer); a process keeps its timing mode.
+the compiler's rank for the suite (token_pairs for the layer, its pool's cost, M*K*N, for the
+GEMMs); a process keeps its timing mode.
 
 Only what the compiler builds from: how a config was chosen (timed now, or recorded by an earlier run)
 is not in the bundle, so the same kernels are the same bundle.
@@ -332,9 +333,18 @@ def largest_first(suites):
     names = []
     for suite in dict.fromkeys(s[0] for s in SUITES if not suites or s[0] in suites):
         mine = [(n, d) for n, s, d, _, _ in workloads({suite})]
-        rank = getattr(compiler_suite(suite), "token_pairs", None) if suite in CAPPED else None
+        rank = _rank(suite)
         names += [(suite, n) for n, d in (sorted(mine, key=lambda w: -rank(w[1])) if rank else mine)]
     return names
+
+
+def _rank(suite):
+    """The compiler's cost of a workload of `suite`: token_pairs for a capped suite, else its pool's `cost`."""
+    mod = compiler_suite(suite)
+    if suite in CAPPED:
+        return getattr(mod, "token_pairs", None)
+    keys = next(s[2] for s in SUITES if s[0] == suite)
+    return (lambda d: mod.cost(d, keys)) if hasattr(mod, "cost") else None
 
 
 def main(out, suites=None, jobs=1):

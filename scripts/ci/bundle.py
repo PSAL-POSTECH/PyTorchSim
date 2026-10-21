@@ -25,10 +25,15 @@ A template kernel neither timed nor recorded (tile_source "heuristic") fails the
 kernel a timed run picks. One recorded without its fused epilogue ("recorded_unfused") is kept and
 named in a warning. The picks the GEMMs were timed to are appended to selection.jsonl in the dump
 path, for scripts/selection_merge.py.
+
+--reuse PREV copies PREV/out/<workload> when PREV/keys/<workload>.json holds the key this run writes to
+KEYS (--keys, default OUT/../keys, not in OUT): a hash of env PTS_INPUTS and BASE_IMAGE, torch, the
+selection identity, the run settings and the row. Without PTS_INPUTS nothing is keyed or reused.
 """
 
 import argparse
 import csv
+import hashlib
 import importlib.util
 import json
 import multiprocessing
@@ -258,7 +263,7 @@ CAPPED = ("layer",)
 
 
 def workloads(suites=None):
-    """(name, suite, dims, fn, inputs maker) per measured row of `suites` (default all); a CAPPED
+    """(name, suite, dims, fn, inputs maker, csv) per measured row of `suites` (default all); a CAPPED
     suite's rows over the compiler's CI cap are left out."""
     for suite, csv_name, keys, program, call in SUITES:
         if suites and suite not in suites:
@@ -275,7 +280,7 @@ def workloads(suites=None):
                 fn, make = call(dims)
                 name = "_".join([suite, *(dims[k] for k in keys if k in TEXT_COLUMNS),
                                  "x".join(str(dims[k]) for k in keys if k not in TEXT_COLUMNS), DTYPE])
-                yield name, suite, dims, fn, make
+                yield name, suite, dims, fn, make, csv_name
 
 
 LAUNCHED = []
@@ -315,24 +320,82 @@ def pts_commit():
         cwd=config.CONFIG_TORCHSIM_DIR).stdout.strip()
 
 
-def build(out, suite, name):
-    """Build `suite`'s workload `name` into out/<name>: (name, kernels launched, unpicked, unfused, externs)."""
-    dims, fn, make = next(w[2:] for w in workloads({suite}) if w[0] == name)
+def key_inputs(suite, name, dims, csv_name):
+    """What decides workload `name`'s kernels, as ids and values; None without env PTS_INPUTS."""
+    pts = os.environ.get("PTS_INPUTS", "").split()
+    if not pts:
+        return None
+    return {"pts": pts, "base_image": os.environ.get("BASE_IMAGE", ""), "torch": torch.__version__,
+            "identity": select.identity(), "target": config.CONFIG_TORCHSIM_TARGET,
+            "run": {s: getattr(config, s) for s in config.RUN_SETTINGS},
+            "workload": {"suite": suite, "csv": csv_name, "name": name, "dims": dims, "dtype": DTYPE}}
+
+
+def workload_key(inputs):
+    return hashlib.sha256(json.dumps(inputs, sort_keys=True).encode()).hexdigest()
+
+
+def write_key(keys, name, inputs, sources, externs):
+    os.makedirs(keys, exist_ok=True)
+    with open(os.path.join(keys, f"{name}.json"), "w") as f:
+        json.dump({"key": workload_key(inputs), "inputs": inputs, "tile_sources": sources,
+                   "externs": externs}, f, indent=1, sort_keys=True)
+
+
+def build(out, suite, name, keys=None):
+    """Build `suite`'s workload `name` into out/<name>, and its key into keys/<name>.json unless a launch
+    is unpicked: (name, kernels launched, unpicked, unfused, externs)."""
+    dims, fn, make, csv_name = next(w[2:] for w in workloads({suite}) if w[0] == name)
     shutil.rmtree(os.path.join(out, name), ignore_errors=True)
+    if keys:
+        _remove(os.path.join(keys, f"{name}.json"))
     launches, sources, externs = capture(name, fn, make, out)
     with open(os.path.join(out, name, "manifest.json"), "w") as f:
         json.dump({"workload": name, "suite": suite, **dims, "dtype": DTYPE, "launches": launches,
                    "externs": externs}, f, indent=1)
     unpicked = [la["kernel"] for la, s in zip(launches, sources) if s == select.HEURISTIC]
     unfused = [la["kernel"] for la, s in zip(launches, sources) if s == select.RECORDED_UNFUSED]
-    return name, [la["kernel"] for la in launches], unpicked, unfused, [e["call"] for e in externs]
+    calls = [e["call"] for e in externs]
+    inputs = key_inputs(suite, name, dims, csv_name)
+    if keys and inputs is not None and not unpicked:
+        write_key(keys, name, inputs, sources, calls)
+    return name, [la["kernel"] for la in launches], unpicked, unfused, calls
+
+
+def _remove(path):
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+
+
+def reuse(prev, out, keys, suite, name, dims, csv_name):
+    """Copy prev/out/<name> into out/<name> when prev/keys/<name>.json holds today's key and no unpicked
+    launch: (name, kernels, [], unfused, externs), else None."""
+    inputs = key_inputs(suite, name, dims, csv_name)
+    try:
+        with open(os.path.join(prev, "keys", f"{name}.json")) as f:
+            old = json.load(f)
+        with open(os.path.join(prev, "out", name, "manifest.json")) as f:
+            manifest = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if inputs is None or old.get("key") != workload_key(inputs) \
+            or select.HEURISTIC in old.get("tile_sources", [select.HEURISTIC]):
+        return None
+    shutil.rmtree(os.path.join(out, name), ignore_errors=True)
+    shutil.copytree(os.path.join(prev, "out", name), os.path.join(out, name))
+    write_key(keys, name, inputs, old["tile_sources"], old["externs"])
+    kernels = [la["kernel"] for la in manifest["launches"]]
+    unfused = [k for k, s in zip(kernels, old["tile_sources"]) if s == select.RECORDED_UNFUSED]
+    return name, kernels, [], unfused, old["externs"]
 
 
 def largest_first(suites):
     """(suite, workload name) of `suites`, each suite's ordered by the compiler's rank where it has one."""
     names = []
     for suite in dict.fromkeys(s[0] for s in SUITES if not suites or s[0] in suites):
-        mine = [(n, d) for n, s, d, _, _ in workloads({suite})]
+        mine = [(w[0], w[2]) for w in workloads({suite})]
         rank = _rank(suite)
         names += [(suite, n) for n, d in (sorted(mine, key=lambda w: -rank(w[1])) if rank else mine)]
     return names
@@ -347,21 +410,30 @@ def _rank(suite):
     return (lambda d: mod.cost(d, keys)) if hasattr(mod, "cost") else None
 
 
-def main(out, suites=None, jobs=1):
+def main(out, suites=None, jobs=1, keys=None, prev=None):
     """Write `suites`' workloads (default all) into `out`, replacing each one's directory there, in
-    `jobs` processes."""
+    `jobs` processes; each one whose key `prev` holds is copied from it instead of built."""
     os.makedirs(out, exist_ok=True)
+    keys = keys or os.path.join(os.path.dirname(out), "keys")
     unpicked, unfused = [], []
-    names = largest_first(suites)
+    names, reused = largest_first(suites), []
+    if prev:
+        rows = {(w[1], w[0]): (w[2], w[5]) for w in workloads(suites)}
+        reused = [r for r in (reuse(prev, out, keys, s, n, *rows[s, n]) for s, n in names) if r]
+        names = [n for n in names if n[1] not in {r[0] for r in reused}]
     if jobs > 1:
         pool = multiprocessing.get_context("spawn").Pool(jobs)
-        built = pool.imap_unordered(_build, [(out, *n) for n in names])
+        built = pool.imap_unordered(_build, [(out, *n, keys) for n in names])
     else:
-        pool, built = None, (build(out, *n) for n in names)
+        pool, built = None, (build(out, *n, keys) for n in names)
+    for name, kernels, up, uf, externs in reused:
+        unfused += [(name, k) for k in uf]
+        print(f"[bundle] {name}: reused {kernels}" + (f" extern {externs}" if externs else ""), flush=True)
     for name, kernels, up, uf, externs in built:
         unpicked += [(name, k) for k in up]
         unfused += [(name, k) for k in uf]
         print(f"[bundle] {name}: {kernels}" + (f" extern {externs}" if externs else ""), flush=True)
+    print(f"[bundle] {len(reused)} reused, {len(names)} built", flush=True)
     if pool is not None:
         pool.close()
         pool.join()
@@ -383,5 +455,8 @@ if __name__ == "__main__":
     ap.add_argument("out")
     ap.add_argument("suites", nargs="*", help="suites to build (default: all)")
     ap.add_argument("--jobs", type=int, default=1, help="processes building workloads at once")
+    ap.add_argument("--keys", help="where the workloads' keys are written (default: OUT/../keys)")
+    ap.add_argument("--reuse", metavar="PREV", help="a previous bundle (PREV/out, PREV/keys) to copy matches from")
     a = ap.parse_args()
-    main(os.path.abspath(a.out), set(a.suites), a.jobs)
+    main(os.path.abspath(a.out), set(a.suites), a.jobs, a.keys and os.path.abspath(a.keys),
+         a.reuse and os.path.abspath(a.reuse))

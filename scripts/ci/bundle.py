@@ -320,12 +320,23 @@ def pts_commit():
         cwd=config.CONFIG_TORCHSIM_DIR).stdout.strip()
 
 
+KEYED_ENV = ("TORCHSIM_", "TORCHINDUCTOR_", "TRITON_")
+PER_RUN_ENV = {"TORCHSIM_DUMP_PATH", "TORCHSIM_LOG_PATH", "TORCHINDUCTOR_CACHE_DIR", "TRITON_CACHE_DIR"}
+
+
+def keyed_env():
+    """The environment PyTorchSim, Inductor and Triton read, less the cache and output paths each run
+    picks for itself (Inductor sets TORCHINDUCTOR_CACHE_DIR and TRITON_CACHE_DIR while compiling)."""
+    return {k: v for k, v in os.environ.items() if k.startswith(KEYED_ENV) and k not in PER_RUN_ENV}
+
+
 def key_inputs(suite, name, dims, csv_name):
     """What decides workload `name`'s kernels, as ids and values; None without env PTS_INPUTS."""
     pts = os.environ.get("PTS_INPUTS", "").split()
     if not pts:
         return None
     return {"pts": pts, "base_image": os.environ.get("BASE_IMAGE", ""), "torch": torch.__version__,
+            "env": keyed_env(),
             "identity": select.identity(), "target": config.CONFIG_TORCHSIM_TARGET,
             "run": {s: getattr(config, s) for s in config.RUN_SETTINGS},
             "workload": {"suite": suite, "csv": csv_name, "name": name, "dims": dims, "dtype": DTYPE}}

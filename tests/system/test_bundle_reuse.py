@@ -1,6 +1,6 @@
 """scripts/ci/bundle.py --reuse: a workload whose key the previous bundle holds is copied byte for byte
-without building it, and every built one gets a key; a changed input, an unpicked launch, no
-PTS_INPUTS or a row no longer measured is not reused."""
+without building it, and every built one gets a key; a changed input or Inductor/Triton/PyTorchSim env,
+an unpicked launch, no PTS_INPUTS or a row no longer measured is not reused; a per-run path is no input."""
 import filecmp
 import importlib.util
 import json
@@ -34,14 +34,14 @@ def _same(a, b):
         _same(os.path.join(a, d), os.path.join(b, d))
 
 
-def _run(root, prev=None, inputs=INPUTS):
-    """main() into root/out and root/keys: the workloads it built."""
+def _run(root, prev=None, inputs=INPUTS, extra=None):
+    """main() into root/out and root/keys, with env `extra` set: the workloads it built."""
     built, real = [], bundle.build
 
     def build(out, suite, name, keys=None):
         built.append(name)
         return real(out, suite, name, keys)
-    env = {"PTS_INPUTS": inputs} if inputs else {}
+    env = dict({"PTS_INPUTS": inputs} if inputs else {}, **(extra or {}))
     with mock.patch.dict(os.environ, env), mock.patch.object(bundle, "workloads", _one), \
             mock.patch.object(bundle, "build", build):
         if not inputs:
@@ -68,6 +68,12 @@ def test_reuse():
 
         assert _run(c, prev=a, inputs="tree-b device-a bundle-a") == [NAME]
         _same(os.path.join(a, "out", NAME), os.path.join(c, "out", NAME))
+
+        x, y = os.path.join(tmp, "x"), os.path.join(tmp, "y")
+        assert _run(x, prev=a, extra={"TORCHINDUCTOR_PERSISTENT_REDUCTIONS": "0"}) == [NAME]
+        assert _run(y, prev=a, extra={"TORCHSIM_DUMP_PATH": os.path.join(tmp, "dump"),
+                                      "TORCHSIM_LOG_PATH": os.path.join(tmp, "log"),
+                                      "TRITON_CACHE_DIR": os.path.join(tmp, "triton")}) == []
 
         shutil.copytree(a, d)
         with open(os.path.join(d, "keys", f"{NAME}.json"), "w") as f:

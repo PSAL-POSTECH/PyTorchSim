@@ -112,9 +112,9 @@ The script checks out the commit pinned in [`third_party/pytorchsim-triton-backe
 ### Run Examples
 The `tests` directory contains several AI workload examples.
 ```bash
-python tests/ops/gemm/test_matmul.py 
+TORCHSIM_TIMING_MODE=1 python tests/ops/gemm/test_matmul.py
 ```
-The result is written to `${TORCHSIM_LOG_PATH}/togsim_result/XXX.log`. The log file contains detailed core, memory, and interconnect stats.
+Timing is off by default (`TORCHSIM_TIMING_MODE=0`): each kernel is compiled and checked on Spike, and gem5 and TOGSim do not run. With `TORCHSIM_TIMING_MODE=1`, the TOGSim log is written to `${TORCHSIM_LOG_PATH}/<YYYYMMDD_HHMMSS>_<hash>.log`. The log file contains detailed core, memory, and interconnect stats.
 
 ### Run Your Own Model on PyTorchSim
 You can run your own PyTorch model on PyTorchSim by setting up a custom NPU device.  
@@ -215,17 +215,16 @@ compiled_step()
 
 By default, each compiled operation can run TOGSim in a standalone way—typically **one simulator process and one log file per kernel**. That matches single-kernel workflows but splits traces when you run many forwards in a row.
 
-`with TOGSimulator(config_path=...)` keeps **one TOGSim session** open for the block: successive calls (e.g. multiple `compiled_model(...)` forwards) run in sequence in the same process, so the timeline and shared resources continue in a single log instead of restarting for every op. `TOGSIM_CONFIG` is set to the given YAML for the block so codegen and TOGSim still share one hardware file.
+`with torch.npu.TOGSimulator(config_path=...)` keeps **one TOGSim session** open for the block: successive calls (e.g. multiple `compiled_model(...)` forwards) run in sequence in the same process, so the timeline and shared resources continue in a single log instead of restarting for every op. `TORCHSIM_TARGET` is set to the given YAML for the block so codegen and TOGSim still share one hardware file.
 
 Use the same API you already use; only wrap the region you want co-simulated:
 
 ```python
 import torch
-from pytorchsim.simulator.togsim import TOGSimulator
 
 # ... build model, torch.compile, tensors on npu:0 as usual ...
 
-with TOGSimulator(config_path=config):
+with torch.npu.TOGSimulator(config_path=config):
     y = compiled_model(x)
 ```
 
@@ -240,7 +239,7 @@ For **multi-tenant** or **interleaved** execution, you usually need to attach a 
 `timestamp`** is in **nanoseconds** (simulation time for ordering launches). Use `0` when you do not need explicit times beyond submission order.
 
 ```python
-with TOGSimulator(config_path=config):
+with torch.npu.TOGSimulator(config_path=config):
     torch.npu.launch_model(opt_model1, x1, stream_index=0, timestamp=0)
     torch.npu.launch_model(opt_model2, x2, stream_index=1, timestamp=0)
     torch.npu.synchronize()
@@ -249,10 +248,6 @@ with TOGSimulator(config_path=config):
 ```
 
 Here `synchronize()` acts as a barrier: it does not return until every `launch_model` issued **above** it has finished in the simulator. The later pair of `launch_model` calls therefore runs only after those earlier models have fully completed—so the sync is the point in the timeline where **all preceding launches are done**.
-
-```bash
-python tests/system/test_scheduler.py
-```
 
 Use a TOGSim config(`.yml`) that defines **partitions** when mapping queues to cores, for example:
 
@@ -271,7 +266,7 @@ Here `stream_index=0` selects queue `0` (core_0), `stream_index=1` selects queue
 
 ### 3. Load generation (Poisson arrivals)
 
-The `poisson_request_generator` in `pytorchsim.simulator.togsim` yields synthetic **arrival times** (in **milliseconds**). Merge those with `launch_model`: convert each time to **nanoseconds** for `timestamp`, set `stream_index` to the target partition queue, and run all launches inside one `with TOGSimulator(...)` so a **single** log captures the full trace.
+The `poisson_request_generator` in `pytorchsim.simulator.togsim` yields synthetic **arrival times** (in **milliseconds**). Merge those with `launch_model`: convert each time to **nanoseconds** for `timestamp`, set `stream_index` to the target partition queue, and run all launches inside one `with torch.npu.TOGSimulator(...)` so a **single** log captures the full trace.
 
 ```python
 from pytorchsim.simulator.togsim import poisson_request_generator
@@ -289,7 +284,7 @@ for t in poisson_request_generator(model1_lambda, max_msec_time=max_time_msec):
     x = torch.randn(128, 768, device=device)
     events.append((t, 1, opt_model1, (x,)))  # stream_index 1 → queue / partition 1
 
-with TOGSimulator(config_path=config):
+with torch.npu.TOGSimulator(config_path=config):
     for t_msec, stream_index, model, args in events:
         torch.npu.launch_model(
             model,
@@ -331,67 +326,56 @@ Each kernel's `meta.json` says where its tile came from: `tile_source` is `timed
 `recorded_unfused` (a recorded pick built with an epilogue fused) or `heuristic`.
 
 ## L2 Cache
-It supports L2 cache as persistent cache. User can provide software-managed allocation/eviction strategy for tensors with persistent cache.
-
-Common Memory (CMEM) is a new feature introduced in the latest TPUs (newer than TPUv3). Multiple cores share this memory, which provides high bandwidth. Reusable tensors are stored and loaded from CMEM to avoid off-chip traffic. Our L2 cache can work like CMEM.
-
-To allocate a tensor in L2 cache, set the environment variable as shown below. The `tpuv4` directory provides example plans for L2 cache obtained from TPUv4 profiling.
-```bash
-export SRAM_BUFFER_PLAN_PATH=tpuv4/gemm_plan.py
-```
-The L2 cache strategy file is composed as follows:
-```
-plan = {
-    "arg0_1"
-}
-```
-In this example, only one input tensor is registered in L2 cache. You can refer to the tensor name from the wrapper code. After running the code, you can find the wrapper codegen path in the [result](#result) section.
-
-Last but not least, you must set `l2d_type` and `l2d_config` in the [TOGSim config](#togsim-configuration) to use L2 cache. The `l2d_config` follows the same configuration method as [AccelSim](https://github.com/accel-sim/accel-sim-framework).
+TOGSim models an optional L2 data cache between the cores and DRAM. Set `l2d_type: datacache` and `l2d_config` in the [TOGSim config](#togsim-configuration) to use it. The `l2d_config` follows the same configuration method as [AccelSim](https://github.com/accel-sim/accel-sim-framework).
 
 ## Compiler Configuration
-`pytorchsim/config.py` contains target hardware configuration to compile.
-
-You can configure these options using environment variables.
+`pytorchsim/config.py` reads PyTorchSim's settings from environment variables. The machine itself is a TOGSim YAML file (see [TOGSim Configuration](#togsim-configuration)).
 ```bash
 export TORCHSIM_DIR=/workspace/PyTorchSim # home directory
 export TOGSIM_DIR=/workspace/pytorchsim-triton-compiler/third_party/TOGSim # TOGSim checkout: include/, build/bin/Simulator, configs/ (default: the one the compiler carries)
+export TORCHSIM_TARGET=tpuv6e # the machine: a name under $TOGSIM_DIR/configs, or a path to a .yml (default tpuv6e)
 
-# Plan which tensors are allocated in TPUv4's CMEM
-export SRAM_BUFFER_PLAN_PATH=/workspace/PyTorchSim/tpuv4/gemm_plan.py
-export TORCHSIM_USE_TIMING_POOLING=0 # use lightweight pooling for timing
+export TORCHSIM_TIMING_MODE=1 # 1 = time each kernel on gem5 and TOGSim (default 0)
+export TORCHSIM_FUNCTIONAL_MODE=0 # 0 = skip Spike for faster runs; outputs are then not computed (default 1)
+export TORCHSIM_FUNCTIONAL_VERIFY_PER_KERNEL=1 # check each kernel against a CPU golden (default 0)
+export TORCHSIM_CODEGEN_AUTOTUNE_TEMPLATE_TOPK=4 # GEMM tiles offered to the selection (default 4)
 ```
 ## TOGSim Configuration
 ![NPU_Core](./docs/npu_core.jpg)
 
-TOGSim is its own repository, [PSAL-POSTECH/TOGSim](https://github.com/PSAL-POSTECH/TOGSim), which the compiler carries as `third_party/TOGSim`. Its `configs/` directory holds **YAML** (`.yml`) hardware descriptions: `$TOGSIM_DIR/configs`, which is `/workspace/pytorchsim-triton-compiler/third_party/TOGSim/configs` in the Docker image. Set `TOGSIM_CONFIG` to one of these files. The **same file** is read by **PyTorchSim** (`pytorchsim/config.py`) for `vpu_*`, `pytorchsim_*`, and `codegen_*` fields, and by **TOGSim** (`src/Common.cc` there) for the simulator-specific keys below.
+TOGSim is its own repository, [PSAL-POSTECH/TOGSim](https://github.com/PSAL-POSTECH/TOGSim), which the compiler carries as `third_party/TOGSim`. Its `configs/` directory holds **YAML** (`.yml`) hardware descriptions: `$TOGSIM_DIR/configs`, which is `/workspace/pytorchsim-triton-compiler/third_party/TOGSim/configs` in the Docker image. Set `TORCHSIM_TARGET` to one of them, by name (`tpuv6e`) or by path. The **same file** is read by the **compiler** (`vpu_*`, `isa`, `vcix`, `address_map`) and by **TOGSim** (`src/Common.cc` there) for the simulator-specific keys below.
 
 ### Reference layout
+
+The default machine, `configs/tpuv6e.yml`, with the optional keys commented out:
 
 ```yaml
 # --- Core (TOGSim) ---
 num_cores: 1
-core_freq_mhz: 940
-core_stats_print_period_cycles: 10000
+core_freq_mhz: 1751
+core_stats_print_period_cycles: 200
 num_systolic_array_per_core: 2
-sa_weight_buffer_depth: 2   # per-SA resident weight slots; must be > 0 (default 2). Raise to loosen the preload throttle.
-# Optional: one entry per core, default ws_mesh
-# core_type: [ws_mesh, ws_mesh]
-# Optional STONNE cores: stonne_config_path, num_stonne_per_core, num_stonne_port
+systolic_array_split: round_robin
+systolic_array_unit: TPUV6E_MXU
+dma_load_latency_cycles: 27
+dma_load_ready_cycles: 842
+# sa_weight_buffer_depth: 2   # per-SA resident weight slots; must be > 0 (default 2). Raise to loosen the preload throttle.
+# core_type: [ws_mesh]        # one entry per core; ws_mesh is the only core type
 
-# --- VPU / scratchpad (compiler codegen; same YAML) ---
+# --- VPU / scratchpad / ISA (compiler; same YAML) ---
 vpu_num_lanes: 128
-vpu_spad_size_kb_per_lane: 128
-vpu_vector_length_bits: 256
+vpu_spad_size_kb_per_lane: 1024
+isa: [m, a, f, d, c, v, zvfh, zvfbfmin, zvl256b, vcix_tpuv6e]
+vcix: {tpu_mxu_queue_entries: 512}
+address_map: {spad_vaddr: 0xd0000000, spad_paddr: 0x2000000000, dram_base: 0x80000000, dram_size: 107374182400}
 
 # --- DRAM config ---
 dram_type: ramulator2          # ramulator2 | simple
-dram_freq_mhz: 940
-dram_channels: 16
-dram_stats_print_period_cycles: 10000
-ramulator_config_path: ../configs/ramulator2_configs/HBM2_TPUv3.yaml  # resolved relative to this YAML’s directory
+dram_channels: 32
+dram_stats_print_period_cycles: 200
+ramulator_config_path: ../configs/ramulator2_configs/HBM3_TPUv6e.yaml  # resolved relative to this YAML's directory
 # For ramulator2: request size, DRAM MHz, and per-channel peak GB/s are derived from the Ramulator YAML.
-# dram_freq_mhz must exactly match MHz derived from Ramulator tCK or startup fails.
+# dram_freq_mhz, if given, must exactly match MHz derived from Ramulator tCK or startup fails.
 
 # simple DRAM (alternative to ramulator2):
 # dram_type: simple
@@ -406,30 +390,21 @@ ramulator_config_path: ../configs/ramulator2_configs/HBM2_TPUv3.yaml  # resolved
 # Optional: NUMA-style DRAM partitions (channels must divide evenly)
 # dram_num_partitions: 2
 
+# --- Optional L2 (TOGSim) ---
+l2d_type: datacache            # nocache (default if omitted) | datacache
+l2d_config: S:128:128:512,32,L:T:m:W:L,A:192:4,32:0,32   # AccelSim-style string, required for datacache
+# l2d_hit_latency: ...
+
 # --- Interconnect (TOGSim) ---
 icnt_type: simple              # simple | booksim2
 icnt_latency_cycles: 10        # used when icnt_type is simple
-icnt_freq_mhz: 940
-icnt_injection_ports_per_core: 16
+icnt_freq_mhz: 1751
+icnt_injection_ports_per_core: 32
 # icnt_stats_print_period_cycles: 0   # optional
-# For icnt_type: booksim2, use booksim_config_path (not icnt_config_path):
+# For icnt_type: booksim2, use booksim_config_path:
 # booksim_config_path: ../configs/booksim2_configs/fly_c16_m16.icnt
 
-# --- Functional / timing flags (compiler; same YAML) ---
-pytorchsim_functional_mode: 1  # 1 = run Spike validation, 0 = skip for faster runs
-pytorchsim_timing_mode: 1
-
-# --- Compiler mapping / optimizations (same YAML) ---
-codegen_autotune_template_topk: 4
-codegen_compiler_optimization: all    # all | none | list of option names
-
-# --- Optional L2 (TOGSim) ---
-# l2d_type: nocache            # default if omitted
-# l2d_type: datacache
-# l2d_config: "S:64:128:512,32,..."   # required when l2d_type is datacache (AccelSim-style string)
-
-# --- Optional scheduler / partitions (TOGSim; multi-queue) ---
-# scheduler: simple
+# --- Optional partitions (TOGSim; multi-queue) ---
 # num_partition: 2
 # partition:
 #   core_0: 0
@@ -440,15 +415,13 @@ codegen_compiler_optimization: all    # all | none | list of option names
 
 One-line meaning for each group (details in the YAML block above).
 
-- **Core (`num_cores`, `core_freq_mhz`, `core_stats_print_period_cycles`, `num_systolic_array_per_core`, `sa_weight_buffer_depth`, optional `core_type`, STONNE keys)**: how many cores, their clock, stats cadence, systolic count per core, the per-SA resident weight-slot count (must be > 0; bounds preload run-ahead—raise it to loosen the throttle), and optional non-default mesh vs STONNE mix.
-- **VPU (`vpu_*`)**: vector lane count, per-lane scratchpad (KB), and vector register width—**compiler** uses these for tiling/codegen.
+- **Core (`num_cores`, `core_freq_mhz`, `core_stats_print_period_cycles`, `num_systolic_array_per_core`, `systolic_array_*`, `dma_*`, `sa_weight_buffer_depth`, optional `core_type`)**: how many cores, their clock, stats cadence, systolic count per core and its unit, DMA costs, and the per-SA resident weight-slot count (must be > 0; bounds preload run-ahead—raise it to loosen the throttle).
+- **VPU / ISA (`vpu_*`, `isa`, `vcix`, `address_map`)**: vector lane count and per-lane scratchpad (KB), the ISA and accelerator the **compiler** targets, and the address map. A machine file that leaves any of them out is refused.
 - **DRAM (`dram_type`, `dram_channels`, …)**: `ramulator2` uses `ramulator_config_path`; `simple` uses fixed latency and optional bandwidth caps (`dram_bandwidth_gbps_*`, `dram_freq_mhz` when capped). `dram_num_partitions` splits channels for NUMA-style addressing.
 - **Interconnect (`icnt_*`, `booksim_config_path`)**: `simple` adds fixed hop latency (`icnt_latency_cycles`); `booksim2` points at a BookSim2 topology file.
-- **Codegen (`codegen_*`)**: how many of this machine's GEMM tiles are offered to the selection (see Mapping), and the fusion/optimization set for the PyTorch compiler path.
 - **L2 (`l2d_type`, `l2d_config`, optional `l2d_hit_latency`)**: optional data cache between cores and DRAM; `l2d_config` uses AccelSim-style cache geometry strings.
-- **Scheduler (`scheduler`, `num_partition`, `partition`)**: request queues per partition and `core_i` → queue index mapping for multi-tenant / `launch_model` routing.
-- **`pytorchsim_functional_mode`**: **`1`** runs **Spike** on generated code; **`0`** skips it for faster iteration.
-- **`pytorchsim_timing_mode`**: **`1`** keeps the cycle-aware tile-graph path that feeds **TOGSim**; **`0`** turns that timing path off (functional-style runs; often paired with `pytorchsim_functional_mode` in tutorial configs).
+- **Partitions (`num_partition`, `partition`)**: request queues per partition and `core_i` → queue index mapping for multi-tenant / `launch_model` routing. The shipped machines define one queue.
+- Run settings (timing, Spike, per-kernel check, GEMM tiles offered) are environment variables, not YAML keys: see [Compiler Configuration](#compiler-configuration).
 
 ## Tutorial
 Check out our [ISPASS 2026 tutorial](https://www.youtube.com/playlist?list=PLYIb5dkr4isJ1ERKTKFoWdCKMUOaay2Nn) to learn:

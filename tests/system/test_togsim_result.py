@@ -7,13 +7,13 @@ import tempfile
 sys.path.insert(0, os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"))
 
 from pytorchsim import config
-from pytorchsim.simulator.togsim import TOGSimulator
+from pytorchsim.simulator.togsim import TOGSimProcess
 
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 
 
 def test_unit_table_rows():
-    core, channels, avg_bw, wall, total = TOGSimulator.get_result_from_file(
+    core, channels, avg_bw, wall, total = TOGSimProcess.get_result_from_file(
         os.path.join(DATA, "togsim_tpuv6e.log"))
     units = core["units"]["Core [0]"]
     array = units[config.CONFIG_MACHINE.togsim_unit]
@@ -31,7 +31,7 @@ def test_unfinished_log_has_the_same_shape():
     with tempfile.NamedTemporaryFile("w", suffix=".log") as log:
         log.write("[info] Core [0] : Total_cycles: 3\n")
         log.flush()
-        assert TOGSimulator.get_result_from_file(log.name) == ({}, {}, 0.0, float("inf"), float("inf"))
+        assert TOGSimProcess.get_result_from_file(log.name) == ({}, {}, 0.0, float("inf"), float("inf"))
 
 
 if __name__ == "__main__":

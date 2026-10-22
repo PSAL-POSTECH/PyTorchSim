@@ -9,7 +9,7 @@ from unittest import mock
 sys.path.insert(0, os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"))
 
 from pytorchsim import config
-from pytorchsim.simulator.togsim import TOGSimulator
+from pytorchsim.simulator.togsim import TOGSimProcess
 
 REFUSAL = "[error] [TOGSim] TOG k/tog.so: work-item 0 (key 10) needs 49153 bytes in the spad at once"
 STUB = """#!/bin/sh
@@ -54,7 +54,7 @@ def _raised(fn):
 def test_standalone_refusal_is_a_runtime_error():
     with tempfile.TemporaryDirectory() as root, _logs_in(root):
         machine, handle, attribute = _checkout(root, 1)
-        said = _raised(lambda: TOGSimulator.run_standalone(
+        said = _raised(lambda: TOGSimProcess.run_standalone(
             handle, attribute, autotune_mode=True, config_path=machine, togsim_path=root))
         assert said is not None and "status 1" in said and REFUSAL in said, said
 
@@ -62,7 +62,7 @@ def test_standalone_refusal_is_a_runtime_error():
 def test_session_refusal_is_a_runtime_error():
     with tempfile.TemporaryDirectory() as root, _logs_in(root):
         machine, handle, attribute = _checkout(root, 1)
-        sim = TOGSimulator(config_path=machine, togsim_path=root)
+        sim = TOGSimProcess(config_path=machine, togsim_path=root)
         sim.launch_kernel(0, 0, handle, attribute)
         said = _raised(sim.shutdown)
         assert said is not None and "status 1" in said, said
@@ -72,7 +72,7 @@ def test_session_refusal_is_a_runtime_error():
 def test_session_that_ran_shuts_down_quietly():
     with tempfile.TemporaryDirectory() as root, _logs_in(root):
         machine, handle, attribute = _checkout(root, 0)
-        sim = TOGSimulator(config_path=machine, togsim_path=root)
+        sim = TOGSimProcess(config_path=machine, togsim_path=root)
         sim.launch_kernel(0, 0, handle, attribute)
         assert _raised(sim.shutdown) is None
 

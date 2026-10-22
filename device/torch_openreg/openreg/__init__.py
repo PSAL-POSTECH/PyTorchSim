@@ -11,7 +11,7 @@ from .extension_device_interface import ExtensionDeviceInterface
 
 _initialized = False
 _default_streams = {}  # Dictionary to store default streams per device
-_tog_simulator = None  # Singleton TOGSimulator instance
+_tog_simulator = None  # Singleton TOGSimProcess instance
 _launch_context = threading.local() # storage for launch_kernel context
 _eager_compiled = set()  # op names already given an eager_to_compile wrapper
 
@@ -150,7 +150,7 @@ def default_stream(device=None):
 
 
 def launch_kernel(tog_path, attribute_path):
-    """Launch a kernel on TOGSimulator.
+    """Launch a kernel on the open TOGSimProcess.
 
     Args:
         tog_path: Path to TOG file
@@ -160,14 +160,14 @@ def launch_kernel(tog_path, attribute_path):
         int: The kernel ID assigned to this launch
 
     """
-    # Get TOGSimulator instance
+    # Get TOGSimProcess instance
     sim = get_tog_simulator()
     if sim is None:
-        raise RuntimeError("[torch.npu] TOGSimulator is not initialized. Call torch.npu.init() first.")
+        raise RuntimeError("[torch.npu] No TOGSim is open. Launch inside `with torch.npu.TOGSimulator(...)`.")
 
     device_idx = current_device()
     stream_index, timestamp = get_launch_context()
-    # Create a task function that calls TOGSimulator.launch_kernel
+    # Create a task function that calls TOGSimProcess.launch_kernel
     def launch_task():
         return sim.launch_kernel(device_idx, stream_index, tog_path, attribute_path, timestamp)
 
@@ -178,16 +178,16 @@ def synchronize():
     """Synchronize all streams on the current device.
 
     This function:
-    1. Registers TOGSimulator.device_synchronize as a task on the default stream
+    1. Registers TOGSimProcess.device_synchronize as a task on the default stream
     2. Calls the underlying device_synchronize to wait for all tasks to complete
     """
-    # Get TOGSimulator instance
+    # Get TOGSimProcess instance
     sim = get_tog_simulator()
     if sim is not None:
         # Get current device index
         device_idx = current_device()
 
-        # Create a task function that calls TOGSimulator.device_synchronize
+        # Create a task function that calls TOGSimProcess.device_synchronize
         def sync_task():
             return sim.device_synchronize(device_idx)
 
@@ -202,15 +202,15 @@ def get_tog_simulator():
     return _tog_simulator
 
 def set_tog_simulator(simulator):
-    """Set the global TOGSimulator instance.
+    """Set the global TOGSimProcess instance.
 
     Args:
-        simulator: TOGSimulator instance or None
+        simulator: TOGSimProcess instance or None
     """
     global _tog_simulator
     _tog_simulator = simulator
 
-class simulator:
+class TOGSimulator:
     """Open a TOGSim backend and make it this device's simulator for the block.
 
     The machine file TOGSim times on is the one kernels are compiled for, so its path
@@ -225,10 +225,10 @@ class simulator:
         self._backend = None
 
     def __enter__(self):
-        from pytorchsim.simulator.togsim import TOGSimulator
+        from pytorchsim.simulator.togsim import TOGSimProcess
 
-        self._backend = TOGSimulator(config_path=self.config_path,
-                                     togsim_path=self.togsim_path)
+        self._backend = TOGSimProcess(config_path=self.config_path,
+                                      togsim_path=self.togsim_path)
         self._old_config_env = os.environ.get("TORCHSIM_TARGET", self._CONFIG_ENV_UNSET)
         os.environ["TORCHSIM_TARGET"] = os.path.abspath(self._backend.config_path)
         self._old_simulator = get_tog_simulator()
@@ -291,7 +291,7 @@ class launch_context:
         return False
 
 def launch_model(model, *args, stream_index=0, timestamp=0, **kwargs):
-    """Launch a compiled model on TOGSimulator.
+    """Launch a compiled model on the open TOGSimulator.
 
     Args:
         model: Compiled model (torch.compile())
@@ -465,7 +465,7 @@ __all__ = [
     "synchronize",
     "get_tog_simulator",
     "set_tog_simulator",
-    "simulator",
+    "TOGSimulator",
     "eager_to_compile",
     "register_eager_to_compile",
     "DEFAULT_EAGER_TO_COMPILE",

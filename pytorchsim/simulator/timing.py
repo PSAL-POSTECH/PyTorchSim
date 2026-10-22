@@ -176,7 +176,7 @@ def run_togsim(workdir, meta, args=()):
     """
     import torch
 
-    from pytorchsim.simulator.togsim import TOGSimulator
+    from pytorchsim.simulator.togsim import TOGSimProcess
 
     for need in SHARED:
         if not os.path.isfile(os.path.join(workdir, need)):
@@ -190,8 +190,8 @@ def run_togsim(workdir, meta, args=()):
     if torch.npu.get_tog_simulator() is not None:
         return torch.npu.launch_kernel(handle, attribute)
 
-    result_path = TOGSimulator.run_standalone(handle, attribute)
-    return TOGSimulator.get_result_from_file(result_path)
+    result_path = TOGSimProcess.run_standalone(handle, attribute)
+    return TOGSimProcess.get_result_from_file(result_path)
 
 
 def run(workdir, meta, args=()):

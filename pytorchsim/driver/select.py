@@ -42,7 +42,7 @@ def _time_tile(src_code, meta, kernel_name, workdir, cut=None):
     """TOGSim cycles of one kernel, simulated alone; inf if it does not compile or run, or `cut`
     stops its simulation. TOGSim refuses a tile over the spad at load, and that refusal and a cut
     reach here as RuntimeError."""
-    from pytorchsim.simulator.togsim import Cut, TOGSimulator
+    from pytorchsim.simulator.togsim import Cut, TOGSimProcess
     os.makedirs(workdir, exist_ok=True)
     spec_path = os.path.join(workdir, f"{kernel_name}_spec.py")
     with open(os.path.join(workdir, "kernel.py"), "w") as f:
@@ -55,10 +55,10 @@ def _time_tile(src_code, meta, kernel_name, workdir, cut=None):
         mine = contract.link_shared(workdir, timing.SHARED)
         timing.write_shape(workdir, meta)
         timing.write_tensors(workdir)
-        result = TOGSimulator.run_standalone(os.path.join(mine, "tile_graph.onnx"),
-                                             os.path.join(mine, "attribute"),
-                                             autotune_mode=True, cut=cut)
-        return TOGSimulator.get_result_from_file(result)[-1]
+        result = TOGSimProcess.run_standalone(os.path.join(mine, "tile_graph.onnx"),
+                                              os.path.join(mine, "attribute"),
+                                              autotune_mode=True, cut=cut)
+        return TOGSimProcess.get_result_from_file(result)[-1]
     except (compiler_bridge.CompilerError, RuntimeError, FileNotFoundError) as exc:
         why = autotune.too_big(exc) or (f"cut, {exc}" if isinstance(exc, Cut) else type(exc).__name__)
         logger.info("[select] %s %s: %s", kernel_name, workdir, why)

@@ -178,7 +178,7 @@ def test_gqa_decode_optimized(model, device, seq_len: int = 10240, tile_size: in
 
     q_dev, k_dev, v_dev = q.to(device), k.to(device), v.to(device)
     with torch.no_grad():
-        with torch.npu.simulator():
+        with torch.npu.TOGSimulator():
             out_dev = compiled(q_dev, k_dev, v_dev, scale=scale)
 
     # ── CPU reference ──────────────────────────────────────────────────────

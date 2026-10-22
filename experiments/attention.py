@@ -29,7 +29,7 @@ if __name__ == "__main__":
     value = torch.randn(*size).to(device=device)
     opt_fn = torch.compile(dynamic=False)(attention)
 
-    with torch.npu.simulator(), torch.no_grad():
+    with torch.npu.TOGSimulator(), torch.no_grad():
         torch.npu.launch_model(opt_fn, query, key, value, stream_index=0, timestamp=0)
         torch.npu.synchronize()
     print(f"Attention {size} Simulation Done")

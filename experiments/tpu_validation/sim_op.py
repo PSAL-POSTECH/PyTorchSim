@@ -31,7 +31,7 @@ else:
 device = torch.device("npu:0")
 inputs = [t.to(device=device) for t in inputs]
 opt_fn = torch.compile(dynamic=False)(fn)
-with torch.npu.simulator(), torch.no_grad():
+with torch.npu.TOGSimulator(), torch.no_grad():
     torch.npu.launch_model(opt_fn, *inputs, stream_index=0, timestamp=0)
     torch.npu.synchronize()
 print(f"{op} {'x'.join(map(str, shape))} Simulation Done")

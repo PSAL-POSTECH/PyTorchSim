@@ -57,7 +57,7 @@ class FunctionalVerifyMismatch(RuntimeError):
 def enabled():
     """True when functional mode AND the per-kernel verify sub-option are on.
 
-    Read dynamically (the config can change inside a ``with torch.npu.simulator(...)``
+    Read dynamically (the config can change inside a ``with torch.npu.TOGSimulator(...)``
     block); the config accessor already AND-gates this with functional mode.
     """
     try:

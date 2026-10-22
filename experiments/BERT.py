@@ -37,7 +37,7 @@ if __name__ == "__main__":
     model_input = torch.randn(args.input_size, hidden_dim).to(device=device)
     opt_fn = torch.compile(dynamic=False)(model)
 
-    with torch.npu.simulator(), torch.no_grad():
+    with torch.npu.TOGSimulator(), torch.no_grad():
         torch.npu.launch_model(opt_fn, model_input, stream_index=0, timestamp=0)
         torch.npu.synchronize()
     print(f"BERT-{args.size} Simulation Done")

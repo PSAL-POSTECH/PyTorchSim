@@ -63,7 +63,7 @@ class ProgressBar:
         return False
 
 
-class TOGSimulator():
+class TOGSimProcess():
     TOGSIM_RESULT_PATH_KEY = "TOGSIM_RESULT_PATH"
     FINISH_STR = "Simulation finished"
     def __init__(self, config_path=None, togsim_path=None) -> None:
@@ -346,7 +346,7 @@ class TOGSimulator():
             cycle_tsv = os.path.join(os.path.dirname(str(model_path)), "tog_cycles.tsv")
             if not os.path.exists(tog_so):
                 raise FileNotFoundError(f"{tog_so} not found -- the kernel has no TOG to simulate")
-            base_cmd = TOGSimulator.get_togsim_command(config_path, togsim_path)
+            base_cmd = TOGSimProcess.get_togsim_command(config_path, togsim_path)
             unit_tsv = os.path.join(os.path.dirname(str(model_path)), "tog_units.tsv")
             cmd = f"{base_cmd} --tog_so {tog_so} --cycle_table {cycle_tsv} --unit_table {unit_tsv}"
             if config.CONFIG_TOGSIM_DEBUG_LEVEL:
@@ -409,7 +409,7 @@ class TOGSimulator():
             lines = f.readlines()
 
         for idx, line in enumerate(lines):
-            if TOGSimulator.FINISH_STR in line:
+            if TOGSimProcess.FINISH_STR in line:
                 break
         else:
             logger.warning(f"[TOGSim] Warning: Unable to parse the output file ({result_path}). The file may be improperly formatted.")
@@ -418,17 +418,17 @@ class TOGSimulator():
         units = {}
         combined = None
         for line in lines[idx:]:
-            m = TOGSimulator._UNIT_LINE.search(line)
+            m = TOGSimProcess._UNIT_LINE.search(line)
             if m:
                 units.setdefault(m.group(1), {})[m.group(2)] = {
                     "utilization": float(m.group(3)), "active_cycles": int(m.group(4)),
                     "idle_cycles": int(m.group(5))}
                 continue
-            m = TOGSimulator._DRAM_CHANNEL.search(line)
+            m = TOGSimProcess._DRAM_CHANNEL.search(line)
             if m:
                 dram_channel_bw[f"CH[{m.group(1)}]"] = float(m.group(2))
                 continue
-            m = TOGSimulator._DRAM_COMBINED.search(line)
+            m = TOGSimProcess._DRAM_COMBINED.search(line)
             if m:
                 combined = float(m.group(1))
             elif 'Total execution cycles' in line:
@@ -482,7 +482,7 @@ if __name__ == "__main__":
     ap.add_argument("--repeat", type=int, default=1)
     args = ap.parse_args()
 
-    sim = TOGSimulator(config_path=args.config)
+    sim = TOGSimProcess(config_path=args.config)
     for _ in range(args.repeat):
         sim.launch_kernel(0, 0, args.kernel_dir, args.attribute)
     sim.device_synchronize(0)

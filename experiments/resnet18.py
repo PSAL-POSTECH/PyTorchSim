@@ -21,7 +21,7 @@ if __name__ == "__main__":
     opt_fn = torch.compile(dynamic=False)(model)
     model_input = torch.randn(args.batch, 3, 224, 224).to(device=device)
 
-    with torch.npu.simulator(), torch.no_grad():
+    with torch.npu.TOGSimulator(), torch.no_grad():
         torch.npu.launch_model(opt_fn, model_input, stream_index=0, timestamp=0)
         torch.npu.synchronize()
     print("ResNet18 Simulation Done")

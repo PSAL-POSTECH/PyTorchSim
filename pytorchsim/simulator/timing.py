@@ -203,12 +203,34 @@ def run_togsim(workdir, meta, args=()):
     write_tensors(workdir)
 
     handle = os.path.join(mine, "tile_graph.onnx")
-    attribute = os.path.join(mine, "attribute")
+    attribute = attribute_dir(workdir)
     if torch.npu.get_tog_simulator() is not None:
-        return torch.npu.launch_kernel(handle, attribute)
+        return torch.npu.launch_kernel(handle, _held_for_the_session(mine, attribute))
 
     result_path = TOGSimProcess.run_standalone(handle, attribute)
     return TOGSimProcess.get_result_from_file(result_path)
+
+
+def attribute_dir(workdir):
+    """The runtime attribute records this launch's functional run left (runtime/runtime_attribute/),
+    which TOGSim reads; refused when the kernel declares attributes and no functional run left them."""
+    manifest = contract.kernel_object(workdir) or {}
+    d = os.path.join(contract.runtime_dir(workdir),
+                     compiler_bridge.compiler_contract("kernel_object").RUNTIME_ATTRIBUTE_DIR)
+    if manifest.get("runtime_attributes") and not os.path.isdir(d):
+        raise FileNotFoundError(
+            f"{d} not found -- {manifest.get('name')} reads runtime attributes, which only the "
+            f"functional run records: run with TORCHSIM_FUNCTIONAL_MODE=1")
+    return d
+
+
+def _held_for_the_session(mine, attribute):
+    """A copy of `attribute` this launch alone names: an open TOGSimulator reads it when it takes the
+    launch, after the next functional run of the kernel has rewritten the original."""
+    import tempfile
+    held = tempfile.mkdtemp(prefix="runtime_attribute-", dir=mine)
+    shutil.copytree(attribute, held, dirs_exist_ok=True)
+    return held
 
 
 def run(workdir, meta, args=()):

@@ -72,6 +72,23 @@ def test_rope_on_device(device):
     test_result("complex-to-real (RoPE on device)", npu_out, cpu_out)
 
 
+def test_complex_scalar_multiply():
+    """A complex Python scalar on either side is multiplied as a complex number, not
+    broadcast over the real pair."""
+    def f(x):
+        z = torch.view_as_complex(x.reshape(1, 32, 32, 2))
+        return torch.cat([torch.view_as_real(z * (0.6 - 0.8j) * 0.5),
+                          torch.view_as_real(2j * z)], -1).flatten(-2)
+
+    x = torch.randn(1, 32, 64)
+    gm = _trace(f, x)
+    ComplexToRealPairs()(gm.graph)
+    gm.recompile()
+    after = _complex_nodes(gm.graph)
+    assert not after, f"complex nodes survived the pass: {[str(n.target) for n in after]}"
+    test_result("complex-to-real (complex scalar)", gm(x), f(x))
+
+
 def test_unhandled_op_is_left_alone():
     # WHOLE OR NOTHING. A complex op the pass cannot say in real arithmetic
     # makes the whole component ineligible -- half a rewrite is a graph with
@@ -92,5 +109,6 @@ def test_unhandled_op_is_left_alone():
 if __name__ == "__main__":
     device = torch.device("npu:0")
     test_pass_leaves_no_complex()
+    test_complex_scalar_multiply()
     test_unhandled_op_is_left_alone()
     test_rope_on_device(device)

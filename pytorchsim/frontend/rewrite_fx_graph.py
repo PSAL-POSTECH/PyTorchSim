@@ -16,7 +16,7 @@ prims = torch.ops.prims
 
 logger = config.setup_logger()
 
-_KEPT_META = ("original_aten", "stack_trace", "nn_module_stack", "source_fn_stack", "seq_nr", "from_node")
+_KEPT_META = ("original_aten", "stack_trace", "nn_module_stack", "source_fn_stack", "seq_nr")
 
 
 def _val(node):
@@ -85,6 +85,8 @@ def _emit_histc(call, x, xv, bins, lo, hi):
             lo, hi = lo - 1, hi + 1
         if integral:
             lo, hi = int(lo), int(hi)
+        if hi <= lo:
+            raise RuntimeError(f"torch.histc: max must be larger than min (min {lo}, max {hi})")
         width = hi - lo
     scaled = call(aten.mul.Tensor, call(aten.sub.Tensor, flat, lo), bins)
     if integral:
@@ -146,7 +148,7 @@ def rewrite_aten_polar(graph, fake_mode) -> int:
 
 
 def _row_times_matrix(node):
-    """(a, b, bias) of an mm or a plain addmm whose left operand is one row, else None."""
+    """(a, b, bias) of an mm or a plain addmm of real floating operands whose left one is a row, else None."""
     if node.op != "call_function":
         return None
     if node.target is aten.mm.default:
@@ -157,6 +159,8 @@ def _row_times_matrix(node):
         return None
     av, bv = _val(a), _val(b)
     if av is None or bv is None or av.dim() != 2 or bv.dim() != 2 or av.shape[0] != 1:
+        return None
+    if not (av.is_floating_point() and bv.is_floating_point()):
         return None
     return a, b, bias
 

@@ -96,8 +96,8 @@ def test_complex_scalar_multiply():
 
 
 def test_components_are_judged_apart():
-    """A component the pass cannot say in real arithmetic leaves a separate one it can rewritten, and every
-    node it makes keeps the provenance of the node it replaces."""
+    """A component the pass cannot say in real arithmetic leaves a separate one it can rewritten; every node it
+    makes keeps the stack trace of the node it replaces, and from_node is left to Inductor's observer."""
     def f(x, y):
         a = torch.view_as_real(torch.view_as_complex(x) * (0.6 - 0.8j))
         b = torch.view_as_real(torch.exp(torch.view_as_complex(y)))
@@ -107,13 +107,30 @@ def test_components_are_judged_apart():
     gm = _trace(f, x, y)
     for n in gm.graph.nodes:
         n.meta["stack_trace"] = f"user.py:{n.name}"
+        n.meta["from_node"] = [n.name]
+    before = {n.name for n in gm.graph.nodes}
     npu_post_grad_pass(gm)
+    copied = [n.name for n in gm.graph.nodes if n.name not in before and "from_node" in n.meta]
+    assert not copied, f"from_node copied onto new nodes: {copied}"
     left = sorted(str(n.target) for n in _complex_nodes(gm.graph))
     assert left == ["aten.exp.default", "aten.view_as_complex.default"], f"complex nodes left: {left}"
     bare = [n.name for n in gm.graph.nodes if n.op == "call_function" and "stack_trace" not in n.meta]
     assert not bare, f"nodes without provenance: {bare}"
     out = gm(x, y)
     test_result("complex-to-real (components apart)", out[0], f(x, y)[0])
+
+
+def test_row_mm_stays_real():
+    """The GEMV rewrite takes real floating operands only: a complex 1 x K mm stays one mm."""
+    def f(a, b):
+        return torch.view_as_real(torch.view_as_complex(a) @ torch.view_as_complex(b))
+
+    a, b = torch.randn(1, 8, 2), torch.randn(8, 4, 2)
+    gm = _trace(f, a, b)
+    npu_post_grad_pass(gm)
+    mms = [n for n in gm.graph.nodes if n.target is aten.mm.default]
+    assert len(mms) == 1, f"complex mm rewritten: {[str(n.target) for n in gm.graph.nodes]}"
+    test_result("complex 1 x K mm", gm(a, b), f(a, b))
 
 
 def test_unhandled_op_is_left_alone():
@@ -138,5 +155,6 @@ if __name__ == "__main__":
     test_pass_leaves_no_complex()
     test_complex_scalar_multiply()
     test_components_are_judged_apart()
+    test_row_mm_stays_real()
     test_unhandled_op_is_left_alone()
     test_rope_on_device(device)

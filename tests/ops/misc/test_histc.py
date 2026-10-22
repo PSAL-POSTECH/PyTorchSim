@@ -107,6 +107,14 @@ def test_pass_counts_on_the_device(n=64):
         out = gm(x)
         assert torch.equal(out, ref), f"{name}: {out.tolist()} != {ref.tolist()}"
         print(f"histc pass {name}: {out.tolist()}")
+    for name, x, lo, hi in (("int edges that truncate to one", ints.to(torch.int32), 0.2, 0.8),
+                            ("float max below min", floats, 1.0, 0.0)):
+        try:
+            npu_post_grad_pass(_histc_graph(x, 4, lo, hi))
+        except RuntimeError as e:
+            assert "max must be larger than min" in str(e), f"{name}: {e}"
+        else:
+            raise AssertionError(f"{name}: [{lo}, {hi}] was not refused")
 
 
 if __name__ == "__main__":

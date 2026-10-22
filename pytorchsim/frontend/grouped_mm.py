@@ -1,6 +1,6 @@
-"""aten._grouped_mm on the npu (2-D A grouped by offs, times 3-D B) as one Triton kernel in fused_moe form: a
-program is a block of BM rows of one group, its group, first row and row count read from a table the TOG reads as
-runtime attributes; a block without rows runs its K loop zero times. Registered through torch.library."""
+"""aten._grouped_mm and transformers' grouped_mm_fallback on the npu (2-D A grouped by offs, times 3-D B) as one
+Triton kernel in fused_moe form: a program is a block of BM rows of one group, its group, first row and row count
+read from a table the TOG reads as runtime attributes. Both ops register one entry through torch.library."""
 
 import torch
 import triton
@@ -111,14 +111,22 @@ def _aten_grouped_mm(a, b, offs=None, bias=None, out_dtype=None):
     return grouped_mm(a, b, offs)
 
 
-_lib = None
+def _transformers_grouped_mm_fallback(input, weight, offs):
+    """transformers' grouped_mm_fallback, which it calls instead of aten._grouped_mm (under torch.compile when the
+    weight is not bf16), on aten._grouped_mm's route."""
+    return _aten_grouped_mm(input, weight, offs)
+
+
+_libs = []
 
 
 def install():
-    """Register aten._grouped_mm's npu kernel above autograd and functionalization, and at the backend key,
-    where a call made under inference_mode lands."""
-    global _lib
-    if _lib is None:
-        _lib = torch.library.Library("aten", "IMPL")
-        for key in ("AutogradPrivateUse1", "PrivateUse1"):
-            _lib.impl("_grouped_mm", _aten_grouped_mm, key)
+    """Register the npu kernel of aten._grouped_mm and of transformers::grouped_mm_fallback above autograd and
+    functionalization, and at the backend key, where a call made under inference_mode lands."""
+    if not _libs:
+        for ns, op, fn in (("aten", "_grouped_mm", _aten_grouped_mm),
+                           ("transformers", "grouped_mm_fallback", _transformers_grouped_mm_fallback)):
+            lib = torch.library.Library(ns, "IMPL")
+            for key in ("AutogradPrivateUse1", "PrivateUse1"):
+                lib.impl(op, fn, key)
+            _libs.append(lib)

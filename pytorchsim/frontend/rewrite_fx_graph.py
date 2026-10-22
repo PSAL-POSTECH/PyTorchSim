@@ -16,7 +16,7 @@ prims = torch.ops.prims
 
 
 @register_decomposition(aten.histc.default)
-def decompose_histc(self, bins: int = 100, min: int = 0, max: int = 0):
+def decompose_aten_histc(self, bins: int = 100, min: int = 0, max: int = 0):
     """Counts of an integral tensor, on the device when the bins are the values.
 
     Exact for bins=N, min=0, max=N-1; any other edges keep the CPU hop.
@@ -32,7 +32,7 @@ def decompose_histc(self, bins: int = 100, min: int = 0, max: int = 0):
 
 
 @register_decomposition(aten.polar.default)
-def decompose_polar(abs, angle):
+def decompose_aten_polar(abs, angle):
     """`polar` as a view over a real pair, so it never becomes an extern call.
 
     The pair is made contiguous because view_as_complex needs a unit last stride.
@@ -70,7 +70,7 @@ def _identity(fn):
     return f"{module}.{name}" if name else f"{module}.<unnamed>"
 
 
-class _Chain(CustomGraphPass):
+class _chain(CustomGraphPass):
     """Inductor's single post-grad slot, as a chain that knows what is in it."""
 
     def __init__(self, foreign):
@@ -102,8 +102,8 @@ def install_once(key, fn):
     from torch._inductor import config
 
     chain = config.post_grad_custom_post_pass
-    if not isinstance(chain, _Chain):
-        chain = _Chain(chain)
+    if not isinstance(chain, _chain):
+        chain = _chain(chain)
         config.post_grad_custom_post_pass = chain
     return chain.add(key, fn)
 
@@ -151,7 +151,7 @@ def _emit_dense_grouped_mm(g, inp, weight, offs, s, e, o, dtype, dev):
     return out
 
 
-def rewrite_grouped_mm(g) -> None:
+def rewrite_transformers_grouped_mm_fallback(g) -> None:
     """Replace every `transformers.grouped_mm_fallback` call with the dense form."""
     target = _grouped_mm_target()
     if target is None:
@@ -214,7 +214,7 @@ def _emit_topk(g, x, k, dim, largest, shape, dtype, dev):
     return call(aten.cat.default, (vals, dim)), call(aten.cat.default, (idxs, dim))
 
 
-def rewrite_topk(g) -> None:
+def rewrite_aten_topk(g) -> None:
     """Replace every `aten.topk.default` whose users are getitem with the rounds."""
     if isinstance(g, fx.GraphModule):
         g = g.graph
@@ -261,7 +261,7 @@ def _row_times_matrix(node):
     return a, b, bias
 
 
-def rewrite_row_mm(g) -> None:
+def rewrite_aten_mm_addmm_row(g) -> None:
     """Replace a 1 x K row times a K x N matrix with the row broadcast down the matrix, a
     multiply and a sum over K: vector work, where the mm template would run it on the array."""
     if isinstance(g, fx.GraphModule):
@@ -310,101 +310,95 @@ def _fake_mode(graph):
     return None
 
 
-class ComplexToRealPairs(CustomGraphPass):
+def rewrite_aten_view_as_complex(graph) -> None:
     """Complex values become their real [..., 2] pairs, whole component or nothing.
 
     Handles view_as_complex, mul and unsqueeze; any other complex op leaves the graph as is.
     """
+    if isinstance(graph, fx.GraphModule):
+        graph = graph.graph
+    complex_nodes = [n for n in graph.nodes if _is_complex(n)]
+    if not complex_nodes:
+        return
 
-    def uuid(self):
-        return "pytorchsim-complex-to-real-pairs-3"
-
-    def __call__(self, graph: torch.fx.Graph) -> None:
-        complex_nodes = [n for n in graph.nodes if _is_complex(n)]
-        if not complex_nodes:
+    for n in complex_nodes:
+        if n.op != "call_function":
+            return
+        if n.target not in _HANDLED:
+            return
+        for user in n.users:
+            if user.op == "output":
+                return
+            if user.target is aten.view_as_real.default:
+                continue
+            if user.target in _HANDLED:
+                continue
             return
 
-        for n in complex_nodes:
-            if n.op != "call_function":
-                return
-            if n.target not in _HANDLED:
-                return
-            for user in n.users:
-                if user.op == "output":
-                    return
-                if user.target is aten.view_as_real.default:
-                    continue
-                if user.target in _HANDLED:
-                    continue
-                return
+    fake_mode = _fake_mode(graph)
 
-        fake_mode = _fake_mode(graph)
+    def _unwrap(a):
+        if isinstance(a, (list, tuple)):
+            return type(a)(_unwrap(x) for x in a)
+        return _val(a)
 
-        def _unwrap(a):
-            if isinstance(a, (list, tuple)):
-                return type(a)(_unwrap(x) for x in a)
-            return _val(a)
+    def call(target, *args):
+        node = graph.call_function(target, args)
+        if fake_mode is not None:
+            with fake_mode:
+                node.meta["val"] = target(*[_unwrap(a) for a in args])
+        return node
 
-        def call(target, *args):
-            node = graph.call_function(target, args)
-            if fake_mode is not None:
-                with fake_mode:
-                    node.meta["val"] = target(*[_unwrap(a) for a in args])
-            return node
+    def join(re, im):
+        return call(aten.cat.default,
+                    [call(aten.unsqueeze.default, re, -1),
+                     call(aten.unsqueeze.default, im, -1)], -1)
 
-        def join(re, im):
-            return call(aten.cat.default,
-                        [call(aten.unsqueeze.default, re, -1),
-                         call(aten.unsqueeze.default, im, -1)], -1)
+    pair = {}
+    for n in complex_nodes:
+        with graph.inserting_before(n):
+            if n.target is aten.view_as_complex.default:
+                pair[n] = n.args[0]
+                continue
 
-        pair = {}
-        for n in complex_nodes:
-            with graph.inserting_before(n):
-                if n.target is aten.view_as_complex.default:
-                    pair[n] = n.args[0]
-                    continue
+            if n.target in _SHAPE:
+                dim = n.args[1]
+                pair[n] = call(n.target, pair[n.args[0]],
+                               dim if dim >= 0 else dim - 1)
+                continue
 
-                if n.target in _SHAPE:
-                    dim = n.args[1]
-                    pair[n] = call(n.target, pair[n.args[0]],
-                                   dim if dim >= 0 else dim - 1)
-                    continue
-
-                a, b = n.args[0], n.args[1]
-                cx, other = (a, b) if _is_complex(a) else (b, a)
-                if _is_complex(other) or isinstance(other, complex):
-                    pa = pair[cx]
-                    ar = call(aten.select.int, pa, -1, 0)
-                    ai = call(aten.select.int, pa, -1, 1)
-                    if isinstance(other, complex):
-                        br, bi = other.real, other.imag
-                    else:
-                        br = call(aten.select.int, pair[other], -1, 0)
-                        bi = call(aten.select.int, pair[other], -1, 1)
-                    re = call(aten.sub.Tensor, call(aten.mul.Tensor, ar, br),
-                              call(aten.mul.Tensor, ai, bi))
-                    im = call(aten.add.Tensor, call(aten.mul.Tensor, ar, bi),
-                              call(aten.mul.Tensor, ai, br))
-                    pair[n] = join(re, im)
+            a, b = n.args[0], n.args[1]
+            cx, other = (a, b) if _is_complex(a) else (b, a)
+            if _is_complex(other) or isinstance(other, complex):
+                pa = pair[cx]
+                ar = call(aten.select.int, pa, -1, 0)
+                ai = call(aten.select.int, pa, -1, 1)
+                if isinstance(other, complex):
+                    br, bi = other.real, other.imag
                 else:
-                    if isinstance(other, torch.fx.Node):
-                        other = call(aten.unsqueeze.default, other, -1)
-                    pair[n] = call(aten.mul.Tensor, pair[cx], other)
+                    br = call(aten.select.int, pair[other], -1, 0)
+                    bi = call(aten.select.int, pair[other], -1, 1)
+                re = call(aten.sub.Tensor, call(aten.mul.Tensor, ar, br),
+                          call(aten.mul.Tensor, ai, bi))
+                im = call(aten.add.Tensor, call(aten.mul.Tensor, ar, bi),
+                          call(aten.mul.Tensor, ai, br))
+                pair[n] = join(re, im)
+            else:
+                if isinstance(other, torch.fx.Node):
+                    other = call(aten.unsqueeze.default, other, -1)
+                pair[n] = call(aten.mul.Tensor, pair[cx], other)
 
-        for n in complex_nodes:
-            for user in list(n.users):
-                if user.target is aten.view_as_real.default:
-                    user.replace_all_uses_with(pair[n])
+    for n in complex_nodes:
+        for user in list(n.users):
+            if user.target is aten.view_as_real.default:
+                user.replace_all_uses_with(pair[n])
 
-        graph.eliminate_dead_code()
-
-
-_COMPLEX_TO_REAL = ComplexToRealPairs()
+    graph.eliminate_dead_code()
 
 
 def install():
     """Chain the post-grad passes onto Inductor's hook, each at most once."""
-    install_once("pytorchsim-grouped-mm", npu_only(rewrite_grouped_mm))
-    install_once("pytorchsim-topk", npu_only(rewrite_topk))
-    install_once("pytorchsim-row-mm", npu_only(rewrite_row_mm))
-    install_once(_COMPLEX_TO_REAL.uuid(), npu_only(_COMPLEX_TO_REAL))
+    install_once("pytorchsim-grouped-mm", npu_only(rewrite_transformers_grouped_mm_fallback))
+    install_once("pytorchsim-topk", npu_only(rewrite_aten_topk))
+    install_once("pytorchsim-row-mm", npu_only(rewrite_aten_mm_addmm_row))
+    install_once("pytorchsim-complex-to-real-pairs-3", npu_only(rewrite_aten_view_as_complex))

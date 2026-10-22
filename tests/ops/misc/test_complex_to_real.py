@@ -7,7 +7,7 @@ from torch._inductor.decomposition import select_decomp_table
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
 from _pytorchsim_utils import test_result
 
-from pytorchsim.frontend.rewrite_fx_graph import ComplexToRealPairs
+from pytorchsim.frontend.rewrite_fx_graph import rewrite_aten_view_as_complex
 
 aten = torch.ops.aten
 
@@ -52,7 +52,7 @@ def test_pass_leaves_no_complex():
     before = _complex_nodes(gm.graph)
     assert before, "the traced graph should have complex nodes to rewrite"
 
-    ComplexToRealPairs()(gm.graph)
+    rewrite_aten_view_as_complex(gm.graph)
     gm.recompile()
 
     after = _complex_nodes(gm.graph)
@@ -82,7 +82,7 @@ def test_complex_scalar_multiply():
 
     x = torch.randn(1, 32, 64)
     gm = _trace(f, x)
-    ComplexToRealPairs()(gm.graph)
+    rewrite_aten_view_as_complex(gm.graph)
     gm.recompile()
     after = _complex_nodes(gm.graph)
     assert not after, f"complex nodes survived the pass: {[str(n.target) for n in after]}"
@@ -100,7 +100,7 @@ def test_unhandled_op_is_left_alone():
     x = torch.randn(1, 32, 64)
     gm = _trace(f, x)
     before = [str(n.target) for n in _complex_nodes(gm.graph)]
-    ComplexToRealPairs()(gm.graph)
+    rewrite_aten_view_as_complex(gm.graph)
     after = [str(n.target) for n in _complex_nodes(gm.graph)]
     assert before == after, f"an ineligible component was rewritten: {before} -> {after}"
     print("unhandled complex op left alone:", after)

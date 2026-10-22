@@ -7,7 +7,7 @@ from torch._inductor.decomposition import select_decomp_table
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
 from _pytorchsim_utils import test_result
 
-from pytorchsim.frontend.rewrite_fx_graph import rewrite_aten_view_as_complex
+from pytorchsim.frontend.rewrite_fx_graph import npu_post_grad_pass
 
 aten = torch.ops.aten
 
@@ -23,11 +23,8 @@ def _rope(x, a):
 
 
 def _trace(fn, *args):
-    # WITH INDUCTOR'S DECOMPOSITION TABLE, because that is the graph the pass
-    # actually runs on. A bare make_fx keeps aten.polar.default, which this
-    # backend decomposes one stage earlier (pytorchsim/frontend/rewrite_fx_graph.py) and
-    # which the pass therefore does not handle -- tracing without the table
-    # measures a graph the pipeline never produces.
+    """The graph Inductor hands its post-grad passes: make_fx with Inductor's decomposition table, which
+    keeps aten.polar, so the device pass rewrites it before the complex values."""
     return make_fx(fn, decomposition_table=select_decomp_table(),
                    tracing_mode="fake")(*args)
 
@@ -52,7 +49,7 @@ def test_pass_leaves_no_complex():
     before = _complex_nodes(gm.graph)
     assert before, "the traced graph should have complex nodes to rewrite"
 
-    rewrite_aten_view_as_complex(gm.graph)
+    npu_post_grad_pass(gm)
     gm.recompile()
 
     after = _complex_nodes(gm.graph)
@@ -82,7 +79,7 @@ def test_complex_scalar_multiply():
 
     x = torch.randn(1, 32, 64)
     gm = _trace(f, x)
-    rewrite_aten_view_as_complex(gm.graph)
+    npu_post_grad_pass(gm)
     gm.recompile()
     after = _complex_nodes(gm.graph)
     assert not after, f"complex nodes survived the pass: {[str(n.target) for n in after]}"
@@ -100,7 +97,7 @@ def test_unhandled_op_is_left_alone():
     x = torch.randn(1, 32, 64)
     gm = _trace(f, x)
     before = [str(n.target) for n in _complex_nodes(gm.graph)]
-    rewrite_aten_view_as_complex(gm.graph)
+    npu_post_grad_pass(gm)
     after = [str(n.target) for n in _complex_nodes(gm.graph)]
     assert before == after, f"an ineligible component was rewritten: {before} -> {after}"
     print("unhandled complex op left alone:", after)

@@ -2,8 +2,12 @@ import os
 import sys
 import torch
 import torch._dynamo
+from torch.fx.experimental.proxy_tensor import make_fx
+from torch._inductor.decomposition import select_decomp_table
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
 from _pytorchsim_utils import test_result
+
+from pytorchsim.frontend.rewrite_fx_graph import npu_post_grad_pass
 
 
 def _rope_like(a):
@@ -26,10 +30,9 @@ def test_polar_on_transposed(device, n=32):
     #                        'torch.ops.aten.polar.default')
     #     AssertionError: expected size 32==32, stride 32==1 at dim=1
     #
-    # pytorchsim/frontend/rewrite_fx_graph.py takes the extern call out
-    # instead of arguing about the layout: the pair is built with ops this
-    # backend compiles and view_as_complex names it, which Inductor already
-    # treats as a view over real data.
+    # rewrite_fx_graph.rewrite_aten_polar takes the extern call out instead
+    # of arguing about the layout: the pair is built contiguous with ops this
+    # backend compiles, and the complex rewrite takes it to real pairs.
     x = torch.randn(1, n, n)
     cpu_out = _rope_like(x)
 
@@ -40,8 +43,7 @@ def test_polar_on_transposed(device, n=32):
 
 
 def test_polar_contiguous(device, n=32):
-    # The ordinary case, which passed before the decomposition too: it is here
-    # so a future rewrite that only handles the transposed shape is caught.
+    """The ordinary case, so a rewrite that only handles the transposed shape is caught."""
     def f(a):
         return torch.view_as_real(torch.polar(torch.ones_like(a), a))
 
@@ -51,7 +53,21 @@ def test_polar_contiguous(device, n=32):
     test_result("polar on a contiguous tile", npu_out, cpu_out)
 
 
+def test_pass_leaves_no_polar(n=32):
+    """The device pass alone, on a traced polar of a transposed view: no aten.polar and no complex value
+    is left, and the real pairs are polar's."""
+    x = torch.randn(1, n, n)
+    gm = make_fx(_rope_like, decomposition_table=select_decomp_table(), tracing_mode="fake")(x)
+    npu_post_grad_pass(gm)
+    left = [str(m.target) for m in gm.graph.nodes
+            if m.target is torch.ops.aten.polar.default
+            or (isinstance(m.meta.get("val"), torch.Tensor) and m.meta["val"].is_complex())]
+    assert not left, f"left after the pass: {left}"
+    test_result("polar pass", gm(x), _rope_like(x))
+
+
 if __name__ == "__main__":
     device = torch.device("npu:0")
+    test_pass_leaves_no_polar()
     test_polar_on_transposed(device)
     test_polar_contiguous(device)

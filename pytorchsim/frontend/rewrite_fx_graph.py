@@ -317,7 +317,7 @@ class ComplexToRealPairs(CustomGraphPass):
     """
 
     def uuid(self):
-        return "pytorchsim-complex-to-real-pairs-2"
+        return "pytorchsim-complex-to-real-pairs-3"
 
     def __call__(self, graph: torch.fx.Graph) -> None:
         complex_nodes = [n for n in graph.nodes if _is_complex(n)]
@@ -352,6 +352,11 @@ class ComplexToRealPairs(CustomGraphPass):
                     node.meta["val"] = target(*[_unwrap(a) for a in args])
             return node
 
+        def join(re, im):
+            return call(aten.cat.default,
+                        [call(aten.unsqueeze.default, re, -1),
+                         call(aten.unsqueeze.default, im, -1)], -1)
+
         pair = {}
         for n in complex_nodes:
             with graph.inserting_before(n):
@@ -366,21 +371,22 @@ class ComplexToRealPairs(CustomGraphPass):
                     continue
 
                 a, b = n.args[0], n.args[1]
-                if _is_complex(a) and _is_complex(b):
-                    pa, pb = pair[a], pair[b]
+                cx, other = (a, b) if _is_complex(a) else (b, a)
+                if _is_complex(other) or isinstance(other, complex):
+                    pa = pair[cx]
                     ar = call(aten.select.int, pa, -1, 0)
                     ai = call(aten.select.int, pa, -1, 1)
-                    br = call(aten.select.int, pb, -1, 0)
-                    bi = call(aten.select.int, pb, -1, 1)
+                    if isinstance(other, complex):
+                        br, bi = other.real, other.imag
+                    else:
+                        br = call(aten.select.int, pair[other], -1, 0)
+                        bi = call(aten.select.int, pair[other], -1, 1)
                     re = call(aten.sub.Tensor, call(aten.mul.Tensor, ar, br),
                               call(aten.mul.Tensor, ai, bi))
                     im = call(aten.add.Tensor, call(aten.mul.Tensor, ar, bi),
                               call(aten.mul.Tensor, ai, br))
-                    pair[n] = call(aten.cat.default,
-                                   [call(aten.unsqueeze.default, re, -1),
-                                    call(aten.unsqueeze.default, im, -1)], -1)
+                    pair[n] = join(re, im)
                 else:
-                    cx, other = (a, b) if _is_complex(a) else (b, a)
                     if isinstance(other, torch.fx.Node):
                         other = call(aten.unsqueeze.default, other, -1)
                     pair[n] = call(aten.mul.Tensor, pair[cx], other)

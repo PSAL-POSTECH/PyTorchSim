@@ -53,6 +53,14 @@ def test_polar_contiguous(device, n=32):
     test_result("polar on a contiguous tile", npu_out, cpu_out)
 
 
+def _unlowered(gm):
+    """The ops of gm Inductor has no lowering for; the device pass runs after decomposition, so any it
+    emits must lower as they are."""
+    from torch._inductor.lowering import lowerings
+    return sorted({str(m.target) for m in gm.graph.nodes if m.op == "call_function"
+                   and m.target not in lowerings and m.target.overloadpacket not in lowerings})
+
+
 def test_pass_leaves_no_polar(n=32):
     """The device pass alone, on a traced polar of a transposed view: no aten.polar and no complex value
     is left, and the real pairs are polar's."""
@@ -63,6 +71,7 @@ def test_pass_leaves_no_polar(n=32):
             if m.target is torch.ops.aten.polar.default
             or (isinstance(m.meta.get("val"), torch.Tensor) and m.meta["val"].is_complex())]
     assert not left, f"left after the pass: {left}"
+    assert not _unlowered(gm), f"no Inductor lowering for {_unlowered(gm)}"
     test_result("polar pass", gm(x), _rope_like(x))
 
 

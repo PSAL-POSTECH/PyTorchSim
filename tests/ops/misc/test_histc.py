@@ -48,7 +48,7 @@ def test_histc_integral(device, n=64, bins=8):
 
 
 def test_histc_float_unchanged(device, n=64, bins=8):
-    """A floating histc keeps aten's kernel: the device pass leaves it and logs why."""
+    """A floating histc is counted on the device too, and comes back in its own dtype."""
     g = torch.Generator().manual_seed(1)
     cpu_x = torch.rand(n, generator=g) * (bins - 1)
     cpu_out = torch.histc(cpu_x, bins=bins, min=0, max=bins - 1)
@@ -58,6 +58,14 @@ def test_histc_float_unchanged(device, n=64, bins=8):
 
     assert npu_out.dtype == torch.float32, npu_out.dtype
     test_result("histc float32", npu_out, cpu_out)
+
+
+def _unlowered(gm):
+    """The ops of gm Inductor has no lowering for; the device pass runs after decomposition, so any it
+    emits must lower as they are."""
+    from torch._inductor.lowering import lowerings
+    return sorted({str(m.target) for m in gm.graph.nodes if m.op == "call_function"
+                   and m.target not in lowerings and m.target.overloadpacket not in lowerings})
 
 
 def _histc_graph(x, bins, lo, hi):
@@ -74,17 +82,31 @@ def _histc_graph(x, bins, lo, hi):
     return fx.GraphModule(torch.nn.Module(), g)
 
 
-def test_pass_counts_on_the_device(n=64, bins=8):
-    """The device pass alone, on a traced integral histc: bins that are the values leave no aten.histc;
-    other edges keep one, at float32, and both count what the CPU counts."""
+def test_pass_counts_on_the_device(n=64):
+    """The device pass alone leaves no aten.histc and counts what aten counts: bins that are the values,
+    wider edges, int8 past 127 bins, floats with values on and past the edges, and min == max."""
     g = torch.Generator().manual_seed(2)
-    x = torch.randint(0, bins, (n,), generator=g).to(torch.int32)
-    for lo, hi, left in ((0, bins - 1, 0), (0, 2 * bins - 1, 1)):
+    ints = torch.randint(-4, 20, (n,), generator=g)
+    floats = torch.cat([torch.rand(n, generator=g) * 3 - 1, torch.tensor([0., 0.5, 1., 1.0000001, float("nan")])])
+    cases = (
+        ("values", ints.clamp(0, 7).to(torch.int32), 8, 0, 7),
+        ("wide edges", ints.to(torch.int32), 8, 0, 15),
+        ("int8 past 127 bins", torch.tensor([0, 1, 127, -100, -100, -100], dtype=torch.int8), 200, 0, 199),
+        ("float", floats, 4, 0, 1),
+        ("float min == max", floats.nan_to_num(0.0), 5, 0, 0),
+        ("int64 min == max", ints, 6, 0, 0),
+        ("one value", torch.full((7,), 3, dtype=torch.int64), 4, 0, 0),
+    )
+    for name, x, bins, lo, hi in cases:
         gm = _histc_graph(x, bins, lo, hi)
         npu_post_grad_pass(gm)
-        histcs = [n for n in gm.graph.nodes if n.target is aten.histc.default]
-        assert len(histcs) == left, f"[{lo}, {hi}]: {len(histcs)} aten.histc left, expected {left}"
-        test_result(f"histc pass [{lo}, {hi}]", gm(x), torch.histc(x.float(), bins, lo, hi).to(x.dtype))
+        left = [m for m in gm.graph.nodes if m.target is aten.histc.default]
+        assert not left, f"{name}: {len(left)} aten.histc left"
+        assert not _unlowered(gm), f"{name}: no Inductor lowering for {_unlowered(gm)}"
+        ref = torch.histc(x.double() if not x.is_floating_point() else x, bins, lo, hi).to(x.dtype)
+        out = gm(x)
+        assert torch.equal(out, ref), f"{name}: {out.tolist()} != {ref.tolist()}"
+        print(f"histc pass {name}: {out.tolist()}")
 
 
 if __name__ == "__main__":

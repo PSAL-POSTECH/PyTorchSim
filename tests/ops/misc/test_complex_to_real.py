@@ -29,6 +29,14 @@ def _trace(fn, *args):
                    tracing_mode="fake")(*args)
 
 
+def _unlowered(gm):
+    """The ops of gm Inductor has no lowering for; the device pass runs after decomposition, so any it
+    emits must lower as they are."""
+    from torch._inductor.lowering import lowerings
+    return sorted({str(m.target) for m in gm.graph.nodes if m.op == "call_function"
+                   and m.target not in lowerings and m.target.overloadpacket not in lowerings})
+
+
 def _complex_nodes(graph):
     out = []
     for n in graph.nodes:
@@ -83,7 +91,29 @@ def test_complex_scalar_multiply():
     gm.recompile()
     after = _complex_nodes(gm.graph)
     assert not after, f"complex nodes survived the pass: {[str(n.target) for n in after]}"
+    assert not _unlowered(gm), f"no Inductor lowering for {_unlowered(gm)}"
     test_result("complex-to-real (complex scalar)", gm(x), f(x))
+
+
+def test_components_are_judged_apart():
+    """A component the pass cannot say in real arithmetic leaves a separate one it can rewritten, and every
+    node it makes keeps the provenance of the node it replaces."""
+    def f(x, y):
+        a = torch.view_as_real(torch.view_as_complex(x) * (0.6 - 0.8j))
+        b = torch.view_as_real(torch.exp(torch.view_as_complex(y)))
+        return a, b
+
+    x, y = torch.randn(4, 8, 2), torch.randn(4, 8, 2)
+    gm = _trace(f, x, y)
+    for n in gm.graph.nodes:
+        n.meta["stack_trace"] = f"user.py:{n.name}"
+    npu_post_grad_pass(gm)
+    left = sorted(str(n.target) for n in _complex_nodes(gm.graph))
+    assert left == ["aten.exp.default", "aten.view_as_complex.default"], f"complex nodes left: {left}"
+    bare = [n.name for n in gm.graph.nodes if n.op == "call_function" and "stack_trace" not in n.meta]
+    assert not bare, f"nodes without provenance: {bare}"
+    out = gm(x, y)
+    test_result("complex-to-real (components apart)", out[0], f(x, y)[0])
 
 
 def test_unhandled_op_is_left_alone():
@@ -107,5 +137,6 @@ if __name__ == "__main__":
     device = torch.device("npu:0")
     test_pass_leaves_no_complex()
     test_complex_scalar_multiply()
+    test_components_are_judged_apart()
     test_unhandled_op_is_left_alone()
     test_rope_on_device(device)

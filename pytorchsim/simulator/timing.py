@@ -87,7 +87,7 @@ def write_shape(workdir, meta, args=()):
     numels = dict(meta["numels"])
     if meta.get("template_grid") is not None:
         grid = list(contract.launch_extents(meta))
-        _write_extents(workdir, grid, "template grid")
+        _write_extents(workdir, grid, "template grid", data_values(workdir, args))
         return grid
 
     passed = [k for k in numels if not k.startswith("r")]
@@ -103,11 +103,28 @@ def write_shape(workdir, meta, args=()):
                 numels[key] = val
 
     grid = list(contract.grid_of({**meta, "numels": numels}))
-    _write_extents(workdir, grid, "grid")
+    _write_extents(workdir, grid, "grid", data_values(workdir, args))
     return grid
 
 
-def _write_extents(workdir, ext, what):
+def data_values(workdir, args):
+    """The elements of every argument the TOG reads as data (tile_types' data_args), off this launch's arguments;
+    shape_args carries them past the grid's extents."""
+    import json
+    path = contract.artifact(workdir, "tile_types")
+    want = json.load(open(path)).get("data_args", []) if path else []
+    out = []
+    for d in want:
+        t = args[d["arg"]]
+        vals = t.detach().reshape(-1).cpu().tolist()
+        if len(vals) != d["numel"]:
+            raise ValueError(f"argument {d['arg']} of {workdir} holds {len(vals)} elements, the TOG reads "
+                             f"{d['numel']}")
+        out += [int(v) for v in vals]
+    return out
+
+
+def _write_extents(workdir, ext, what, data=()):
     """Write `ext` as this launch's shape_args, refusing a count it cannot use.
 
     The count is checked against the shared TOG; the file goes in this
@@ -124,7 +141,7 @@ def _write_extents(workdir, ext, what):
                 f"would read past the end of shape_args. Delete the workdir to "
                 f"rebuild it.")
     with open(os.path.join(contract.dir_for(workdir), SHAPE_TXT), "w") as f:
-        f.write("\n".join(str(int(g)) for g in ext) + "\n")
+        f.write("\n".join(str(int(g)) for g in list(ext) + list(data)) + "\n")
     logger.info("[TOGSim] %s %s -> %s", what, ext, SHAPE_TXT)
 
 

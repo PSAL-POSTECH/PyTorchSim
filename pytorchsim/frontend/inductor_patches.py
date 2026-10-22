@@ -670,8 +670,9 @@ def install():
     _install_npu_choices()
     _decompose_convolution_for_npu()
     _install_selection()
-    from pytorchsim.frontend import attention
+    from pytorchsim.frontend import attention, grouped_mm
     attention.install()
+    grouped_mm.install()
 
     inductor_config.max_autotune_gemm = True
     inductor_config.max_autotune_gemm_backends = "ATEN,TRITON"

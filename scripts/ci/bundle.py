@@ -49,7 +49,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 import torch  # noqa: E402  (first: its device autoload installs pytorchsim)
 
 from pytorchsim import config, contract  # noqa: E402
-from pytorchsim.driver import codecache, compiler_bridge, compiler_input, select  # noqa: E402
+from pytorchsim.backend import codecache, compiler_bridge, compiler_input, select  # noqa: E402
 from pytorchsim.simulator import functional  # noqa: E402
 
 #: The head dimension the compiler's attention measurements were taken at.

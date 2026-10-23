@@ -37,7 +37,7 @@ def _npu_choices_class():
     from torch._inductor.choices import InductorChoices
     from torch._inductor.lookup_table import LookupTableChoices
 
-    from pytorchsim.driver import select
+    from pytorchsim.backend import select
 
     class NPUChoices(LookupTableChoices):
         def uuid(self):

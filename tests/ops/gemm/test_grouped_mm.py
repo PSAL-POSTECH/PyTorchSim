@@ -48,7 +48,7 @@ def _fallback(a, b, offs):
 
 def _run_compiled(sizes, k, n, fn=_gmm, dtype=torch.bfloat16):
     """(relative error, grouped-kernel launches, calls left to aten) of one compiled call."""
-    from pytorchsim.driver import codecache
+    from pytorchsim.backend import codecache
     from pytorchsim.frontend.dispatcher import grouped_mm
     launches, externs = [], []
     codecache.observe_launches(grouped_mm._grouped_mm_kernel, lambda: launches.append(1))

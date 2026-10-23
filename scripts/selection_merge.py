@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import torch  # noqa: E402,F401  (first: its device autoload installs pytorchsim, which imports select)
 
-from pytorchsim.driver import select  # noqa: E402
+from pytorchsim.backend import select  # noqa: E402
 
 
 def main(paths):

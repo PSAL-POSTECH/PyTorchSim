@@ -11,7 +11,7 @@ sys.path.insert(0, os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim
 
 import torch  # noqa: F401,E402  the npu backend loads pytorchsim whole, before its parts are imported
 from pytorchsim import contract  # noqa: E402
-from pytorchsim.driver import codecache  # noqa: E402
+from pytorchsim.backend import codecache  # noqa: E402
 from pytorchsim.simulator import timing  # noqa: E402
 
 SRC = "def kernel(): pass\n"

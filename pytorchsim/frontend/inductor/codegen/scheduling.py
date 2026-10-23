@@ -85,7 +85,7 @@ class TritonNPUScheduling(TritonScheduling):
                                    skip_perf_cache=False):
         """(TOGSim cycles, path) of a module generate_kernel_code_from_nodes wrote: Inductor
         compares these with the cycles select.time_choices gave the unfused choices."""
-        from pytorchsim.driver import select
+        from pytorchsim.backend import select
 
         got = self._benchmarked.get(mod.__file__)
         if got is None:
@@ -136,7 +136,7 @@ def _tile_source(node_schedule):
     RECORDED_UNFUSED; a MultiTemplateBuffer is only made for choices timed in cycles."""
     from torch._inductor.ir import MultiTemplateBuffer
 
-    from pytorchsim.driver import select
+    from pytorchsim.backend import select
 
     nodes = [n for n in node_schedule if hasattr(n, "is_template")]
     template = next((n for n in nodes if n.is_template()), None)
@@ -176,7 +176,7 @@ class TritonNPUWrapperCodegen(verify.VerifyLines, wrapper.PythonWrapperCodegen):
             f"""
                 from pytorchsim.config import setup_logger
                 from pytorchsim.frontend.inductor.codegen import verify as _fverify
-                from pytorchsim.driver.codecache import torchsim_compile, torchsim_extern
+                from pytorchsim.backend.codecache import torchsim_compile, torchsim_extern
 
                 _logger = setup_logger("pytorchsim.frontend.inductor.codegen.generated_wrapper")
                 _logger.info(f'Wrapper Codegen Path = {{__file__}}')
@@ -329,7 +329,7 @@ def user_kernel_meta(kernel, kwargs, triton_meta, grid):
     written (inout) where torch's mutation analysis says the launch writes it, read (in)
     elsewhere, every pointer inout when that analysis is not at hand."""
     from pytorchsim.contract import storage_span
-    from pytorchsim.driver.codecache import user_kernel_id
+    from pytorchsim.backend.codecache import user_kernel_id
 
     hint = V.graph.sizevars.optimization_hint
     signature = {str(k): str(v) for k, v in triton_meta["signature"].items()}

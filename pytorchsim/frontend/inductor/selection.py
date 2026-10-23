@@ -1,4 +1,4 @@
-"""How a template's config is picked for npu: TOGSim cycles in timing mode (driver/select.py), the
+"""How a template's config is picked for npu: TOGSim cycles in timing mode (backend/select.py), the
 offered order otherwise, a recorded pick when there is one. Inductor's recording hooks
 (add_preprocessing_fn, add_feedback_saver) take the last; it has none for timing a choice, so the
 rest replaces four AlgorithmSelectorCache methods, each falling back to Inductor's off npu.
@@ -18,7 +18,7 @@ def install():
     from torch._inductor import select_algorithm
     from torch._inductor.select_algorithm import AlgorithmSelectorCache
 
-    from pytorchsim.driver import select
+    from pytorchsim.backend import select
 
     orig_benchmark = AlgorithmSelectorCache.__dict__["benchmark_choices"].__func__
     orig_call = AlgorithmSelectorCache.__call__

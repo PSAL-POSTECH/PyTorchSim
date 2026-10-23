@@ -278,7 +278,7 @@ def install():
     backend key, where a call made under inference_mode lands. Count each fused kernel launch."""
     global _lib
     if _lib is None:
-        from pytorchsim.driver import codecache
+        from pytorchsim.backend import codecache
         codecache.observe_launches(_prefill_kernel, lambda: _count("prefill"))
         codecache.observe_launches(_decode_kernel, lambda: _count("decode"))
         _lib = torch.library.Library("aten", "IMPL")

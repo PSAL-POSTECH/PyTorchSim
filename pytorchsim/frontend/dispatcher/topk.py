@@ -175,7 +175,7 @@ def install():
     key, where a call made under inference_mode lands. Count each kernel launch."""
     global _lib
     if _lib is None:
-        from pytorchsim.driver import codecache
+        from pytorchsim.backend import codecache
         codecache.observe_launches(_topk_kernel, lambda: _count("kernel"))
         _lib = torch.library.Library("aten", "IMPL")
         for key in ("AutogradPrivateUse1", "PrivateUse1"):

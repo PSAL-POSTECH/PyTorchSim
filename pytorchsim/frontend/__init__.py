@@ -4,7 +4,7 @@
     inductor/    npu as an Inductor backend and the patches to Inductor's passes, choices and codegen
     dispatcher/  ops with a Triton kernel of their own, registered at the npu dispatch keys
 
-What compiles and runs a kernel after Inductor is pytorchsim/driver and pytorchsim/simulator.
+What compiles and runs a kernel after Inductor is pytorchsim/backend and pytorchsim/simulator.
 """
 
 

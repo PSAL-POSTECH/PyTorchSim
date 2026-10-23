@@ -9,7 +9,7 @@ a whole block and has no backward. Each case checks the value against x * 2 and 
               gradient is the fallback's
   inference   a compiled call under inference_mode (PrivateUse1) launches the kernel
 
-Usage: test_fused_kernel.py [case ...]   (all cases when none is named)
+Usage: test_custom_fused_kernel.py [case ...]   (all cases when none is named)
 """
 import sys
 
@@ -18,7 +18,7 @@ import triton
 import triton.language as tl
 from torch.library import wrap_triton
 
-from pytorchsim.frontend.dispatcher.fused_kernel import CustomFusedKernel, Decline
+from pytorchsim.frontend.dispatcher.custom_fused_kernel import CustomFusedKernel, Decline
 
 device = torch.device("npu:0")
 BLOCK = 128

@@ -3,7 +3,7 @@ decode) where they take the call, SDPA's own math everywhere else.
 
 The device's `_fused_sdp_choice` sends a call to `aten._scaled_dot_product_fused_attention_overrideable`
 when that op can carry it (no mask, no dropout, no gradient, H dividing Hq). FusedSDPA is that op's
-npu kernel, a CustomFusedKernel (fused_kernel.py): `fused_plan` is the one place that decides
+npu kernel, a CustomFusedKernel (custom_fused_kernel.py): `fused_plan` is the one place that decides
 whether a fused kernel takes the call, and everything it declines runs
 `aten._scaled_dot_product_attention_math`, the op SDPA's math backend runs.
 """
@@ -17,8 +17,8 @@ import triton.language as tl
 from torch.library import wrap_triton
 
 from pytorchsim import config
-from pytorchsim.frontend.dispatcher.fused_kernel import (CustomFusedKernel, Decline,
-                                                         fits_scratchpad, next_pow2)
+from pytorchsim.frontend.dispatcher.custom_fused_kernel import (
+    CustomFusedKernel, Decline, fits_scratchpad, next_pow2)
 
 
 class FusedSDPA(CustomFusedKernel):

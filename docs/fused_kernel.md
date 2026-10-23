@@ -75,8 +75,8 @@ import triton.language as tl
 from torch.library import wrap_triton
 
 from pytorchsim import config
-from pytorchsim.frontend.dispatcher.fused_kernel import (CustomFusedKernel, Decline,
-                                                         fits_scratchpad, next_pow2)
+from pytorchsim.frontend.dispatcher.custom_fused_kernel import (
+    CustomFusedKernel, Decline, fits_scratchpad, next_pow2)
 
 
 class RowScale(CustomFusedKernel):

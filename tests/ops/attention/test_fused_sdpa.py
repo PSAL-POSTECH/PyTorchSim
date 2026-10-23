@@ -149,7 +149,7 @@ def run_spad(name):
     scratchpad bound binds, until one row per lane overruns it and fused_plan declines."""
     from pytorchsim import config
     from pytorchsim.frontend.dispatcher import attention
-    from pytorchsim.frontend.dispatcher.fused_kernel import Decline
+    from pytorchsim.frontend.dispatcher.custom_fused_kernel import Decline
     _, B, Hq, H, _, S0, D0, causal = CASES["prefill_causal_gqa"]
 
     def plan(S, D):

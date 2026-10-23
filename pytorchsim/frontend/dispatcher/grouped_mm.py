@@ -1,7 +1,7 @@
 """aten._grouped_mm and transformers' grouped_mm_fallback on the npu (2-D A grouped by offs, times 3-D B) as one
 Triton kernel in fused_moe form: a program is a block of BM rows of one group, its group, first row and row count
-read from a table the TOG reads as runtime attributes. GroupedMM is a CustomFusedKernel (fused_kernel.py) taking both ops;
-it has no backward, so a call that needs a gradient runs group by group.
+read from a table the TOG reads as runtime attributes. GroupedMM is a CustomFusedKernel (custom_fused_kernel.py)
+taking both ops; it has no backward, so a call that needs a gradient runs group by group.
 """
 
 from typing import Optional
@@ -12,7 +12,7 @@ import triton.language as tl
 from torch.library import wrap_triton
 
 from pytorchsim import config
-from pytorchsim.frontend.dispatcher.fused_kernel import CustomFusedKernel, Decline
+from pytorchsim.frontend.dispatcher.custom_fused_kernel import CustomFusedKernel, Decline
 
 
 class GroupedMM(CustomFusedKernel):

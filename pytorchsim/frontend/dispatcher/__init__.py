@@ -1,6 +1,6 @@
-"""Ops the npu takes as a Triton kernel of our own, each a CustomFusedKernel (fused_kernel.py): the
-ops it takes, its plan, its launch as a triton_op (torchsim::<op>) and an aten fallback. Rewrites
-into aten ops are inductor/post_grad_pass.py instead."""
+"""Ops the npu takes as a Triton kernel of our own, each a CustomFusedKernel
+(custom_fused_kernel.py): the ops it takes, its plan, its launch as a triton_op (torchsim::<op>)
+and an aten fallback. Rewrites into aten ops are inductor/post_grad_pass.py instead."""
 
 
 def install():

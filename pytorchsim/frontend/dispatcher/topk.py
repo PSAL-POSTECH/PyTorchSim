@@ -3,7 +3,7 @@
 The kernel puts a row on each lane and runs K rounds of max (min), first index of it, and mask,
 gathering the K values and indices of its rows in registers and storing each once, as a TPU
 kernel would. Its backward scatters the values' gradient to the indices, aten's own topk backward.
-TopK is a CustomFusedKernel (fused_kernel.py), which routes aten::topk's calls.
+TopK is a CustomFusedKernel (custom_fused_kernel.py), which routes aten::topk's calls.
 """
 
 import torch
@@ -12,8 +12,8 @@ import triton.language as tl
 from torch.library import wrap_triton
 
 from pytorchsim import config
-from pytorchsim.frontend.dispatcher.fused_kernel import (CustomFusedKernel, Decline,
-                                                         fits_scratchpad, next_pow2)
+from pytorchsim.frontend.dispatcher.custom_fused_kernel import (
+    CustomFusedKernel, Decline, fits_scratchpad, next_pow2)
 
 
 class TopK(CustomFusedKernel):

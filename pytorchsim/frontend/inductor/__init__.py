@@ -3,12 +3,15 @@
     registration/      everything npu registers, one file per registry: its DeviceInterface, a
                        Triton GPU, its codegen and post-grad pass, its wrappers' device code, its
                        choices and template heuristics
-    device.py          is_npu and is_lowering_npu, the device tests the patches share
     post_grad_pass.py  the FX graph after Inductor's post-grad passes (device_custom_pass)
     autotune/          how each kernel's sizes are chosen: template kernels' configs and selection,
                        generated kernels' blocks
     codegen/           the scheduling and wrapper Inductor generates through, kernel metadata
+
+is_npu and is_lowering_npu, here, are the device tests the patches share.
 """
+
+import torch
 
 from pytorchsim import config
 
@@ -38,3 +41,22 @@ def _configure_inductor():
     inductor_config.autotune_local_cache = False
     if timed:
         inductor_config.compile_threads = 1
+
+
+def is_npu(obj):
+    """Whether a device, device string, tensor, layout or node is on this device."""
+    dev = getattr(obj, "device", obj)
+    dev = getattr(dev, "device", dev)
+    if isinstance(dev, str):
+        dev = torch.device(dev)
+    return getattr(dev, "type", None) == "npu"
+
+
+def is_lowering_npu():
+    """Whether the graph being lowered right now targets this device."""
+    from torch._inductor.virtualized import V
+
+    try:
+        return V.graph.get_current_device_or_throw().type == "npu"
+    except (AttributeError, RuntimeError):
+        return False

@@ -5,7 +5,7 @@ and whether a reduction is persistent all read it. And whether a reduction split
 
 from pytorchsim import config
 from pytorchsim.frontend import tiling
-from pytorchsim.frontend.inductor.device import is_lowering_npu
+from pytorchsim.frontend.inductor import is_lowering_npu
 
 logger = config.setup_logger()
 

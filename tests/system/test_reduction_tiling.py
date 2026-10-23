@@ -9,7 +9,7 @@ import torch
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
 from _pytorchsim_utils import test_result
 
-from pytorchsim.codegen import tiling
+from pytorchsim.frontend.inductor.codegen import tiling
 
 LANES, LANE_BYTES = 128, 1 << 20
 
@@ -47,7 +47,7 @@ def test_kept_axis_is_the_unit_stride_axis_of_the_largest_read():
     from torch._inductor.dependencies import MemoryDep
     from torch._inductor.sizevars import SizeVarAllocator
     from torch._inductor.virtualized import V
-    from pytorchsim.frontend.choices import _kept_axis_contiguous
+    from pytorchsim.frontend.inductor.choices import _kept_axis_contiguous
     c0, c1 = sympy.symbols("c0 c1", integer=True, nonnegative=True)
     graph = type("G", (), {"sizevars": SizeVarAllocator(), "get_dtype": lambda self, n: torch.bfloat16})()
 

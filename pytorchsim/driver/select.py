@@ -17,7 +17,7 @@ import os
 import time
 
 from pytorchsim import config, contract
-from pytorchsim.codegen import kernel_metadata
+from pytorchsim.frontend.inductor.codegen import kernel_metadata
 from pytorchsim.driver import autotune, compiler_bridge, compiler_input
 from pytorchsim.simulator import timing
 

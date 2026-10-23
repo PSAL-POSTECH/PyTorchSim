@@ -157,7 +157,7 @@ def _decode_tiles(GP, BKV, D, esize):
 
 def _fits(tiles):
     """Whether `tiles` fit one lane's scratchpad budget, and each is a tensor Triton builds."""
-    from pytorchsim.codegen import tiling
+    from pytorchsim.frontend.inductor.codegen import tiling
     big = tiling.triton_max_numel()
     return (all(r * c <= big for r, c, _ in tiles)
             and _lane_bytes(tiles) <= int(config.CONFIG_MACHINE.spad_budget))

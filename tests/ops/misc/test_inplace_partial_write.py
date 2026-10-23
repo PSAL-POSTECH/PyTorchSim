@@ -20,7 +20,7 @@ WHERE IT COMES FROM. Inductor plans this as two kernels and its plan is right:
         inductor_meta: mutated_arg_names: ['out_ptr0']
 
 The second kernel MUTATES buf0. `mutated_arg_names` is where Inductor says so,
-and `pytorchsim/codegen/kernel_metadata.py` deliberately does not read it -- it decides
+and `pytorchsim/frontend/inductor/codegen/kernel_metadata.py` deliberately does not read it -- it decides
 each argument's role from the stores Inductor renders instead, because the table
 overstates (an `in_out_ptr0` whose store Inductor removed is still listed, and
 believing it produced divergence reports about values nothing materialised).

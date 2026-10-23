@@ -7,7 +7,7 @@ from torch._subclasses.fake_tensor import FakeTensorMode
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
 from _pytorchsim_utils import test_result
 
-from pytorchsim.frontend.post_grad_pass import pytorchsim_post_grad_pass
+from pytorchsim.frontend.inductor.post_grad_pass import pytorchsim_post_grad_pass
 
 aten = torch.ops.aten
 

@@ -9,8 +9,8 @@ config is picked selection.py, the ops with a Triton kernel of their own triton_
 import torch
 
 from pytorchsim import config
-from pytorchsim.frontend.choices import conv_groups
-from pytorchsim.frontend.triton_gpu import is_npu, lowering_npu
+from pytorchsim.frontend.inductor.choices import conv_groups
+from pytorchsim.frontend.inductor.registration import is_npu, lowering_npu
 
 _installed = False
 
@@ -21,7 +21,8 @@ def install():
     global _installed
     if _installed:
         return
-    from pytorchsim.frontend import choices, selection, triton_gpu, triton_ops
+    from pytorchsim.frontend import dispatcher as triton_ops
+    from pytorchsim.frontend.inductor import choices, selection, registration as triton_gpu
 
     triton_gpu.install()
     choices.install()

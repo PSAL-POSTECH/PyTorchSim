@@ -17,7 +17,7 @@ from torch._inductor.utils import Placeholder, get_fused_kernel_name
 from torch._inductor.virtualized import V
 
 from pytorchsim import config
-from pytorchsim.codegen import kernel_metadata, verify
+from pytorchsim.frontend.inductor.codegen import kernel_metadata, verify
 
 _logger = config.setup_logger()
 
@@ -32,7 +32,7 @@ class TritonNPUKernel(TritonKernel):
         """Pin this machine's blocks here, where every kernel of this class is made: the one
         Inductor emits and the one its fusion benchmark times are then the same kernel."""
         if fixed_config is None:
-            from pytorchsim.frontend.choices import pinned_blocks
+            from pytorchsim.frontend.inductor.choices import pinned_blocks
             fixed_config = pinned_blocks(tiling, kwargs.get("features"))
         super().__init__(tiling, *args, fixed_config=fixed_config, **kwargs)
 
@@ -175,10 +175,10 @@ class TritonNPUWrapperCodegen(verify.VerifyLines, wrapper.PythonWrapperCodegen):
         self.header.splice(
             f"""
                 from pytorchsim.config import setup_logger
-                from pytorchsim.codegen import verify as _fverify
+                from pytorchsim.frontend.inductor.codegen import verify as _fverify
                 from pytorchsim.driver.codecache import torchsim_compile, torchsim_extern
 
-                _logger = setup_logger("pytorchsim.codegen.generated_wrapper")
+                _logger = setup_logger("pytorchsim.frontend.inductor.codegen.generated_wrapper")
                 _logger.info(f'Wrapper Codegen Path = {{__file__}}')
             """
         )

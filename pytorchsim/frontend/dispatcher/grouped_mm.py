@@ -14,7 +14,7 @@ logger = config.setup_logger()
 
 def _tiles(n, k, esize):
     """(BM, BN, BK): BM the lanes, BN and BK the largest tile the machine's mm rule gives a BM-row block."""
-    from pytorchsim.codegen import tiling
+    from pytorchsim.frontend.inductor.codegen import tiling
     bm = int(config.CONFIG_MACHINE.vector_lanes)
     acc = 4
     _, tn, tk = tiling.gemm_tile_candidates(bm, n, k, acc + esize, esize)[0]

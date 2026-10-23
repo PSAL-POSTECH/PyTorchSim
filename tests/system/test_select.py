@@ -24,7 +24,7 @@ SHAPE = (128, 256, 256)
 CHILD = r"""
 import json, os, sys
 import torch
-from pytorchsim.codegen.inductor_hooks import TritonNPUScheduling
+from pytorchsim.frontend.inductor.codegen.scheduling import TritonNPUScheduling
 from pytorchsim.driver import select
 
 select.RECORD_DIR = os.environ["SELECT_RECORD_DIR"]

@@ -7,7 +7,7 @@ rest replaces four AlgorithmSelectorCache methods, each falling back to Inductor
 import torch
 
 from pytorchsim import config
-from pytorchsim.frontend.triton_gpu import is_npu
+from pytorchsim.frontend.inductor.registration import is_npu
 
 
 def install():

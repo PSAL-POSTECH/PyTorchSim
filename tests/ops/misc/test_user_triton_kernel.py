@@ -74,7 +74,7 @@ def wrap(x: torch.Tensor) -> torch.Tensor:
 
 
 def _check_roles(kernel, want):
-    from pytorchsim.codegen import kernel_metadata
+    from pytorchsim.frontend.inductor.codegen import kernel_metadata
     got = {n: r for n, r in kernel_metadata.ROLES_BY_KERNEL.items() if n.startswith(kernel)}
     if not got or any(r != want for r in got.values()):
         print(f"|UserTritonKernel roles of {kernel} Test Failed| got {got}, want {want}")

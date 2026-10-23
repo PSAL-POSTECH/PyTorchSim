@@ -8,8 +8,8 @@ import threading
 import torch
 
 from pytorchsim import config
-from pytorchsim.codegen import tiling
-from pytorchsim.frontend.triton_gpu import lowering_npu
+from pytorchsim.frontend.inductor.codegen import tiling
+from pytorchsim.frontend.inductor.registration import lowering_npu
 
 logger = config.setup_logger()
 

@@ -102,7 +102,7 @@ def _compiler_git(compiler_dir):
 
 
 _PROBE = ("import json; from {pkg} import toolchain as t; "
-          "print(json.dumps({{'tools': dict(t.TOOLS), 'togsim_api': t.togsim_api_version(), "
+          "print(json.dumps({{'tools': dict(t.TOOLS), 'togsim_api': t.togsim_version(), "
           "'togsim_include': t.TOGSIM_INCLUDE}}))")
 
 

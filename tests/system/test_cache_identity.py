@@ -36,7 +36,7 @@ def test_tools_are_the_compilers():
 
 def test_tog_abi_is_the_compilers_togsim():
     abi = _fresh_identity()["tog_abi"]
-    assert isinstance(abi, dict) and abi["api"] == _ask_compiler("t.togsim_api_version()"), abi
+    assert isinstance(abi, dict) and abi["api"] == _ask_compiler("t.togsim_version()"), abi
     assert abi["api"] is not None and abi["headers"]
 
 

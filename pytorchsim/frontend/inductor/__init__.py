@@ -7,7 +7,7 @@
     lowering.py        lowering patches with no Inductor hook, npu's conv decompositions
     choices.py         NPUChoices: conv tiles, pinned blocks, reductions, recorded template picks
     selection.py       how a template's config is picked (TOGSim cycles in timing mode)
-    codegen/           the scheduling and wrapper Inductor generates through, kernel metadata, tiling
+    codegen/           the scheduling and wrapper Inductor generates through, kernel metadata
 """
 
 from pytorchsim import config

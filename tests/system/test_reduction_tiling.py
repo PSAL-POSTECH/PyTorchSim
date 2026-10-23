@@ -9,7 +9,7 @@ import torch
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
 from result_check import check_result
 
-from pytorchsim.frontend.inductor.codegen import tiling
+from pytorchsim.frontend import tiling
 
 LANES, LANE_BYTES = 128, 1 << 20
 

@@ -7,7 +7,7 @@ the numels, the pinned blocks and the grid.
 from torch._inductor.codegen.common import InplacedBuffer, is_buffer_removed
 from torch._inductor.virtualized import V
 
-from pytorchsim.frontend.inductor.codegen import tiling
+from pytorchsim.frontend import tiling
 from pytorchsim.contract import SpecIncomplete, storage_span
 
 _DTYPE = {

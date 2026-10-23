@@ -16,18 +16,9 @@ The project's code is organized with a clear structure and separation of respons
 openreg/
 ├── README.md               # Comprehensive introduction of OpenReg.
 ├── CMakeLists.txt          # Top-level CMake build script, used to compile and generate libopenreg.so
-├── cmake/
-│   └── GTestTargets.cmake  # Utils of fetching GoogleTest.
 ├── include/
 │   ├── openreg.h           # Public API header file, external users only need to include this file
 │   └── openreg.inl         # Public API header file, as an extension of openreg.h, cannot be included separately.
-├── example/
-│   └── example.cpp         # Example for OpenReg.
-├── tests/
-│   ├── event_tests.cpp     # Testcases about OpenReg Event.
-│   ├── stream_tests.cpp    # Testcases about OpenReg Stream.
-│   ├── device_tests.cpp    # Testcases about OpenReg Device.
-│   └── memory_tests.cpp    # Testcases about OpenReg Memory.
 └── csrc/
     ├── device.cpp          # Implementation of device management APIs
     ├── memory.cpp          # Implementation of memory management APIs
@@ -117,34 +108,6 @@ Simulating creation, release and synchronization for event and steam:
 1. **Event**: Each event is encapsulated as a task function and placed into a stream, which acts as a thread. Upon completion of the task, a flag within the event is modified to simulate the event's status.
 2. **Stream**: When each stream is requested, a new thread is created, which sequentially processes each task in the task queue within the stream structure. Tasks can be wrappers around kernel functions or events.
 3. **Synchronization**: Synchronization between streams and events is achieved using multithreading, condition variables, and mutexes.
-
-## Usage Example
-
-Please refer to [example](example/example.cpp) for example.
-
-The command to compile example.cpp is as follow:
-
-```Shell
-mkdir build
-
-pushd build
-cmake ..
-make -j 32
-popd
-
-g++ -o out example/example.cpp -L ./build -lopenreg
-LD_LIBRARY_PATH=./build ./out
-```
-
-The output is as follow:
-
-```Shell
-Current environment have 2 devices
-Current is 0 device
-All tasks have been submitted.
-Kernel execution time: 0.238168 ms
-Verification PASSED!
-```
 
 ## Next Steps
 

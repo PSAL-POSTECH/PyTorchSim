@@ -83,12 +83,6 @@ def _lazy_init():
     register_interface_for_device(custom_device(), ExtensionDeviceInterface)
     _initialized = True
 
-    # SDPA: the overrideable op where _fused_sdp_choice sends it (the front end's fused kernel or
-    # math, attention.fused_plan decides), math elsewhere.
-    torch._C._set_sdp_use_flash(False)
-    torch._C._set_sdp_use_overrideable(True)
-    torch._C._set_sdp_use_math(True)
-
     # Create default streams for all devices
     num_devices = device_count()
     for device_idx in range(num_devices):

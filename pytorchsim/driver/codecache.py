@@ -95,19 +95,27 @@ def _compiler_git(compiler_dir):
     return {"commit": head.strip(), "dirty": dirty}
 
 
-def _tool_paths(compiler_dir):
-    """The tool paths the compiler itself would resolve, asked in its own interpreter."""
-    code = (f"import json; from {compiler_bridge.COMPILER_PKG} import config as c; "
-            "print(json.dumps({n: p for n, p, _ in c.CHECKS}))")
+_PROBE = ("import json; from {pkg} import toolchain as t; "
+          "print(json.dumps({{'tools': dict(t.TOOLS), 'togsim_api': t.togsim_api_version(), "
+          "'togsim_include': t.TOGSIM_INCLUDE}}))")
+
+
+def _compiler_facts(compiler_dir):
+    """The tools, TOGSim API version and TOGSim header directory the compiler itself resolves, asked
+    in its own interpreter. A probe that cannot answer raises with what the compiler said."""
     proc = subprocess.run(
-        [config.CONFIG_TORCHSIM_COMPILE_PYTHON, "-c", code],
+        [config.CONFIG_TORCHSIM_COMPILE_PYTHON, "-c", _PROBE.format(pkg=compiler_bridge.COMPILER_PKG)],
         capture_output=True, text=True, cwd=compiler_dir, env=compiler_bridge.compiler_env())
-    if proc.returncode != 0:
-        return None
     try:
-        return json.loads(proc.stdout.strip().splitlines()[-1])
+        facts = json.loads(proc.stdout.strip().splitlines()[-1]) if proc.returncode == 0 else None
     except (ValueError, IndexError):
-        return None
+        facts = None
+    if not isinstance(facts, dict) or not facts.get("tools") or not facts.get("togsim_include"):
+        said = (proc.stderr or proc.stdout).strip()[-600:]
+        raise RuntimeError(
+            f"the compiler in {compiler_dir} did not state its toolchain (exit {proc.returncode}), so "
+            f"no cached kernel can be trusted to be its build: {said}")
+    return facts
 
 
 def _stat_tools(paths):
@@ -123,18 +131,21 @@ def _stat_tools(paths):
     return out
 
 
-def _tog_abi():
-    """A digest of the runtime header a cached tog.so was compiled against. TOGSim refuses a TOG
-    of another TOGSIM_ABI_VERSION when it loads it; with the header in the artifact's identity
-    any change to it is a cache miss before that."""
-    path = os.path.join(config.togsim_include_dir(), "togsim_runtime.h")
-    try:
-        with open(path, "rb") as fh:
-            return hashlib.sha256(fh.read()).hexdigest()[:16]
-    except OSError as exc:
+def _tog_abi(facts):
+    """The TOGSim API a cached tog.so was compiled against, as the compiler resolves it: its stated
+    version and a digest of every header in its TOGSim include directory."""
+    include = facts["togsim_include"]
+    names = sorted(n for n in os.listdir(include) if n.endswith((".h", ".hpp"))) \
+        if os.path.isdir(include) else []
+    if "togsim.hpp" not in names:
         raise FileNotFoundError(
-            f"{path} cannot be read ({exc.strerror}): TOGSIM_DIR must name a TOGSim checkout, "
-            f"the one the compiler carries as third_party/TOGSim unless set") from exc
+            f"{include} holds no togsim.hpp: the compiler's TOGSim (TOGSIM_DIR, else its "
+            f"third_party/TOGSim) is not a TOGSim checkout")
+    digest = hashlib.sha256()
+    for name in names:
+        with open(os.path.join(include, name), "rb") as fh:
+            digest.update(name.encode() + b"\0" + fh.read())
+    return {"api": facts["togsim_api"], "headers": digest.hexdigest()[:16]}
 
 
 def identity():
@@ -142,16 +153,12 @@ def identity():
     global _identity
     if _identity is None:
         compiler_dir = compiler_bridge.compiler_dir()
-        paths = _tool_paths(compiler_dir)
-        if paths is None:
-            logger.warning(
-                "[provenance] the compiler's toolchain could not be introspected; "
-                "cached kernels are guarded by the compiler commit only")
+        facts = _compiler_facts(compiler_dir)
         _identity = {
             "the compiler": _compiler_git(compiler_dir),
-            "tools": _stat_tools(paths) if paths else None,
+            "tools": _stat_tools(facts["tools"]),
             "machine": compiler_bridge.target().as_dict(),
-            "tog_abi": _tog_abi(),
+            "tog_abi": _tog_abi(facts),
         }
     return _identity
 

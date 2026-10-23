@@ -86,11 +86,6 @@ def __getattr__(name):
 CONFIG_DEBUG_MODE = int(os.environ.get('TORCHSIM_DEBUG_MODE', default=0))
 
 
-def togsim_include_dir():
-    """Where togsim_runtime.h lives: the header a TOG is compiled against."""
-    return os.path.join(CONFIG_TOGSIM_DIR, "include")
-
-
 def togsim_simulator(togsim_dir=None):
     """The Simulator a TOGSim checkout builds in its own tree; CONFIG_TOGSIM_DIR's unless another is named."""
     return os.path.join(togsim_dir or CONFIG_TOGSIM_DIR, "build", "bin", "Simulator")

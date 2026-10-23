@@ -3,7 +3,7 @@
 Here: the lowering patches with no Inductor hook (a transposed conv lowered as its direct
 equivalent, a grouped conv's grid per group, a zero-length GEMM as zeros) and npu's conv
 decompositions. npu as a Triton GPU is triton_gpu.py, its choices choices.py, how a template's
-config is picked selection.py, the ops with a Triton kernel of their own their own modules.
+config is picked selection.py, the ops with a Triton kernel of their own triton_ops/.
 """
 
 import torch
@@ -21,7 +21,7 @@ def install():
     global _installed
     if _installed:
         return
-    from pytorchsim.frontend import attention, choices, grouped_mm, selection, topk, triton_gpu
+    from pytorchsim.frontend import attention, choices, selection, triton_gpu, triton_ops
 
     triton_gpu.install()
     choices.install()
@@ -31,8 +31,7 @@ def install():
     _decompose_convolution_for_npu()
     selection.install()
     attention.install()
-    grouped_mm.install()
-    topk.install()
+    triton_ops.install()
     _configure_inductor()
     _installed = True
 

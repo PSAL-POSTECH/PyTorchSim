@@ -1,8 +1,8 @@
 """The npu's post-grad pass: rewrites that keep ops with no npu kernel on the device.
 
 pytorchsim_post_grad_pass is the device_custom_pass Inductor runs on npu graphs only, after its post-grad
-passes: histc, polar, a row times a matrix, complex values as real pairs. topk and grouped_mm are
-frontend/topk.py and frontend/grouped_mm.py.
+passes: histc, polar, a row times a matrix, complex values as real pairs. Ops with a Triton kernel of
+their own (topk, grouped_mm) are frontend/triton_ops/.
 """
 
 import torch

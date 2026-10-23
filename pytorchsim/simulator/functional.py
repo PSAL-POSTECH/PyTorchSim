@@ -107,18 +107,26 @@ def write_inputs(workdir, meta, args):
         if m["role"] not in ("in", "inout"):
             np.zeros(m["numel"], dtype=_np_dtype(m["dtype"])).tofile(path)
             continue
-        cpu = t.detach().to("cpu")
-        flat = torch.zeros(m["numel"], dtype=cpu.dtype, device="cpu")
-        shape, strides = list(t.shape), list(t.stride())
-        src = cpu
-        for i in range(len(strides) - 1, -1, -1):
-            if strides[i] == 0:
-                src = src.select(i, 0)
-                shape.pop(i)
-                strides.pop(i)
-        flat.as_strided(shape, strides).copy_(src)
-        _as_carrier(flat).numpy().tofile(path)
+        _as_carrier(flat_input(m, t)).numpy().tofile(path)
     return runtime
+
+
+def flat_input(m, t):
+    """The launch tensor `t` of arg `m` as the kernel sees it: a CPU tensor of m's numel elements, each
+    at the address `t`'s strides put it, what its .raw file holds."""
+    import torch
+
+    cpu = t.detach().to("cpu")
+    flat = torch.zeros(m["numel"], dtype=cpu.dtype, device="cpu")
+    shape, strides = list(t.shape), list(t.stride())
+    src = cpu
+    for i in range(len(strides) - 1, -1, -1):
+        if strides[i] == 0:
+            src = src.select(i, 0)
+            shape.pop(i)
+            strides.pop(i)
+    flat.as_strided(shape, strides).copy_(src)
+    return flat
 
 
 def read_outputs(workdir, meta, args):

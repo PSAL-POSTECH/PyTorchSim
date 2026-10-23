@@ -18,7 +18,7 @@ repo:
    worktree. The override forces `import torch_openreg` to resolve to the
    active worktree's code and `.so` first.
 3. **Branch tracking.** `git worktree add` from a remote ref sets upstream to
-   that ref, so `git push` would target `develop`. The script unsets it so
+   that ref, so `git push` would target the base branch. The script unsets it so
    first `git push -u origin <branch>` creates the right remote branch.
 
 The script bundles all three.
@@ -38,7 +38,7 @@ scripts/setup_worktree.sh <purpose> [base-ref]
 | `setup_worktree.sh bugfix/issue-198` | `/workspace/PyTorchSim-bugfix` | `bugfix/issue-198` |
 | `setup_worktree.sh feature origin/master` | `/workspace/PyTorchSim-feature` | `feature/scratch` (off master) |
 
-Default base is `origin/develop` (per `.github/CONTRIBUTING.md`).
+Default base is `origin/pytorchsim-triton-backend`.
 
 ## Activate
 

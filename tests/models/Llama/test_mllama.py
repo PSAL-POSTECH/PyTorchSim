@@ -26,10 +26,6 @@ Width there is deliberately NOT held at the real 1280: test_vit.py and
 test_clip.py already gate ViT-shaped attention at 768, so what is unproven is
 the tile structure and the global split, both of which survive scaling.
 
-scripts/op_coverage.py's build_mllama does NOT cover any of this -- it passes
-cross_attention_layers=[] and builds the text branch alone, which is a Llama
-with a different class name. Its "26 ops, OK" says nothing about this file.
-
     source /workspace/torchsim-env.sh
     python tests/models/Llama/test_mllama.py --part vision
     python tests/models/Llama/test_mllama.py --part text
@@ -191,9 +187,6 @@ def run_text(device, batch=1, seq_len=32, dtype="float32", compile_model=True,
     print("layers:", [k.replace("Mllama", "").replace("DecoderLayer", "") for k in kinds])
     print("text params:", sum(p.numel() for p in model_cpu.parameters()))
 
-    # The trap op_coverage.py fell into: with cross_attention_layers=[] this is
-    # a Llama wearing a different class name, and every check below still
-    # passes.  Refuse to report a result unless a cross layer is really there.
     n_cross = sum(isinstance(l, MllamaCrossAttentionDecoderLayer) for l in model_cpu.layers)
     assert n_cross > 0, "no cross-attention layer was built -- this is not testing Mllama"
     print(f"cross-attention layers built: {n_cross}")

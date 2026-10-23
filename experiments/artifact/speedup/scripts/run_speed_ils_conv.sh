@@ -5,6 +5,12 @@ config_dir="$(cd "$TORCHSIM_DIR" && python3 -c 'from pytorchsim.config import CO
 config=(
     "systolic_ws_128x128_c2_simple_noc_tpuv3_ils.yml"
 )
+for i in "${config[@]}"; do
+  if [[ ! -f "$config_dir/$i" ]]; then
+    echo "error: $config_dir/$i does not exist: this script reproduces the paper on the v1.0.0 image (README.md, Artifact Evaluation)" >&2
+    exit 1
+  fi
+done
 TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
 SHAPE_LIST=(
   #B H W I_C O_C K S P
@@ -30,7 +36,7 @@ for i in "${config[@]}"; do
     for iter in {1..5}; do
       echo "[Iter $iter] Running simulation for workload=ils_$ops config=$config"
       output=$(bash -c "
-        export TOGSIM_CONFIG=$config_path;
+        export TORCHSIM_TARGET=$config_path;
         cd $TORCHSIM_DIR && python3 $workload 2>&1
       ")
 

@@ -1,5 +1,5 @@
-"""npu's DeviceInterface: what Dynamo and Inductor ask of the device, answered for the simulator.
-Of it they read the properties, the compute capability, availability, Triton and bf16 support."""
+"""npu's DeviceInterface, registered with Dynamo's registry, read by Inductor: the properties, the
+compute capability, availability, Triton and bf16 support, answered for the simulator."""
 
 import torch
 from torch._dynamo.device_interface import DeviceInterface
@@ -31,7 +31,7 @@ class NPUDeviceInterface(DeviceInterface):
 
     @staticmethod
     def get_compute_capability(device: torch.types.Device = None) -> int:
-        """None of CUDA's; Triton's compile metadata carries it, which torchsim_compile does not read."""
+        """None of CUDA's; Triton's compile metadata carries it, and torchsim_compile ignores it."""
         return 0
 
     @staticmethod

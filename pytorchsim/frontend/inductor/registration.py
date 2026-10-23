@@ -1,11 +1,11 @@
-"""npu as an Inductor backend: a Triton GPU (GPU_TYPES, which Inductor has no hook for, so it
-patches its module state), its codegen and post-grad pass (register_backend_for_device) and its
-device op overrides (device_op_overrides.py). is_npu and lowering_npu are the device tests the other
-patches share.
-"""
+"""npu as an Inductor backend: its DeviceInterface (device_interface.py), a Triton GPU (GPU_TYPES,
+which has no hook, so it patches module state), its codegen and post-grad pass and its device op
+overrides. is_npu and lowering_npu are the device tests the patches share."""
 
 def install():
-    """Make Inductor take npu as a Triton GPU and register npu's codegen, post-grad pass and op overrides."""
+    """Make Inductor take npu as a Triton GPU and register npu's device interface, codegen,
+    post-grad pass and op overrides."""
+    _register_device_interface()
     _register_npu_as_gpu()
     _register_backend()
     _register_device_op_overrides()
@@ -21,6 +21,13 @@ def _register_backend():
 
     register_backend_for_device("npu", TritonNPUScheduling, TritonNPUWrapperCodegen,
                                 device_custom_pass=pytorchsim_post_grad_pass)
+
+
+def _register_device_interface():
+    """What Inductor asks of the device: its properties, Triton and bf16 (device_interface.py)."""
+    from pytorchsim.frontend.inductor import device_interface
+
+    device_interface.install()
 
 
 def _register_device_op_overrides():

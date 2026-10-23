@@ -1,6 +1,7 @@
 """What npu plugs into Inductor, in the order Inductor meets it:
 
     registration.py    npu as an Inductor backend: GPU_TYPES, Triton present, codegen and op overrides
+    device_interface.py  what Inductor asks of the device: properties (SM count), Triton, bf16
     device_op_overrides.py  the device code Inductor writes into an npu wrapper
     post_grad_pass.py  the FX graph after Inductor's post-grad passes (device_custom_pass)
     lowering.py        lowering patches with no Inductor hook, npu's conv decompositions

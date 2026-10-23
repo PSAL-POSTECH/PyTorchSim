@@ -458,8 +458,8 @@ def _npu_choices_class():
 
     class NPUChoices(LookupTableChoices):
         def uuid(self):
-            """This class's part of Inductor's cache key, with the recorded picks it hands out."""
-            return f"pytorchsim-npu-choices-3-{select.record_digest()}"
+            """This class's part of Inductor's cache key: the machine and the picks it hands out."""
+            return f"pytorchsim-npu-choices-4-{select.graph_digest()}"
 
         def _get_lookup_table(self):
             """This machine's recorded picks; Inductor's own looks only on CUDA."""

@@ -205,7 +205,39 @@ def test_a_config_running_past_the_cut_is_inf():
         assert time.monotonic() - t0 < 0.2 * select.CUT_FACTOR + 1
 
 
+def _machine(root, sub, **change):
+    """tpuv6e's machine file with `change` applied, at <root>/<sub>/m.yml: one name, other content."""
+    import yaml
+    from pytorchsim import config
+    with open(os.path.join(config.CONFIG_TOGSIM_CONFIG_DIR, "tpuv6e.yml")) as f:
+        raw = yaml.safe_load(f)
+    raw.update(change)
+    os.makedirs(os.path.join(root, sub))
+    path = os.path.join(root, sub, "m.yml")
+    with open(path, "w") as f:
+        yaml.safe_dump(raw, f)
+    return path
+
+
+def test_graph_cache_key_names_the_machine():
+    """Inductor's FX cache key differs between machines with no recorded picks, so one machine's
+    cached graph is not handed to another: the core count and the lanes' scratchpad shape it."""
+    from pytorchsim.frontend.inductor_patches import _npu_choices_class
+    with tempfile.TemporaryDirectory() as root:
+        paths = [_machine(root, "base"), _machine(root, "cores", num_cores=2),
+                 _machine(root, "spad", vpu_spad_size_kb_per_lane=512)]
+        keys = []
+        for path in paths:
+            with mock.patch.dict(os.environ, TORCHSIM_TARGET=path), \
+                 mock.patch.object(select, "RECORD_DIR", os.path.join(root, "record")):
+                assert select.record_digest() == "none"
+                keys.append(_npu_choices_class()().uuid())
+                assert keys[-1] == _npu_choices_class()().uuid()
+        assert len(set(keys)) == len(keys), keys
+
+
 if __name__ == "__main__":
+    test_graph_cache_key_names_the_machine()
     test_a_config_running_past_the_cut_is_inf()
     test_a_refused_config_is_inf_and_none_left_is_an_error()
     test_select_record_and_rebuild()

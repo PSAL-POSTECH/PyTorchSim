@@ -303,5 +303,7 @@ def torchsim_compile(src_code, meta, kernel_name):
                 f.write(src_code)
             timing.store_meta(write_path, meta)
             store_identity(write_path)
+        else:
+            timing.load_tuned_blocks(write_path, meta)
         logger.info("[torchsim-compile] %s -> %s", kernel_name, write_path)
         return TritonNPULauncher(kernel_name, write_path, meta)

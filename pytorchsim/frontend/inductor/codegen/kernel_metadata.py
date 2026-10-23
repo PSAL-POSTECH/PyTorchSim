@@ -8,7 +8,7 @@ from torch._inductor.codegen.common import InplacedBuffer, is_buffer_removed
 from torch._inductor.virtualized import V
 
 from pytorchsim.frontend.inductor.codegen import tiling
-from pytorchsim.contract import storage_span
+from pytorchsim.contract import SpecIncomplete, storage_span
 
 _DTYPE = {
     "*fp64": "float64", "*fp32": "float32", "*fp16": "float16",
@@ -165,7 +165,7 @@ def collect_meta(kernel, kernel_name):
         "numels": numels,
         "inside_reduction": bool(getattr(kernel, "inside_reduction", False)),
         "fixed_config": _held_blocks(kernel) or tiling.fixed_config_for(kernel, numels, args),
-        "template_grid": tiling.template_grid(kernel) or tiling.combo_grid(kernel),
+        "template_grid": template_grid(kernel) or combo_grid(kernel),
     }
 
 
@@ -245,3 +245,65 @@ def _dtype_tokens():
             torch.float8_e5m2: "*fp8e5", torch.float8_e4m3fn: "*fp8e4nv",
         }
     return _TORCH_DTYPE_TOKEN
+
+
+def template_grid(kernel):
+    """A TEMPLATE kernel's launch grid as [gridX, gridY, gridZ], else None.
+
+    mm and conv tile with their own BLOCK_M/N, so the grid is theirs to state
+    and their numels describe the output. Refuses rather than falling back.
+    """
+    grid_fn = getattr(kernel, "grid_fn", None)
+    sizes = getattr(kernel, "call_sizes", None)
+    if grid_fn is None or sizes is None:
+        return None
+    name = getattr(kernel, "kernel_name", kernel)
+    try:
+        vals = [int(V.graph.sizevars.optimization_hint(s)) for s in sizes]
+        grid = grid_fn(*vals, dict(getattr(kernel, "meta", None) or {}))
+        extents = [int(g) for g in grid]
+    except Exception as e:
+        raise SpecIncomplete(
+            f"{name}: template grid_fn raised {type(e).__name__}: {e}") from e
+    if len(extents) != 3 or any(g < 1 for g in extents):
+        raise SpecIncomplete(
+            f"{name}: template grid_fn returned {grid!r}; this route needs three "
+            f"static positive extents. Refusing rather than falling back to the "
+            f"numels, which describe the output tensor and not the grid.")
+    return extents
+
+
+def combo_grid(kernel):
+    """A ComboKernel's grid as [gridX, 1, 1], else None.
+
+    A COMBO KERNEL IS N KERNELS IN ONE, AND IT STATES ITS OWN GRID. Inductor
+    fuses independent small kernels horizontally -- `aten.cat` of twelve expert
+    outputs, `torch._foreach_*` over a parameter list -- into one @foreach
+    kernel that splits `program_id` into one range per piece:
+
+        num_xblocks_0 = tl.cdiv(5120, XBLOCK)
+        num_xblocks_1 = num_xblocks_0 + tl.cdiv(512, XBLOCK)   # twelve of these
+
+    So the launch is the SUM of the pieces' block counts, and `kernel.numels`
+    does not describe it -- there is no single iteration space. That is the same
+    situation `template_grid` answers, which is why this answers in the same
+    shape and rides the same `template_grid` path from there on.
+
+    `combo_grid_meta` is Inductor's own answer to the same question (it is what
+    the emitted `inductor_meta` carries), so this asks it rather than
+    reconstructing the ranges.
+    """
+    meta_fn = getattr(kernel, "combo_grid_meta", None)
+    if meta_fn is None:
+        return None
+    grid_meta = meta_fn([kernel.select_heuristics(k)[1] for k in kernel.sub_kernels])
+    xblock = (grid_meta.get("default_config") or {}).get("XBLOCK")
+    if not xblock:
+        return None
+    blocks = 0
+    for i in range(int(grid_meta.get("num_kernels", 0))):
+        n = grid_meta.get(f"xnumel_{i}")
+        if n is None:
+            return None
+        blocks += -(-int(n) // int(xblock))
+    return [blocks, 1, 1] if blocks else None

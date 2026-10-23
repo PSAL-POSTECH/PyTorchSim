@@ -76,7 +76,24 @@ def test_this_device_still_gets_its_own_answers():
     test_result("OnDeviceAnswersKept", got, torch.tensor([1, 64, True]))
 
 
+def test_triton_presence_is_upstream():
+    """has_triton and the Triton hash in Inductor's cache key are upstream's own:
+    npu's registered interface and the active torchsim driver answer them."""
+    import hashlib
+
+    import torch.utils._triton as triton_utils
+    from torch._inductor.runtime.triton_compat import triton_key
+
+    key = f"{triton_key()}-{triton_utils.triton_backend().hash()}"
+    want = hashlib.sha256(key.encode("utf-8")).hexdigest().upper()
+    got = torch.tensor([triton_utils.has_triton(),
+                        hasattr(triton_utils.has_triton, "cache_info"),
+                        triton_utils.triton_hash_with_backend() == want])
+    test_result("TritonPresenceUpstream", got, torch.tensor([True, True, True]))
+
+
 if __name__ == "__main__":
+    test_triton_presence_is_upstream()
     test_reduction_split_is_upstream_off_device()
     test_benchmark_operand_is_upstream_off_device()
     test_device_predicate_reads_every_spelling()

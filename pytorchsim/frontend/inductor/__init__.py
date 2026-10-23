@@ -1,7 +1,9 @@
 """What npu plugs into Inductor, in the order Inductor meets it:
 
-    registration.py    everything npu registers: its DeviceInterface (SM count, Triton, bf16), a
-                       Triton GPU, its codegen and post-grad pass, its wrappers' device code
+    registration/      everything npu registers, one file per registry: its DeviceInterface, a
+                       Triton GPU, its codegen and post-grad pass, its wrappers' device code, its
+                       choices and template heuristics
+    device.py          is_npu and is_lowering_npu, the device tests the patches share
     post_grad_pass.py  the FX graph after Inductor's post-grad passes (device_custom_pass)
     autotune/          how each kernel's sizes are chosen: template kernels' configs and selection,
                        generated kernels' blocks

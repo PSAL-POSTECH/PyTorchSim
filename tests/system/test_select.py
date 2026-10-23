@@ -222,7 +222,7 @@ def _machine(root, sub, **change):
 def test_graph_cache_key_names_the_machine():
     """Inductor's FX cache key differs between machines with no recorded picks, so one machine's
     cached graph is not handed to another: the core count and the lanes' scratchpad shape it."""
-    from pytorchsim.frontend.inductor.registration import npu_choices_class
+    from pytorchsim.frontend.inductor.registration.choices import npu_choices_class
     with tempfile.TemporaryDirectory() as root:
         paths = [_machine(root, "base"), _machine(root, "cores", num_cores=2),
                  _machine(root, "spad", vpu_spad_size_kb_per_lane=512)]

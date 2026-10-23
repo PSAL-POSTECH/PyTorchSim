@@ -45,7 +45,7 @@ def test_device_op_overrides():
     """npu gets its own overrides; cpu keeps Inductor's, which this backend no longer registers."""
     from torch._inductor.codegen.common import get_device_op_overrides
     from torch._inductor.codegen.cpu_device_op_overrides import CpuDeviceOpOverrides
-    from pytorchsim.frontend.inductor.registration import NPUDeviceOpOverrides
+    from pytorchsim.frontend.inductor.registration.device_op_overrides import NPUDeviceOpOverrides
     got = [isinstance(get_device_op_overrides("npu"), NPUDeviceOpOverrides),
            isinstance(get_device_op_overrides("cpu"), CpuDeviceOpOverrides)]
     check_result("DeviceOpOverrides", torch.tensor(got), torch.ones(len(got), dtype=torch.bool))
@@ -53,7 +53,7 @@ def test_device_op_overrides():
 
 def test_is_npu_spellings():
     """is_npu reads a device, a device string with or without an index, and a tensor's device."""
-    from pytorchsim.frontend.inductor.registration import is_npu
+    from pytorchsim.frontend.inductor.device import is_npu
     got = [is_npu("npu"), is_npu("npu:0"), is_npu(torch.device("npu", 0)),
            is_npu(torch.empty(1, device="npu")), not is_npu("cpu"), not is_npu(torch.empty(1))]
     check_result("IsNpuSpellings", torch.tensor(got), torch.ones(len(got), dtype=torch.bool))

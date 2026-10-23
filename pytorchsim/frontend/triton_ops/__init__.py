@@ -5,6 +5,7 @@ frontend/post_grad_pass.py instead."""
 
 def install():
     """Register every op's npu kernel, once each."""
-    from . import grouped_mm, topk
+    from . import attention, grouped_mm, topk
+    attention.install()
     grouped_mm.install()
     topk.install()

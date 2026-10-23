@@ -21,7 +21,7 @@ def install():
     global _installed
     if _installed:
         return
-    from pytorchsim.frontend import attention, choices, selection, triton_gpu, triton_ops
+    from pytorchsim.frontend import choices, selection, triton_gpu, triton_ops
 
     triton_gpu.install()
     choices.install()
@@ -30,7 +30,6 @@ def install():
     _short_circuit_degenerate_gemms()
     _decompose_convolution_for_npu()
     selection.install()
-    attention.install()
     triton_ops.install()
     _configure_inductor()
     _installed = True

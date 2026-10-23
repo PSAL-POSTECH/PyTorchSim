@@ -73,7 +73,7 @@ def topk_plan(x, k, dim):
     """(the kernel's blocks, None) when it takes topk of `x` along `dim`, else (None, why). A
     program takes a row on each lane, those past the last masked, halved while its tiles overrun
     the scratchpad budget."""
-    from pytorchsim.frontend.attention import _fits
+    from pytorchsim.frontend.triton_ops.attention import _fits
     if not x.is_floating_point():
         return None, f"{x.dtype} is not a floating dtype"
     if x.dim() == 0 or x.numel() == 0:

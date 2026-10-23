@@ -17,10 +17,11 @@ from pytorchsim.frontend.dispatcher.fused_kernel import CustomFusedKernel, Decli
 
 class GroupedMM(CustomFusedKernel):
     name = "torchsim::grouped_mm"
-    takes = ("aten::_grouped_mm", "transformers::grouped_mm_fallback")
+    #: transformers defines grouped_mm_fallback only once it is imported, after install, so by name.
+    takes = (torch.ops.aten._grouped_mm.default, "transformers::grouped_mm_fallback")
 
     def kernels(self):
-        return {"kernel": _grouped_mm_kernel}
+        return (_grouped_mm_kernel,)
 
     def arguments(self, op, a, b, offs=None, bias=None, out_dtype=None):
         """aten's call, and transformers' (A, B, offs) as the same call without bias or out_dtype."""
@@ -55,7 +56,6 @@ class GroupedMM(CustomFusedKernel):
 
 
 GROUPED_MM = GroupedMM()
-ROUTED = GROUPED_MM.routed
 
 
 def install():

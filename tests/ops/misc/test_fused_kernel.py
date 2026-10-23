@@ -1,6 +1,6 @@
 """CustomFusedKernel's routing, on a toy op `torchsim_test::twice` (x * 2) whose plan takes rows of
 a whole block and has no backward. Each case checks the value against x * 2 and the counts in
-`routed`: a "kernel" count per launch, a "fallback" count per eager call.
+`calls`: a "_twice_kernel" count per launch, a "fallback" count per eager call.
 
   eager       outside torch.compile the fallback runs
   compiled    a compiled call the plan takes launches the kernel
@@ -23,13 +23,15 @@ from pytorchsim.frontend.dispatcher.fused_kernel import CustomFusedKernel, Decli
 device = torch.device("npu:0")
 BLOCK = 128
 
+torch.library.define("torchsim_test::twice", "(Tensor x) -> Tensor")
+
 
 class Twice(CustomFusedKernel):
     name = "torchsim_test::twice_fused"
-    takes = ("torchsim_test::twice",)
+    takes = (torch.ops.torchsim_test.twice.default,)
 
     def kernels(self):
-        return {"kernel": _twice_kernel}
+        return (_twice_kernel,)
 
     def plan(self, x):
         if x.numel() % BLOCK:
@@ -52,17 +54,16 @@ def _twice_kernel(x_ptr, o_ptr, BLOCK: tl.constexpr):
     tl.store(o_ptr + offs, tl.load(x_ptr + offs) * 2)
 
 
-torch.library.define("torchsim_test::twice", "(Tensor x) -> Tensor")
 TWICE = Twice()
 TWICE.install()
 
 #  name: (want, numel, compiled, grad, inference_mode)
 CASES = {
     "eager": ({"fallback": 1}, 4 * BLOCK, False, False, False),
-    "compiled": ({"kernel": 1}, 4 * BLOCK, True, False, False),
+    "compiled": ({"_twice_kernel": 1}, 4 * BLOCK, True, False, False),
     "declined": ({}, 4 * BLOCK + 3, True, False, False),
     "grad": ({}, 4 * BLOCK, True, True, False),
-    "inference": ({"kernel": 1}, 4 * BLOCK, True, False, True),
+    "inference": ({"_twice_kernel": 1}, 4 * BLOCK, True, False, True),
 }
 
 
@@ -73,15 +74,15 @@ def run_case(name):
     if compiled:
         torch._dynamo.reset()
         f = torch.compile(f, dynamic=False)
-    TWICE.routed.clear()
+    TWICE.calls.clear()
     with torch.inference_mode(inference):
         out = f(x)
-    took = dict(TWICE.routed)
+    took = dict(TWICE.calls)
     ok = torch.equal(out.detach().cpu(), x.detach().cpu() * 2) and took == want
     if grad:
         out.sum().backward()
         ok = ok and torch.equal(x.grad.cpu(), torch.full((numel,), 2.0))
-    print(f"{name}: routed={took} want={want} {'PASS' if ok else 'FAIL'}", flush=True)
+    print(f"{name}: calls={took} want={want} {'PASS' if ok else 'FAIL'}", flush=True)
     return ok
 
 

@@ -2,7 +2,7 @@
 attention.fused_plan takes the call, SDPA's math where it does not, against a float32 CPU reference.
 
 Each case states the route it must take (prefill, decode or fallback, SDPA's math) and checks
-attention.ROUTED, the calls that ran each route: one launch per compiled call that takes a fused
+FUSED_SDPA.calls, the calls that ran each route: one launch per compiled call that takes a fused
 kernel, one "fallback" count per math call run outside a compiled graph, nothing for math compiled
 into the graph (Inductor's own kernels). So a gate that silently sends a fused case to math, or a
 math case to a kernel, fails:
@@ -13,7 +13,7 @@ math case to a kernel, fails:
              a non-power-of-two S, and a call whose inputs require grad (whose gradients are checked
              against the CPU's: the overrideable op has no backward)
   eager      a prefill-shaped call outside torch.compile runs math (no Triton launch outside a
-             compiled graph) and says so in ROUTED; under inference_mode too, which skips the
+             compiled graph) and says so in its calls; under inference_mode too, which skips the
              autograd key the op's npu kernel is registered at, eagerly and compiled
   spad       doubling a fused prefill's S keeps splash's block (one query block's scratch is live
              at a time); doubling its D halves the block as the scratchpad bound binds, and
@@ -22,7 +22,7 @@ math case to a kernel, fails:
   counts     a compiled prefill called twice counts two launches, not its traces; under
              backend="eager" the call runs math, and only the fallback is counted
 
-On a tree without attention.ROUTED the route checks are skipped and only the values are checked,
+On a tree without FUSED_SDPA.calls the route checks are skipped and only the values are checked,
 so the value failures a fix removes show on the tree before it.
 
 Usage: test_fused_sdpa.py [case ...]   (all cases when none is named)
@@ -40,9 +40,9 @@ device = torch.device("npu:0")
 
 #  name: (route, B, Hq, H, L, S, D, causal)
 CASES = {
-    "prefill_causal_gqa": ("prefill", 1, 2, 1, 256, 256, 64, True),
-    "prefill_noncausal": ("prefill", 1, 2, 2, 256, 256, 64, False),
-    "decode_gqa": ("decode", 2, 8, 2, 1, 512, 64, False),
+    "prefill_causal_gqa": ("_prefill_kernel", 1, 2, 1, 256, 256, 64, True),
+    "prefill_noncausal": ("_prefill_kernel", 1, 2, 2, 256, 256, 64, False),
+    "decode_gqa": ("_decode_kernel", 2, 8, 2, 1, 512, 64, False),
     "decode_causal_top_left": ("fallback", 1, 4, 1, 1, 128, 64, True),
     "prefill_non_pow2": ("fallback", 1, 2, 2, 96, 96, 64, True),
 }
@@ -68,7 +68,7 @@ def _err(out, ref):
 
 def _routed():
     from pytorchsim.frontend.dispatcher import attention
-    return getattr(attention, "ROUTED", None)
+    return getattr(getattr(attention, "FUSED_SDPA", None), "calls", None)
 
 
 def _route_ok(want):
@@ -136,7 +136,7 @@ def run_eager(name):
         print(f"{name}: {type(exc).__name__}: {str(exc)[:200]} FAIL", flush=True)
         return False
     err = _err(out, ref)
-    want = {"prefill": 1} if compiled else {"fallback": 1}
+    want = {"_prefill_kernel": 1} if compiled else {"fallback": 1}
     ok = err < TOL and _route_ok(want)
     print(f"{name}: route={dict(_routed() or {})} want={want} err={err:.3e} "
           f"{'PASS' if ok else 'FAIL'}", flush=True)
@@ -187,8 +187,9 @@ def run_counts(name):
             errs += [_err(f(*args).cpu(), ref) for _ in range(calls)]
         took.append(dict(_routed() or {}))
     routed = _routed()
-    ok = max(errs) < TOL and (routed is None or took == [{"prefill": 2}, {"fallback": 1}])
-    print(f"{name}: inductor x2 route={took[0]} want={{'prefill': 2}}, eager route={took[1]} "
+    ok = max(errs) < TOL and (routed is None or took == [{"_prefill_kernel": 2}, {"fallback": 1}])
+    print(f"{name}: inductor x2 route={took[0]} want={{'_prefill_kernel': 2}}, "
+          f"eager route={took[1]} "
           f"want={{'fallback': 1}} err={max(errs):.3e} {'PASS' if ok else 'FAIL'}", flush=True)
     return ok
 

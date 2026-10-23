@@ -49,7 +49,7 @@ def _fallback(a, b, offs):
 
 def _routed():
     from pytorchsim.frontend.dispatcher import grouped_mm
-    return grouped_mm.ROUTED
+    return grouped_mm.GROUPED_MM.calls
 
 
 def _run_compiled(sizes, k, n, fn=_gmm, dtype=torch.bfloat16):
@@ -62,7 +62,7 @@ def _run_compiled(sizes, k, n, fn=_gmm, dtype=torch.bfloat16):
     a, b = a.to(dtype), b.to(dtype)
     torch._dynamo.reset()
     out = torch.compile(fn, dynamic=False)(a.to(device), b.to(device), offs.to(device))
-    return _err(out, _reference(a, b, offs)), _routed().get("kernel", 0), externs
+    return _err(out, _reference(a, b, offs)), _routed().get("_grouped_mm_kernel", 0), externs
 
 
 def case_routed():
@@ -81,7 +81,7 @@ def case_eager():
     out = _gmm(a.to(device), b.to(device), offs.to(device))
     err = _err(out, _reference(a, b, offs))
     took = dict(_routed())
-    return err < TOL and took == {"fallback": 1}, f"err {err:.3g}, routed {took}"
+    return err < TOL and took == {"fallback": 1}, f"err {err:.3g}, calls {took}"
 
 
 def case_grad():
@@ -94,7 +94,7 @@ def case_grad():
     torch.compile(_gmm, dynamic=False)(a_npu, b_npu, offs.to(device)).float().sum().backward()
     ea, eb = _err(a_npu.grad, a_ref.grad), _err(b_npu.grad, b_ref.grad)
     took = dict(_routed())
-    return ea < TOL and eb < TOL and not took, f"grad err a {ea:.3g}, b {eb:.3g}, routed {took}"
+    return ea < TOL and eb < TOL and not took, f"grad err a {ea:.3g}, b {eb:.3g}, calls {took}"
 
 
 def case_fallback():

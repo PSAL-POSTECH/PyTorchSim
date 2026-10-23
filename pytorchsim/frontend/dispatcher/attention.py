@@ -23,10 +23,10 @@ from pytorchsim.frontend.dispatcher.fused_kernel import (CustomFusedKernel, Decl
 
 class FusedSDPA(CustomFusedKernel):
     name = "torchsim::sdpa_fused"
-    takes = ("aten::_scaled_dot_product_fused_attention_overrideable",)
+    takes = (torch.ops.aten._scaled_dot_product_fused_attention_overrideable.default,)
 
     def kernels(self):
-        return {"prefill": _prefill_kernel, "decode": _decode_kernel}
+        return (_prefill_kernel, _decode_kernel)
 
     def arguments(self, op, query, key, value, attn_bias=None, dropout_p=0.0, is_causal=False,
                   return_debug_mask=False, *, scale=None):
@@ -47,7 +47,7 @@ class FusedSDPA(CustomFusedKernel):
         B, Hq, L, D = q.shape
         H, S = k.shape[1], k.shape[2]
         o = torch.empty_like(q)
-        if plan["kernel"] == "decode":
+        if plan["kernel"] is _decode_kernel:
             wrap_triton(_decode_kernel)[(B * H, 1, 1)](
                 q, k, v, o, H, Hq // H, plan["GP"], S, D, plan["BKV"], scale)
         else:
@@ -68,7 +68,6 @@ class FusedSDPA(CustomFusedKernel):
 
 
 FUSED_SDPA = FusedSDPA()
-ROUTED = FUSED_SDPA.routed
 
 
 def install():
@@ -215,7 +214,7 @@ def fused_plan(query, key, value, is_causal):
             block //= 2
         if block % rows or not fits_scratchpad(_prefill_tiles(block, block, D, esize, is_causal)):
             return Decline(f"a block of {block} overruns the scratchpad budget")
-        return {"kernel": "prefill", "BQ": block, "BKV": block}
+        return {"kernel": _prefill_kernel, "BQ": block, "BKV": block}
     if L == 1 and not is_causal:
         gp = max(rows, next_pow2(Hq // H))
         bkv = S
@@ -223,7 +222,7 @@ def fused_plan(query, key, value, is_causal):
             bkv //= 2
         if bkv < rows:
             return Decline(f"a KV step of {rows} overruns the scratchpad budget")
-        return {"kernel": "decode", "GP": gp, "BKV": bkv}
+        return {"kernel": _decode_kernel, "GP": gp, "BKV": bkv}
     return Decline(f"L {L} is neither S {S} nor a non-causal 1")
 
 

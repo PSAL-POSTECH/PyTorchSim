@@ -1,8 +1,8 @@
 """torch.topk on the npu: the topk kernel where TopK.plan takes the call, the fallback rounds as
 aten ops where it does not, against torch.topk on the CPU.
 
-Each case states the route it must take and checks topk.ROUTED: one "kernel" count per launch of a
-compiled call the kernel takes, one "fallback" count per eager call, nothing for a fallback
+Each case states the route it must take and checks TOPK.calls: one "_topk_kernel" count per launch
+of a compiled call the kernel takes, one "fallback" count per eager call, nothing for a fallback
 compiled into the graph (Inductor's own kernels). Ties take the first index, as a stable
 descending sort does.
 
@@ -27,12 +27,12 @@ device = torch.device("npu:0")
 
 #  name: (route, shape, k, dim, largest, dtype)
 CASES = {
-    "router": ("kernel", (64, 128), 8, -1, True, torch.float32),
-    "ragged_rows": ("kernel", (100, 128), 5, -1, True, torch.float32),
-    "row_not_pow2": ("kernel", (32, 100), 3, -1, True, torch.float32),
-    "smallest": ("kernel", (64, 128), 4, -1, False, torch.float32),
-    "bf16": ("kernel", (64, 128), 8, -1, True, torch.bfloat16),
-    "ties": ("kernel", (64, 128), 8, -1, True, torch.float32),
+    "router": ("_topk_kernel", (64, 128), 8, -1, True, torch.float32),
+    "ragged_rows": ("_topk_kernel", (100, 128), 5, -1, True, torch.float32),
+    "row_not_pow2": ("_topk_kernel", (32, 100), 3, -1, True, torch.float32),
+    "smallest": ("_topk_kernel", (64, 128), 4, -1, False, torch.float32),
+    "bf16": ("_topk_kernel", (64, 128), 8, -1, True, torch.bfloat16),
+    "ties": ("_topk_kernel", (64, 128), 8, -1, True, torch.float32),
     "dim0": ("fallback", (128, 32), 4, 0, True, torch.float32),
 }
 
@@ -51,11 +51,11 @@ def _ref(x, k, dim, largest):
 
 def _routed():
     from pytorchsim.frontend.dispatcher import topk
-    return topk.ROUTED
+    return topk.TOPK.calls
 
 
 def _check(name, got, want, route, took):
-    """Values and indices equal, and ROUTED is `route` (a dict of counts)."""
+    """Values and indices equal, and TOPK.calls is `route` (a dict of counts)."""
     ok = torch.equal(got[0].cpu(), want[0]) and torch.equal(got[1].cpu(), want[1]) and took == route
     print(f"{name}: route={took} want={route} {'PASS' if ok else 'FAIL'}", flush=True)
     return ok
@@ -81,8 +81,9 @@ def run_grad(name):
     torch._dynamo.reset()
     v, i = torch.compile(lambda t: torch.topk(t, 8, -1), dynamic=False)(dev)
     v.sum().backward()
-    ok = torch.equal(dev.grad.cpu(), ref.grad) and dict(_routed()) == {"kernel": 1}
-    print(f"{name}: route={dict(_routed())} want=kernel {'PASS' if ok else 'FAIL'}", flush=True)
+    ok = torch.equal(dev.grad.cpu(), ref.grad) and dict(_routed()) == {"_topk_kernel": 1}
+    print(f"{name}: route={dict(_routed())} want=_topk_kernel {'PASS' if ok else 'FAIL'}",
+          flush=True)
     return ok
 
 
@@ -99,7 +100,8 @@ def run_eager(name):
     ctx = torch.no_grad() if name == "eager" else torch.inference_mode()
     with ctx:
         got = f(x.to(device))
-    return _check(name, got, want, {"kernel": 1} if compiled else {"fallback": 1}, dict(_routed()))
+    want_calls = {"_topk_kernel": 1} if compiled else {"fallback": 1}
+    return _check(name, got, want, want_calls, dict(_routed()))
 
 
 def run_counts(name):
@@ -110,8 +112,8 @@ def run_counts(name):
     f = torch.compile(lambda t: torch.topk(t, 8, -1), dynamic=False)
     for _ in range(2):
         f(x.to(device))
-    ok = dict(_routed()) == {"kernel": 2}
-    print(f"{name}: route={dict(_routed())} want={{'kernel': 2}} {'PASS' if ok else 'FAIL'}",
+    ok = dict(_routed()) == {"_topk_kernel": 2}
+    print(f"{name}: route={dict(_routed())} want={{'_topk_kernel': 2}} {'PASS' if ok else 'FAIL'}",
           flush=True)
     return ok
 

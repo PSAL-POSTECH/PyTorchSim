@@ -18,10 +18,10 @@ from pytorchsim.frontend.dispatcher.fused_kernel import (CustomFusedKernel, Decl
 
 class TopK(CustomFusedKernel):
     name = "torchsim::topk"
-    takes = ("aten::topk",)
+    takes = (torch.ops.aten.topk.default,)
 
     def kernels(self):
-        return {"kernel": _topk_kernel}
+        return (_topk_kernel,)
 
     def arguments(self, op, x, k, dim=-1, largest=True, sorted=True):
         """A non-negative dim; the values are always sorted."""
@@ -70,7 +70,6 @@ class TopK(CustomFusedKernel):
 
 
 TOPK = TopK()
-ROUTED = TOPK.routed
 
 
 def install():

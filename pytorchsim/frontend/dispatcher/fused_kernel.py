@@ -10,8 +10,8 @@ registers them the same way for every op:
     the triton_op's own npu kernel      -> fallback, counted (a Triton kernel launches only
                                            inside a compiled graph)
 
-`routed` counts the calls that ran each route: each kernel's launches under its key in `kernels()`,
-and eager fallback calls; a trace, or a fallback compiled into a graph, is not a call.
+`calls` counts the calls that ran each route: each kernel's launches under its name, and eager
+fallback calls under "fallback"; a trace, or a fallback compiled into a graph, is not a call.
 """
 
 import inspect
@@ -36,13 +36,14 @@ class CustomFusedKernel:
 
     #: The triton_op a compiled graph calls, "torchsim::<op>".
     name = None
-    #: The ops this is the npu kernel of, by qualified name ("aten::topk").
+    #: The ops this is the npu kernel of (torch.ops.aten.topk.default), or the qualified name of
+    #: one not defined until later ("transformers::grouped_mm_fallback").
     takes = ()
     #: (ctx, *grads) -> input grads, with setup_context; None makes a gradient decline the kernel.
     backward = None
 
     def __init__(self):
-        self.routed = {}
+        self.calls = {}
         self._op = None
 
     def arguments(self, op, *args, **kwargs):
@@ -50,8 +51,8 @@ class CustomFusedKernel:
         return args
 
     def kernels(self):
-        """route -> @triton.jit kernel; each launch counts its route."""
-        return {}
+        """The @triton.jit kernels launch may launch; each launch counts under the kernel's name."""
+        return ()
 
     def plan(self, *args):
         """The kernel's blocks (a dict launch reads) for these arguments, or a Decline."""
@@ -79,10 +80,10 @@ class CustomFusedKernel:
             return
         from pytorchsim.backend import codecache
         self._op = self._triton_op()
-        for route, kernel in self.kernels().items():
-            codecache.observe_launches(kernel, lambda route=route: self._count(route))
+        for kernel in self.kernels():
+            codecache.observe_launches(kernel, lambda name=kernel.__name__: self._count(name))
         for op in self.takes:
-            torch.library.impl(op, _KEYS, self._entry(op))
+            torch.library.impl(op if isinstance(op, str) else op.name(), _KEYS, self._entry(op))
 
     def _triton_op(self):
         sig = inspect.signature(self.launch)
@@ -125,7 +126,7 @@ class CustomFusedKernel:
         return self.fallback(*args)
 
     def _count(self, route):
-        self.routed[route] = self.routed.get(route, 0) + 1
+        self.calls[route] = self.calls.get(route, 0) + 1
 
 
 def _describe(call):

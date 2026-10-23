@@ -12,10 +12,14 @@ on:
         default: "tpuv6e"
         type: string
 
-# The list below IS scripts/ci/triton_route_passing.txt, one container per test.
-# Regenerate that file with
+# The list below is mirrored by hand from scripts/ci/triton_route_passing.txt, one container per
+# test file, and is not identical to it: a file the allowlist runs as several entries (Gemma's
+# --preset) runs here once without arguments, which runs the same presets in one process, and
+# three tests/system tests the allowlist leaves out (test_compiler_failure, test_reduction_tiling,
+# test_select) run here too.
+# Regenerate the allowlist with
 #   python scripts/ci/triton_route_sweep.py --all --update-allowlist
-# and mirror it here; a test absent from both is not gated anywhere.
+# and mirror its files here; a test absent from both is not gated anywhere.
 #
 # Runner policy: every job is self-hosted. The image carries the PyTorchSim-Triton-Backend
 # toolchain layer (~1.8 GiB on top of the base), which is more than a

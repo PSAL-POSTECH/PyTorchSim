@@ -1,6 +1,7 @@
 """The common form of an op the npu runs as a Triton kernel of our own, and the scratchpad budget
 its plan is held to. A subclass of CustomFusedKernel states the ops it takes, the kernel's plan, its
-launch and an aten reference; `install` registers them the same way for every op:
+launch, an aten reference and, where the op returns more than the kernel, its outputs; `install`
+registers them the same way for every op:
 
     the op's npu kernel, at AutogradPrivateUse1 and PrivateUse1 (where inference_mode lands)
         outside a compiled graph        -> reference, counted "reference"
@@ -60,8 +61,13 @@ class CustomFusedKernel:
         raise NotImplementedError
 
     def reference(self, *args):
-        """The op's outputs as aten ops (differentiable), for every call the kernel does not run."""
+        """What launch returns, as aten ops (differentiable), for every call the kernel does not
+        run."""
         raise NotImplementedError
+
+    def outputs(self, op, result, *args):
+        """The outputs of `op` from the kernel's (or the reference's) `result` for `args`."""
+        return result
 
     def setup_context(self, ctx, inputs, output):
         pass
@@ -94,15 +100,18 @@ class CustomFusedKernel:
     def _entry(self, op):
         def entry(*args, **kwargs):
             call = self.arguments(op, *args, **kwargs)
-            if not torch.compiler.is_compiling():
-                return self._eager(*call)
-            why = self._decline(call)
-            if why is not None:
-                logger.info("%s on the npu runs its reference, not %s: %s (%s)", op, self.name,
-                            _describe(call), why)
-                return self.reference(*call)
-            return self._op(*call)
+            return self.outputs(op, self._route(op, call), *call)
         return entry
+
+    def _route(self, op, call):
+        if not torch.compiler.is_compiling():
+            return self._eager(*call)
+        why = self._decline(call)
+        if why is not None:
+            logger.info("%s on the npu runs its reference, not %s: %s (%s)", op, self.name,
+                        _describe(call), why)
+            return self.reference(*call)
+        return self._op(*call)
 
     def _decline(self, call):
         if (self.backward is None and torch.is_grad_enabled()

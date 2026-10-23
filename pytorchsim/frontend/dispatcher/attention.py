@@ -2,39 +2,77 @@
 decode) where they take the call, SDPA's own math everywhere else.
 
 The device's `_fused_sdp_choice` sends a call to `aten._scaled_dot_product_fused_attention_overrideable`
-when that op can carry it (no mask, no dropout, no gradient, H dividing Hq). Its npu kernel here is
-the one place that decides whether a fused kernel takes the call (`fused_plan`); everything it
-declines runs `aten._scaled_dot_product_attention_math`, the op SDPA's math backend runs.
-
-The route is registered through torch.library: the op's npu kernel is registered at
-AutogradPrivateUse1, so it runs above functionalization when torch.compile traces (and at
-PrivateUse1 too, which is where a call lands under inference_mode, which skips autograd), and calls
-`torchsim::sdpa_fused`, a `triton_op` whose body launches the kernel through `wrap_triton`.
-Inductor traces into that body and gets a user-defined Triton kernel, which the npu wrapper
-compiles with torchsim_compile. Eagerly the same op computes by math, since a Triton kernel
-cannot launch on the npu outside a compiled graph. A call fused_plan declines is logged with its
-shape. ROUTED counts the calls that ran each route: a fused kernel's launches, and the math calls
-made outside a compiled graph (math compiled into one is Inductor's own kernels, not counted).
+when that op can carry it (no mask, no dropout, no gradient, H dividing Hq). FusedSDPA is that op's
+npu kernel, a CustomFusedKernel (fused_kernel.py): `fused_plan` is the one place that decides
+whether a fused kernel takes the call, and everything it declines runs
+`aten._scaled_dot_product_attention_math`, the op SDPA's math backend runs.
 """
 
 import math
+from typing import Optional
 
 import torch
 import triton
 import triton.language as tl
-from torch.library import triton_op, wrap_triton
+from torch.library import wrap_triton
 
 from pytorchsim import config
-from pytorchsim.frontend.dispatcher.fused_kernel import fits_scratchpad, next_pow2
-
-logger = config.setup_logger()
-
-#: The calls that ran each route, by kernel name or "math"; a trace is not a call.
-ROUTED = {}
+from pytorchsim.frontend.dispatcher.fused_kernel import (CustomFusedKernel, Decline,
+                                                         fits_scratchpad, next_pow2)
 
 
-def _count(route):
-    ROUTED[route] = ROUTED.get(route, 0) + 1
+class FusedSDPA(CustomFusedKernel):
+    name = "torchsim::sdpa_fused"
+    takes = ("aten::_scaled_dot_product_fused_attention_overrideable",)
+
+    def kernels(self):
+        return {"prefill": _prefill_kernel, "decode": _decode_kernel}
+
+    def arguments(self, op, query, key, value, attn_bias=None, dropout_p=0.0, is_causal=False,
+                  return_debug_mask=False, *, scale=None):
+        """SDPA's default scale, 1 / sqrt(D), made explicit; no debug mask is returned."""
+        scale = 1.0 / math.sqrt(query.shape[-1]) if scale is None else scale
+        return query, key, value, attn_bias, float(dropout_p), bool(is_causal), float(scale)
+
+    def plan(self, query, key, value, attn_bias, dropout_p, is_causal, scale):
+        """SDPA never sends a mask or dropout here, but the op can be called directly with them."""
+        if attn_bias is not None or dropout_p:
+            return Decline("a mask or dropout")
+        return fused_plan(query, key, value, is_causal)
+
+    def launch(self, plan, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor,
+               attn_bias: Optional[torch.Tensor], dropout_p: float, is_causal: bool,
+               scale: float) -> torch.Tensor:
+        q, k, v = query.contiguous(), key.contiguous(), value.contiguous()
+        B, Hq, L, D = q.shape
+        H, S = k.shape[1], k.shape[2]
+        o = torch.empty_like(q)
+        if plan["kernel"] == "decode":
+            wrap_triton(_decode_kernel)[(B * H, 1, 1)](
+                q, k, v, o, H, Hq // H, plan["GP"], S, D, plan["BKV"], scale)
+        else:
+            wrap_triton(_prefill_kernel)[(B * Hq, 1, 1)](
+                q, k, v, o, Hq, Hq // H, S, D, plan["BQ"], plan["BKV"], is_causal, scale)
+        return o
+
+    def reference(self, query, key, value, attn_bias, dropout_p, is_causal, scale):
+        return _math(query, key, value, attn_bias, dropout_p, is_causal, scale=scale)
+
+    def outputs(self, op, out, query, key, *rest):
+        """The op's outputs from the attention output: the ones only a backward reads are empty."""
+        B, Hq, L, D = query.shape
+        empty = lambda dtype: torch.empty(0, dtype=dtype, device=query.device)
+        lse = torch.empty(B, Hq, L, dtype=torch.float32, device=query.device)
+        return (out, lse, empty(torch.int32), empty(torch.int32), L, key.shape[-2],
+                empty(torch.int64), empty(torch.int64), empty(query.dtype))
+
+
+FUSED_SDPA = FusedSDPA()
+ROUTED = FUSED_SDPA.routed
+
+
+def install():
+    FUSED_SDPA.install()
 
 
 @triton.jit
@@ -144,8 +182,8 @@ def _decode_tiles(GP, BKV, D, esize):
 
 
 def fused_plan(query, key, value, is_causal):
-    """The fused kernel and its blocks that take this unmasked, dropout-free call, or None for
-    SDPA's math. The one predicate: _fused_sdp_choice only says which op carries the call.
+    """The fused kernel and its blocks that take this unmasked, dropout-free call, or a Decline
+    for SDPA's math. The one predicate: _fused_sdp_choice only says which op carries the call.
 
     prefill  L == S. One program per (batch, query head); BQ = BKV is splash's block, min(S,
              SPLASH_BLOCK), halved while one query block's scratch overruns the budget (the compiler
@@ -157,17 +195,17 @@ def fused_plan(query, key, value, is_causal):
     Both need power-of-two S and D, D and the blocks a whole number of vector registers.
     """
     if query.dim() != 4 or key.dim() != 4 or value.shape != key.shape:
-        return None
+        return Decline("q, k, v not 4-D, or v not shaped as k")
     dtype = query.dtype
     if dtype not in _DOT_DTYPES or key.dtype != dtype or value.dtype != dtype:
-        return None
+        return Decline(f"q {dtype}, k {key.dtype}, v {value.dtype}")
     B, Hq, L, D = query.shape
     H, S = key.shape[1], key.shape[2]
     if H == 0 or Hq % H or key.shape[0] != B or key.shape[3] != D:
-        return None
+        return Decline(f"{H} KV heads for {Hq} query heads, or k's batch or D not q's")
     rows = _register_rows(dtype)
     if not (_is_p2(D) and _is_p2(S)) or D % rows or S < rows:
-        return None
+        return Decline(f"S {S} and D {D} not powers of two of at least {rows} rows")
     esize = dtype.itemsize
     if L == S:
         floor = min(S, int(config.CONFIG_MACHINE.vector_lanes))
@@ -176,7 +214,7 @@ def fused_plan(query, key, value, is_causal):
                and not fits_scratchpad(_prefill_tiles(block, block, D, esize, is_causal))):
             block //= 2
         if block % rows or not fits_scratchpad(_prefill_tiles(block, block, D, esize, is_causal)):
-            return None
+            return Decline(f"a block of {block} overruns the scratchpad budget")
         return {"kernel": "prefill", "BQ": block, "BKV": block}
     if L == 1 and not is_causal:
         gp = max(rows, next_pow2(Hq // H))
@@ -184,9 +222,9 @@ def fused_plan(query, key, value, is_causal):
         while bkv >= rows and not fits_scratchpad(_decode_tiles(gp, bkv, D, esize)):
             bkv //= 2
         if bkv < rows:
-            return None
+            return Decline(f"a KV step of {rows} overruns the scratchpad budget")
         return {"kernel": "decode", "GP": gp, "BKV": bkv}
-    return None
+    return Decline(f"L {L} is neither S {S} nor a non-causal 1")
 
 
 def _math(query, key, value, attn_bias=None, dropout_p=0.0, is_causal=False, *, scale=None):
@@ -195,73 +233,3 @@ def _math(query, key, value, attn_bias=None, dropout_p=0.0, is_causal=False, *, 
     return torch.ops.aten._scaled_dot_product_attention_math(
         query, key, value, attn_bias, dropout_p, is_causal, None, scale=scale,
         enable_gqa=query.size(-3) != key.size(-3))[0]
-
-
-@triton_op("torchsim::sdpa_fused", mutates_args=())
-def sdpa_fused(query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, is_causal: bool,
-               scale: float, kernel: str, block_q: int, block_kv: int,
-               rows: int) -> torch.Tensor:
-    """One fused kernel's launch, as a compiled graph sees it. The kernel's arguments are passed
-    by position: Inductor reads a keyword argument of a wrap_triton launch as a possible backend
-    option, and asks for the device's Triton backend options, which the npu has none of."""
-    q, k, v = query.contiguous(), key.contiguous(), value.contiguous()
-    B, Hq, L, D = q.shape
-    H, S = k.shape[1], k.shape[2]
-    o = torch.empty_like(q)
-    if kernel == "decode":
-        wrap_triton(_decode_kernel)[(B * H, 1, 1)](
-            q, k, v, o, H, Hq // H, rows, S, D, block_kv, scale)
-    else:
-        wrap_triton(_prefill_kernel)[(B * Hq, 1, 1)](
-            q, k, v, o, Hq, Hq // H, S, D, block_q, block_kv, is_causal, scale)
-    return o
-
-
-@sdpa_fused.register_kernel("npu")
-def _sdpa_fused_eager(query, key, value, is_causal, scale, kernel, block_q, block_kv, rows):
-    _count("math")
-    return _math(query, key, value, is_causal=is_causal, scale=scale)
-
-
-def _overrideable(query, key, value, attn_bias=None, dropout_p=0.0, is_causal=False,
-                  return_debug_mask=False, *, scale=None):
-    """aten._scaled_dot_product_fused_attention_overrideable on the npu: the fused kernel where
-    `fused_plan` takes the call, else math; the outputs only a backward reads are empty. SDPA
-    never sends a mask, dropout or gradient here, but the op can be called directly with them:
-    such a call runs math, which states them all (and is differentiable)."""
-    B, Hq, L, D = query.shape
-    S = key.shape[-2]
-    scale = 1.0 / math.sqrt(D) if scale is None else scale
-    direct = (attn_bias is not None or dropout_p
-              or torch.is_grad_enabled() and any(t.requires_grad for t in (query, key, value)))
-    plan = None if direct else fused_plan(query, key, value, is_causal)
-    if plan is None:
-        logger.info("SDPA on the npu runs math, not a fused kernel: q %s k %s %s causal=%s%s",
-                    tuple(query.shape), tuple(key.shape), query.dtype, is_causal,
-                    " (mask, dropout or grad)" if direct else "")
-        out = _math(query, key, value, attn_bias, dropout_p, is_causal, scale=scale)
-        if not torch.compiler.is_compiling():
-            _count("math")
-    else:
-        out = sdpa_fused(query, key, value, is_causal, scale, plan["kernel"],
-                         plan.get("BQ", 1), plan["BKV"], plan.get("GP", 1))
-    empty = lambda dtype: torch.empty(0, dtype=dtype, device=query.device)
-    lse = torch.empty(B, Hq, L, dtype=torch.float32, device=query.device)
-    return (out, lse, empty(torch.int32), empty(torch.int32), L, S,
-            empty(torch.int64), empty(torch.int64), empty(query.dtype))
-
-
-_lib = None
-
-
-def install():
-    """Register the overrideable op's npu kernel above autograd and functionalization, and at the
-    backend key, where a call made under inference_mode lands. Count each fused kernel launch."""
-    global _lib
-    if _lib is None:
-        from pytorchsim.backend import codecache
-        codecache.observe_launches(_prefill_kernel, lambda: _count("prefill"))
-        codecache.observe_launches(_decode_kernel, lambda: _count("decode"))
-        _lib = torch.library.Library("aten", "IMPL")
-        for key in ("AutogradPrivateUse1", "PrivateUse1"):
-            _lib.impl("_scaled_dot_product_fused_attention_overrideable", _overrideable, key)

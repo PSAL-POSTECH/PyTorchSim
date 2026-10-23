@@ -1,75 +1,41 @@
-"""npu's DeviceInterface for Dynamo: the device, stream and properties queries Dynamo and Inductor's
-compile workers make, answered for the simulated device."""
+"""npu's DeviceInterface: what Dynamo and Inductor ask of the device, answered for the simulator.
+Of it they read the properties, the compute capability, availability, Triton and bf16 support."""
 
 import torch
-from torch._dynamo.device_interface import DeviceInterface, caching_worker_current_devices, caching_worker_device_properties
+from torch._dynamo.device_interface import DeviceInterface
 
-class _ExtensionDeviceProperties:
-    """Placeholder properties for the simulated device; multi_processor_count is what Inductor reads as
-    its SM count."""
-    name: str = "Extension_device"
-    platform_name: str
-    vendor: str
-    driver_version: str
-    version: str
-    max_compute_units: int
-    gpu_eu_count: int
-    max_work_group_size: int
-    max_num_sub_groups: int
-    sub_group_sizes: list[int]
-    has_fp16: bool
-    has_fp64: bool
-    has_atomic64: bool
-    has_bfloat16_conversions: bool
-    has_subgroup_matrix_multiply_accumulate: bool
-    has_subgroup_matrix_multiply_accumulate_tensor_float32: bool
-    has_subgroup_2d_block_io: bool
-    total_memory: int
-    multi_processor_count: int = 128
-    architecture: int
-    type: str
+from pytorchsim import config
 
-_ExtensionDeviceProperties = _ExtensionDeviceProperties
 
-class ExtensionDeviceInterface(DeviceInterface):
+class NPUDeviceProperties:
+    """The properties Inductor reads; every other one it reads by getattr with a default."""
+
+    def __init__(self):
+        self.multi_processor_count = int(config.CONFIG_MACHINE.vector_lanes)
+
+
+class NPUDeviceInterface(DeviceInterface):
     class Worker:
         @staticmethod
         def set_device(device: int):
-            caching_worker_current_devices["extension_device"] = device
+            torch.npu.set_device(device)
 
         @staticmethod
         def current_device() -> int:
-            if "extension_device" in caching_worker_current_devices:
-                return caching_worker_current_devices["extension_device"]
             return torch.npu.current_device()
 
         @staticmethod
-        def get_device_properties(device: torch.types.Device = None) -> _ExtensionDeviceProperties:
-            if device is not None:
-                if isinstance(device, str):
-                    device = torch.device(device)
-                    assert device.type == "extension_device"
-                if isinstance(device, torch.device):
-                    device = device.index
-            if device is None:
-                device = ExtensionDeviceInterface.Worker.current_device()
-
-            if "extension_device" not in caching_worker_device_properties:
-                device_prop = [
-                    torch.cuda.get_device_properties(i)
-                    for i in range(torch.cuda.device_count())
-                ]
-                caching_worker_device_properties["extension_device"] = device_prop
-
-            return _ExtensionDeviceProperties
+        def get_device_properties(device: torch.types.Device = None) -> NPUDeviceProperties:
+            """One set for every npu device: the simulated machine's."""
+            return NPUDeviceProperties()
 
     @staticmethod
-    def get_compute_capability(device: torch.types.Device = None):
-        return 36
+    def get_compute_capability(device: torch.types.Device = None) -> int:
+        """None of CUDA's; Triton's compile metadata carries it, which torchsim_compile does not read."""
+        return 0
 
     @staticmethod
     def is_available() -> bool:
-        """The simulated device is always there."""
         return True
 
     @staticmethod
@@ -79,17 +45,11 @@ class ExtensionDeviceInterface(DeviceInterface):
 
     @staticmethod
     def is_bf16_supported(including_emulation: bool = False) -> bool:
-        """Answer Inductor's bf16 gate, which the base class only raises on.
-
-        True on purpose even though the compiler refuses bf16 today: False makes
-        _check_triton_bf16_support skip the frame to eager, which on this device
-        is a silent CPU fallback that simulates nothing.
-        """
         return True
 
 
 def install():
-    """Register ExtensionDeviceInterface as npu's DeviceInterface."""
+    """Register NPUDeviceInterface as npu's DeviceInterface."""
     from torch._dynamo.device_interface import register_interface_for_device
 
-    register_interface_for_device("npu", ExtensionDeviceInterface)
+    register_interface_for_device("npu", NPUDeviceInterface)

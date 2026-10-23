@@ -15,29 +15,29 @@ sys.path.insert(0, TORCHSIM_DIR)
 import torch  # noqa: E402  the npu backend loads pytorchsim whole, before its parts are imported
 from torch._inductor.select_algorithm import TritonTemplateCaller  # noqa: E402
 
-from pytorchsim.backend import select  # noqa: E402
+from pytorchsim.backend import template_timing  # noqa: E402
 
 SHAPE = (128, 256, 256)
 
-# One compile of OP, with select's record kept in SELECT_RECORD_DIR, and what was timed written to
+# One compile of OP, with template_timing's record kept in SELECT_RECORD_DIR, and what was timed written to
 # SELECT_TIMED as [config, cycles] (unfused choices) and [meta, cycles] (fusion benchmarks).
 CHILD = r"""
 import json, os, sys
 import torch
 from pytorchsim.frontend.inductor.codegen.scheduling import TritonNPUScheduling
-from pytorchsim.backend import select
+from pytorchsim.backend import template_timing
 
-select.RECORD_DIR = os.environ["SELECT_RECORD_DIR"]
+template_timing.RECORD_DIR = os.environ["SELECT_RECORD_DIR"]
 timed = {"choices": [], "modules": []}
 
-def time_choices(choices, _orig=select.time_choices):
+def time_choices(choices, _orig=template_timing.time_choices):
     out = _orig(choices)
     for c, t in out.items():
         ktc = c.annotations.get("ktc")
         if ktc is not None and t != float("inf"):
             timed["choices"].append([ktc.params.to_kwargs(), t])
     return out
-select.time_choices = time_choices
+template_timing.time_choices = time_choices
 
 def bench(self, mod, *a, _orig=TritonNPUScheduling.benchmark_codegened_module, **k):
     t, path = _orig(self, mod, *a, **k)
@@ -87,16 +87,16 @@ def _templates(dump):
 
 
 def _picks(dump):
-    with open(os.path.join(dump, select.RECORD_LOG)) as f:
+    with open(os.path.join(dump, template_timing.RECORD_LOG)) as f:
         return [json.loads(line) for line in f]
 
 
 def _merge(root, dump):
     """scripts/selection_merge.py over a timed run's picks, into the record under `root`."""
     script = os.path.join(TORCHSIM_DIR, "scripts", "selection_merge.py")
-    code = (f"import runpy, sys, torch; from pytorchsim.backend import select; "
-            f"select.RECORD_DIR = {os.path.join(root, 'record')!r}; "
-            f"sys.argv = [{script!r}, {os.path.join(dump, select.RECORD_LOG)!r}]; "
+    code = (f"import runpy, sys, torch; from pytorchsim.backend import template_timing; "
+            f"template_timing.RECORD_DIR = {os.path.join(root, 'record')!r}; "
+            f"sys.argv = [{script!r}, {os.path.join(dump, template_timing.RECORD_LOG)!r}]; "
             f"runpy.run_path({script!r}, run_name='__main__')")
     proc = subprocess.run([sys.executable, "-c", code], cwd=TORCHSIM_DIR, capture_output=True,
                           text=True)
@@ -121,7 +121,7 @@ def test_select_record_and_rebuild():
         assert {k: v for k, v in pick["config"].items()
                 if k not in ("template_id", "template_hash")} == best
         (built,) = _templates(mm).values()
-        assert built["tile_source"] == select.TIMED
+        assert built["tile_source"] == template_timing.TIMED
         bench = [json.load(open(os.path.join(mm, "select", d, "meta.json")))
                  for d in os.listdir(os.path.join(mm, "select"))]
         assert _same_kernel(built) in [_same_kernel(b) for b in bench]
@@ -131,7 +131,7 @@ def test_select_record_and_rebuild():
         fused = [m for m, _ in relu_timed["modules"] if m["template_grid"] is not None]
         assert 1 <= len(fused) <= len(relu_timed["choices"])
         (built_relu,) = _templates(relu).values()
-        assert built_relu["tile_source"] == select.TIMED
+        assert built_relu["tile_source"] == template_timing.TIMED
         # the epilogue alone is timed at the blocks it would be built at (its arguments are the
         # fused graph's: there relu runs in place on the mm's output)
         alone = [m for m, _ in relu_timed["modules"] if m["template_grid"] is None]
@@ -146,10 +146,10 @@ def test_select_record_and_rebuild():
             again, timed = _compile(root, f"mm_recorded_{int(timing)}", "mm", timing=timing)
             assert timed == {"choices": [], "modules": []}
             assert {k: m["tile_source"] for k, m in _templates(again).items()} == \
-                {k: select.RECORDED for k in _templates(mm)}
+                {k: template_timing.RECORDED for k in _templates(mm)}
         fused_again, _ = _compile(root, "mm_relu_recorded", "mm_relu", timing=False)
         assert [m["tile_source"] for m in _templates(fused_again).values()] == \
-            [select.RECORDED_UNFUSED]
+            [template_timing.RECORDED_UNFUSED]
 
         # a record timed with another compiler is not used
         path = os.path.join(root, "record", os.listdir(os.path.join(root, "record"))[0])
@@ -157,7 +157,7 @@ def test_select_record_and_rebuild():
         rec["identity"]["compiler"] = "another"
         json.dump(rec, open(path, "w"))
         stale, _ = _compile(root, "mm_stale", "mm", timing=False)
-        assert [m["tile_source"] for m in _templates(stale).values()] == [select.HEURISTIC]
+        assert [m["tile_source"] for m in _templates(stale).values()] == [template_timing.HEURISTIC]
 
 
 def _choice(name):
@@ -170,16 +170,16 @@ def _choice(name):
 
 def test_a_refused_config_is_inf_and_none_left_is_an_error():
     a, b = _choice("a"), _choice("b")
-    with mock.patch.object(select.kernel_metadata, "benchmark_request_meta",
+    with mock.patch.object(template_timing.kernel_metadata, "benchmark_request_meta",
                            return_value=("", {})), \
-         mock.patch.object(select, "_time_tile",
+         mock.patch.object(template_timing, "_time_tile",
                            side_effect=lambda src, meta, name, wd, cut: 7.0 if wd.endswith("b") else float("inf")):
-        assert select.time_choices([a, b]) == {a: float("inf"), b: 7.0}
-    with mock.patch.object(select.kernel_metadata, "benchmark_request_meta",
+        assert template_timing.time_choices([a, b]) == {a: float("inf"), b: 7.0}
+    with mock.patch.object(template_timing.kernel_metadata, "benchmark_request_meta",
                            return_value=("", {})), \
-         mock.patch.object(select, "_time_tile", return_value=float("inf")):
+         mock.patch.object(template_timing, "_time_tile", return_value=float("inf")):
         try:
-            select.time_choices([a, b])
+            template_timing.time_choices([a, b])
         except RuntimeError as e:
             assert "no template config" in str(e)
         else:
@@ -198,11 +198,11 @@ def test_a_config_running_past_the_cut_is_inf():
             time.sleep(0.05)
         return float("inf")
     fast, slow = _choice("fast"), _choice("slow")
-    with mock.patch.object(select.kernel_metadata, "benchmark_request_meta", return_value=("", {})), \
-         mock.patch.object(select, "_time_tile", side_effect=tile):
+    with mock.patch.object(template_timing.kernel_metadata, "benchmark_request_meta", return_value=("", {})), \
+         mock.patch.object(template_timing, "_time_tile", side_effect=tile):
         t0 = time.monotonic()
-        assert select.time_choices([slow, fast]) == {slow: float("inf"), fast: 5.0}
-        assert time.monotonic() - t0 < 0.2 * select.CUT_FACTOR + 1
+        assert template_timing.time_choices([slow, fast]) == {slow: float("inf"), fast: 5.0}
+        assert time.monotonic() - t0 < 0.2 * template_timing.CUT_FACTOR + 1
 
 
 def _machine(root, sub, **change):
@@ -222,15 +222,15 @@ def _machine(root, sub, **change):
 def test_graph_cache_key_names_the_machine():
     """Inductor's FX cache key differs between machines with no recorded picks, so one machine's
     cached graph is not handed to another: the core count and the lanes' scratchpad shape it."""
-    from pytorchsim.frontend.inductor_patches import _npu_choices_class
+    from pytorchsim.frontend.inductor.autotune.template_kernel_configs import _npu_choices_class
     with tempfile.TemporaryDirectory() as root:
         paths = [_machine(root, "base"), _machine(root, "cores", num_cores=2),
                  _machine(root, "spad", vpu_spad_size_kb_per_lane=512)]
         keys = []
         for path in paths:
             with mock.patch.dict(os.environ, TORCHSIM_TARGET=path), \
-                 mock.patch.object(select, "RECORD_DIR", os.path.join(root, "record")):
-                assert select.record_digest() == "none"
+                 mock.patch.object(template_timing, "RECORD_DIR", os.path.join(root, "record")):
+                assert template_timing.record_digest() == "none"
                 keys.append(_npu_choices_class()().uuid())
                 assert keys[-1] == _npu_choices_class()().uuid()
         assert len(set(keys)) == len(keys), keys

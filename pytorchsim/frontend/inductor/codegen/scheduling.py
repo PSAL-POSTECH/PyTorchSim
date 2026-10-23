@@ -32,7 +32,7 @@ class TritonNPUKernel(TritonKernel):
         """Pin this machine's blocks here, where every kernel of this class is made: the one
         Inductor emits and the one its fusion benchmark times are then the same kernel."""
         if fixed_config is None:
-            from pytorchsim.frontend.inductor.blocks import pinned_blocks
+            from pytorchsim.frontend.inductor.autotune.generated_kernel_blocks import pinned_blocks
             fixed_config = pinned_blocks(tiling, kwargs.get("features"))
         super().__init__(tiling, *args, fixed_config=fixed_config, **kwargs)
 
@@ -84,13 +84,13 @@ class TritonNPUScheduling(TritonScheduling):
     def benchmark_codegened_module(self, mod, n_spills_threshold=8, node_names=None,
                                    skip_perf_cache=False):
         """(TOGSim cycles, path) of a module generate_kernel_code_from_nodes wrote: Inductor
-        compares these with the cycles select.time_choices gave the unfused choices."""
-        from pytorchsim.backend import select
+        compares these with the cycles template_timing.time_choices gave the unfused choices."""
+        from pytorchsim.backend import template_timing
 
         got = self._benchmarked.get(mod.__file__)
         if got is None:
             return float("inf"), mod.__file__
-        return select.time_module(*got, mod.__file__), mod.__file__
+        return template_timing.time_module(*got, mod.__file__), mod.__file__
 
     def define_kernel(self, src_code, node_schedule, kernel):
         """Name the kernel by its source, capture its metadata, and emit our compile call.
@@ -136,19 +136,19 @@ def _tile_source(node_schedule):
     RECORDED_UNFUSED; a MultiTemplateBuffer is only made for choices timed in cycles."""
     from torch._inductor.ir import MultiTemplateBuffer
 
-    from pytorchsim.backend import select
+    from pytorchsim.backend import template_timing
 
     nodes = [n for n in node_schedule if hasattr(n, "is_template")]
     template = next((n for n in nodes if n.is_template()), None)
     if template is None:
         return None
     if isinstance(template.node, MultiTemplateBuffer):
-        return select.TIMED
+        return template_timing.TIMED
     ktc = getattr(template.node, "annotations", {}).get("ktc")
-    source = ktc.annotations.get(select.SOURCE) if ktc is not None else None
-    if source == select.RECORDED and len(nodes) > 1:
-        return select.RECORDED_UNFUSED
-    return source or select.HEURISTIC
+    source = ktc.annotations.get(template_timing.SOURCE) if ktc is not None else None
+    if source == template_timing.RECORDED and len(nodes) > 1:
+        return template_timing.RECORDED_UNFUSED
+    return source or template_timing.HEURISTIC
 
 
 class TritonNPUWrapperCodegen(verify.VerifyLines, wrapper.PythonWrapperCodegen):

@@ -1,7 +1,7 @@
 """A kernel the compiler refuses as too big is retried at smaller blocks.
 
 A kernel's pinned blocks (its fixed_config) halve when the compiler says they do not fit. A
-template's own blocks are its config, which Inductor chose (backend/select.py), and are built as
+template's own blocks are its config, which Inductor chose (backend/template_timing.py), and are built as
 rendered.
 """
 

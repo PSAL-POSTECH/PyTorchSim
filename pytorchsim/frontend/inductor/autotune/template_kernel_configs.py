@@ -7,7 +7,7 @@ import threading
 
 from pytorchsim import config
 from pytorchsim.frontend import tiling
-from pytorchsim.frontend.inductor.blocks import blocks_for
+from pytorchsim.frontend.inductor.autotune.generated_kernel_blocks import blocks_for
 from pytorchsim.frontend.inductor.registration import is_lowering_npu
 
 logger = config.setup_logger()
@@ -36,12 +36,12 @@ def _npu_choices_class():
     from torch._inductor.choices import InductorChoices
     from torch._inductor.lookup_table import LookupTableChoices
 
-    from pytorchsim.backend import select
+    from pytorchsim.backend import template_timing
 
     class NPUChoices(LookupTableChoices):
         def uuid(self):
             """This class's part of Inductor's cache key: the machine and the picks it hands out."""
-            return f"pytorchsim-npu-choices-4-{select.graph_digest()}"
+            return f"pytorchsim-npu-choices-4-{template_timing.graph_digest()}"
 
         def get_config_heuristics(self, device_type="cuda"):
             """npu's conv tiles (_npu_config_heuristic); every other device keeps Inductor's."""
@@ -51,19 +51,19 @@ def _npu_choices_class():
 
         def _get_lookup_table(self):
             """This machine's recorded picks; Inductor's own looks only on CUDA."""
-            return select.lookup_table()
+            return template_timing.lookup_table()
 
         @staticmethod
         def _get_device_key(device):
             if getattr(device, "type", None) == "npu":
-                return select.device_key()
+                return template_timing.device_key()
             return LookupTableChoices._get_device_key(device)
 
         def _create_lookup_choices(self, *args, **kwargs):
             """Inductor's choices from the recorded configs, each marked as recorded."""
             ktcs = super()._create_lookup_choices(*args, **kwargs)
             for ktc in ktcs:
-                ktc.annotations[select.SOURCE] = select.RECORDED
+                ktc.annotations[template_timing.SOURCE] = template_timing.RECORDED
             return ktcs
 
         @staticmethod

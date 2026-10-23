@@ -4,9 +4,8 @@
                        Triton GPU, its codegen and post-grad pass, its wrappers' device code
     post_grad_pass.py  the FX graph after Inductor's post-grad passes (device_custom_pass)
     lowering.py        lowering patches with no Inductor hook, npu's conv decompositions
-    choices.py         NPUChoices: conv tiles, reductions, recorded template picks; mm tile heuristics
-    blocks.py          an Inductor kernel's blocks on this machine (tiling.fixed_config_for)
-    selection.py       how a template's config is picked (TOGSim cycles in timing mode)
+    autotune/          how each kernel's sizes are chosen: template kernels' configs and selection,
+                       generated kernels' blocks
     codegen/           the scheduling and wrapper Inductor generates through, kernel metadata
 """
 
@@ -15,12 +14,11 @@ from pytorchsim import config
 
 def install():
     """Register npu with Inductor and apply every patch here, then Inductor's config."""
-    from . import choices, lowering, registration, selection
+    from . import autotune, lowering, registration
 
     registration.install()
-    choices.install()
+    autotune.install()
     lowering.install()
-    selection.install()
     _configure_inductor()
 
 

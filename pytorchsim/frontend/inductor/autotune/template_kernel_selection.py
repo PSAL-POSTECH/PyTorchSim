@@ -1,4 +1,4 @@
-"""How a template's config is picked for npu: TOGSim cycles in timing mode (backend/select.py), the
+"""How a template's config is picked for npu: TOGSim cycles in timing mode (backend/template_timing.py), the
 offered order otherwise, a recorded pick when there is one. Inductor's recording hooks
 (add_preprocessing_fn, add_feedback_saver) take the last; it has none for timing a choice, so the
 rest replaces four AlgorithmSelectorCache methods, each falling back to Inductor's off npu.
@@ -18,7 +18,7 @@ def install():
     from torch._inductor import select_algorithm
     from torch._inductor.select_algorithm import AlgorithmSelectorCache
 
-    from pytorchsim.backend import select
+    from pytorchsim.backend import template_timing
 
     orig_benchmark = AlgorithmSelectorCache.__dict__["benchmark_choices"].__func__
     orig_call = AlgorithmSelectorCache.__call__
@@ -36,13 +36,13 @@ def install():
             raise RuntimeError(
                 "TORCHSIM_TIMING_MODE changed after pytorchsim was installed: Inductor's "
                 "epilogue-fusion benchmark follows the mode the process started in")
-        if timed and select.times(choices):
-            return select.time_choices(choices)
+        if timed and template_timing.times(choices):
+            return template_timing.time_choices(choices)
         return pick_config(choices)
 
     def __call__(self, name, choices, *args, **kwargs):
         """Inductor's selection; a fusion is benchmarked only for choices timed in cycles."""
-        if _choices_are_npu(choices) and not select.times(choices):
+        if _choices_are_npu(choices) and not template_timing.times(choices):
             kwargs["return_multi_template"] = False
         return orig_call(self, name, choices, *args, **kwargs)
 
@@ -70,8 +70,8 @@ def install():
     AlgorithmSelectorCache.make_precompile_fn = make_precompile_fn
     AlgorithmSelectorCache.generate_example_value = staticmethod(
         generate_example_value)
-    select_algorithm.add_preprocessing_fn(select.keep_recorded)
-    select_algorithm.add_feedback_saver(select.record)
+    select_algorithm.add_preprocessing_fn(template_timing.keep_recorded)
+    select_algorithm.add_feedback_saver(template_timing.record)
 
 
 def pick_config(choices):

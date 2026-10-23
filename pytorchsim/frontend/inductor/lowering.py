@@ -5,7 +5,7 @@ GEMM are rewritten before lowering (post_grad_pass.py); a depthwise conv2d befor
 
 import torch
 
-from pytorchsim.frontend.inductor.choices import conv_groups
+from pytorchsim.frontend.inductor.autotune.template_kernel_configs import conv_groups
 from pytorchsim.frontend.inductor.registration import is_lowering_npu
 
 

@@ -30,9 +30,9 @@ def test_polar_on_transposed(device, n=32):
     #                        'torch.ops.aten.polar.default')
     #     AssertionError: expected size 32==32, stride 32==1 at dim=1
     #
-    # post_grad_pass.rewrite_aten_polar takes the extern call out instead
-    # of arguing about the layout: the pair is built contiguous with ops this
-    # backend compiles, and the complex rewrite takes it to real pairs.
+    # post_grad_pass takes the extern call out instead of arguing about the
+    # layout: polar's real-pair rule (_REAL_PAIR) builds (abs*cos, abs*sin)
+    # with ops this backend compiles.
     x = torch.randn(1, n, n)
     cpu_out = _rope_like(x)
 

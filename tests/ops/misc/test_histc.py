@@ -28,7 +28,7 @@ def test_histc_integral(device, n=64, bins=8):
     # and "mps", integral otherwise -- so `npu` gets the branch written for
     # CUDA and the fallback then lands on the very kernel the first branch
     # exists to avoid. That is what stopped DeepSeek-V3 under transformers
-    # 5.15.0; post_grad_pass.rewrite_aten_histc counts it on the device.
+    # 5.15.0; post_grad_pass.histc counts it on the device.
     #
     # Both integral widths are here because they take different paths back:
     # the counts return in the INPUT's dtype, which is the contract the CUDA

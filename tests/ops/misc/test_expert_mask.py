@@ -4,7 +4,7 @@ import torch
 import torch._dynamo
 import torch.utils.cpp_extension
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 
 
@@ -27,7 +27,7 @@ def test_expert_mask(device, batch=4, num_experts=8):
     opt_fn = torch.compile(dynamic=False)(expert_mask)
     npu_out = opt_fn(expert_idx.to(device=device), scores.to(device=device))
 
-    test_result("ExpertMask (i64 == arange)", npu_out, cpu_out)
+    check_result("ExpertMask (i64 == arange)", npu_out, cpu_out)
 
 
 if __name__ == "__main__":

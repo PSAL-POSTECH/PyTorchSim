@@ -3,7 +3,7 @@ import sys
 import argparse
 import torch
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 
 def test_equal(name, out, cpu_out):
@@ -33,13 +33,13 @@ def test_sort(device, size=(128, 128), dim=-1, descending=False, stable=True):
     ref_values, ref_indices = torch.sort(x, stable=stable, dim=dim, descending=descending)
 
     prefix = "Sort.stable" if stable else "Sort.unstable"
-    test_result(f"{prefix}/values size={size}, dim={dim}, desc={descending}", out_values, ref_values)
+    check_result(f"{prefix}/values size={size}, dim={dim}, desc={descending}", out_values, ref_values)
     if stable:
-        test_result(f"{prefix}/indices size={size}, dim={dim}, desc={descending}", out_indices, ref_indices)
+        check_result(f"{prefix}/indices size={size}, dim={dim}, desc={descending}", out_indices, ref_indices)
     else:
         # Unstable sort does not guarantee tie ordering; validate index-value consistency instead.
         gathered = torch.gather(x, dim, out_indices.cpu())
-        test_result(f"{prefix}/indices_gather size={size}, dim={dim}, desc={descending}", gathered, out_values.cpu())
+        check_result(f"{prefix}/indices_gather size={size}, dim={dim}, desc={descending}", gathered, out_values.cpu())
 
 
 def test_sort_stable_suite(device):
@@ -83,7 +83,7 @@ def test_sort_duplicate_cases(device):
         ref_values, ref_indices = torch.sort(
             x, dim=case["dim"], descending=case["descending"], stable=True
         )
-        test_result(f"Sort.dup/stable_values {case}", out_values, ref_values)
+        check_result(f"Sort.dup/stable_values {case}", out_values, ref_values)
         test_equal(f"Sort.dup/stable_indices {case}", out_indices, ref_indices)
 
         def sort_test_unstable(inp):
@@ -91,9 +91,9 @@ def test_sort_duplicate_cases(device):
 
         out_values_u, out_indices_u = torch.compile(dynamic=False)(sort_test_unstable)(x.to(device=device))
         ref_values_u, _ = torch.sort(x, dim=case["dim"], descending=case["descending"], stable=False)
-        test_result(f"Sort.dup/unstable_values {case}", out_values_u, ref_values_u)
+        check_result(f"Sort.dup/unstable_values {case}", out_values_u, ref_values_u)
         gathered_u = torch.gather(x, case["dim"], out_indices_u.cpu())
-        test_result(f"Sort.dup/unstable_gather {case}", gathered_u, out_values_u.cpu())
+        check_result(f"Sort.dup/unstable_gather {case}", gathered_u, out_values_u.cpu())
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run sort tests")

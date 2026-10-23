@@ -7,7 +7,7 @@ import sys
 
 import torch
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 from pytorchsim.frontend.inductor.codegen import tiling
 
@@ -25,7 +25,7 @@ def test_gemv_blocks_follow_the_contiguous_kept_axis():
             (3072, 8192): (1024, 2048), (5120, 8192): (1024, 2048), (768, 768): (256, 1024),
             (384, 384): (128, 512), (1000, 4096): (1024, 2048)}
     got = {k: _blocks(*k) for k in want}
-    test_result("GemvBlocks", torch.tensor(list(got.values())), torch.tensor(list(want.values())))
+    check_result("GemvBlocks", torch.tensor(list(got.values())), torch.tensor(list(want.values())))
 
 
 def test_lane_cover_and_budget_are_never_crossed():
@@ -37,7 +37,7 @@ def test_lane_cover_and_budget_are_never_crossed():
             xb, rb = _blocks(x, r)
             if xb < min(LANES, 1 << (x - 1).bit_length()) or xb * rb > LANES * per_lane:
                 bad.append((x, r, xb, rb))
-    test_result("BlocksWithinBudget", torch.tensor(len(bad)), torch.tensor(0))
+    check_result("BlocksWithinBudget", torch.tensor(len(bad)), torch.tensor(0))
 
 
 def test_kept_axis_is_the_unit_stride_axis_of_the_largest_read():
@@ -61,7 +61,7 @@ def test_kept_axis_is_the_unit_stride_axis_of_the_largest_read():
     with V.set_graph_handler(graph):
         got = [_kept_axis_contiguous(feats(4096, gemv(4096))), _kept_axis_contiguous(feats(24576, gemv(24576))),
                _kept_axis_contiguous(feats(8192, rows)), _kept_axis_contiguous(feats(4096, gemv(4096), red=False))]
-    test_result("KeptAxisFromStrides", torch.tensor([g == "x" for g in got]),
+    check_result("KeptAxisFromStrides", torch.tensor([g == "x" for g in got]),
                 torch.tensor([True, True, False, False]))
 
 
@@ -74,7 +74,7 @@ def test_row_reduction_rows_fill_the_tile_budget():
              (128, 4096): (128, 4096), (1, 4096): (1, 4096)}
     got = {k: tuple(tiling.fixed_config_for(kernel, {"xnumel": k[0], "r0_numel": k[1]}, args)[b]
                     for b in ("XBLOCK", "R0_BLOCK")) for k in cases}
-    test_result("RowReductionRows", torch.tensor(list(got.values())), torch.tensor(list(cases.values())))
+    check_result("RowReductionRows", torch.tensor(list(got.values())), torch.tensor(list(cases.values())))
 
 
 def test_other_reductions_keep_todays_blocks():
@@ -84,7 +84,7 @@ def test_other_reductions_keep_todays_blocks():
     args = [{"dtype": "float32"}]
     base = tiling.fixed_config_for(kernel, numels, args)
     same = [tiling.fixed_config_for(kernel, numels, args, contiguous=c) == base for c in (None, "r")]
-    test_result("RowReductionUnchanged", torch.tensor(same), torch.tensor([True, True]))
+    check_result("RowReductionUnchanged", torch.tensor(same), torch.tensor([True, True]))
 
 
 def test_few_rows_budget_the_reduced_axis_over_every_lane():
@@ -101,7 +101,7 @@ def test_few_rows_budget_the_reduced_axis_over_every_lane():
              ({"xnumel": 4096, "r0_numel": 1024},
               tiling.fixed_config_for(kernel, {"xnumel": 4096, "r0_numel": 1024}, args)["R0_BLOCK"])]
     got = [tiling.fixed_config_for(kernel, n, args)["R0_BLOCK"] for n, _ in cases]
-    test_result("FewRowsLaneBlocks", torch.tensor(got), torch.tensor([w for _, w in cases]))
+    check_result("FewRowsLaneBlocks", torch.tensor(got), torch.tensor([w for _, w in cases]))
 
 
 if __name__ == "__main__":

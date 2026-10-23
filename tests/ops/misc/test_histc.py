@@ -5,7 +5,7 @@ import torch._dynamo
 from torch import fx
 from torch._subclasses.fake_tensor import FakeTensorMode
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 from pytorchsim.frontend.inductor.post_grad_pass import pytorchsim_post_grad_pass
 
@@ -44,7 +44,7 @@ def test_histc_integral(device, n=64, bins=8):
 
         assert npu_out.dtype == dtype, (
             f"histc should return the input's dtype: {npu_out.dtype} != {dtype}")
-        test_result(f"histc {dtype}", npu_out, cpu_out)
+        check_result(f"histc {dtype}", npu_out, cpu_out)
 
 
 def test_histc_float_unchanged(device, n=64, bins=8):
@@ -57,7 +57,7 @@ def test_histc_float_unchanged(device, n=64, bins=8):
     npu_out = opt_fn(cpu_x.to(device=device), bins, 0, bins - 1)
 
     assert npu_out.dtype == torch.float32, npu_out.dtype
-    test_result("histc float32", npu_out, cpu_out)
+    check_result("histc float32", npu_out, cpu_out)
 
 
 def _unlowered(gm):

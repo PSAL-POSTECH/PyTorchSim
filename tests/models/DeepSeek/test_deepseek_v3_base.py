@@ -5,7 +5,7 @@ import copy
 from pathlib import Path
 import torch
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 # DeepSeek-V3's remote modeling file (trust_remote_code) imports flash_attn, and
 # transformers' check_imports statically requires it to be installed even though
@@ -244,7 +244,7 @@ def test_cat_default(device):
     _assert_simulation_happened(before, "cat.default")
 
     cpu_out = torch.cat([x.cpu(), y.cpu()], dim=0)
-    test_result("cat.default", out, cpu_out, rtol=1e-4, atol=1e-4)
+    check_result("cat.default", out, cpu_out, rtol=1e-4, atol=1e-4)
 
 
 def test_cat_out(device):
@@ -261,7 +261,7 @@ def test_cat_out(device):
     _assert_simulation_happened(before, "cat.out")
 
     cpu_out = torch.cat([x.cpu(), y.cpu()], dim=0)
-    test_result("cat.out", out, cpu_out, rtol=1e-4, atol=1e-4)
+    check_result("cat.out", out, cpu_out, rtol=1e-4, atol=1e-4)
     
     
 @torch.no_grad()
@@ -354,7 +354,7 @@ def run_deepseek_v3_base(
     npu_out = _extract_logits(model_npu(input_ids))
 
     # Campare results
-    test_result(
+    check_result(
         "DeepSeek V3 Base",
         npu_out,
         cpu_out,

@@ -66,7 +66,7 @@ import sys
 import torch
 
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 
 # The vision tower.  image_size / patch_size gives 16 patches a tile against the
@@ -164,7 +164,7 @@ def run_vision(device, batch=1, dtype="float32", compile_model=True,
                         aspect_ratio_ids=aspect_ratio_ids.to(device),
                         aspect_ratio_mask=aspect_ratio_mask.to(device)).last_hidden_state
 
-    test_result("Mllama vision tower", npu_out, cpu_out, rtol=rtol, atol=atol)
+    check_result("Mllama vision tower", npu_out, cpu_out, rtol=rtol, atol=atol)
     print("Max diff > ", torch.max(torch.abs(npu_out.cpu() - cpu_out)))
 
 
@@ -220,7 +220,7 @@ def run_text(device, batch=1, seq_len=32, dtype="float32", compile_model=True,
         model_npu = torch.compile(model_npu, dynamic=False)
     npu_out = call(model_npu, device)
 
-    test_result("Mllama text tower (cross-attention)", npu_out, cpu_out,
+    check_result("Mllama text tower (cross-attention)", npu_out, cpu_out,
                 rtol=rtol, atol=atol)
     print("Max diff > ", torch.max(torch.abs(npu_out.cpu() - cpu_out)))
 

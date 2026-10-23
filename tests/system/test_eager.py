@@ -4,7 +4,7 @@ import sys
 import torch
 
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 torch.npu.register_eager_to_compile(["aten::mul.Tensor", "aten::add.Tensor"])
 
@@ -16,4 +16,4 @@ if __name__ == "__main__":
     y = y_cpu.to(device)
     z = x * y
     z = x + z
-    test_result("Eager mul + add", z, x_cpu + x_cpu * y_cpu)
+    check_result("Eager mul + add", z, x_cpu + x_cpu * y_cpu)

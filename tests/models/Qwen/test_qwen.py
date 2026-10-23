@@ -116,7 +116,7 @@ import sys
 import torch
 
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 
 # Presets shrink cost, not character.  Width carries head_dim, the GQA repeat
@@ -417,7 +417,7 @@ def run_qwen(
     npu_out = _out(model_npu(input_ids=input_ids.to(device),
                              attention_mask=attn_mask.to(device)))
 
-    test_result(f"Qwen {part} ({preset})", npu_out, cpu_out, rtol=rtol, atol=atol)
+    check_result(f"Qwen {part} ({preset})", npu_out, cpu_out, rtol=rtol, atol=atol)
     print("Max diff > ", torch.max(torch.abs(npu_out.cpu() - cpu_out)))
     print("Qwen Simulation Done")
 

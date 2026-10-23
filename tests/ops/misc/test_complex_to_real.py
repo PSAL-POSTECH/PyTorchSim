@@ -5,7 +5,7 @@ import torch._dynamo
 from torch.fx.experimental.proxy_tensor import make_fx
 from torch._inductor.decomposition import select_decomp_table
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 from pytorchsim.frontend.inductor.post_grad_pass import pytorchsim_post_grad_pass
 
@@ -63,7 +63,7 @@ def test_pass_leaves_no_complex():
     after = _complex_nodes(gm.graph)
     assert not after, f"complex nodes survived the pass: {[str(n.target) for n in after]}"
 
-    test_result("complex-to-real (rewritten graph)", gm(x, a), _rope(x, a))
+    check_result("complex-to-real (rewritten graph)", gm(x, a), _rope(x, a))
 
 
 def test_rope_on_device(device):
@@ -74,7 +74,7 @@ def test_rope_on_device(device):
     x, a = torch.randn(1, 32, 64), torch.randn(1, 32, 32)
     cpu_out = _rope(x, a)
     npu_out = torch.compile(_rope, dynamic=False)(x.to(device=device), a.to(device=device))
-    test_result("complex-to-real (RoPE on device)", npu_out, cpu_out)
+    check_result("complex-to-real (RoPE on device)", npu_out, cpu_out)
 
 
 def test_complex_scalar_multiply():
@@ -92,7 +92,7 @@ def test_complex_scalar_multiply():
     after = _complex_nodes(gm.graph)
     assert not after, f"complex nodes survived the pass: {[str(n.target) for n in after]}"
     assert not _unlowered(gm), f"no Inductor lowering for {_unlowered(gm)}"
-    test_result("complex-to-real (complex scalar)", gm(x), f(x))
+    check_result("complex-to-real (complex scalar)", gm(x), f(x))
 
 
 def test_components_are_judged_apart():
@@ -121,7 +121,7 @@ def test_components_are_judged_apart():
     bare = [n.name for n in gm.graph.nodes if callable(n.target) and "stack_trace" not in n.meta]
     assert not bare, f"nodes without provenance: {bare}"
     out = gm(x, y)
-    test_result("complex-to-real (components apart)", out[0], f(x, y)[0])
+    check_result("complex-to-real (components apart)", out[0], f(x, y)[0])
 
 
 def test_row_mm_stays_real():
@@ -134,7 +134,7 @@ def test_row_mm_stays_real():
     pytorchsim_post_grad_pass(gm)
     mms = [n for n in gm.graph.nodes if n.target is aten.mm.default]
     assert len(mms) == 1, f"complex mm rewritten: {[str(n.target) for n in gm.graph.nodes]}"
-    test_result("complex 1 x K mm", gm(a, b), f(a, b))
+    check_result("complex 1 x K mm", gm(a, b), f(a, b))
 
 
 def test_unhandled_op_is_left_alone():

@@ -10,7 +10,7 @@ from diffusers.models.upsampling import Upsample2D
 from diffusers.models.resnet import ResnetBlock2D
 from diffusers.models.embeddings import Timesteps
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 @torch.no_grad()
 def test_unet_conditional(
@@ -88,7 +88,7 @@ def test_unet_conditional(
         else:
             out_cpu = unet_cpu(latents.cpu(), timestep, encoder_hidden_states=enc_states_cpu).sample
 
-    test_result(f"UNet({model_id}) forward", out_dev, out_cpu, rtol=rtol, atol=atol)
+    check_result(f"UNet({model_id}) forward", out_dev, out_cpu, rtol=rtol, atol=atol)
     print("Max diff >", torch.max(torch.abs(out_dev.cpu() - out_cpu)).item())
     print("UNet Simulation Done")
 
@@ -143,7 +143,7 @@ def test_unet_mid_block2d_cross_attn(
             encoder_hidden_states=encoder_hidden_states_dev,
         )
 
-    test_result("UNetMidBlock2DCrossAttn", dev_out, cpu_out, rtol=rtol, atol=atol)
+    check_result("UNetMidBlock2DCrossAttn", dev_out, cpu_out, rtol=rtol, atol=atol)
     print("Max diff >", torch.max(torch.abs(dev_out.cpu() - cpu_out)).item())
     print("UNetMidBlock2DCrossAttn simulation done.")
 
@@ -210,7 +210,7 @@ def test_cross_attn_up_block2d(
             encoder_hidden_states=encoder_hidden_states_dev,
         )
 
-    test_result("CrossAttnUpBlock2D", dev_out, cpu_out, rtol=rtol, atol=atol)
+    check_result("CrossAttnUpBlock2D", dev_out, cpu_out, rtol=rtol, atol=atol)
     print("Max diff >", torch.max(torch.abs(dev_out.cpu() - cpu_out)).item())
     print("CrossAttnUpBlock2D simulation done.")
 
@@ -278,7 +278,7 @@ def test_unet2d_condition_model(
         ).sample
 
     for idx, (cpu, dev) in enumerate(zip(y_cpu, y_dev)):
-        test_result(f"[{idx}] UNet2DConditionModel", dev.cpu(), cpu, rtol=rtol, atol=atol)
+        check_result(f"[{idx}] UNet2DConditionModel", dev.cpu(), cpu, rtol=rtol, atol=atol)
         max_diff = torch.max(torch.abs(dev.detach().cpu() - cpu)).item()
         print("Max diff >", max_diff)
     print("UNet2DConditionModel simulation done.")
@@ -343,7 +343,7 @@ def test_cross_attn_down_block2d(
         )
 
     # 7. Compare the results
-    test_result("CrossAttnDownBlock2D", dev_out, cpu_out, rtol=rtol, atol=atol)
+    check_result("CrossAttnDownBlock2D", dev_out, cpu_out, rtol=rtol, atol=atol)
     print("Max diff >", torch.max(torch.abs(dev_out.cpu() - cpu_out)).item())
     print("CrossAttnDownBlock2D simulation done.")
 
@@ -402,7 +402,7 @@ def test_resnetblock2d(
         y_dev = dev_blk(x_dev, temb=temb_dev)
 
     try:
-        test_result("ResnetBlock2D(down=True)", y_dev, y_cpu, rtol=rtol, atol=atol)
+        check_result("ResnetBlock2D(down=True)", y_dev, y_cpu, rtol=rtol, atol=atol)
     except NameError:
         # fallback: PyTorch의 기본 엄밀 비교
         torch.testing.assert_close(y_dev.cpu(), y_cpu, rtol=rtol, atol=atol)
@@ -467,7 +467,7 @@ def test_groupnorm(
         dev_out = device_norm(input_dev)
 
     # 7. Compare the results
-    test_result("GroupNorm", dev_out, cpu_out, rtol=rtol, atol=atol)
+    check_result("GroupNorm", dev_out, cpu_out, rtol=rtol, atol=atol)
     print("Max diff >", torch.max(torch.abs(dev_out.cpu() - cpu_out)).item())
     print("GroupNorm simulation done.")
 
@@ -523,7 +523,7 @@ def test_upsample2d(
     with torch.no_grad():
         y_dev = dev_block(x_dev)
 
-    test_result("Upsample2D", y_dev, y_cpu, rtol=rtol, atol=atol)
+    check_result("Upsample2D", y_dev, y_cpu, rtol=rtol, atol=atol)
     print("Max diff >", torch.max(torch.abs(y_dev.cpu() - y_cpu)).item())
     print("Upsample2D simulation done.")
 
@@ -570,9 +570,9 @@ def test_flip_sin_to_cos_embedding(
         emb_flip_dev = create_embeddings_compiled(timesteps_dev, embedding_dim, flip_sin_to_cos=True)
 
     # Verify flip case
-    test_result("Embedding (flip_sin_to_cos=True)", emb_flip_dev[0], emb_flip_cpu[0], rtol=rtol, atol=atol)
+    check_result("Embedding (flip_sin_to_cos=True)", emb_flip_dev[0], emb_flip_cpu[0], rtol=rtol, atol=atol)
     print("Max diff (flip) >", torch.max(torch.abs(emb_flip_dev[0].cpu() - emb_flip_cpu[0])).item())
-    test_result("Embedding (flip_sin_to_cos=True)", emb_flip_dev[1], emb_flip_cpu[1], rtol=rtol, atol=atol)
+    check_result("Embedding (flip_sin_to_cos=True)", emb_flip_dev[1], emb_flip_cpu[1], rtol=rtol, atol=atol)
     print("Max diff (flip) >", torch.max(torch.abs(emb_flip_dev[1].cpu() - emb_flip_cpu[1])).item())
 
 
@@ -606,7 +606,7 @@ def test_timesteps(
     with torch.no_grad():
         dev_out = dev_timesteps(timesteps_dev)
 
-    test_result("Timesteps", dev_out, cpu_out, rtol=rtol, atol=atol)
+    check_result("Timesteps", dev_out, cpu_out, rtol=rtol, atol=atol)
     print("Max diff >", torch.max(torch.abs(dev_out.cpu() - cpu_out)).item())
     print("Timesteps simulation done.")
 

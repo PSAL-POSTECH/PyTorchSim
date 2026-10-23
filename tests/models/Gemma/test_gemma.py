@@ -165,7 +165,7 @@ import sys
 import torch
 
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 
 # Presets shrink cost, not character.  Width carries head_dim, the GQA repeat
@@ -960,7 +960,7 @@ def run_gemma(
         model_npu = torch.compile(model_npu, dynamic=False)
     npu_out = _out(model_npu(**{k: v.to(device) for k, v in cpu_inputs.items()}))
 
-    test_result(f"Gemma {part} ({preset})", npu_out, cpu_out, rtol=rtol, atol=atol)
+    check_result(f"Gemma {part} ({preset})", npu_out, cpu_out, rtol=rtol, atol=atol)
     print("Max diff > ", torch.max(torch.abs(npu_out.cpu() - cpu_out)))
     print("Gemma Simulation Done")
 

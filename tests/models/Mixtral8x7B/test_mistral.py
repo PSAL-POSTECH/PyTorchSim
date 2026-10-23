@@ -4,7 +4,7 @@ import copy
 import torch
 from model import Transformer, TransformerBlock, ModelArgs, Attention, FeedForward, KVCache, RMSNorm, precompute_freqs_cis, sample
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 def test_decode(device, prompt_length, nr_tokens):
     # Setup model & model args
@@ -59,7 +59,7 @@ def test_decode(device, prompt_length, nr_tokens):
         T = 1
 
         # Check output token
-        test_result("Mistral", res, cpu_res)
+        check_result("Mistral", res, cpu_res)
 
 def test_attention(device):
     args = ModelArgs()
@@ -86,7 +86,7 @@ def test_attention(device):
     opt_fn = torch.compile(dynamic=False)(model)
     res = opt_fn(prompt, None, mask, input_pos)
     cpu_res = cpu_model(cpu_prompt, None, cpu_mask, cpu_input_pos)
-    test_result("Attention", res, cpu_res)
+    check_result("Attention", res, cpu_res)
 
 def test_ffn(device):
     args = ModelArgs()
@@ -107,7 +107,7 @@ def test_ffn(device):
     opt_fn = torch.compile(dynamic=False)(model)
     res = opt_fn(prompt)
     cpu_res = cpu_model(cpu_prompt)
-    test_result("FFN", res, cpu_res)
+    check_result("FFN", res, cpu_res)
 
 def test_concat(device, size1=(1, 8, 32, 64), size2=(1, 8, 1, 64), dim=2):
     def concat_tensors(a, b):
@@ -124,7 +124,7 @@ def test_concat(device, size1=(1, 8, 32, 64), size2=(1, 8, 1, 64), dim=2):
     res = opt_fn(x, y)
     out = concat_tensors(cpu_x, cpu_y)
 
-    test_result("ConcatTensors", res, out)
+    check_result("ConcatTensors", res, out)
 
 def test_rmsnorm(device, seq=32):
     dim = 512
@@ -143,7 +143,7 @@ def test_rmsnorm(device, seq=32):
     res = opt_fn(x)
     cpu_res = cpu_model(cpu_x)
 
-    test_result("RMSNorm", res, cpu_res)
+    check_result("RMSNorm", res, cpu_res)
 
 if __name__ == "__main__":
     device = torch.device("npu:0")

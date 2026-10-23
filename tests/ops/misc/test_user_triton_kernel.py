@@ -22,7 +22,7 @@ from torch.library import triton_op, wrap_triton
 
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"),
                                 "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 
 @triton.jit
@@ -88,19 +88,19 @@ def test_user_triton_kernel(device):
     y = torch.randn(512)
     f = torch.compile(lambda x, y: (scale(x, 2.0, 256), scale(y, 3.0, 128)), dynamic=False)
     ox, oy = f(x.to(device), y.to(device))
-    test_result("UserTritonKernel stored through a helper", ox, x * 2.0)
-    test_result("UserTritonKernel relaunched with other constexprs", oy, y * 3.0)
+    check_result("UserTritonKernel stored through a helper", ox, x * 2.0)
+    check_result("UserTritonKernel relaunched with other constexprs", oy, y * 3.0)
     _check_roles("_scale_kernel", ["in", "inout"])
 
     a, b = torch.randn(512), torch.randn(1024)
     g = torch.compile(lambda a, b: (add_one(a), add_one(b)), dynamic=False)
     oa, ob = g(a.to(device), b.to(device))
-    test_result("UserTritonKernel relaunched with other extents", oa, a + 1.0)
-    test_result("UserTritonKernel relaunched with other extents (second)", ob, b + 1.0)
+    check_result("UserTritonKernel relaunched with other extents", oa, a + 1.0)
+    check_result("UserTritonKernel relaunched with other extents (second)", ob, b + 1.0)
 
     w = torch.randn(128)
     ow = torch.compile(wrap, dynamic=False)(w.to(device))
-    test_result("UserTritonKernel source reaches the compiler as written", ow,
+    check_result("UserTritonKernel source reaches the compiler as written", ow,
                 w[torch.arange(256) % 128] * 64)
 
 

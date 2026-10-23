@@ -6,7 +6,7 @@ import sys
 import math
 import argparse
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 device = torch.device("npu:0")
 # ─────────────────────────────────────────────────────────────────────────────
 # Optimized: Flash-Decode style — tile S upfront, batch in B dimension
@@ -199,7 +199,7 @@ def test_gqa_decode_optimized(model, device, seq_len: int = 10240, tile_size: in
     print(f"  npu out max     = {out_dev.cpu().abs().max().item():.6f}")
     print(f"  cpu out max     = {out_cpu.abs().max().item():.6f}")
     print(f"  library out max = {out_library.abs().max().item():.6f}")
-    test_result("GQADecodeOptimized", out_dev, out_cpu, rtol=0, atol=0.05)
+    check_result("GQADecodeOptimized", out_dev, out_cpu, rtol=0, atol=0.05)
 
 
 

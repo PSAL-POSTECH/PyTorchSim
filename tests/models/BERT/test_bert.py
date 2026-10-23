@@ -23,7 +23,7 @@ import sys
 import torch
 
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 
 # Presets shrink the model, not the shapes' character: the head dim, the 4x
@@ -134,7 +134,7 @@ def run_bert(
                                 attention_mask=attention_mask.to(device),
                                 token_type_ids=token_type_ids.to(device)))
 
-    test_result(f"BERT {part} ({preset})", npu_out, cpu_out, rtol=rtol, atol=atol)
+    check_result(f"BERT {part} ({preset})", npu_out, cpu_out, rtol=rtol, atol=atol)
     print("Max diff > ", torch.max(torch.abs(npu_out.cpu() - cpu_out)))
     print("BERT Simulation Done")
 

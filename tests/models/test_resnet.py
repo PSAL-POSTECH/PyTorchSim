@@ -6,7 +6,7 @@ from torchvision.models import resnet18, resnet50
 import os
 import sys
 sys.path.insert(0, os.path.join(os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim'), 'tests'))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 def test_resnet(device, batch=1, model_type='resnet18'):
     from torchvision.models import resnet
@@ -26,7 +26,7 @@ def test_resnet(device, batch=1, model_type='resnet18'):
         res = opt_fn(x1)
         cpu_model = model.cpu().to(memory_format=torch.channels_last)
         cpu_res = cpu_model(x2)
-    test_result(f"{model_type} inference", res, cpu_res)
+    check_result(f"{model_type} inference", res, cpu_res)
     print("Max diff > ", torch.max(torch.abs(res.cpu() - cpu_res)))
     print(f"{model_type} Simulation Done")
 

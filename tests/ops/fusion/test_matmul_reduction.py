@@ -4,7 +4,7 @@ import torch
 import torch._dynamo
 import torch.utils.cpp_extension
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 def test_matmul_reduce(device, M=512, N=512, K=512):
     def matmul_fused(a, b):
@@ -22,8 +22,8 @@ def test_matmul_reduce(device, M=512, N=512, K=512):
     opt_fn = torch.compile(dynamic=False)(matmul_fused)
     res = opt_fn(x1, w1)
     y = [t.float() for t in matmul_fused(x2, w2)]
-    test_result("Matmul Reduction Fusion activation", res[0], y[0])
-    test_result("Matmul Reduction Fusion reduction", res[1], y[1])
+    check_result("Matmul Reduction Fusion activation", res[0], y[0])
+    check_result("Matmul Reduction Fusion reduction", res[1], y[1])
 
 def test_matmul_reduce_last_dim(device, M=256, N=96, K=96):
     """Reducing the matmul output's contiguous (last) axis cannot be expressed in the GEMM's
@@ -38,7 +38,7 @@ def test_matmul_reduce_last_dim(device, M=256, N=96, K=96):
     opt_fn = torch.compile(dynamic=False)(matmul_fused)
     res = opt_fn(input.to(device=device), weight.to(device=device))
     y = matmul_fused(input.to("cpu", torch.float64), weight.to("cpu", torch.float64)).float()
-    test_result("Matmul reduce over contiguous axis", res, y)
+    check_result("Matmul reduce over contiguous axis", res, y)
 
 def test_matmul_var_mean(device, size=512):
     def matmul_fused(a, b, c):
@@ -59,9 +59,9 @@ def test_matmul_var_mean(device, size=512):
     opt_fn = torch.compile(dynamic=False)(matmul_fused)
     res = opt_fn(x1, w1, c)
     y = [t.float() for t in matmul_fused(x2, w2, c)]
-    test_result("Matmul var_mean Fusion activation", res[0], y[0])
-    test_result("Matmul var_mean Fusion reduction", res[1], y[1])
-    test_result("Matmul var_mean Fusion reduction", res[2], y[2])
+    check_result("Matmul var_mean Fusion activation", res[0], y[0])
+    check_result("Matmul var_mean Fusion reduction", res[1], y[1])
+    check_result("Matmul var_mean Fusion reduction", res[2], y[2])
 
 def test_matmul_add_var_mean(device, M=768, N=512, K=3072):
     def matmul_fused(a, b, c, d):
@@ -84,9 +84,9 @@ def test_matmul_add_var_mean(device, M=768, N=512, K=3072):
     opt_fn = torch.compile(dynamic=False)(matmul_fused)
     res = opt_fn(x1, w1, b1, r1)
     y = [t.float() for t in matmul_fused(x2, w2, b2, r2)]
-    test_result("Matmul+residual+var_mean Fusion activation", res[0], y[0])
-    test_result("Matmul+residual+var_mean Fusion reduction", res[1], y[1])
-    test_result("Matmul+residual+var_mean Fusion reduction", res[2], y[2])
+    check_result("Matmul+residual+var_mean Fusion activation", res[0], y[0])
+    check_result("Matmul+residual+var_mean Fusion reduction", res[1], y[1])
+    check_result("Matmul+residual+var_mean Fusion reduction", res[2], y[2])
 
 if __name__ == "__main__":
     device = torch.device("npu:0")

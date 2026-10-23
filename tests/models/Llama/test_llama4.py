@@ -114,7 +114,7 @@ import sys
 import torch
 
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 
 # Experts scaled down, everything that decides the SHAPE of the routing kept.
@@ -229,7 +229,7 @@ def run_llama4(device, preset="small", batch=1, seq_len=None, dtype="float32",
         model_npu = torch.compile(model_npu, dynamic=False)
     npu_out = model_npu(input_ids=input_ids.to(device)).last_hidden_state
 
-    test_result(f"Llama 4 text ({preset})", npu_out, cpu_out, rtol=rtol, atol=atol)
+    check_result(f"Llama 4 text ({preset})", npu_out, cpu_out, rtol=rtol, atol=atol)
     print("Max diff > ", torch.max(torch.abs(npu_out.cpu() - cpu_out)))
     print("Llama 4 Simulation Done")
 
@@ -327,7 +327,7 @@ def run_llama4_vision(device, preset="tiny", batch=1, dtype="float32",
         model_npu = torch.compile(model_npu, dynamic=False)
     npu_out = model_npu(px.to(device)).last_hidden_state
 
-    test_result(f"Llama 4 vision ({preset})", npu_out, cpu_out, rtol=rtol, atol=atol)
+    check_result(f"Llama 4 vision ({preset})", npu_out, cpu_out, rtol=rtol, atol=atol)
     print("Max diff > ", torch.max(torch.abs(npu_out.cpu() - cpu_out)))
     print("Llama 4 Vision Simulation Done")
 

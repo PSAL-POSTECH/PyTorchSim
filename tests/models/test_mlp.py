@@ -3,7 +3,7 @@ import sys
 import copy
 import torch
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 class MLP(torch.nn.Module):
     def __init__(self, input_size=28*28, hidden_size=64, output_size=8):
@@ -44,12 +44,12 @@ def test_mlp(device, batch_size=64, input_size=64, hidden_size=32, output_size=8
     cpu_loss = loss_fn(cpu_y, y2)
     loss.backward()
     cpu_loss.backward()
-    test_result("MLP Forward", y, cpu_y)
-    test_result("Loss", loss, cpu_loss)
-    test_result("MLP Weight1 Backward", model.linear1.weight.grad, cpu_model.linear1.weight.grad)
-    test_result("MLP Bias1 Backward", model.linear1.bias.grad, cpu_model.linear1.bias.grad)
-    test_result("MLP Weight2 Backward", model.linear2.weight.grad, cpu_model.linear2.weight.grad)
-    test_result("MLP Bias2 Backward", model.linear2.bias.grad, cpu_model.linear2.bias.grad)
+    check_result("MLP Forward", y, cpu_y)
+    check_result("Loss", loss, cpu_loss)
+    check_result("MLP Weight1 Backward", model.linear1.weight.grad, cpu_model.linear1.weight.grad)
+    check_result("MLP Bias1 Backward", model.linear1.bias.grad, cpu_model.linear1.bias.grad)
+    check_result("MLP Weight2 Backward", model.linear2.weight.grad, cpu_model.linear2.weight.grad)
+    check_result("MLP Bias2 Backward", model.linear2.bias.grad, cpu_model.linear2.bias.grad)
 
 def test_mlp_inf(device, batch_size=64, input_size=64, hidden_size=32, output_size=8, sparsity=0.0):
     torch.manual_seed(0)
@@ -65,7 +65,7 @@ def test_mlp_inf(device, batch_size=64, input_size=64, hidden_size=32, output_si
     cpu_model = copy.deepcopy(model).to("cpu")
     cpu_model.requires_grad = False
     cpu_y = cpu_model(x2)
-    test_result("MLP Forward", y, cpu_y)
+    check_result("MLP Forward", y, cpu_y)
 
 def test_optimizer(device):
     torch.manual_seed(0)
@@ -89,7 +89,7 @@ def test_optimizer(device):
     cpu_loss.backward()
     opt_step()
     cpu_optimizer.step()
-    test_result("Optimizer", model.linear1.weight, cpu_model.linear1.weight)
+    check_result("Optimizer", model.linear1.weight, cpu_model.linear1.weight)
 
 if __name__ == "__main__":
     device = torch.device("npu:0")

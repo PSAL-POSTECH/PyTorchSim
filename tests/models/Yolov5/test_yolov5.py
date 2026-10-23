@@ -14,7 +14,7 @@ import os
 import sys
 import shutil
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 def run_yolo(batch):
     import copy
@@ -54,9 +54,9 @@ def run_yolo(batch):
     # YOLOv5 output is typically a list or tensor, handle both cases
     if isinstance(y_cpu, (list, tuple)):
         for i, (out_npu, out_cpu) in enumerate(zip(y_npu, y_cpu)):
-            test_result(f"YOLOv5 Output {i}", out_npu, out_cpu)
+            check_result(f"YOLOv5 Output {i}", out_npu, out_cpu)
     else:
-        test_result("YOLOv5 Output", y_npu, y_cpu)
+        check_result("YOLOv5 Output", y_npu, y_cpu)
 
     print("Yolo Simulation Done")
 
@@ -100,9 +100,9 @@ def test_c3_module(device, batch=1, c1=64, c2=128, n=1, h=64, w=64):
     # Compare results
     if isinstance(y_cpu, (list, tuple)):
         for i, (out_npu, out_cpu) in enumerate(zip(y_npu, y_cpu)):
-            test_result(f"C3 Output {i}", out_npu, out_cpu)
+            check_result(f"C3 Output {i}", out_npu, out_cpu)
     else:
-        test_result("C3 Output", y_npu, y_cpu)
+        check_result("C3 Output", y_npu, y_cpu)
     print("C3 Module Test Done")
 
 
@@ -143,7 +143,7 @@ def test_bottleneck_module(device, batch=1, c1=64, c2=64, shortcut=True, g=1, e=
     y_npu = compiled_model_npu(x_npu)
 
     # Compare results
-    test_result("Bottleneck Module", y_npu, y_cpu)
+    check_result("Bottleneck Module", y_npu, y_cpu)
     print("Bottleneck Module Test Done")
 
 
@@ -184,7 +184,7 @@ def test_conv_module(device, batch=1, c1=32, c2=64, k=3, s=1, p=None, g=1, d=1, 
     y_npu = compiled_model_npu(x_npu)
 
     # Compare results
-    test_result("Conv Module", y_npu, y_cpu)
+    check_result("Conv Module", y_npu, y_cpu)
     print("Conv Module Test Done")
 
 
@@ -221,7 +221,7 @@ def test_concat_4d(device):
     y_npu = compiled_concat(x1_npu, x2_npu, x3_npu)
 
     # Compare results
-    test_result("Concat 4D", y_npu, y_cpu)
+    check_result("Concat 4D", y_npu, y_cpu)
     print(f"Output shape: {y_npu.shape}")
     print("Concat 4D Test Done")
 

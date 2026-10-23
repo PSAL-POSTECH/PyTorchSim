@@ -15,7 +15,7 @@ import torch.utils.cpp_extension
 from torch._inductor import config
 
 sys.path.insert(0, os.path.join(os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim'), 'tests'))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 # FIXME. This is a Dynamo bug. Solution to avoid is_forward conflict during backward
 def patch_metrics_context_update():
@@ -424,8 +424,8 @@ def test_moe(device):
     model_cpu.train()
     # model_cpu.eval()
     cpu_hat, cpu_aux_loss = model_cpu(x2)
-    test_result("MoE Forward", y_hat, cpu_hat)
-    test_result("MoE Aux Loss", aux_loss, cpu_aux_loss)
+    check_result("MoE Forward", y_hat, cpu_hat)
+    check_result("MoE Aux Loss", aux_loss, cpu_aux_loss)
     print("MoE Forward Done!")
 
     # Backward
@@ -461,11 +461,11 @@ def test_moe(device):
     print("MoE Weight Bias Grad")
     for i in range(num_experts):
         print(f"\nExpert {i}")
-        test_result(f"FC1 Grad", model.experts[i].fc1.weight.grad, model_cpu.experts[i].fc1.weight.grad)
-        test_result(f"FC1 Bias", model.experts[i].fc1.bias.grad, model_cpu.experts[i].fc1.bias.grad)
+        check_result(f"FC1 Grad", model.experts[i].fc1.weight.grad, model_cpu.experts[i].fc1.weight.grad)
+        check_result(f"FC1 Bias", model.experts[i].fc1.bias.grad, model_cpu.experts[i].fc1.bias.grad)
         print("\n")
-        test_result(f"FC2 Grad", model.experts[i].fc2.weight.grad, model_cpu.experts[i].fc2.weight.grad)
-        test_result(f"FC2 Bias", model.experts[i].fc2.bias.grad, model_cpu.experts[i].fc2.bias.grad)
+        check_result(f"FC2 Grad", model.experts[i].fc2.weight.grad, model_cpu.experts[i].fc2.weight.grad)
+        check_result(f"FC2 Bias", model.experts[i].fc2.bias.grad, model_cpu.experts[i].fc2.bias.grad)
         print("\n")
 
 def train_moe(device):
@@ -519,8 +519,8 @@ def train_moe(device):
     model_cpu.train()
     # model_cpu.eval()
     cpu_hat, cpu_aux_loss = model_cpu(x2)
-    test_result("MoE Forward", y_hat, cpu_hat)
-    test_result("MoE Aux Loss", aux_loss, cpu_aux_loss)
+    check_result("MoE Forward", y_hat, cpu_hat)
+    check_result("MoE Aux Loss", aux_loss, cpu_aux_loss)
     print("MoE Forward Done!")
 
     for i, out in enumerate(y_hat):
@@ -541,18 +541,18 @@ def train_moe(device):
     total_cpu_loss.backward()
     print("MoE Backward Done!")
 
-    test_result("MoE Forward", y_hat, cpu_hat)
-    test_result("MoE Aux Loss", aux_loss, cpu_aux_loss)
-    test_result("Loss", total_loss, total_cpu_loss)
+    check_result("MoE Forward", y_hat, cpu_hat)
+    check_result("MoE Aux Loss", aux_loss, cpu_aux_loss)
+    check_result("Loss", total_loss, total_cpu_loss)
 
     print("MoE Weight Bias Grad")
     for i in range(num_experts):
         print(f"\nExpert {i}")
-        test_result(f"FC1 Grad", model.experts[i].fc1.weight.grad, model_cpu.experts[i].fc1.weight.grad)
-        test_result(f"FC1 Bias", model.experts[i].fc1.bias.grad, model_cpu.experts[i].fc1.bias.grad)
+        check_result(f"FC1 Grad", model.experts[i].fc1.weight.grad, model_cpu.experts[i].fc1.weight.grad)
+        check_result(f"FC1 Bias", model.experts[i].fc1.bias.grad, model_cpu.experts[i].fc1.bias.grad)
         print("\n")
-        test_result(f"FC2 Grad", model.experts[i].fc2.weight.grad, model_cpu.experts[i].fc2.weight.grad)
-        test_result(f"FC2 Bias", model.experts[i].fc2.bias.grad, model_cpu.experts[i].fc2.bias.grad)
+        check_result(f"FC2 Grad", model.experts[i].fc2.weight.grad, model_cpu.experts[i].fc2.weight.grad)
+        check_result(f"FC2 Bias", model.experts[i].fc2.bias.grad, model_cpu.experts[i].fc2.bias.grad)
         print("\n")
 
     import matplotlib.pyplot as plt

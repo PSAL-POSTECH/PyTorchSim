@@ -2,7 +2,7 @@ import os
 import sys
 import torch
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 def test_matmul(device, input_size=128, hidden_size=128, output_size=128):
     def custom_matmul(a, b):
@@ -17,7 +17,7 @@ def test_matmul(device, input_size=128, hidden_size=128, output_size=128):
     opt_fn = torch.compile(dynamic=False)(custom_matmul)
     res = opt_fn(x1, w1)
     y = custom_matmul(x2, w2)
-    test_result("Matmul Forward", res, y)
+    check_result("Matmul Forward", res, y)
 
 def test_addmm(device, input_size=128, hidden_size=128, output_size=128, bias_rank=1):
     def custom_matmul(bias, a, b):
@@ -35,7 +35,7 @@ def test_addmm(device, input_size=128, hidden_size=128, output_size=128, bias_ra
     opt_fn = torch.compile(dynamic=False)(custom_matmul)
     res = opt_fn(b1, x1, w1)
     y = custom_matmul(b2, x2, w2)
-    test_result("Addmm Forward", res, y)
+    check_result("Addmm Forward", res, y)
 
 def test_addmm2(device, input_size=128, hidden_size=128, output_size=128):
     def custom_matmul(bias, a, b):
@@ -53,7 +53,7 @@ def test_addmm2(device, input_size=128, hidden_size=128, output_size=128):
     opt_fn = torch.compile(dynamic=False)(custom_matmul)
     res = opt_fn(b1, x1, w1)
     y = custom_matmul(b2, x2, w2)
-    test_result("Addmm2 Forward", res, y)
+    check_result("Addmm2 Forward", res, y)
 
 def test_linear(device, input_size=128, hidden_size=128, output_size=128):
     def custom_linear(a, b, bias):
@@ -74,7 +74,7 @@ def test_linear(device, input_size=128, hidden_size=128, output_size=128):
     opt_fn = torch.compile(dynamic=False)(custom_linear)
     res = opt_fn(x1, w1, b1)
     y = custom_linear(x2, w2, b2)
-    test_result("Linear Forward", res, y)
+    check_result("Linear Forward", res, y)
 
 if __name__ == "__main__":
     device = torch.device("npu:0")

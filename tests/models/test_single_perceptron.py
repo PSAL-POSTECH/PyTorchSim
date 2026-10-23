@@ -3,7 +3,7 @@ import sys
 import copy
 import torch
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 def test_single_perceptron(device):
     def perceptron(a, b, c):
@@ -41,10 +41,10 @@ def test_single_perceptron(device):
     cpu_y = perceptron(x2, w2, b2)
     cpu_loss = loss_fn(cpu_y, y2)
     cpu_loss.backward()
-    test_result("Perceptron", y, cpu_y)
-    test_result("Loss", loss, cpu_loss)
-    test_result("Weight Update", w1.grad, w2.grad)
-    test_result("Bias Update", b1.grad, b2.grad)
+    check_result("Perceptron", y, cpu_y)
+    check_result("Loss", loss, cpu_loss)
+    check_result("Weight Update", w1.grad, w2.grad)
+    check_result("Bias Update", b1.grad, b2.grad)
     # for i in range(50):
     #     y = opt_mlp(w1, x1, b1)
     #     loss = opt_loss(y, y1)

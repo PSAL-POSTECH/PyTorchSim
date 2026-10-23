@@ -3,7 +3,7 @@ import sys
 import torch
 import torch._dynamo
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 # REGISTERED ON PURPOSE, and this file exists because of what that used to do.
 #
@@ -49,7 +49,7 @@ def test_registered_mul_out_does_not_recurse(device):
             "aten::mul.out recursed through its own eager_to_compile wrapper -- "
             "the complex multiply became a fallback again")
 
-    test_result("eager_to_compile mul.out + complex", npu_out, cpu_out)
+    check_result("eager_to_compile mul.out + complex", npu_out, cpu_out)
 
 
 if __name__ == "__main__":

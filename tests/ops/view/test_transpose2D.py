@@ -2,7 +2,7 @@ import os
 import sys
 import torch
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 def test_Transpose2D(device, size=(16, 32)):
     def transpose(a):
@@ -13,7 +13,7 @@ def test_Transpose2D(device, size=(16, 32)):
     opt_fn = torch.compile(dynamic=False)(transpose)
     res = opt_fn(x)
     out = transpose(x.cpu())
-    test_result("Transpose Forward", res, out)
+    check_result("Transpose Forward", res, out)
 
 def test_Transpose2D_2(device, size=(16, 32)):
     def transpose(a, b):
@@ -26,7 +26,7 @@ def test_Transpose2D_2(device, size=(16, 32)):
     opt_fn = torch.compile(dynamic=False)(transpose)
     res = opt_fn(x, y)
     out = transpose(x.cpu(), y.cpu())
-    test_result("Transpose2 Forward", res, out)
+    check_result("Transpose2 Forward", res, out)
 
 if __name__ == "__main__":
     device = torch.device("npu:0")

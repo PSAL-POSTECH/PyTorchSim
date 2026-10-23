@@ -5,7 +5,7 @@ import torch._dynamo
 from torch.fx.experimental.proxy_tensor import make_fx
 from torch._inductor.decomposition import select_decomp_table
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 from pytorchsim.frontend.inductor.post_grad_pass import pytorchsim_post_grad_pass
 
@@ -39,7 +39,7 @@ def test_polar_on_transposed(device, n=32):
     opt_fn = torch.compile(dynamic=False)(_rope_like)
     npu_out = opt_fn(x.to(device=device))
 
-    test_result("polar on a transposed view", npu_out, cpu_out)
+    check_result("polar on a transposed view", npu_out, cpu_out)
 
 
 def test_polar_contiguous(device, n=32):
@@ -50,7 +50,7 @@ def test_polar_contiguous(device, n=32):
     x = torch.randn(1, n, n)
     cpu_out = f(x)
     npu_out = torch.compile(dynamic=False)(f)(x.to(device=device))
-    test_result("polar on a contiguous tile", npu_out, cpu_out)
+    check_result("polar on a contiguous tile", npu_out, cpu_out)
 
 
 def _unlowered(gm):
@@ -72,7 +72,7 @@ def test_pass_leaves_no_polar(n=32):
             or (isinstance(m.meta.get("val"), torch.Tensor) and m.meta["val"].is_complex())]
     assert not left, f"left after the pass: {left}"
     assert not _unlowered(gm), f"no Inductor lowering for {_unlowered(gm)}"
-    test_result("polar pass", gm(x), _rope_like(x))
+    check_result("polar pass", gm(x), _rope_like(x))
 
 
 if __name__ == "__main__":

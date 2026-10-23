@@ -56,7 +56,7 @@ import sys
 import torch
 
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 T, E = 4, 4
 #: NOT ZERO ON PURPOSE -- see the module docstring. Zero makes the defect pass.
@@ -77,7 +77,7 @@ def test_scatter_keeps_the_base(device):
 
     cpu_out = f(vals, idx)
     npu_out = torch.compile(dynamic=False)(f)(vals.to(device), idx.to(device))
-    test_result("scatter_ keeps the untouched elements", npu_out, cpu_out)
+    check_result("scatter_ keeps the untouched elements", npu_out, cpu_out)
 
 
 def test_index_put_keeps_the_base(device):
@@ -91,7 +91,7 @@ def test_index_put_keeps_the_base(device):
 
     cpu_out = f(vals, idx)
     npu_out = torch.compile(dynamic=False)(f)(vals.to(device), idx.to(device))
-    test_result("index_put_ keeps the untouched elements", npu_out, cpu_out)
+    check_result("index_put_ keeps the untouched elements", npu_out, cpu_out)
 
 
 def test_index_copy_keeps_the_base(device):
@@ -104,7 +104,7 @@ def test_index_copy_keeps_the_base(device):
 
     cpu_out = f(vals)
     npu_out = torch.compile(dynamic=False)(f)(vals.to(device))
-    test_result("index_copy_ keeps the untouched elements", npu_out, cpu_out)
+    check_result("index_copy_ keeps the untouched elements", npu_out, cpu_out)
 
 
 def test_masked_fill_is_the_boundary(device):
@@ -123,7 +123,7 @@ def test_masked_fill_is_the_boundary(device):
 
     cpu_out = f(vals, idx)
     npu_out = torch.compile(dynamic=False)(f)(vals.to(device), idx.to(device))
-    test_result("masked_fill_ writes every element", npu_out, cpu_out)
+    check_result("masked_fill_ writes every element", npu_out, cpu_out)
 
 
 if __name__ == "__main__":

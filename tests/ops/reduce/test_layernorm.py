@@ -4,7 +4,7 @@ import torch
 import torch._dynamo
 import torch.utils.cpp_extension
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 def test_LayerNorm(device, size=(64, 64)):
     torch.manual_seed(0)
@@ -17,7 +17,7 @@ def test_LayerNorm(device, size=(64, 64)):
     y = opt_fn(x1)
     cpu_model = model.to("cpu")
     cpu_y = cpu_model(x2)
-    test_result("LayerNorm Forward", y, cpu_y)
+    check_result("LayerNorm Forward", y, cpu_y)
 
 if __name__ == "__main__":
     import argparse

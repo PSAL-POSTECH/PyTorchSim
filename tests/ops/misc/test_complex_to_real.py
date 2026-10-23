@@ -33,7 +33,7 @@ def _unlowered(gm):
     """The ops of gm Inductor has no lowering for; the device pass runs after decomposition, so any it
     inserts must lower as they are."""
     from torch._inductor.lowering import lowerings
-    return sorted({str(m.target) for m in gm.graph.nodes if m.op == "call_function"
+    return sorted({str(m.target) for m in gm.graph.nodes if callable(m.target)
                    and m.target not in lowerings and m.target.overloadpacket not in lowerings})
 
 
@@ -118,7 +118,7 @@ def test_components_are_judged_apart():
         assert getattr(last, "name", None) in before, f"{n.name}: from_node {src}"
     left = sorted(str(n.target) for n in _complex_nodes(gm.graph))
     assert left == ["aten.exp.default", "aten.view_as_complex.default"], f"complex nodes left: {left}"
-    bare = [n.name for n in gm.graph.nodes if n.op == "call_function" and "stack_trace" not in n.meta]
+    bare = [n.name for n in gm.graph.nodes if callable(n.target) and "stack_trace" not in n.meta]
     assert not bare, f"nodes without provenance: {bare}"
     out = gm(x, y)
     test_result("complex-to-real (components apart)", out[0], f(x, y)[0])

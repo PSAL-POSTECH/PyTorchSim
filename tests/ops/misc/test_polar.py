@@ -57,7 +57,7 @@ def _unlowered(gm):
     """The ops of gm Inductor has no lowering for; the device pass runs after decomposition, so any it
     inserts must lower as they are."""
     from torch._inductor.lowering import lowerings
-    return sorted({str(m.target) for m in gm.graph.nodes if m.op == "call_function"
+    return sorted({str(m.target) for m in gm.graph.nodes if callable(m.target)
                    and m.target not in lowerings and m.target.overloadpacket not in lowerings})
 
 

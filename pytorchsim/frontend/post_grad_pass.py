@@ -43,9 +43,7 @@ def rewrite_aten_histc(graph, fake_mode) -> int:
     """Every aten.histc as a count on the device (_insert_histc); one without a fake value is left to aten,
     logged. Returns how many were rewritten."""
     changed = 0
-    for node in list(graph.nodes):
-        if node.op != "call_function" or node.target is not aten.histc.default:
-            continue
+    for node in graph.find_nodes(op="call_function", target=aten.histc.default):
         x = node.args[0]
         xv = _val(x)
         if xv is None:
@@ -103,9 +101,7 @@ def rewrite_aten_polar(graph, fake_mode) -> int:
     """polar(abs, angle) as view_as_complex of the pair (abs*cos, abs*sin), built contiguous since
     view_as_complex needs a unit last stride; rewrite_aten_view_as_complex then takes it to real pairs."""
     changed = 0
-    for node in list(graph.nodes):
-        if node.op != "call_function" or node.target is not aten.polar.default:
-            continue
+    for node in graph.find_nodes(op="call_function", target=aten.polar.default):
         call = _inserter(graph, fake_mode, node)
         r, angle = node.args[0], node.args[1]
         with graph.inserting_before(node):
@@ -122,7 +118,8 @@ def rewrite_aten_mm_addmm_row(graph, fake_mode) -> int:
     """Replace a 1 x K row times a K x N matrix with the row broadcast down the matrix, a
     multiply and a sum over K: vector work, where the mm template would run it on the array."""
     changed = 0
-    for node in list(graph.nodes):
+    for node in (graph.find_nodes(op="call_function", target=aten.mm.default)
+                 + graph.find_nodes(op="call_function", target=aten.addmm.default)):
         found = _row_times_matrix(node)
         if found is None:
             continue
@@ -142,11 +139,9 @@ def rewrite_aten_mm_addmm_row(graph, fake_mode) -> int:
 
 def _row_times_matrix(node):
     """(a, b, bias) of an mm or a plain addmm of real floating operands whose left one is a row, else None."""
-    if node.op != "call_function":
-        return None
     if node.target is aten.mm.default:
         (a, b), bias = node.args, None
-    elif node.target is aten.addmm.default and not node.kwargs:
+    elif not node.kwargs:
         bias, a, b = node.args
     else:
         return None
@@ -198,16 +193,14 @@ def _complex_components(nodes):
 
 
 def _why_not_real(component):
-    """Why the component has no real-pair form, or None: an op outside _HANDLED, a complex value leaving the
-    graph, or one read by an op outside _HANDLED and view_as_real."""
+    """Why the component has no real-pair form, or None: a node outside _HANDLED (a placeholder or attribute
+    among them), or a complex value read by anything but _HANDLED and view_as_real (the graph's output too)."""
     for n in component:
-        if n.op != "call_function" or n.target not in _HANDLED:
+        if n.target not in _HANDLED:
             return f"{n.op} {n.target}"
         for user in n.users:
-            if user.op == "output":
-                return f"{n.target}'s complex value leaves the graph"
             if user.target is not aten.view_as_real.default and user.target not in _HANDLED:
-                return f"{user.target} reads {n.target}'s complex value"
+                return f"{user.op} {user.name} reads {n.name}'s complex value"
     return None
 
 

@@ -79,15 +79,16 @@ def write_tensors(workdir):
 
 
 def write_shape(workdir, meta, args=()):
-    """Write the grid extents the TOG reads as shape_args.
+    """Write the shape_args the TOG reads: the grid extents, then the kernel's integer scalars.
 
     The parallel numels are read off `args` by the kernel's parameter names. A
     template's trailing arguments ARE its grid, so its extents are used as is.
+    The scalars follow in the compiler's order (kernel_object.shape_args), `args` by name.
     """
     numels = dict(meta["numels"])
     if meta.get("template_grid") is not None:
         grid = list(contract.launch_extents(meta))
-        _write_extents(workdir, grid, "template grid")
+        _write_extents(workdir, grid, "template grid", meta, args)
         return grid
 
     passed = [k for k in numels if not k.startswith("r")]
@@ -103,12 +104,13 @@ def write_shape(workdir, meta, args=()):
                 numels[key] = val
 
     grid = list(contract.grid_of({**meta, "numels": numels}))
-    _write_extents(workdir, grid, "grid")
+    _write_extents(workdir, grid, "grid", meta, args)
     return grid
 
 
-def _write_extents(workdir, ext, what):
-    """Write `ext` as this launch's shape_args, refusing a count it cannot use.
+def _write_extents(workdir, ext, what, meta, args):
+    """Write `ext` and the launch's integer scalars as this launch's shape_args, refusing a grid
+    count it cannot use.
 
     The count is checked against the shared TOG; the file goes in this
     process's launch directory, because the grid belongs to the launch.
@@ -123,9 +125,12 @@ def _write_extents(workdir, ext, what):
                 f"extent(s) and this launch has {len(ext)} ({ext}); the TOG "
                 f"would read past the end of shape_args. Delete the workdir to "
                 f"rebuild it.")
+    ko = compiler_bridge.compiler_contract("kernel_object")
+    shape = ko.shape_args(contract.kernel_object(workdir), dict(zip(meta.get("call_params", ()), args)),
+                          grid=ext)
     with open(os.path.join(contract.dir_for(workdir), SHAPE_TXT), "w") as f:
-        f.write("\n".join(str(int(g)) for g in ext) + "\n")
-    logger.info("[TOGSim] %s %s -> %s", what, ext, SHAPE_TXT)
+        f.write("\n".join(str(int(g)) for g in shape) + "\n")
+    logger.info("[TOGSim] %s %s, scalars %s -> %s", what, ext, shape[len(ext):], SHAPE_TXT)
 
 
 def write_cycle_tables(workdir, meta):

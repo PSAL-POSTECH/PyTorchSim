@@ -8,7 +8,7 @@ from textwrap import dedent
 from torch._inductor.codegen.common import DeviceOpOverrides, register_device_op_overrides
 from torch._inductor.codegen.cpu_device_op_overrides import CpuDeviceOpOverrides
 
-class ExtensionDeviceOpOverrides(DeviceOpOverrides):
+class NPUDeviceOpOverrides(DeviceOpOverrides):
     def import_get_raw_stream_as(self, name: str) -> str:
         return dedent(
             """
@@ -29,5 +29,5 @@ class ExtensionDeviceOpOverrides(DeviceOpOverrides):
 
 def install():
     """Register npu's device op overrides, and cpu's own beside them."""
-    register_device_op_overrides("npu", ExtensionDeviceOpOverrides())
+    register_device_op_overrides("npu", NPUDeviceOpOverrides())
     register_device_op_overrides("cpu", CpuDeviceOpOverrides())

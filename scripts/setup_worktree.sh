@@ -9,8 +9,8 @@
 #   scripts/setup_worktree.sh <purpose> [base-ref]
 #
 # Examples:
-#   scripts/setup_worktree.sh feature                  # off origin/develop, branch feature/scratch
-#   scripts/setup_worktree.sh bugfix/issue-198         # off origin/develop, branch bugfix/issue-198
+#   scripts/setup_worktree.sh feature                  # off origin/pytorchsim-triton-backend, branch feature/scratch
+#   scripts/setup_worktree.sh bugfix/issue-198         # off origin/pytorchsim-triton-backend, branch bugfix/issue-198
 #   scripts/setup_worktree.sh review origin/master     # off origin/master,  branch review/scratch
 #
 # Result:
@@ -29,7 +29,7 @@ if [[ $# -lt 1 || $# -gt 2 ]]; then
 fi
 
 PURPOSE="$1"
-BASE_REF="${2:-origin/develop}"
+BASE_REF="${2:-origin/pytorchsim-triton-backend}"
 
 # Branch name: use the purpose as-is if it already has a slash, else append /scratch.
 if [[ "$PURPOSE" == */* ]]; then
@@ -57,7 +57,7 @@ fi
 git -C "$REPO_ROOT" worktree add "$WT_DIR" -b "$BRANCH" "$BASE_REF"
 
 # Default `worktree add` from a remote ref sets upstream to that remote ref,
-# which means `git push` would target develop/master. Unset so the new branch
+# which means `git push` would target the base branch. Unset so the new branch
 # pushes to its own name on first `git push -u origin <branch>`.
 git -C "$WT_DIR" branch --unset-upstream || true
 

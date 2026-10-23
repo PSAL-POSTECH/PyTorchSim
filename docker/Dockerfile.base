@@ -22,7 +22,7 @@ RUN python3.11 -m pip install --no-cache-dir \
 # Triton is the image's source build (/workspace/triton-src, on PYTHONPATH below), with the
 # torchsim backend linked in; a pip triton would shadow nothing but confuse `import triton`.
 RUN python3.11 -m pip install --no-cache-dir \
-    numpy==2.4.6 onnx matplotlib scikit-learn pydot tabulate \
+    numpy==2.4.6 matplotlib scikit-learn \
     transformers==5.15.0 diffusers==0.34.0 \
     cmake==3.26.4 && \
     python3.11 -m pip install --no-cache-dir --no-deps ultralytics && \

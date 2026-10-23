@@ -397,8 +397,8 @@ def main():
 
     if args.update_allowlist:
         with open(PASSING, "w") as f:
-            f.write("# Tests that pass THROUGH the Triton codegen route. One that fails in the "
-                    "route job's sweep\n# (pytorchsim_triton_backend.yml) fails that job; a test "
+            f.write("# Tests that pass THROUGH the Triton codegen route. One that fails, or stops "
+                    "emitting a kernel, in\n# the route job's sweep (pytorchsim_triton_backend.yml) fails that job; a test "
                     "off this list only reports. Regenerate with\n"
                     "#   python scripts/ci/triton_route_sweep.py --all "
                     "--update-allowlist\n")

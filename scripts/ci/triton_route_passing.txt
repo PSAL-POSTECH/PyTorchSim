@@ -1,5 +1,5 @@
-# Tests that pass THROUGH the Triton codegen route. One that fails in the route job's sweep
-# (pytorchsim_triton_backend.yml) fails that job; a test off this list only reports. Regenerate with
+# Tests that pass THROUGH the Triton codegen route. One that fails, or stops emitting a kernel, in
+# the route job's sweep (pytorchsim_triton_backend.yml) fails that job; a test off this list only reports. Regenerate with
 #   python scripts/ci/triton_route_sweep.py --all --update-allowlist
 # A test that passes without emitting a kernel is deliberately absent.
 # WHAT WAS BLOCKED HERE AND IS NOT. tests/models/test_swinv2.py stopped after
@@ -276,6 +276,3 @@ tests/ops/reduce/test_batchnorm.py
 tests/ops/view/test_view3D_2D.py
 tests/system/test_bundle_reuse.py
 tests/system/test_eager.py
-tests/system/test_patch_scope.py
-tests/system/test_togsim_exit.py
-tests/system/test_togsim_result.py

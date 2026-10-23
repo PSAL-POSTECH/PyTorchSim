@@ -132,14 +132,9 @@ def _row_times_matrix(node):
     return a, b, bias
 
 
-_MUL = (aten.mul.Tensor, aten.mul.Scalar)
-_SHAPE = (aten.unsqueeze.default,)
-_HANDLED = (aten.view_as_complex.default,) + _MUL + _SHAPE
-
-
 def rewrite_aten_view_as_complex(graph, fake_mode) -> int:
-    """Each component of complex values (view_as_complex, mul, unsqueeze) becomes real [..., 2] pairs; a
-    component with any other complex op stays as it is, logged with why. Returns the components rewritten."""
+    """Each component of complex values whose ops _REAL_PAIR has a rule for becomes real [..., 2] pairs; any
+    other component stays as it is, logged with why. Returns the components rewritten."""
     changed = 0
     for component in _complex_components([n for n in graph.nodes if _is_complex(n)]):
         why = _why_not_real(component)
@@ -172,13 +167,13 @@ def _complex_components(nodes):
 
 
 def _why_not_real(component):
-    """Why the component has no real-pair form, or None: a node outside _HANDLED (a placeholder or attribute
-    among them), or a complex value read by anything but _HANDLED and view_as_real (the graph's output too)."""
+    """Why the component has no real-pair form, or None: a node _REAL_PAIR has no rule for (a placeholder or
+    attribute among them), or a complex value read by anything but _REAL_PAIR and view_as_real (the output too)."""
     for n in component:
-        if n.target not in _HANDLED:
+        if n.target not in _REAL_PAIR:
             return f"{n.op} {n.target}"
         for user in n.users:
-            if user.target is not aten.view_as_real.default and user.target not in _HANDLED:
+            if user.target is not aten.view_as_real.default and user.target not in _REAL_PAIR:
                 return f"{user.op} {user.name} reads {n.name}'s complex value"
     return None
 
@@ -188,34 +183,50 @@ def _to_real_pairs(graph, fake_mode, component):
     it reads the pair."""
     pair = {}
     for n in component:
-        call = _inserter(graph, fake_mode, n)
-        if n.target is aten.view_as_complex.default:
-            pair[n] = n.args[0]
-            continue
-        if n.target in _SHAPE:
-            dim = n.args[1]
-            pair[n] = call(n.target, pair[n.args[0]], dim if dim >= 0 else dim - 1)
-            continue
-        a, b = n.args[0], n.args[1]
-        cx, other = (a, b) if _is_complex(a) else (b, a)
-        if _is_complex(other) or isinstance(other, complex):
-            ar, ai = call(aten.select.int, pair[cx], -1, 0), call(aten.select.int, pair[cx], -1, 1)
-            if isinstance(other, complex):
-                br, bi = other.real, other.imag
-            else:
-                br, bi = call(aten.select.int, pair[other], -1, 0), call(aten.select.int, pair[other], -1, 1)
-            re = call(aten.sub.Tensor, call(aten.mul.Tensor, ar, br), call(aten.mul.Tensor, ai, bi))
-            im = call(aten.add.Tensor, call(aten.mul.Tensor, ar, bi), call(aten.mul.Tensor, ai, br))
-            pair[n] = _join(call, re, im)
-        else:
-            if isinstance(other, fx.Node):
-                other = call(aten.unsqueeze.default, other, -1)
-            pair[n] = call(aten.mul.Tensor, pair[cx], other)
+        pair[n] = _REAL_PAIR[n.target](_inserter(graph, fake_mode, n), n, pair)
 
     for n in component:
         for user in list(n.users):
             if user.target is aten.view_as_real.default:
                 user.replace_all_uses_with(pair[n])
+
+
+def _pair_of_view(call, n, pair):
+    """view_as_complex(x): its pair is x."""
+    return n.args[0]
+
+
+def _pair_of_unsqueeze(call, n, pair):
+    """unsqueeze(z, dim): the pair unsqueezed before its last axis."""
+    dim = n.args[1]
+    return call(aten.unsqueeze.default, pair[n.args[0]], dim if dim >= 0 else dim - 1)
+
+
+def _pair_of_mul(call, n, pair):
+    """z * w as (zr*wr - zi*wi, zr*wi + zi*wr) when w is complex (a value or a Python complex); z * r scales
+    the pair when r is real."""
+    a, b = n.args[0], n.args[1]
+    cx, other = (a, b) if _is_complex(a) else (b, a)
+    if not (_is_complex(other) or isinstance(other, complex)):
+        if isinstance(other, fx.Node):
+            other = call(aten.unsqueeze.default, other, -1)
+        return call(aten.mul.Tensor, pair[cx], other)
+    ar, ai = call(aten.select.int, pair[cx], -1, 0), call(aten.select.int, pair[cx], -1, 1)
+    if isinstance(other, complex):
+        br, bi = other.real, other.imag
+    else:
+        br, bi = call(aten.select.int, pair[other], -1, 0), call(aten.select.int, pair[other], -1, 1)
+    re = call(aten.sub.Tensor, call(aten.mul.Tensor, ar, br), call(aten.mul.Tensor, ai, bi))
+    im = call(aten.add.Tensor, call(aten.mul.Tensor, ar, bi), call(aten.mul.Tensor, ai, br))
+    return _join(call, re, im)
+
+
+_REAL_PAIR = {
+    aten.view_as_complex.default: _pair_of_view,
+    aten.unsqueeze.default: _pair_of_unsqueeze,
+    aten.mul.Tensor: _pair_of_mul,
+    aten.mul.Scalar: _pair_of_mul,
+}
 
 
 def _replace(graph, fake_mode, nodes, build):

@@ -5,7 +5,7 @@ Produces a gate (triton_route_passing.txt), a report bucketed by cause and
 stage, and per-failure artifacts for reporting upstream.
 
   python scripts/ci/triton_route_sweep.py                  # the allowlist, gating
-  python scripts/ci/triton_route_sweep.py --all            # every test, reports
+  python scripts/ci/triton_route_sweep.py --all            # every test and allowlist entry; still gates
   python scripts/ci/triton_route_sweep.py --all --artifacts triton-failures
   python scripts/ci/triton_route_sweep.py --all --order-from results.json
 
@@ -79,6 +79,18 @@ def discover(allow):
                 path = os.path.relpath(os.path.join(dirpath, f), ROOT)
                 out.extend(split.get(path, [path]))
     return sorted(out)
+
+
+def regressions(results, allow):
+    """The allowlisted results that fail the gate: failed, or passed without emitting a kernel,
+    which is no longer passing through the route."""
+    return [r for r in results if r["test"] in allow and not (r["ok"] and r["exercised"])]
+
+
+def _why(r):
+    """Why a regressed result fails the gate, for the report."""
+    return f"**{r['stage']}** [{r['bucket']}]" if not r["ok"] else \
+        "**passed without emitting a kernel** [route not exercised]"
 
 
 def _slug(entry):
@@ -221,8 +233,9 @@ def run_one(test, timeout, artifacts, scratch):
     return r
 
 
-def write_markdown(results, path):
-    """The report a human reads: counts by cause, then every failure."""
+def write_markdown(results, path, regressed=()):
+    """The report a human reads: the allowlisted tests that regressed (what fails the job), counts
+    by cause, then every failure."""
     passed = [r for r in results if r["ok"]]
     failed = [r for r in results if not r["ok"]]
     by = {}
@@ -234,6 +247,9 @@ def write_markdown(results, path):
          f"**{len(real)}/{len(results)} pass through the Triton route.** "
          f"({len(passed)-len(real)} more pass without exercising it -- CPU-only, "
          f"eager fallback, or a path that bypasses Inductor.)", ""]
+    if regressed:
+        L += [f"## REGRESSION: {len(regressed)} allowlisted test(s) failed or left the route", ""]
+        L += [f"- `{r['test']}` — {_why(r)}" for r in regressed] + [""]
     if failed:
         L += ["| cause | count | owner |", "|---|---|---|"]
         OWNER = {
@@ -301,7 +317,7 @@ def main():
     args = ap.parse_args()
 
     allow = load_allowlist()
-    tests = discover(allow) if args.all else allow
+    tests = sorted(set(discover(allow)) | set(allow)) if args.all else allow
     if not tests:
         print("no tests selected; the allowlist is empty and --all was not given")
         return 1
@@ -350,6 +366,7 @@ def main():
     passed = [r for r in results if r["ok"]]
     failed = [r for r in results if not r["ok"]]
     real = [r for r in passed if r["exercised"]]
+    regressed = regressions(results, allow)
 
     print(f"\n{'='*72}\npassed {len(passed)}/{len(results)}"
           f"  ({len(real)} through the Triton route, "
@@ -373,7 +390,7 @@ def main():
             json.dump(results, f, indent=2)
         print(f"\nwrote {args.json}")
     if args.markdown:
-        write_markdown(results, args.markdown)
+        write_markdown(results, args.markdown, regressed)
         print(f"wrote {args.markdown}")
     if args.artifacts and failed:
         print(f"wrote {args.artifacts}/ ({len(failed)} failure dirs)")
@@ -389,11 +406,11 @@ def main():
         print(f"wrote {PASSING} ({len(real)} tests)")
         return 0
 
-    regressed = [r for r in failed if r["test"] in allow]
     if regressed:
-        print(f"\nREGRESSION: {len(regressed)} allowlisted test(s) failed")
+        print(f"\nREGRESSION: {len(regressed)} allowlisted test(s) failed or left the route")
         for r in regressed:
-            print(f"  {r['test']}  [{r['bucket']}] {r['error']}")
+            print(f"  {r['test']}  " + (f"[{r['bucket']}] {r['error']}" if not r["ok"]
+                                        else "passed without emitting a kernel"))
         return 1
     return 0
 

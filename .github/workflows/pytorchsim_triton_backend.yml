@@ -3,8 +3,9 @@ name: Triton codegen route (PyTorchSim-Triton-Backend)
 # Exercises the Triton codegen route: Inductor's own Triton backend produces the
 # kernel and PyTorchSim-Triton-Backend lowers it to a RISC-V ELF.
 #
-# Separate from the main CI on purpose: it runs when the compiler pin moves, and
-# its sweep reports rather than gates.
+# Separate from the main CI on purpose: it runs when the compiler pin moves. Its sweep runs every
+# test and reports them all; only a test on the allowlist (scripts/ci/triton_route_passing.txt)
+# that fails fails the job.
 #
 # The base job makes sure of the base image; the route job (smoke + sweep) and the bundle job
 # (the validation kernels for the compiler) then run beside each other in it. The base image is
@@ -12,7 +13,8 @@ name: Triton codegen route (PyTorchSim-Triton-Backend)
 # compiler's package grants this repository read access, so the workflow's own token pulls it. The
 # commit under test is not baked into an image: the checkout is mounted read-only and its device
 # extension built in the container. What fails the route: no compiler image, the base build or its
-# pull, the smoke kernels, the device extension, the job's time limit.
+# pull, the smoke kernels, the device extension, an allowlisted test that fails (or a sweep that
+# breaks), the job's time limit.
 
 on:
   push:
@@ -172,10 +174,12 @@ jobs:
             python3 /src/scripts/ci/triton_route_previous.py "${GITHUB_REPOSITORY}" /out/results.json
 
       # Runs whether or not the smoke kernels held. Reports every test, allowlist
-      # included; each failure leaves its kernel and stage IR behind. A device
-      # extension that does not build fails the step, a sweep result does not. A test on the
-      # allowlist gets twice the time: the slowest one runs within seconds of 900.
-      - name: Device extension + full sweep (the sweep reports)
+      # included; each failure leaves its kernel and stage IR behind. The step fails when the device
+      # extension does not build, or when the sweep exits nonzero: an allowlisted test failed, or the
+      # sweep broke. A test off the allowlist only reports. The report and the artifacts are written
+      # first either way. A test on the allowlist gets twice the time: the slowest one runs within
+      # seconds of 900.
+      - name: Device extension + full sweep (the allowlist gates)
         if: ${{ !cancelled() && steps.pull.outcome == 'success' }}
         env:
           SWEEP_JOBS: ${{ inputs.sweep_jobs }}
@@ -196,13 +200,14 @@ jobs:
             exit 1
           fi
           rm -f sweep/device-built
-          if [ "$rc" -ne 0 ]; then
-            echo "::warning::the sweep container exited $rc"
-          fi
           if [ -f sweep/coverage.md ]; then
             cat sweep/coverage.md >> "$GITHUB_STEP_SUMMARY"
           else
             echo "::warning::the sweep wrote no report"
+          fi
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::the sweep exited $rc: an allowlisted test regressed (REGRESSION in the log and the summary), or the sweep itself broke"
+            exit "$rc"
           fi
 
       - uses: actions/upload-artifact@v4

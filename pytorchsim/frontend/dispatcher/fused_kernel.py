@@ -1,17 +1,17 @@
 """The common form of an op the npu runs as a Triton kernel of our own, and the scratchpad budget
 its plan is held to. A subclass of CustomFusedKernel states the ops it takes, the kernel's plan, its
-launch, an aten reference and, where the op returns more than the kernel, its outputs; `install`
+launch, an aten fallback and, where the op returns more than the kernel, its outputs; `install`
 registers them the same way for every op:
 
     the op's npu kernel, at AutogradPrivateUse1 and PrivateUse1 (where inference_mode lands)
-        outside a compiled graph        -> reference, counted "reference"
-        declined (plan says why, or a gradient with no backward)   -> reference, logged
+        outside a compiled graph        -> fallback, counted "fallback"
+        declined (plan says why, or a gradient with no backward)   -> fallback, logged
         else                            -> the triton_op `name`, which Inductor traces into launch
-    the triton_op's own npu kernel      -> reference, counted (a Triton kernel launches only
+    the triton_op's own npu kernel      -> fallback, counted (a Triton kernel launches only
                                            inside a compiled graph)
 
 `routed` counts the calls that ran each route: each kernel's launches under its key in `kernels()`,
-and eager reference calls; a trace, or a reference compiled into a graph, is not a call.
+and eager fallback calls; a trace, or a fallback compiled into a graph, is not a call.
 """
 
 import inspect
@@ -60,13 +60,13 @@ class CustomFusedKernel:
     def launch(self, plan, *args):
         raise NotImplementedError
 
-    def reference(self, *args):
+    def fallback(self, *args):
         """What launch returns, as aten ops (differentiable), for every call the kernel does not
         run."""
         raise NotImplementedError
 
     def outputs(self, op, result, *args):
-        """The outputs of `op` from the kernel's (or the reference's) `result` for `args`."""
+        """The outputs of `op` from the kernel's (or the fallback's) `result` for `args`."""
         return result
 
     def setup_context(self, ctx, inputs, output):
@@ -108,9 +108,9 @@ class CustomFusedKernel:
             return self._eager(*call)
         why = self._decline(call)
         if why is not None:
-            logger.info("%s on the npu runs its reference, not %s: %s (%s)", op, self.name,
+            logger.info("%s on the npu runs its fallback, not %s: %s (%s)", op, self.name,
                         _describe(call), why)
-            return self.reference(*call)
+            return self.fallback(*call)
         return self._op(*call)
 
     def _decline(self, call):
@@ -121,8 +121,8 @@ class CustomFusedKernel:
         return plan if isinstance(plan, Decline) else None
 
     def _eager(self, *args):
-        self._count("reference")
-        return self.reference(*args)
+        self._count("fallback")
+        return self.fallback(*args)
 
     def _count(self, route):
         self.routed[route] = self.routed.get(route, 0) + 1

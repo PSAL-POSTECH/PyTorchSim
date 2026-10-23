@@ -50,7 +50,7 @@ class GroupedMM(CustomFusedKernel):
             k, triton.cdiv(k, bk) * bk, n, bm, bn, bk)
         return c
 
-    def reference(self, a, b, offs, bias, out_dtype):
+    def fallback(self, a, b, offs, bias, out_dtype):
         return _math(a, b, offs, bias, out_dtype)
 
 

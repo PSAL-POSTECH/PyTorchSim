@@ -55,7 +55,7 @@ class TopK(CustomFusedKernel):
             x.contiguous(), v, i, rows, E, plan["EP"], k, plan["KP"], plan["XBLOCK"], largest)
         return v, i
 
-    def reference(self, x, k, dim, largest):
+    def fallback(self, x, k, dim, largest):
         return _rounds(x, k, dim, largest)
 
     def setup_context(self, ctx, inputs, output):

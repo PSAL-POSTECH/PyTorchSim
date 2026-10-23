@@ -55,7 +55,7 @@ class FusedSDPA(CustomFusedKernel):
                 q, k, v, o, Hq, Hq // H, S, D, plan["BQ"], plan["BKV"], is_causal, scale)
         return o
 
-    def reference(self, query, key, value, attn_bias, dropout_p, is_causal, scale):
+    def fallback(self, query, key, value, attn_bias, dropout_p, is_causal, scale):
         return _math(query, key, value, attn_bias, dropout_p, is_causal, scale=scale)
 
     def outputs(self, op, out, query, key, *rest):

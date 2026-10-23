@@ -4,7 +4,7 @@ against a float32 CPU reference, group by group.
   routed     uneven groups (empty ones, one past BM rows) run as the grouped kernel, no call left to aten
   few_rows   fewer rows than groups: every block holds rows, the grid stops at the row count
   eager      outside torch.compile the call runs group by group (no Triton launch outside a compiled graph),
-             counted as the reference
+             counted as the fallback
   grad       inputs that require grad run group by group (no kernel launch), and their gradients match the CPU's
   fallback   transformers' grouped_mm_fallback (its call when the weight is not bf16) takes the same kernel
 
@@ -81,7 +81,7 @@ def case_eager():
     out = _gmm(a.to(device), b.to(device), offs.to(device))
     err = _err(out, _reference(a, b, offs))
     took = dict(_routed())
-    return err < TOL and took == {"reference": 1}, f"err {err:.3g}, routed {took}"
+    return err < TOL and took == {"fallback": 1}, f"err {err:.3g}, routed {took}"
 
 
 def case_grad():

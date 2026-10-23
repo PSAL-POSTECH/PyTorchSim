@@ -1,14 +1,14 @@
-"""torch.topk on the npu: the topk kernel where TopK.plan takes the call, the reference rounds as
+"""torch.topk on the npu: the topk kernel where TopK.plan takes the call, the fallback rounds as
 aten ops where it does not, against torch.topk on the CPU.
 
 Each case states the route it must take and checks topk.ROUTED: one "kernel" count per launch of a
-compiled call the kernel takes, one "reference" count per eager call, nothing for a reference
+compiled call the kernel takes, one "fallback" count per eager call, nothing for a fallback
 compiled into the graph (Inductor's own kernels). Ties take the first index, as a stable
 descending sort does.
 
   kernel     rows a whole number of programs and not, a row length that is not a power of two,
              the smallest k, bf16, ties
-  reference  topk along a dim that is not the last
+  fallback   topk along a dim that is not the last
   grad       a compiled call whose input requires grad runs the kernel, and its gradient is aten's
   eager      outside torch.compile, and under inference_mode eagerly and compiled
   counts     a compiled call run twice counts two launches, not its traces
@@ -33,7 +33,7 @@ CASES = {
     "smallest": ("kernel", (64, 128), 4, -1, False, torch.float32),
     "bf16": ("kernel", (64, 128), 8, -1, True, torch.bfloat16),
     "ties": ("kernel", (64, 128), 8, -1, True, torch.float32),
-    "dim0": ("reference", (128, 32), 4, 0, True, torch.float32),
+    "dim0": ("fallback", (128, 32), 4, 0, True, torch.float32),
 }
 
 
@@ -67,7 +67,7 @@ def run_case(name):
     _routed().clear()
     torch._dynamo.reset()
     f = torch.compile(lambda t: torch.topk(t, k, dim=dim, largest=largest), dynamic=False)
-    want = {} if route == "reference" else {route: 1}
+    want = {} if route == "fallback" else {route: 1}
     return _check(name, f(x.to(device)), _ref(x, k, dim, largest), want, dict(_routed()))
 
 
@@ -87,7 +87,7 @@ def run_grad(name):
 
 
 def run_eager(name):
-    """Outside torch.compile the reference runs (one count); compiled under inference_mode, the
+    """Outside torch.compile the fallback runs (one count); compiled under inference_mode, the
     kernel."""
     x = _input((64, 128), torch.float32)
     want = _ref(x, 8, -1, True)
@@ -99,7 +99,7 @@ def run_eager(name):
     ctx = torch.no_grad() if name == "eager" else torch.inference_mode()
     with ctx:
         got = f(x.to(device))
-    return _check(name, got, want, {"kernel": 1} if compiled else {"reference": 1}, dict(_routed()))
+    return _check(name, got, want, {"kernel": 1} if compiled else {"fallback": 1}, dict(_routed()))
 
 
 def run_counts(name):

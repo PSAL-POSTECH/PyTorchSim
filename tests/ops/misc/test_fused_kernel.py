@@ -1,12 +1,12 @@
 """CustomFusedKernel's routing, on a toy op `torchsim_test::twice` (x * 2) whose plan takes rows of
 a whole block and has no backward. Each case checks the value against x * 2 and the counts in
-`routed`: a "kernel" count per launch, a "reference" count per eager call.
+`routed`: a "kernel" count per launch, a "fallback" count per eager call.
 
-  eager       outside torch.compile the reference runs
+  eager       outside torch.compile the fallback runs
   compiled    a compiled call the plan takes launches the kernel
-  declined    a compiled call the plan declines runs the reference compiled into the graph
+  declined    a compiled call the plan declines runs the fallback compiled into the graph
   grad        a compiled call needing a gradient declines the kernel (no backward), and the
-              gradient is the reference's
+              gradient is the fallback's
   inference   a compiled call under inference_mode (PrivateUse1) launches the kernel
 
 Usage: test_fused_kernel.py [case ...]   (all cases when none is named)
@@ -42,7 +42,7 @@ class Twice(CustomFusedKernel):
                                                                        plan["BLOCK"])
         return o
 
-    def reference(self, x):
+    def fallback(self, x):
         return x * 2
 
 
@@ -58,7 +58,7 @@ TWICE.install()
 
 #  name: (want, numel, compiled, grad, inference_mode)
 CASES = {
-    "eager": ({"reference": 1}, 4 * BLOCK, False, False, False),
+    "eager": ({"fallback": 1}, 4 * BLOCK, False, False, False),
     "compiled": ({"kernel": 1}, 4 * BLOCK, True, False, False),
     "declined": ({}, 4 * BLOCK + 3, True, False, False),
     "grad": ({}, 4 * BLOCK, True, True, False),

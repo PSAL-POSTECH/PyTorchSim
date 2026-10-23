@@ -8,7 +8,7 @@ the whole time series. For per-instruction Gantt detail use `trace_timeline.py`.
 Compile wall clock comes from the the compiler `timing.json` each kernel workdir holds,
 joined to a run by the `triton_<hash>` beside its `--tog_so` (`--trace_so` in a log from before
 TOGSim ABI 16). A PyTorchSim
-`breakdown.json` (TORCHSIM_BREAKDOWN=1) adds Spike, gem5 and TOGSim on top.
+`breakdown_<run>.json` (TORCHSIM_BREAKDOWN=1) adds Spike, gem5 and TOGSim on top.
 
 Usage:
   python scripts/util_viewer.py togsim_results -o util.html
@@ -16,11 +16,15 @@ Usage:
   python scripts/util_viewer.py togsim_results --breakdown outputs -o util.html
 """
 import argparse
+import fnmatch
 import glob
 import json
 import os
 import re
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from pytorchsim.simulator import wallclock  # noqa: E402
 
 _CMDLINE = re.compile(r"--(?:tog_so|trace_so) (\S+)")
 _CONFIG_INT = re.compile(r"^(\w+): (\d+)$")
@@ -222,12 +226,13 @@ def read_breakdown(path):
 
 
 def find_breakdowns(roots):
-    """Collect every PyTorchSim breakdown.json under the given roots."""
+    """Collect every PyTorchSim breakdown_<run>.json (or older breakdown.json) under the roots."""
+    name = f"{wallclock.PREFIX}*.json"
     out = []
     for root in roots:
         if os.path.isdir(root):
-            files = glob.glob(os.path.join(root, "**", "breakdown.json"), recursive=True)
-        elif os.path.basename(root) == "breakdown.json":
+            files = glob.glob(os.path.join(root, "**", name), recursive=True)
+        elif fnmatch.fnmatch(os.path.basename(root), name):
             files = [root]
         else:
             files = glob.glob(root)
@@ -239,7 +244,7 @@ def find_breakdowns(roots):
 
 
 def breakdown_groups(rec):
-    """Fold a breakdown's components into the compiler/spike/gem5/togsim plus elsewhere."""
+    """Fold a breakdown's components into wallclock's groups, then any other, plus elsewhere."""
     groups = {}
     for comp, e in (rec.get("components") or {}).items():
         g = comp.split("/")[0]
@@ -249,7 +254,7 @@ def breakdown_groups(rec):
         cur["parts"].append({"name": comp, "calls": e["calls"], "seconds": e["seconds"]})
     wall = rec.get("wall") or 0.0
     elsewhere = wall - (rec.get("measured") or 0.0)
-    order = [g for g in ("the compiler", "spike", "gem5", "togsim") if g in groups]
+    order = [g for g in wallclock.GROUPS if g in groups]
     order += [g for g in sorted(groups) if g not in order]
     out = [dict(groups[g], name=g) for g in order]
     if elsewhere > 0:
@@ -258,10 +263,10 @@ def breakdown_groups(rec):
 
 
 def timing_from_breakdowns(breakdowns):
-    """Pull the the compiler compile records a breakdown embeds, keyed by kernel label."""
+    """Pull the torchsim-compile records a breakdown embeds, keyed by kernel label."""
     out = {}
     for bd in breakdowns:
-        for e in bd.get("the compiler") or []:
+        for e in bd.get(wallclock.TORCHSIM_COMPILE) or []:
             if e.get("kind", "compile") != "compile":
                 continue
             rec = e.get("timing")
@@ -1213,7 +1218,7 @@ def main(argv=None):
                     help="extra roots to scan for the compiler timing.json; the workdir beside "
                          "each log's tog_so is always checked")
     ap.add_argument("--breakdown", nargs="*", default=None, metavar="ROOT",
-                    help="roots to scan for PyTorchSim breakdown.json (TORCHSIM_BREAKDOWN=1), "
+                    help="roots to scan for PyTorchSim breakdown_<run>.json (TORCHSIM_BREAKDOWN=1), "
                          "which adds Spike, gem5 and TOGSim wall clock")
     args = ap.parse_args(argv)
 

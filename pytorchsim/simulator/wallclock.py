@@ -30,6 +30,7 @@ TOGSIM_TABLES = "togsim/tables"
 TOGSIM_RUN = "togsim/run"
 
 ORDER = [TORCHSIM_COMPILE, SPIKE, GEM5_SAMPLE, GEM5_BUILD, GEM5_RUN, TOGSIM_TABLES, TOGSIM_RUN]
+GROUPS = tuple(dict.fromkeys(c.split("/")[0] for c in ORDER))
 
 
 def enabled():
@@ -91,8 +92,8 @@ class Record:
             "components": {c: {"calls": n, "seconds": dt}
                            for c, (n, dt) in self.totals.items()},
             "kernels": self.kernels,
-            "torchsim-compile": [{"kernel": k, "kind": kind, "timing": r}
-                     for k, kind, r in self.compiles],
+            TORCHSIM_COMPILE: [{"kernel": k, "kind": kind, "timing": r}
+                               for k, kind, r in self.compiles],
         }
 
 
@@ -208,7 +209,7 @@ def render(rec):
     wall = rec.get("wall") or 0.0
     comps = rec.get("components") or {}
     kernels = rec.get("kernels") or {}
-    entries = rec.get("torchsim-compile") or []
+    entries = rec.get(TORCHSIM_COMPILE) or []
     compiles = [e["timing"] for e in entries if e.get("kind", "compile") == "compile"]
     launch = [e["timing"] for e in entries
               if e.get("kind") in ("spike", "cycle")]
@@ -221,7 +222,7 @@ def render(rec):
         groups.setdefault(c.split("/")[0], [0, 0.0])
         groups[c.split("/")[0]][0] += e["calls"]
         groups[c.split("/")[0]][1] += e["seconds"]
-    for g in [x for x in ("torchsim-compile", "spike", "gem5", "togsim") if x in groups]:
+    for g in [x for x in GROUPS if x in groups]:
         calls, dt = groups[g]
         pct = 100.0 * dt / wall if wall else 0.0
         out.append(f"  {g:<14} {dt:9.2f}s {pct:5.1f}%  x{calls:<5} {_bar(pct / 100)}")
@@ -264,7 +265,7 @@ def render(rec):
 
     if kernels:
         out += ["", "  per kernel (self time, seconds)"]
-        cols = [g for g in ("torchsim-compile", "spike", "gem5", "togsim") if g in groups]
+        cols = [g for g in GROUPS if g in groups]
         head = "".join(f"{c:>10}" for c in cols)
         out.append(f"    {'kernel':<46}{head}{'total':>10}")
         rows = []

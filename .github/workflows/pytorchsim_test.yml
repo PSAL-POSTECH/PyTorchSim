@@ -16,8 +16,8 @@ on:
 # test file, and is not identical to it: a file the allowlist runs as several entries (Gemma's
 # --preset) runs here once without arguments, which runs the same presets in one process, and
 # tests/system tests the allowlist leaves out run here too: test_compiler_failure,
-# test_reduction_tiling and test_select, and test_patch_scope, test_togsim_exit and
-# test_togsim_result, which emit no kernel and so are no route coverage.
+# test_reduction_tiling and test_select, and test_breakdown_viewer, test_patch_scope,
+# test_togsim_exit and test_togsim_result, which emit no kernel and so are no route coverage.
 # Regenerate the allowlist with
 #   python scripts/ci/triton_route_sweep.py --all --update-allowlist
 # and mirror its files here; a test absent from both is not gated anywhere.
@@ -79,6 +79,7 @@ jobs:
           - tests/ops/misc/test_widen_dtype.py
           - tests/ops/reduce/test_batchnorm.py
           - tests/ops/view/test_view3D_2D.py
+          - tests/system/test_breakdown_viewer.py
           - tests/system/test_bundle_reuse.py
           - tests/system/test_compiler_failure.py
           - tests/system/test_eager.py

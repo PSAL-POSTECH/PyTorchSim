@@ -140,6 +140,23 @@ def kernel_object(workdir):
     return got
 
 
+def attribute_sources(manifest):
+    """The args the kernel's runtime attributes are read from, by the manifest's `sources`, in arg order:
+    what a run must hold as the launch did to record the launch's attributes. An attribute the manifest
+    gives no `sources` is a KernelObjectMismatch."""
+    attributes = (manifest.get("runtime_attributes") or {}).get("attributes", [])
+    unsaid = [a["id"] for a in attributes if "sources" not in a]
+    if unsaid:
+        raise KernelObjectMismatch(
+            f"{manifest['name']}: runtime attributes {unsaid} name no sources; the compiler that wrote "
+            f"this kernel object does not say which args they are read from")
+    named = {n for a in attributes for n in a["sources"]}
+    unknown = sorted(named - {a["name"] for a in manifest["args"]})
+    if unknown:
+        raise KernelObjectMismatch(f"{manifest['name']}: runtime attribute sources {unknown} are no arg of it")
+    return [a["name"] for a in manifest["args"] if a["name"] in named]
+
+
 def artifact(workdir, kind):
     """One compiler output by the name the manifest gives it, or None.
 

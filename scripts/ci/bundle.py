@@ -11,7 +11,9 @@ is the one Inductor picks by TOGSim cycles, or the one the selection record hold
   OUT/<workload>/manifest.json        suite, shape, dtype, the launches in order, and the externs:
                                       each call Inductor left to aten (not simulated), with `at`, the
                                       launches before it
-  OUT/<workload>/<NN>_<kernel>/       <kernel>_spec.py, <kernel>_triton.py
+  OUT/<workload>/<NN>_<kernel>/       <kernel>_spec.py, <kernel>_triton.py, and <kernel>_inputs.pt
+                                      when its manifest reads runtime attributes from args: their
+                                      launch values, which its make_inputs takes instead of drawing
 
 The layer suite holds only the rows under the compiler's CI cap (validation/layer/simulate_shapes.py
 under_cap). --jobs N builds the workloads in N processes, each taking the next one, largest first by
@@ -46,8 +48,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 import torch  # noqa: E402  (first: its device autoload installs pytorchsim)
 
-from pytorchsim import config  # noqa: E402
-from pytorchsim.driver import codecache, compiler_bridge, select  # noqa: E402
+from pytorchsim import config, contract  # noqa: E402
+from pytorchsim.driver import codecache, compiler_bridge, compiler_input, select  # noqa: E402
+from pytorchsim.simulator import functional  # noqa: E402
 
 #: The head dimension the compiler's attention measurements were taken at.
 HEAD_DIM = 128
@@ -358,27 +361,65 @@ EXTERNS = []
 codecache.observe_every_extern(lambda call: EXTERNS.append({"call": call, "at": len(LAUNCHED)}))
 
 
+def attribute_inputs(launcher, args):
+    """The launch values, as the kernel sees them, of the args `launcher`'s manifest says its runtime
+    attributes are read from; a kernel with no manifest stops the bundle by name."""
+    manifest = contract.kernel_object(launcher.workdir)
+    if manifest is None:
+        raise RuntimeError(f"[bundle] {launcher.kernel_name}: {launcher.workdir} holds no "
+                           f"{contract.KERNEL_MANIFEST}, so the args its runtime attributes are read from "
+                           f"are unknown")
+    names = contract.attribute_sources(manifest)
+    return {m["name"]: functional.flat_input(m, t) for m, t in functional.tensor_args(launcher.meta, args)
+            if m["name"] in names}
+
+
+RECORDED = []
+codecache.observe_every_launch_inputs(lambda launcher, args: RECORDED.append(attribute_inputs(launcher, args)))
+
+
 def kernel_files(launcher):
     name = launcher.kernel_name
     return [f"{name}_spec.py", f"{name}_triton.py"]
 
 
+def copy_kernel(launcher, recorded, dest):
+    """`launcher`'s kernel files into `dest`; with `recorded` ({arg: launch value}) its kernel file is written
+    again to take those args from the values saved beside it."""
+    if not recorded:
+        for f in kernel_files(launcher):
+            shutil.copy(os.path.join(launcher.workdir, f), os.path.join(dest, f))
+        return
+    spec, triton = kernel_files(launcher)
+    with open(os.path.join(launcher.workdir, triton)) as f:
+        src = f.read()
+    compiler_input.write(src, launcher.meta, os.path.join(dest, spec), recorded=recorded)
+
+
+def same_values(a, b):
+    return a.keys() == b.keys() and all(torch.equal(a[k], b[k]) for k in a)
+
+
 def capture(name, fn, make, out):
     """Run `fn` once on make's inputs and copy each kernel it launches into out/<name>; its launches in
-    order, their tile sources and the extern calls."""
+    order, their tile sources and the extern calls. A kernel launched again on other values of the args its
+    runtime attributes are read from stops the bundle: its directory holds one launch's."""
     LAUNCHED.clear()
     EXTERNS.clear()
+    RECORDED.clear()
     torch._dynamo.reset()
     xs = [x.to("npu:0") for x in make(torch.Generator().manual_seed(0))]
     torch.compile(fn, dynamic=False)(*xs)
-    dirs, launches = {}, []
-    for launcher in LAUNCHED:
+    dirs, kept, launches = {}, {}, []
+    for launcher, recorded in zip(LAUNCHED, RECORDED, strict=True):
         if launcher.workdir not in dirs:
             d = f"{len(dirs):02d}_{launcher.kernel_name}"
             os.makedirs(os.path.join(out, name, d))
-            for f in kernel_files(launcher):
-                shutil.copy(os.path.join(launcher.workdir, f), os.path.join(out, name, d, f))
-            dirs[launcher.workdir] = d
+            copy_kernel(launcher, recorded, os.path.join(out, name, d))
+            dirs[launcher.workdir], kept[launcher.workdir] = d, recorded
+        elif not same_values(kept[launcher.workdir], recorded):
+            raise RuntimeError(f"[bundle] {name}: {launcher.kernel_name} is launched again on other values of "
+                               f"{sorted(recorded)}, which its runtime attributes are read from")
         launches.append({"kernel": launcher.kernel_name, "dir": dirs[launcher.workdir]})
     return launches, [launcher.meta.get("tile_source") for launcher in LAUNCHED], list(EXTERNS)
 

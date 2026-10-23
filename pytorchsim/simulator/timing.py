@@ -53,10 +53,10 @@ def run_cycle_binary(workdir, meta):
 
 
 def tile_tables(m5out, overlap_offsets):
-    """The cycle table and the unit rows of a gem5 run, from the warm call's dump of each tile as the
-    compiler's gem5_samples reads them; whatever that reader refuses is raised, not sampled around."""
-    warm = compiler_bridge.compiler_contract("gem5_samples").read(m5out, len(overlap_offsets))
-    return cycle_table(overlap_offsets, [w["cycles"] for w in warm]), unit_rows(warm)
+    """The cycle table and the unit rows of a gem5 run: a row per dump the compiler's gem5_samples
+    reads, in the order it returns them; whatever that reader refuses is raised, not sampled around."""
+    dumps = compiler_bridge.compiler_contract("gem5_samples").read(m5out, len(overlap_offsets))
+    return cycle_table(overlap_offsets, dumps), unit_rows(dumps)
 
 
 def write_tensors(workdir):
@@ -131,7 +131,7 @@ def _write_extents(workdir, ext, what):
 def write_cycle_tables(workdir, meta):
     """Place the compiler's tog.so in the workdir and write tog_cycles.tsv and tog_units.tsv beside it.
 
-    Returns the number of compute tiles the cycle table covers.
+    Returns the number of compute tiles gem5 measured.
     """
     import json
 
@@ -277,27 +277,29 @@ class CycleSimulator():
         return dir_path
 
 
-def unit_rows(warm):
-    """TOGSim's --unit_table rows, one per tile and unit, from the warm call's dumps in tile id order:
-    (tile_id, unit, unit_of_work, capacity per cycle, admitted)."""
+def unit_rows(dumps):
+    """TOGSim's --unit_table rows, one per table row and unit, from gem5's dumps in row order:
+    (row, unit, unit_of_work, capacity per cycle, admitted)."""
     rows = []
-    for tile, dump in enumerate(warm):
+    for row, dump in enumerate(dumps):
         for name, u in dump["units"].items():
             if "admitted" not in u or "capacity" not in u:
-                raise ValueError(f"gem5 dump of tile {tile}: unit {name} lacks admitted or capacity")
-            rows.append((tile, name, u["unit_of_work"], int(u["capacity"]), int(u["admitted"])))
+                raise ValueError(f"gem5 dump of tile {dump['tile']} call {dump['call']}: unit {name} "
+                                 f"lacks admitted or capacity")
+            rows.append((row, name, u["unit_of_work"], int(u["capacity"]), int(u["admitted"])))
     return rows
 
 
-def cycle_table(overlap_offsets, cycle_list):
-    """[(cycle, overlapping_cycle), ...] indexed by tile_id. The compiler states each tile's
-    overlap offset (None where nothing of it overlaps); gem5 gives the cycles, one per tile."""
-    return [(int(c), 0 if off is None else max(int(c) - int(off), 0))
-            for c, off in zip(cycle_list, overlap_offsets, strict=True)]
+def cycle_table(overlap_offsets, dumps):
+    """[(cycle, overlapping_cycle), ...], one per gem5 dump in row order. The compiler states each
+    tile's overlap offset (None where nothing of it overlaps), and each dump names its tile."""
+    return [(int(d["cycles"]), 0 if (off := overlap_offsets[d["tile"]]) is None
+             else max(int(d["cycles"]) - int(off), 0))
+            for d in dumps]
 
 
 def dump_cycle_table_tsv(table, path, origins=None):
-    """cycle<TAB>overlapping per line, in tile_id order, for TOGSim's loader.
+    """cycle<TAB>overlapping per line, in row order, for TOGSim's loader.
 
     origins is appended as a trailing comment line, which the loader stops at.
     """

@@ -7,7 +7,7 @@ from torch._subclasses.fake_tensor import FakeTensorMode
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
 from _pytorchsim_utils import test_result
 
-from pytorchsim.frontend.rewrite_fx_graph import npu_post_grad_pass
+from pytorchsim.frontend.post_grad_pass import pytorchsim_post_grad_pass
 
 aten = torch.ops.aten
 
@@ -28,7 +28,7 @@ def test_histc_integral(device, n=64, bins=8):
     # and "mps", integral otherwise -- so `npu` gets the branch written for
     # CUDA and the fallback then lands on the very kernel the first branch
     # exists to avoid. That is what stopped DeepSeek-V3 under transformers
-    # 5.15.0; rewrite_fx_graph.rewrite_aten_histc counts it on the device.
+    # 5.15.0; post_grad_pass.rewrite_aten_histc counts it on the device.
     #
     # Both integral widths are here because they take different paths back:
     # the counts return in the INPUT's dtype, which is the contract the CUDA
@@ -62,7 +62,7 @@ def test_histc_float_unchanged(device, n=64, bins=8):
 
 def _unlowered(gm):
     """The ops of gm Inductor has no lowering for; the device pass runs after decomposition, so any it
-    emits must lower as they are."""
+    inserts must lower as they are."""
     from torch._inductor.lowering import lowerings
     return sorted({str(m.target) for m in gm.graph.nodes if m.op == "call_function"
                    and m.target not in lowerings and m.target.overloadpacket not in lowerings})
@@ -99,7 +99,7 @@ def test_pass_counts_on_the_device(n=64):
     )
     for name, x, bins, lo, hi in cases:
         gm = _histc_graph(x, bins, lo, hi)
-        npu_post_grad_pass(gm)
+        pytorchsim_post_grad_pass(gm)
         left = [m for m in gm.graph.nodes if m.target is aten.histc.default]
         assert not left, f"{name}: {len(left)} aten.histc left"
         assert not _unlowered(gm), f"{name}: no Inductor lowering for {_unlowered(gm)}"
@@ -110,7 +110,7 @@ def test_pass_counts_on_the_device(n=64):
     for name, x, lo, hi in (("int edges that truncate to one", ints.to(torch.int32), 0.2, 0.8),
                             ("float max below min", floats, 1.0, 0.0)):
         try:
-            npu_post_grad_pass(_histc_graph(x, 4, lo, hi))
+            pytorchsim_post_grad_pass(_histc_graph(x, 4, lo, hi))
         except RuntimeError as e:
             assert "max must be larger than min" in str(e), f"{name}: {e}"
         else:

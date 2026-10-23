@@ -1,6 +1,6 @@
-"""Our rewrites of the FX graph, so ops with no npu kernel stay on the device.
+"""The npu's post-grad pass: rewrites that keep ops with no npu kernel on the device.
 
-npu_post_grad_pass is the device_custom_pass Inductor runs on npu graphs only, after its post-grad
+pytorchsim_post_grad_pass is the device_custom_pass Inductor runs on npu graphs only, after its post-grad
 passes: histc, polar, a row times a matrix, complex values as real pairs. topk and grouped_mm are
 frontend/topk.py and frontend/grouped_mm.py.
 """
@@ -19,56 +19,50 @@ logger = config.setup_logger()
 _KEPT_META = ("original_aten", "stack_trace", "nn_module_stack", "source_fn_stack", "seq_nr")
 
 
-def _val(node):
-    """The fake value of a node, or the argument itself when it is not a node."""
-    return node.meta.get("val", None) if isinstance(node, torch.fx.Node) else node
+class _pytorchsim_post_grad_pass(CustomGraphModulePass):
+    """The four rewrites in this order on an npu graph (polar before the complex values it makes); its uuid
+    hashes this file, so an edit here is a new cache key."""
+
+    def __call__(self, gm: fx.GraphModule) -> None:
+        graph, fake_mode = gm.graph, _fake_mode(gm.graph)
+        changed = (rewrite_aten_histc(graph, fake_mode)
+                   + rewrite_aten_polar(graph, fake_mode)
+                   + rewrite_aten_mm_addmm_row(graph, fake_mode)
+                   + rewrite_aten_view_as_complex(graph, fake_mode))
+        if changed:
+            graph.eliminate_dead_code()
+            gm.recompile()
+
+    def uuid(self):
+        return get_hash_for_files((__file__,))
 
 
-def _is_complex(node):
-    """Whether the node holds a complex tensor."""
-    v = _val(node)
-    return isinstance(v, torch.Tensor) and v.is_complex()
+pytorchsim_post_grad_pass = _pytorchsim_post_grad_pass()
 
 
-def _fake_mode(graph):
-    """The fake mode of the graph's tensors, or None."""
-    for n in graph.nodes:
-        v = _val(n)
-        if isinstance(v, torch.Tensor) and hasattr(v, "fake_mode"):
-            return v.fake_mode
-    return None
+def rewrite_aten_histc(graph, fake_mode) -> int:
+    """Every aten.histc as a count on the device (_insert_histc); one without a fake value is left to aten,
+    logged. Returns how many were rewritten."""
+    changed = 0
+    for node in list(graph.nodes):
+        if node.op != "call_function" or node.target is not aten.histc.default:
+            continue
+        x = node.args[0]
+        xv = _val(x)
+        if xv is None:
+            logger.info("[post_grad_pass] histc without a fake value: left to aten")
+            continue
+        said = dict(zip(("bins", "min", "max"), node.args[1:]), **node.kwargs)
+        bins, lo, hi = int(said.get("bins", 100)), said.get("min", 0), said.get("max", 0)
+        with graph.inserting_before(node):
+            out = _insert_histc(_inserter(graph, fake_mode, node), x, xv, bins, lo, hi)
+        node.replace_all_uses_with(out)
+        graph.erase_node(node)
+        changed += 1
+    return changed
 
 
-def _emitter(graph, fake_mode, origin):
-    """call(target, *args, **kwargs): a node at the insert point with its fake value set (nothing after the
-    device pass sets it) and origin's provenance (_KEPT_META), origin being the node it rewrites."""
-    def unwrap(a):
-        if isinstance(a, (list, tuple)):
-            return type(a)(unwrap(x) for x in a)
-        if isinstance(a, dict):
-            return {k: unwrap(v) for k, v in a.items()}
-        return _val(a)
-
-    def call(target, *args, **kwargs):
-        node = graph.call_function(target, args, kwargs)
-        for key in _KEPT_META:
-            if key in origin.meta:
-                node.meta[key] = origin.meta[key]
-        if fake_mode is not None:
-            with fake_mode:
-                node.meta["val"] = target(*unwrap(args), **unwrap(kwargs))
-        return node
-
-    return call
-
-
-def _join(call, re, im):
-    """The [..., 2] real pair of re and im."""
-    return call(aten.cat.default, [call(aten.unsqueeze.default, re, -1),
-                                   call(aten.unsqueeze.default, im, -1)], -1)
-
-
-def _emit_histc(call, x, xv, bins, lo, hi):
+def _insert_histc(call, x, xv, bins, lo, hi):
     """aten's histc: bin (x - lo) * bins / (hi - lo), integral in int64 and floating in x's dtype, the top
     edge in the last bin, outside [lo, hi] dropped; lo == hi takes x's range, widened by 1 if it is one value."""
     integral = not xv.is_floating_point()
@@ -106,28 +100,6 @@ def _emit_histc(call, x, xv, bins, lo, hi):
     return call(prims.convert_element_type.default, call(aten.sum.dim_IntList, hits, [0]), xv.dtype)
 
 
-def rewrite_aten_histc(graph, fake_mode) -> int:
-    """Every aten.histc as a count on the device (_emit_histc); one without a fake value is left to aten,
-    logged. Returns how many were rewritten."""
-    changed = 0
-    for node in list(graph.nodes):
-        if node.op != "call_function" or node.target is not aten.histc.default:
-            continue
-        x = node.args[0]
-        xv = _val(x)
-        if xv is None:
-            logger.info("[rewrite_fx_graph] histc without a fake value: left to aten")
-            continue
-        said = dict(zip(("bins", "min", "max"), node.args[1:]), **node.kwargs)
-        bins, lo, hi = int(said.get("bins", 100)), said.get("min", 0), said.get("max", 0)
-        with graph.inserting_before(node):
-            out = _emit_histc(_emitter(graph, fake_mode, node), x, xv, bins, lo, hi)
-        node.replace_all_uses_with(out)
-        graph.erase_node(node)
-        changed += 1
-    return changed
-
-
 def rewrite_aten_polar(graph, fake_mode) -> int:
     """polar(abs, angle) as view_as_complex of the pair (abs*cos, abs*sin), built contiguous since
     view_as_complex needs a unit last stride; rewrite_aten_view_as_complex then takes it to real pairs."""
@@ -135,12 +107,34 @@ def rewrite_aten_polar(graph, fake_mode) -> int:
     for node in list(graph.nodes):
         if node.op != "call_function" or node.target is not aten.polar.default:
             continue
-        call = _emitter(graph, fake_mode, node)
+        call = _inserter(graph, fake_mode, node)
         r, angle = node.args[0], node.args[1]
         with graph.inserting_before(node):
             pair = _join(call, call(aten.mul.Tensor, r, call(aten.cos.default, angle)),
                          call(aten.mul.Tensor, r, call(aten.sin.default, angle)))
             out = call(aten.view_as_complex.default, pair)
+        node.replace_all_uses_with(out)
+        graph.erase_node(node)
+        changed += 1
+    return changed
+
+
+def rewrite_aten_mm_addmm_row(graph, fake_mode) -> int:
+    """Replace a 1 x K row times a K x N matrix with the row broadcast down the matrix, a
+    multiply and a sum over K: vector work, where the mm template would run it on the array."""
+    changed = 0
+    for node in list(graph.nodes):
+        found = _row_times_matrix(node)
+        if found is None:
+            continue
+        call = _inserter(graph, fake_mode, node)
+        a, b, bias = found
+        k = int(_val(a).shape[1])
+        with graph.inserting_before(node):
+            column = call(aten.view.default, a, [k, 1])
+            out = call(aten.sum.dim_IntList, call(aten.mul.Tensor, column, b), [0], True)
+            if bias is not None:
+                out = call(aten.add.Tensor, out, bias)
         node.replace_all_uses_with(out)
         graph.erase_node(node)
         changed += 1
@@ -165,31 +159,23 @@ def _row_times_matrix(node):
     return a, b, bias
 
 
-def rewrite_aten_mm_addmm_row(graph, fake_mode) -> int:
-    """Replace a 1 x K row times a K x N matrix with the row broadcast down the matrix, a
-    multiply and a sum over K: vector work, where the mm template would run it on the array."""
-    changed = 0
-    for node in list(graph.nodes):
-        found = _row_times_matrix(node)
-        if found is None:
-            continue
-        call = _emitter(graph, fake_mode, node)
-        a, b, bias = found
-        k = int(_val(a).shape[1])
-        with graph.inserting_before(node):
-            column = call(aten.view.default, a, [k, 1])
-            out = call(aten.sum.dim_IntList, call(aten.mul.Tensor, column, b), [0], True)
-            if bias is not None:
-                out = call(aten.add.Tensor, out, bias)
-        node.replace_all_uses_with(out)
-        graph.erase_node(node)
-        changed += 1
-    return changed
-
-
 _MUL = (aten.mul.Tensor, aten.mul.Scalar)
 _SHAPE = (aten.unsqueeze.default,)
 _HANDLED = (aten.view_as_complex.default,) + _MUL + _SHAPE
+
+
+def rewrite_aten_view_as_complex(graph, fake_mode) -> int:
+    """Each component of complex values (view_as_complex, mul, unsqueeze) becomes real [..., 2] pairs; a
+    component with any other complex op stays as it is, logged with why. Returns the components rewritten."""
+    changed = 0
+    for component in _complex_components([n for n in graph.nodes if _is_complex(n)]):
+        why = _why_not_real(component)
+        if why is not None:
+            logger.info("[post_grad_pass] %d complex nodes left to aten: %s", len(component), why)
+            continue
+        _to_real_pairs(graph, fake_mode, component)
+        changed += 1
+    return changed
 
 
 def _complex_components(nodes):
@@ -231,7 +217,7 @@ def _to_real_pairs(graph, fake_mode, component):
     it reads the pair."""
     pair = {}
     for n in component:
-        call = _emitter(graph, fake_mode, n)
+        call = _inserter(graph, fake_mode, n)
         with graph.inserting_before(n):
             if n.target is aten.view_as_complex.default:
                 pair[n] = n.args[0]
@@ -270,35 +256,50 @@ def _to_real_pairs(graph, fake_mode, component):
                 user.replace_all_uses_with(pair[n])
 
 
-def rewrite_aten_view_as_complex(graph, fake_mode) -> int:
-    """Each component of complex values (view_as_complex, mul, unsqueeze) becomes real [..., 2] pairs; a
-    component with any other complex op stays as it is, logged with why. Returns the components rewritten."""
-    changed = 0
-    for component in _complex_components([n for n in graph.nodes if _is_complex(n)]):
-        why = _why_not_real(component)
-        if why is not None:
-            logger.info("[rewrite_fx_graph] %d complex nodes left to aten: %s", len(component), why)
-            continue
-        _to_real_pairs(graph, fake_mode, component)
-        changed += 1
-    return changed
+def _inserter(graph, fake_mode, origin):
+    """call(target, *args, **kwargs): a node at the insert point with its fake value set (nothing after the
+    device pass sets it) and origin's provenance (_KEPT_META), origin being the node it rewrites."""
+    def unwrap(a):
+        if isinstance(a, (list, tuple)):
+            return type(a)(unwrap(x) for x in a)
+        if isinstance(a, dict):
+            return {k: unwrap(v) for k, v in a.items()}
+        return _val(a)
+
+    def call(target, *args, **kwargs):
+        node = graph.call_function(target, args, kwargs)
+        for key in _KEPT_META:
+            if key in origin.meta:
+                node.meta[key] = origin.meta[key]
+        if fake_mode is not None:
+            with fake_mode:
+                node.meta["val"] = target(*unwrap(args), **unwrap(kwargs))
+        return node
+
+    return call
 
 
-REWRITES = (rewrite_aten_histc, rewrite_aten_polar, rewrite_aten_mm_addmm_row, rewrite_aten_view_as_complex)
+def _join(call, re, im):
+    """The [..., 2] real pair of re and im."""
+    return call(aten.cat.default, [call(aten.unsqueeze.default, re, -1),
+                                   call(aten.unsqueeze.default, im, -1)], -1)
 
 
-class _npu_post_grad_pass(CustomGraphModulePass):
-    """REWRITES in order on an npu graph (polar before the complex values it makes); its uuid hashes this
-    file, so an edit here is a new cache key."""
-
-    def __call__(self, gm: fx.GraphModule) -> None:
-        fake_mode = _fake_mode(gm.graph)
-        if sum(rewrite(gm.graph, fake_mode) for rewrite in REWRITES):
-            gm.graph.eliminate_dead_code()
-            gm.recompile()
-
-    def uuid(self):
-        return get_hash_for_files((__file__,))
+def _val(node):
+    """The fake value of a node, or the argument itself when it is not a node."""
+    return node.meta.get("val", None) if isinstance(node, torch.fx.Node) else node
 
 
-npu_post_grad_pass = _npu_post_grad_pass()
+def _is_complex(node):
+    """Whether the node holds a complex tensor."""
+    v = _val(node)
+    return isinstance(v, torch.Tensor) and v.is_complex()
+
+
+def _fake_mode(graph):
+    """The fake mode of the graph's tensors, or None."""
+    for n in graph.nodes:
+        v = _val(n)
+        if isinstance(v, torch.Tensor) and hasattr(v, "fake_mode"):
+            return v.fake_mode
+    return None

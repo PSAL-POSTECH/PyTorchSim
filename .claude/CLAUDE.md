@@ -50,13 +50,13 @@ and same device, two transformers:
 5.x rewrote the MoE block to remove the graph breaks (12 graphs -> 1), and paid
 for it in fallbacks. The wrong number came with them.
 
-**WHAT TO DO INSTEAD.** A rewrite in `pytorchsim/frontend/rewrite_fx_graph.py`,
-written in aten ops the backend already lowers, so the work stays in the graph.
-That file exists for exactly this and says so. Note that casting an operand until
-the CPU kernel accepts it is only half the job: the histc decomposition there
-still leaves `aten.histc` as an extern call, and its own docstring names the
-device-side form it should have been (`(x == bin).sum()` against `arange(bins)` —
-one elementwise and one reduce).
+**WHAT TO DO INSTEAD.** A rewrite in `pytorchsim/frontend/post_grad_pass.py`,
+the npu's `device_custom_pass`, written in aten ops Inductor lowers as they are
+(the pass runs after decomposition), so the work stays in the graph. Casting an
+operand until the CPU kernel accepts it is only half the job: histc, for one, is
+counted there with aten's own bin rule, so no histc leaves the device. An op
+with a Triton kernel of its own (topk, grouped_mm, attention) registers it
+through torch.library instead, in its own file under `pytorchsim/frontend/`.
 
 **IF YOU CANNOT REMOVE ONE,** say so in those words and name it. A fallback left
 in place is a known hole in what "this model runs" means, and it belongs in the
@@ -67,7 +67,7 @@ report next to the number it produced — never folded into a pass.
 | Path | Purpose |
 |---|---|
 | `pytorchsim/config.py` | The central settings reader, shared by every stage |
-| `pytorchsim/frontend/` | The graph side, where the framework is met: `rewrite_fx_graph.py` (our FX graph rewrites, so ops with no `npu` kernel stay on the device) and `inductor_patches.py` (decompositions, template and tile choices, the patches that make Inductor's Triton route serve `npu`) |
+| `pytorchsim/frontend/` | The graph side, where the framework is met: `post_grad_pass.py` (the npu's post-grad pass, Inductor's `device_custom_pass`: rewrites so ops with no `npu` kernel stay on the device), `topk.py`, `grouped_mm.py`, `attention.py` (ops with a Triton kernel of their own, through torch.library) and `inductor_patches.py` (decompositions, template and tile choices, the patches that make Inductor's Triton route serve `npu`) |
 | `pytorchsim/contract.py` | What the stages share, so none of them imports another for it: the axes and programs of a launch, how far a strided layout reaches in storage, and the kernel workdir (the manifest and artifacts the compiler left, and each process's launch directory) |
 | `pytorchsim/codegen/` | What runs while Inductor generates code: `inductor_hooks.py` (the scheduling and wrapper classes registered for `npu`; Inductor writes the Triton source, these wrap it), `kernel_metadata.py` (what the compile step needs from an Inductor kernel), `tiling.py` (block sizes, a template's grid, this machine's mm tiles), `verify.py` (the per-kernel CPU cross-check, both the lines put in the wrapper and the check they call) |
 | `pytorchsim/driver/` | Building a kernel and having it run: `codecache.py` (the compile entry point, the cache and the identity that admits it, the launcher), `select.py` (a template's config: Inductor's selection timed on TOGSim, and the recorded picks), `autotune.py` (smaller pinned blocks when the compiler says too big), `compiler_input.py` (what the compiler is handed: the rewritten Triton source and the KernelSpec file), `compiler_bridge.py` (PyTorchSim-Triton-Backend in a subprocess, the target description) |
@@ -173,7 +173,7 @@ with torch.npu.TOGSimulator(config_path=...):
 
 ## Where to look for X
 
-- **Adding a new op:** nothing here, usually — Inductor's own Triton lowerings emit the kernel and PyTorchSim-Triton-Backend lowers it. What lives here is our FX graph rewrites, `rewrite_fx_graph.py`: decompositions and post-grad passes for ops with no `npu` kernel (histc, polar, topk, transformers' grouped_mm, complex arithmetic). GEMM/BMM tile selection: `pytorchsim/codegen/tiling.py` (`gemm_tile_candidates`). Kernel source fixups before the compiler sees them: `pytorchsim/driver/compiler_input.py`.
+- **Adding a new op:** nothing here, usually — Inductor's own Triton lowerings emit the kernel and PyTorchSim-Triton-Backend lowers it. What lives here is the npu's post-grad pass, `post_grad_pass.py`, for ops with no `npu` kernel (histc, polar, a row times a matrix, complex arithmetic), and torch.library kernels for ops with a Triton kernel of their own (`topk.py`, `grouped_mm.py`, `attention.py`). GEMM/BMM tile selection: `pytorchsim/codegen/tiling.py` (`gemm_tile_candidates`). Kernel source fixups before the compiler sees them: `pytorchsim/driver/compiler_input.py`.
 - **Adding a PyTorch device op:** `device/csrc/aten/native/*` (Minimal/Extra split mirrors `torch_openreg`).
 - **TOGSim hardware model changes:** in the TOGSim repository, `src/{Core,Dram,Interconnect,L2Cache,Tile,TileGraph}.cc` + matching `include/*.h`. They reach this repository when the compiler pins that TOGSim commit and this repository pins that compiler commit.
 - **TOG generation:** the compiler emits the tile-operation-graph (TOG) as C++, compiles it to `tog.so` against TOGSim's `togsim_runtime.h` and records the compute type of each tile (`pytorchsim_triton_compiler/lowering/tog/`; `tog_cpp`, `tog_so` and `tile_types` in `kernel.json`); this repo measures the tiles under gem5 and writes `tog_cycles.tsv` and `tog_units.tsv` beside the TOG (`pytorchsim/simulator/timing.py`); TOGSim replays the TOG into a TileGraph (`tog_to_tilegraph`).

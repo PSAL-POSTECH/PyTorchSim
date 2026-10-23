@@ -19,7 +19,7 @@ torch.utils.generate_methods_for_privateuse1_backend(for_storage=True)
 sys.path.append(os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim'))
 import pytorchsim.config  # noqa: F401
 from pytorchsim.frontend import inductor_patches as _inductor_patches
-from pytorchsim.frontend import rewrite_fx_graph as _rewrite_fx_graph
+from pytorchsim.frontend import post_grad_pass as _post_grad_pass
 
 _inductor_patches.install()
 
@@ -31,7 +31,7 @@ torch._inductor.codegen.common.register_backend_for_device(
     "npu",
     TritonNPUScheduling,
     TritonNPUWrapperCodegen,
-    device_custom_pass=_rewrite_fx_graph.npu_post_grad_pass,
+    device_custom_pass=_post_grad_pass.pytorchsim_post_grad_pass,
 )
 
 torch_openreg.openreg.init()

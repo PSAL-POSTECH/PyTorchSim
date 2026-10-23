@@ -7,7 +7,7 @@ from torch._inductor.decomposition import select_decomp_table
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
 from _pytorchsim_utils import test_result
 
-from pytorchsim.frontend.rewrite_fx_graph import npu_post_grad_pass
+from pytorchsim.frontend.post_grad_pass import pytorchsim_post_grad_pass
 
 
 def _rope_like(a):
@@ -30,7 +30,7 @@ def test_polar_on_transposed(device, n=32):
     #                        'torch.ops.aten.polar.default')
     #     AssertionError: expected size 32==32, stride 32==1 at dim=1
     #
-    # rewrite_fx_graph.rewrite_aten_polar takes the extern call out instead
+    # post_grad_pass.rewrite_aten_polar takes the extern call out instead
     # of arguing about the layout: the pair is built contiguous with ops this
     # backend compiles, and the complex rewrite takes it to real pairs.
     x = torch.randn(1, n, n)
@@ -55,7 +55,7 @@ def test_polar_contiguous(device, n=32):
 
 def _unlowered(gm):
     """The ops of gm Inductor has no lowering for; the device pass runs after decomposition, so any it
-    emits must lower as they are."""
+    inserts must lower as they are."""
     from torch._inductor.lowering import lowerings
     return sorted({str(m.target) for m in gm.graph.nodes if m.op == "call_function"
                    and m.target not in lowerings and m.target.overloadpacket not in lowerings})
@@ -66,7 +66,7 @@ def test_pass_leaves_no_polar(n=32):
     is left, and the real pairs are polar's."""
     x = torch.randn(1, n, n)
     gm = make_fx(_rope_like, decomposition_table=select_decomp_table(), tracing_mode="fake")(x)
-    npu_post_grad_pass(gm)
+    pytorchsim_post_grad_pass(gm)
     left = [str(m.target) for m in gm.graph.nodes
             if m.target is torch.ops.aten.polar.default
             or (isinstance(m.meta.get("val"), torch.Tensor) and m.meta["val"].is_complex())]

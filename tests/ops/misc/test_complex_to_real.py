@@ -7,7 +7,7 @@ from torch._inductor.decomposition import select_decomp_table
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
 from _pytorchsim_utils import test_result
 
-from pytorchsim.frontend.rewrite_fx_graph import npu_post_grad_pass
+from pytorchsim.frontend.post_grad_pass import pytorchsim_post_grad_pass
 
 aten = torch.ops.aten
 
@@ -31,7 +31,7 @@ def _trace(fn, *args):
 
 def _unlowered(gm):
     """The ops of gm Inductor has no lowering for; the device pass runs after decomposition, so any it
-    emits must lower as they are."""
+    inserts must lower as they are."""
     from torch._inductor.lowering import lowerings
     return sorted({str(m.target) for m in gm.graph.nodes if m.op == "call_function"
                    and m.target not in lowerings and m.target.overloadpacket not in lowerings})
@@ -57,7 +57,7 @@ def test_pass_leaves_no_complex():
     before = _complex_nodes(gm.graph)
     assert before, "the traced graph should have complex nodes to rewrite"
 
-    npu_post_grad_pass(gm)
+    pytorchsim_post_grad_pass(gm)
     gm.recompile()
 
     after = _complex_nodes(gm.graph)
@@ -87,7 +87,7 @@ def test_complex_scalar_multiply():
 
     x = torch.randn(1, 32, 64)
     gm = _trace(f, x)
-    npu_post_grad_pass(gm)
+    pytorchsim_post_grad_pass(gm)
     gm.recompile()
     after = _complex_nodes(gm.graph)
     assert not after, f"complex nodes survived the pass: {[str(n.target) for n in after]}"
@@ -109,7 +109,7 @@ def test_components_are_judged_apart():
         n.meta["stack_trace"] = f"user.py:{n.name}"
         n.meta["from_node"] = [n.name]
     before = {n.name for n in gm.graph.nodes}
-    npu_post_grad_pass(gm)
+    pytorchsim_post_grad_pass(gm)
     copied = [n.name for n in gm.graph.nodes if n.name not in before and "from_node" in n.meta]
     assert not copied, f"from_node copied onto new nodes: {copied}"
     left = sorted(str(n.target) for n in _complex_nodes(gm.graph))
@@ -127,7 +127,7 @@ def test_row_mm_stays_real():
 
     a, b = torch.randn(1, 8, 2), torch.randn(8, 4, 2)
     gm = _trace(f, a, b)
-    npu_post_grad_pass(gm)
+    pytorchsim_post_grad_pass(gm)
     mms = [n for n in gm.graph.nodes if n.target is aten.mm.default]
     assert len(mms) == 1, f"complex mm rewritten: {[str(n.target) for n in gm.graph.nodes]}"
     test_result("complex 1 x K mm", gm(a, b), f(a, b))
@@ -144,7 +144,7 @@ def test_unhandled_op_is_left_alone():
     x = torch.randn(1, 32, 64)
     gm = _trace(f, x)
     before = [str(n.target) for n in _complex_nodes(gm.graph)]
-    npu_post_grad_pass(gm)
+    pytorchsim_post_grad_pass(gm)
     after = [str(n.target) for n in _complex_nodes(gm.graph)]
     assert before == after, f"an ineligible component was rewritten: {before} -> {after}"
     print("unhandled complex op left alone:", after)

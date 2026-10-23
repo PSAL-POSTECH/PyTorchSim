@@ -220,3 +220,15 @@ def record_digest():
             return hashlib.sha256(f.read()).hexdigest()[:16]
     except (FileNotFoundError, compiler_bridge.NoTarget):
         return "none"
+
+
+def graph_digest():
+    """A digest of what an npu graph is compiled against, for Inductor's cache key: the machine
+    (its name, the keys the compiler reads, num_cores) and its recorded picks."""
+    try:
+        t = compiler_bridge.target()
+        machine = {"name": t.name, "keys": t.as_dict(), "num_cores": config.CONFIG_NUM_CORES}
+    except compiler_bridge.NoTarget:
+        machine = None
+    said = json.dumps({"machine": machine, "record": record_digest()}, sort_keys=True)
+    return hashlib.sha256(said.encode()).hexdigest()[:16]

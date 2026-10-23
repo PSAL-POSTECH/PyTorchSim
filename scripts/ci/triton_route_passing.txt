@@ -1,5 +1,5 @@
-# Tests that pass THROUGH the Triton codegen route.
-# Gated by scripts/ci/triton_route_sweep.py; regenerate with
+# Tests that pass THROUGH the Triton codegen route. One that fails in the route job's sweep
+# (pytorchsim_triton_backend.yml) fails that job; a test off this list only reports. Regenerate with
 #   python scripts/ci/triton_route_sweep.py --all --update-allowlist
 # A test that passes without emitting a kernel is deliberately absent.
 # WHAT WAS BLOCKED HERE AND IS NOT. tests/models/test_swinv2.py stopped after

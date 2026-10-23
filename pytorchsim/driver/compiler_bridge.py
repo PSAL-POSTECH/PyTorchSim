@@ -41,8 +41,14 @@ class NoTarget(RuntimeError):
 
 def compiler_contract(name):
     """The compiler's contract/<name> module, from the checkout TORCHSIM_COMPILE_DIR names."""
+    return compiler_module(f"contract.{name}")
+
+
+def compiler_module(name):
+    """The compiler's module `name` (dotted, under its package), from the checkout
+    TORCHSIM_COMPILE_DIR names."""
     try:
-        mod = importlib.import_module(f"{COMPILER_PKG}.contract.{name}")
+        mod = importlib.import_module(f"{COMPILER_PKG}.{name}")
     except ImportError as e:
         raise CompilerError(f"{COMPILER_PKG} is not importable here ({e}): install the checkout "
                             f"at {compiler_dir()} (pip install -e)") from None

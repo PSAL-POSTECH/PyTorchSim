@@ -1,9 +1,11 @@
-"""The blocks of an Inductor kernel on this machine: the kernel's numels, widest dtype and contiguous
-axis read off Inductor's scheduler nodes, handed to tiling.fixed_config_for. blocks_for is the one
-place they are computed; pinning, persistence and the compile metadata all read it."""
+"""The blocks of a kernel Inductor generates from nodes (any kernel but a template) on this machine:
+its numels, widest dtype and contiguous axis, read off Inductor's scheduler nodes, handed to
+tiling.fixed_config_for. blocks_for is the one place they are computed; pinning, the compile metadata
+and whether a reduction is persistent all read it. And whether a reduction splits over the cores."""
 
 from pytorchsim import config
 from pytorchsim.frontend import tiling
+from pytorchsim.frontend.inductor.registration import is_lowering_npu
 
 logger = config.setup_logger()
 
@@ -29,6 +31,52 @@ def blocks_for(numels, features):
     shim = type("K", (), {"inside_reduction": bool(features.is_reduction()), "numels": numels})()
     return tiling.fixed_config_for(shim, numels, _widest_dtype_args(features),
                                    contiguous=_kept_axis_contiguous(features)) or {}
+
+
+def use_persistent_reduction(features, upstream):
+    """Inductor's answer (`upstream`) narrowed: persistent only when the whole reduction fits this
+    machine's reduction block."""
+    if not upstream or not is_lowering_npu():
+        return upstream
+    try:
+        extent = int(features.reduction_numel)
+    except (TypeError, ValueError):
+        return upstream
+    if extent < 1:
+        return upstream
+    persistent = 1 << (extent - 1).bit_length()
+    try:
+        numels = {"xnumel": int(features.numel), "r0_numel": extent}
+    except TypeError:
+        logger.info("[torchsim-compile] a reduction of %s rows is not static: persistent "
+                    "only within one reduction block", features.numel)
+        return persistent <= tiling.reduction_block_for(extent)
+    return persistent <= int(blocks_for(numels, features)["R0_BLOCK"])
+
+
+def reduction_split(reduction_numel_hint, numel_hint, upstream):
+    """Split a reduction only when a core would otherwise sit idle, and at most cores ways:
+    `upstream()` is Inductor's split, asked only on a machine of more than one core."""
+    cores = _num_cores()
+    if cores <= 1:
+        return 1
+    want = upstream()
+    try:
+        if int(numel_hint) >= cores:
+            return 1
+    except (TypeError, ValueError):
+        return 1
+    split = min(int(want), cores)
+    if split > 1:
+        logger.info("[torchsim-compile] splitting a reduction of %s elements %s ways over %s cores "
+                    "(upstream wanted %s)", reduction_numel_hint, split, cores, want)
+        return split
+    return 1
+
+
+def _num_cores():
+    """This machine's core count, `num_cores` of its TOGSim config (every machine file has it)."""
+    return max(1, int(config.CONFIG_NUM_CORES))
 
 
 def _kept_axis_contiguous(features):

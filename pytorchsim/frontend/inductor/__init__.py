@@ -3,7 +3,6 @@
     registration.py    everything npu registers: its DeviceInterface (SM count, Triton, bf16), a
                        Triton GPU, its codegen and post-grad pass, its wrappers' device code
     post_grad_pass.py  the FX graph after Inductor's post-grad passes (device_custom_pass)
-    lowering.py        lowering patches with no Inductor hook, npu's conv decompositions
     autotune/          how each kernel's sizes are chosen: template kernels' configs and selection,
                        generated kernels' blocks
     codegen/           the scheduling and wrapper Inductor generates through, kernel metadata
@@ -14,11 +13,10 @@ from pytorchsim import config
 
 def install():
     """Register npu with Inductor and apply every patch here, then Inductor's config."""
-    from . import autotune, lowering, registration
+    from . import autotune, registration
 
     registration.install()
     autotune.install()
-    lowering.install()
     _configure_inductor()
 
 

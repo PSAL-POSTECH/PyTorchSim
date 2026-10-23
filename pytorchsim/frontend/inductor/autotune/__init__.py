@@ -8,7 +8,8 @@
 
 
 def install():
-    """Apply the template kernels' choices and selection to Inductor."""
+    """Apply the patches Inductor has no hook for (the conv's groups and grid, template selection);
+    NPUChoices and the mm heuristics, which have hooks, are registration.py's."""
     from . import template_kernel_configs, template_kernel_selection
 
     template_kernel_configs.install()

@@ -222,7 +222,7 @@ def _machine(root, sub, **change):
 def test_graph_cache_key_names_the_machine():
     """Inductor's FX cache key differs between machines with no recorded picks, so one machine's
     cached graph is not handed to another: the core count and the lanes' scratchpad shape it."""
-    from pytorchsim.frontend.inductor.autotune.template_kernel_configs import _npu_choices_class
+    from pytorchsim.frontend.inductor.registration import npu_choices_class
     with tempfile.TemporaryDirectory() as root:
         paths = [_machine(root, "base"), _machine(root, "cores", num_cores=2),
                  _machine(root, "spad", vpu_spad_size_kb_per_lane=512)]
@@ -231,8 +231,8 @@ def test_graph_cache_key_names_the_machine():
             with mock.patch.dict(os.environ, TORCHSIM_TARGET=path), \
                  mock.patch.object(template_timing, "RECORD_DIR", os.path.join(root, "record")):
                 assert template_timing.record_digest() == "none"
-                keys.append(_npu_choices_class()().uuid())
-                assert keys[-1] == _npu_choices_class()().uuid()
+                keys.append(npu_choices_class()().uuid())
+                assert keys[-1] == npu_choices_class()().uuid()
         assert len(set(keys)) == len(keys), keys
 
 

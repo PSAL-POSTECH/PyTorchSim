@@ -1,7 +1,8 @@
-"""Everything npu registers with Inductor: its DeviceInterface, a Triton GPU (GPU_TYPES, which
-has no hook, so it patches module state), its codegen and post-grad pass, and the device code its
-wrappers carry. is_npu and is_lowering_npu are the device tests patches share."""
+"""Everything npu registers with Inductor: its DeviceInterface, a Triton GPU (GPU_TYPES, which has
+no hook, so it patches module state), its codegen and post-grad pass, the device code its wrappers
+carry, and its choices (NPUChoices, the mm heuristics), whose answers are autotune/'s."""
 
+import functools
 from textwrap import dedent
 
 import torch
@@ -18,6 +19,8 @@ def install():
     _register_npu_as_gpu()
     _register_backend()
     _register_device_op_overrides()
+    _register_choices()
+    _register_template_heuristics()
 
 
 def _register_backend():
@@ -44,6 +47,91 @@ def _register_device_op_overrides():
     from torch._inductor.codegen.common import register_device_op_overrides
 
     register_device_op_overrides("npu", NPUDeviceOpOverrides())
+
+
+def _register_choices():
+    """NPUChoices as Inductor's choices, unless something else already is."""
+    from torch._inductor import config as inductor_config
+
+    if inductor_config.inductor_choices_class is None:
+        inductor_config.inductor_choices_class = npu_choices_class()
+
+
+def _register_template_heuristics():
+    """npu's mm/bmm and addmm/baddbmm template heuristics (autotune/template_kernel_configs.py)."""
+    from torch._inductor.kernel.bmm import bmm_template
+    from torch._inductor.kernel.mm import mm_template
+    from torch._inductor.heuristics.template.registry import register_template_heuristic
+
+    from pytorchsim.frontend.inductor.autotune.template_kernel_configs import mm_config_heuristics
+
+    mm, addmm = mm_config_heuristics()
+    register_template_heuristic(mm_template.uid, "npu")(mm)
+    register_template_heuristic(bmm_template.uid, "npu")(mm)
+    register_template_heuristic(mm_template.uid, "npu", op_name="addmm")(addmm)
+    register_template_heuristic(bmm_template.uid, "npu", op_name="baddbmm")(addmm)
+
+
+_NPU_CHOICES = None
+
+
+def npu_choices_class():
+    """NPUChoices, built once: Inductor's lookup-table choices whose npu answers come from autotune/
+    (template kernels' configs and recorded picks, generated kernels' reductions); every other
+    device keeps Inductor's."""
+    global _NPU_CHOICES
+    if _NPU_CHOICES is not None:
+        return _NPU_CHOICES
+    from torch._inductor.choices import InductorChoices
+    from torch._inductor.lookup_table import LookupTableChoices
+
+    from pytorchsim.backend import template_timing
+    from pytorchsim.frontend.inductor.autotune import generated_kernel_blocks, template_kernel_configs
+
+    class NPUChoices(LookupTableChoices):
+        def uuid(self):
+            """This class's part of Inductor's cache key: the machine and the picks it hands out."""
+            return f"pytorchsim-npu-choices-4-{template_timing.graph_digest()}"
+
+        def get_config_heuristics(self, device_type="cuda"):
+            if device_type == "npu":
+                return template_kernel_configs.conv_config_heuristic()
+            return super().get_config_heuristics(device_type)
+
+        def _get_lookup_table(self):
+            """This machine's recorded picks; Inductor's own looks only on CUDA."""
+            return template_timing.lookup_table()
+
+        @staticmethod
+        def _get_device_key(device):
+            if getattr(device, "type", None) == "npu":
+                return template_timing.device_key()
+            return LookupTableChoices._get_device_key(device)
+
+        def _create_lookup_choices(self, *args, **kwargs):
+            """Inductor's choices from the recorded configs, each marked as recorded."""
+            ktcs = super()._create_lookup_choices(*args, **kwargs)
+            for ktc in ktcs:
+                ktc.annotations[template_timing.SOURCE] = template_timing.RECORDED
+            return ktcs
+
+        @staticmethod
+        def should_use_persistent_reduction(features, cooperative_reduction):
+            return generated_kernel_blocks.use_persistent_reduction(
+                features, InductorChoices.should_use_persistent_reduction(features, cooperative_reduction))
+
+        def reduction_split_factor(self, device, reduction_numel_hint, numel_hint, inner_reduction):
+            upstream = functools.partial(super().reduction_split_factor, device,
+                                         reduction_numel_hint, numel_hint, inner_reduction)
+            if getattr(device, "type", device) != "npu":
+                return upstream()
+            return generated_kernel_blocks.reduction_split(reduction_numel_hint, numel_hint, upstream)
+
+    NPUChoices.__module__ = __name__
+    NPUChoices.__qualname__ = "NPUChoices"
+    globals()["NPUChoices"] = NPUChoices
+    _NPU_CHOICES = NPUChoices
+    return NPUChoices
 
 
 def _register_npu_as_gpu():

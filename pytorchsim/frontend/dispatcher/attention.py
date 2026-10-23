@@ -1,12 +1,6 @@
-"""SDPA's overrideable backend on the npu: the fused Triton kernels (a splash-style prefill, a GQA
-decode) where they take the call, SDPA's own math everywhere else.
-
-The device's `_fused_sdp_choice` sends a call to `aten._scaled_dot_product_fused_attention_overrideable`
-when that op can carry it (no mask, no dropout, no gradient, H dividing Hq). FusedSDPA is that op's
-npu kernel, a CustomFusedKernel (custom_fused_kernel.py): `fused_plan` is the one place that decides
-whether a fused kernel takes the call, and everything it declines runs
-`aten._scaled_dot_product_attention_math`, the op SDPA's math backend runs.
-"""
+"""SDPA's overrideable op on the npu: a splash-style prefill or a GQA decode kernel where
+`fused_plan` takes the call, SDPA's math elsewhere. `_fused_sdp_choice` sends this op only calls
+with no mask, dropout or gradient."""
 
 import math
 from typing import Optional
@@ -59,7 +53,7 @@ class FusedSDPA(CustomFusedKernel):
         return _math(query, key, value, attn_bias, dropout_p, is_causal, scale=scale)
 
     def outputs(self, op, out, query, key, *rest):
-        """The op's outputs from the attention output: the ones only a backward reads are empty."""
+        """The op's nine outputs from the attention output; the backward-only ones are empty."""
         B, Hq, L, D = query.shape
         empty = lambda dtype: torch.empty(0, dtype=dtype, device=query.device)
         lse = torch.empty(B, Hq, L, dtype=torch.float32, device=query.device)
@@ -153,23 +147,18 @@ def _is_p2(n):
 
 _DOT_DTYPES = (torch.bfloat16, torch.float16, torch.float32)
 
-#: The query and key block of the splash kernel the prefill is measured against: the v6e
-#: runs of PyTorchSim-Triton-Backend's validation archive name it
-#: splash_mha_fwd_..._block_kv_compute_1024_..._block_q_1024. A smaller block runs the same
-#: rows as more, shorter steps, each paying the matrix unit's fill and drain again.
+#: The block of the v6e splash kernel the prefill is measured against (block_q = block_kv = 1024);
+#: a smaller block pays the matrix unit's fill and drain more often.
 SPLASH_BLOCK = 1024
 
 
 def _register_rows(dtype):
-    """Rows of `dtype` in one vector register, the least a dot dimension may be here. PTB refuses
-    only a last register under MIN_VEC = 2 words; padding dots to whole registers is our choice
-    (measured not slower), not the compiler's rule."""
+    """Rows of `dtype` in one vector register, the least a dot dimension is padded to."""
     return int(config.CONFIG_MACHINE.vlen_bits) // (8 * dtype.itemsize)
 
 
 def _prefill_tiles(BQ, BKV, D, esize, causal):
-    """The tiles one query block of _prefill_kernel creates: q, K^T, V, the f32 scores through exp,
-    p in the input dtype, the f32 accumulator chain and the stored block."""
+    """One query block's tiles: q, K^T, V, f32 scores, p, the f32 accumulators, the output."""
     tiles = [(BQ, D, esize), (D, BKV, esize), (BKV, D, esize), (BQ, BKV, esize), (BQ, D, esize)]
     tiles += [(BQ, BKV, 4)] * (5 if causal else 4) + [(BQ, D, 4)] * 4
     return tiles
@@ -181,18 +170,9 @@ def _decode_tiles(GP, BKV, D, esize):
 
 
 def fused_plan(query, key, value, is_causal):
-    """The fused kernel and its blocks that take this unmasked, dropout-free call, or a Decline
-    for SDPA's math. The one predicate: _fused_sdp_choice only says which op carries the call.
-
-    prefill  L == S. One program per (batch, query head); BQ = BKV is splash's block, min(S,
-             SPLASH_BLOCK), halved while one query block's scratch overruns the budget (the compiler
-             gives the static query loop's blocks one set), down to one row per lane, below which
-             it declines.
-    decode   L == 1, not causal (a causal L == 1 attends key 0 alone, SDPA's top-left mask). One
-             program per (batch, KV head), its G query heads padded to GP rows; one KV step of the
-             largest power of two that fits, since every further step adds its own DMAs.
-    Both need power-of-two S and D, D and the blocks a whole number of vector registers.
-    """
+    """The fused kernel and its blocks, or a Decline. prefill (L == S): BQ = BKV = min(S,
+    SPLASH_BLOCK), halved to fit the scratchpad; decode (L == 1, not causal): heads padded to GP
+    rows, the largest KV step that fits. S and D are powers of two in whole vector registers."""
     if query.dim() != 4 or key.dim() != 4 or value.shape != key.shape:
         return Decline("q, k, v not 4-D, or v not shaped as k")
     dtype = query.dtype
@@ -227,8 +207,7 @@ def fused_plan(query, key, value, is_causal):
 
 
 def _math(query, key, value, attn_bias=None, dropout_p=0.0, is_causal=False, *, scale=None):
-    """SDPA by the op its math backend runs: masks, dropout and is_causal (top-left) as SDPA
-    defines them, differentiable."""
+    """SDPA by its math backend's op: masks, dropout, top-left is_causal; differentiable."""
     return torch.ops.aten._scaled_dot_product_attention_math(
         query, key, value, attn_bias, dropout_p, is_causal, None, scale=scale,
         enable_gqa=query.size(-3) != key.size(-3))[0]

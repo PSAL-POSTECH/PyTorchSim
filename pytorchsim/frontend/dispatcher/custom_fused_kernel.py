@@ -1,18 +1,6 @@
-"""The common form of an op the npu runs as a Triton kernel of our own, and the scratchpad budget
-its plan is held to. A subclass of CustomFusedKernel states the ops it takes, the kernel's plan, its
-launch, an aten fallback and, where the op returns more than the kernel, its outputs; `install`
-registers them the same way for every op:
-
-    the op's npu kernel, at AutogradPrivateUse1 and PrivateUse1 (where inference_mode lands)
-        outside a compiled graph        -> fallback, counted "fallback"
-        declined (plan says why, or a gradient with no backward)   -> fallback, logged
-        else                            -> the triton_op `name`, which Inductor traces into launch
-    the triton_op's own npu kernel      -> fallback, counted (a Triton kernel launches only
-                                           inside a compiled graph)
-
-`calls` counts the calls that ran each route: each kernel's launches under its name, and eager
-fallback calls under "fallback"; a trace, or a fallback compiled into a graph, is not a call.
-"""
+"""CustomFusedKernel, the form every fused op inherits, and the scratchpad budget its plan is
+held to. Eager calls run the fallback; compiled ones the triton_op, or the fallback (logged) where
+plan declines or a gradient has no backward. How to write one: docs/fused_kernel.md."""
 
 import inspect
 
@@ -31,15 +19,13 @@ class Decline(str):
 
 
 class CustomFusedKernel:
-    """One fused op. `launch(plan, *args)` carries the triton_op's schema in its annotations after
-    `plan`, and launches the kernels through wrap_triton, their arguments by position."""
+    """One fused op; launch's annotations after `plan` are the triton_op's schema."""
 
     #: The triton_op a compiled graph calls, "torchsim::<op>".
     name = None
-    #: The ops this is the npu kernel of (torch.ops.aten.topk.default), or the qualified name of
-    #: one not defined until later ("transformers::grouped_mm_fallback").
+    #: OpOverloads this is the npu kernel of; a qualified name only for an op defined after install.
     takes = ()
-    #: (ctx, *grads) -> input grads, with setup_context; None makes a gradient decline the kernel.
+    #: (ctx, *grads) -> input grads, with setup_context; without it a gradient declines the kernel.
     backward = None
 
     def __init__(self):
@@ -51,7 +37,7 @@ class CustomFusedKernel:
         return args
 
     def kernels(self):
-        """The @triton.jit kernels launch may launch; each launch counts under the kernel's name."""
+        """The @triton.jit kernels launch may launch; each launch counts under its name."""
         return ()
 
     def plan(self, *args):
@@ -62,20 +48,18 @@ class CustomFusedKernel:
         raise NotImplementedError
 
     def fallback(self, *args):
-        """What launch returns, as aten ops (differentiable), for every call the kernel does not
-        run."""
+        """launch's result as aten ops, differentiable, for every call the kernel does not run."""
         raise NotImplementedError
 
     def outputs(self, op, result, *args):
-        """The outputs of `op` from the kernel's (or the fallback's) `result` for `args`."""
+        """`op`'s outputs from `result`; the result itself unless the op returns more."""
         return result
 
     def setup_context(self, ctx, inputs, output):
         pass
 
     def install(self):
-        """Build the triton_op, count each kernel's launches and register every op in `takes`;
-        once."""
+        """Build the triton_op, count launches and register every op in `takes`; once."""
         if self._op is not None:
             return
         from pytorchsim.backend import codecache
@@ -140,10 +124,8 @@ def next_pow2(n):
 
 
 def lane_bytes(tiles):
-    """An upper bound on the bytes per lane the [rows, cols] tiles take: each in its own buffer (no
-    reuse), banked across whichever axis leaves the most per lane. The compiler picks the axis
-    (a decode's [GP, D] accumulator lands on its GP rows, its [GP, BKV] scores on BKV), so the
-    bound takes the shorter one, at most the lane count."""
+    """The most bytes per lane the [rows, cols, bytes] tiles take: no buffer reuse, each
+    banked along its shorter axis, at most the lane count."""
     lanes = int(config.CONFIG_MACHINE.vector_lanes)
     return sum(rows * cols * nbytes // min(rows, cols, lanes) for rows, cols, nbytes in tiles)
 

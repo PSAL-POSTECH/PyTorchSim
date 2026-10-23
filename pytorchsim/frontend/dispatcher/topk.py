@@ -1,10 +1,5 @@
-"""topk on the npu: one Triton kernel where it takes the call, the same rounds as aten ops elsewhere.
-
-The kernel puts a row on each lane and runs K rounds of max (min), first index of it, and mask,
-gathering the K values and indices of its rows in registers and storing each once, as a TPU
-kernel would. Its backward scatters the values' gradient to the indices, aten's own topk backward.
-TopK is a CustomFusedKernel (custom_fused_kernel.py), which routes aten::topk's calls.
-"""
+"""topk on the npu: a row per lane, K rounds of max (min), first index and mask, the K values and
+indices kept in registers and stored once; the same rounds as aten ops where the kernel declines."""
 
 import torch
 import triton
@@ -28,8 +23,7 @@ class TopK(CustomFusedKernel):
         return x, int(k), dim % max(x.dim(), 1), bool(largest)
 
     def plan(self, x, k, dim, largest):
-        """A program takes a row on each lane, those past the last masked, halved while its tiles
-        overrun the scratchpad budget."""
+        """A row per lane, the block halved while its tiles overrun the scratchpad budget."""
         if not x.is_floating_point():
             return Decline(f"{x.dtype} is not a floating dtype")
         if x.dim() == 0 or x.numel() == 0:
@@ -105,8 +99,7 @@ def _topk_kernel(x_ptr, v_ptr, i_ptr, rows, E: tl.constexpr, EP: tl.constexpr, K
 
 
 def _tiles(xblock, ep, kp, esize):
-    """The tiles one program of _topk_kernel holds: the row and its masked copy, the index
-    candidates, and the gathered values and int64 indices."""
+    """One program's tiles: the row, its masked copy, index candidates, values and indices."""
     return [(xblock, ep, esize), (xblock, ep, esize), (xblock, ep, 4), (xblock, kp, esize),
             (xblock, kp, 8)]
 

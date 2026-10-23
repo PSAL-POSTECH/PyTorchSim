@@ -1,57 +1,19 @@
-"""Our patches to Inductor so its Triton codegen serves npu, and install(), which applies them all.
-
-Here: the lowering patches with no Inductor hook (a transposed conv lowered as its direct
-equivalent, a grouped conv's grid per group, a zero-length GEMM as zeros) and npu's conv
-decompositions. npu as a Triton GPU is triton_gpu.py, its choices choices.py, how a template's
-config is picked selection.py, the ops with a Triton kernel of their own triton_ops/.
-"""
+"""Inductor lowering patches for npu that Inductor has no hook for: a transposed conv lowered as its
+direct equivalent, a grouped conv's grid per group, a zero-length GEMM as zeros; and npu's conv
+decompositions."""
 
 import torch
 
-from pytorchsim import config
 from pytorchsim.frontend.inductor.choices import conv_groups
 from pytorchsim.frontend.inductor.registration import is_npu, lowering_npu
 
-_installed = False
-
 
 def install():
-    """Apply every patch once: npu as a Triton GPU, its choices, the lowering patches here, its
-    template selection, the ops with a Triton kernel of their own, and Inductor's config."""
-    global _installed
-    if _installed:
-        return
-    from pytorchsim.frontend import dispatcher as triton_ops
-    from pytorchsim.frontend.inductor import choices, selection, registration as triton_gpu
-
-    triton_gpu.install()
-    choices.install()
+    """Apply this file's patches."""
     _wrap_convolution_lowering()
     _size_grouped_conv_grid_per_group()
     _short_circuit_degenerate_gemms()
     _decompose_convolution_for_npu()
-    selection.install()
-    triton_ops.install()
-    _configure_inductor()
-    _installed = True
-
-
-def _configure_inductor():
-    """mm/conv template autotune on, at compile time off. In timing mode a template with an epilogue
-    is picked by its fused cycles, Inductor timing the top configs one at a time in this process
-    (TritonNPUScheduling.benchmark_codegened_module); select records picks, so its cache stays off."""
-    from torch._inductor import config as inductor_config
-
-    inductor_config.max_autotune_gemm = True
-    inductor_config.max_autotune_gemm_backends = "ATEN,TRITON"
-    inductor_config.max_autotune_conv_backends = "ATEN,TRITON"
-    inductor_config.triton.autotune_at_compile_time = False
-    timed = bool(config.pytorchsim_timing_mode)
-    inductor_config.benchmark_epilogue_fusion = timed
-    inductor_config.max_epilogue_benchmarked_choices = config.codegen_autotune_template_topk
-    inductor_config.autotune_local_cache = False
-    if timed:
-        inductor_config.compile_threads = 1
 
 
 def _wrap_convolution_lowering():

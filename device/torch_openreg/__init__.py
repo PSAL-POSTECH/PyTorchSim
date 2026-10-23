@@ -18,21 +18,9 @@ torch.utils.generate_methods_for_privateuse1_backend(for_storage=True)
 
 sys.path.append(os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim'))
 import pytorchsim.config  # noqa: F401
-from pytorchsim.frontend.inductor import lowering as _inductor_patches
-from pytorchsim.frontend.inductor import post_grad_pass as _post_grad_pass
+from pytorchsim import frontend as _frontend
 
-_inductor_patches.install()
-
-# The `npu` codegen route: Inductor's own Triton codegen, lowered by the
-# compiler passes. Registered here because Inductor registers a backend per
-# device, once.
-from pytorchsim.frontend.inductor.codegen import TritonNPUScheduling, TritonNPUWrapperCodegen
-torch._inductor.codegen.common.register_backend_for_device(
-    "npu",
-    TritonNPUScheduling,
-    TritonNPUWrapperCodegen,
-    device_custom_pass=_post_grad_pass.pytorchsim_post_grad_pass,
-)
+_frontend.install()
 
 torch_openreg.openreg.init()
 torch_openreg.openreg.register_eager_to_compile(

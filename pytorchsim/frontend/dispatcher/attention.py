@@ -25,6 +25,7 @@ import triton.language as tl
 from torch.library import triton_op, wrap_triton
 
 from pytorchsim import config
+from pytorchsim.frontend.dispatcher.fused_kernel import fits_scratchpad, next_pow2
 
 logger = config.setup_logger()
 
@@ -109,10 +110,6 @@ def _decode_kernel(q_ptr, k_ptr, v_ptr, o_ptr, HKV: tl.constexpr, G: tl.constexp
              (acc / l_i[:, None]).to(o_ptr.dtype.element_ty), mask=rows)
 
 
-def _p2(n):
-    return 1 << max(0, (int(n) - 1).bit_length())
-
-
 def _is_p2(n):
     return n > 0 and n & (n - 1) == 0
 
@@ -133,15 +130,6 @@ def _register_rows(dtype):
     return int(config.CONFIG_MACHINE.vlen_bits) // (8 * dtype.itemsize)
 
 
-def _lane_bytes(tiles):
-    """An upper bound on the bytes per lane the [rows, cols] tiles take: each in its own buffer (no
-    reuse), banked across whichever axis leaves the most per lane. The compiler picks the axis
-    (a decode's [GP, D] accumulator lands on its GP rows, its [GP, BKV] scores on BKV), so the
-    bound takes the shorter one, at most the lane count."""
-    lanes = int(config.CONFIG_MACHINE.vector_lanes)
-    return sum(rows * cols * nbytes // min(rows, cols, lanes) for rows, cols, nbytes in tiles)
-
-
 def _prefill_tiles(BQ, BKV, D, esize, causal):
     """The tiles one query block of _prefill_kernel creates: q, K^T, V, the f32 scores through exp,
     p in the input dtype, the f32 accumulator chain and the stored block."""
@@ -153,14 +141,6 @@ def _prefill_tiles(BQ, BKV, D, esize, causal):
 def _decode_tiles(GP, BKV, D, esize):
     """The tiles one KV step of _decode_kernel creates (the same chain over GP rows)."""
     return _prefill_tiles(GP, BKV, D, esize, causal=False)
-
-
-def _fits(tiles):
-    """Whether `tiles` fit one lane's scratchpad budget, and each is a tensor Triton builds."""
-    from pytorchsim.frontend.inductor.codegen import tiling
-    big = tiling.triton_max_numel()
-    return (all(r * c <= big for r, c, _ in tiles)
-            and _lane_bytes(tiles) <= int(config.CONFIG_MACHINE.spad_budget))
 
 
 def fused_plan(query, key, value, is_causal):
@@ -192,15 +172,16 @@ def fused_plan(query, key, value, is_causal):
     if L == S:
         floor = min(S, int(config.CONFIG_MACHINE.vector_lanes))
         block = min(S, SPLASH_BLOCK)
-        while block > floor and not _fits(_prefill_tiles(block, block, D, esize, is_causal)):
+        while (block > floor
+               and not fits_scratchpad(_prefill_tiles(block, block, D, esize, is_causal))):
             block //= 2
-        if block % rows or not _fits(_prefill_tiles(block, block, D, esize, is_causal)):
+        if block % rows or not fits_scratchpad(_prefill_tiles(block, block, D, esize, is_causal)):
             return None
         return {"kernel": "prefill", "BQ": block, "BKV": block}
     if L == 1 and not is_causal:
-        gp = max(rows, _p2(Hq // H))
+        gp = max(rows, next_pow2(Hq // H))
         bkv = S
-        while bkv >= rows and not _fits(_decode_tiles(gp, bkv, D, esize)):
+        while bkv >= rows and not fits_scratchpad(_decode_tiles(gp, bkv, D, esize)):
             bkv //= 2
         if bkv < rows:
             return None

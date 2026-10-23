@@ -19,6 +19,7 @@ import triton.language as tl
 from torch.library import triton_op, wrap_triton
 
 from pytorchsim import config
+from pytorchsim.frontend.dispatcher.fused_kernel import fits_scratchpad, next_pow2
 
 logger = config.setup_logger()
 
@@ -58,10 +59,6 @@ def _topk_kernel(x_ptr, v_ptr, i_ptr, rows, E: tl.constexpr, EP: tl.constexpr, K
     tl.store(i_ptr + r * K + j, idxs.to(tl.int64), mask=out)
 
 
-def _p2(n):
-    return 1 << max(0, (int(n) - 1).bit_length())
-
-
 def _tiles(xblock, ep, kp, esize):
     """The tiles one program of _topk_kernel holds: the row and its masked copy, the index
     candidates, and the gathered values and int64 indices."""
@@ -73,7 +70,6 @@ def topk_plan(x, k, dim):
     """(the kernel's blocks, None) when it takes topk of `x` along `dim`, else (None, why). A
     program takes a row on each lane, those past the last masked, halved while its tiles overrun
     the scratchpad budget."""
-    from pytorchsim.frontend.dispatcher.attention import _fits
     if not x.is_floating_point():
         return None, f"{x.dtype} is not a floating dtype"
     if x.dim() == 0 or x.numel() == 0:
@@ -81,11 +77,11 @@ def topk_plan(x, k, dim):
     if dim != x.dim() - 1:
         return None, f"dim {dim} is not the last of {x.dim()}"
     E = int(x.shape[-1])
-    ep, kp = _p2(E), _p2(k)
+    ep, kp = next_pow2(E), next_pow2(k)
     xblock = int(config.CONFIG_MACHINE.vector_lanes)
-    while xblock > 1 and not _fits(_tiles(xblock, ep, kp, x.dtype.itemsize)):
+    while xblock > 1 and not fits_scratchpad(_tiles(xblock, ep, kp, x.dtype.itemsize)):
         xblock //= 2
-    if not _fits(_tiles(xblock, ep, kp, x.dtype.itemsize)):
+    if not fits_scratchpad(_tiles(xblock, ep, kp, x.dtype.itemsize)):
         return None, f"a row of {E} overruns the scratchpad budget"
     return {"XBLOCK": xblock, "EP": ep, "KP": kp}, None
 

@@ -8,6 +8,7 @@ from torch._inductor.codegen.common import InplacedBuffer, is_buffer_removed
 from torch._inductor.virtualized import V
 
 from pytorchsim.frontend import tiling
+from pytorchsim.frontend.inductor.blocks import blocks_for
 from pytorchsim.contract import SpecIncomplete, storage_span
 
 _DTYPE = {
@@ -115,6 +116,15 @@ def _held_blocks(kernel):
     return {k: v for k, v in held.items() if k.endswith("BLOCK")} if held else None
 
 
+def _blocks_without_pin(kernel, numels, args):
+    """Blocks for a kernel holding none: a TritonNPUKernel's from blocks_for, the answer pinning
+    gives; a template's or a combo kernel's from its numels and args alone."""
+    from pytorchsim.frontend.inductor.codegen.scheduling import TritonNPUKernel
+    if isinstance(kernel, TritonNPUKernel) and all(isinstance(v, int) for v in numels.values()):
+        return blocks_for(numels, kernel.features)
+    return tiling.fixed_config_for(kernel, numels, args)
+
+
 def collect_meta(kernel, kernel_name):
     """Everything the compile step needs, as plain repr-able data.
 
@@ -164,7 +174,7 @@ def collect_meta(kernel, kernel_name):
         "call_params": call_params,
         "numels": numels,
         "inside_reduction": bool(getattr(kernel, "inside_reduction", False)),
-        "fixed_config": _held_blocks(kernel) or tiling.fixed_config_for(kernel, numels, args),
+        "fixed_config": _held_blocks(kernel) or _blocks_without_pin(kernel, numels, args),
         "template_grid": template_grid(kernel) or combo_grid(kernel),
     }
 

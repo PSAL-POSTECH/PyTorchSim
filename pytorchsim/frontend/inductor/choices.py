@@ -7,7 +7,7 @@ import threading
 
 from pytorchsim import config
 from pytorchsim.frontend import tiling
-from pytorchsim.frontend.inductor.blocks import _elem_args, _kept_axis_contiguous
+from pytorchsim.frontend.inductor.blocks import blocks_for
 from pytorchsim.frontend.inductor.registration import lowering_npu
 
 logger = config.setup_logger()
@@ -82,12 +82,11 @@ def _npu_choices_class():
             persistent = 1 << (extent - 1).bit_length()
             try:
                 numels = {"xnumel": int(features.numel), "r0_numel": extent}
-                shim = type("K", (), {"inside_reduction": True, "numels": numels})()
-                pinned = tiling.fixed_config_for(shim, numels, _elem_args(features),
-                                                 contiguous=_kept_axis_contiguous(features))
-                return persistent <= int(pinned["R0_BLOCK"])
-            except Exception:  # noqa: BLE001
+            except TypeError:
+                logger.info("[torchsim-compile] a reduction of %s rows is not static: persistent "
+                            "only within one reduction block", features.numel)
                 return persistent <= tiling.reduction_block_for(extent)
+            return persistent <= int(blocks_for(numels, features)["R0_BLOCK"])
 
         def reduction_split_factor(self, device, reduction_numel_hint, numel_hint,
                                    inner_reduction):

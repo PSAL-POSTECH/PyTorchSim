@@ -188,16 +188,23 @@ def _outputs_of(meta):
 
 
 def _replay(workdir, meta, runtime, key):
-    """Put a saved run's outputs back in runtime/, or say it is not there."""
+    """Put a saved run's outputs, and its runtime attributes, back in runtime/, or say they are not
+    there: a saved run without the attributes a kernel declares is a miss."""
     import shutil
 
     saved = os.path.join(_replay_root(workdir), key)
     names = _outputs_of(meta)
     if not all(os.path.isfile(os.path.join(saved, f"{n}.raw")) for n in names):
         return False
+    attributes = _attribute_dir_of(workdir)
+    if attributes and not os.path.isdir(os.path.join(saved, attributes)):
+        return False
     for n in names:
         shutil.copyfile(os.path.join(saved, f"{n}.raw"),
                         os.path.join(runtime, f"{n}.raw"))
+    if attributes:
+        shutil.rmtree(os.path.join(runtime, attributes), ignore_errors=True)
+        shutil.copytree(os.path.join(saved, attributes), os.path.join(runtime, attributes))
     return True
 
 
@@ -209,6 +216,18 @@ def _save_replay(workdir, meta, runtime, key):
     for n in _outputs_of(meta):
         shutil.copyfile(os.path.join(runtime, f"{n}.raw"),
                         os.path.join(saved, f"{n}.raw"))
+    attributes = _attribute_dir_of(workdir)
+    if attributes:
+        shutil.rmtree(os.path.join(saved, attributes), ignore_errors=True)
+        shutil.copytree(os.path.join(runtime, attributes), os.path.join(saved, attributes))
+
+
+def _attribute_dir_of(workdir):
+    """runtime/'s directory of runtime attribute records when the kernel declares any, else None."""
+    manifest = contract.kernel_object(workdir)
+    if manifest is None or not manifest.get("runtime_attributes"):
+        return None
+    return compiler_bridge.compiler_contract("kernel_object").RUNTIME_ATTRIBUTE_DIR
 
 
 def run(workdir, meta, args):

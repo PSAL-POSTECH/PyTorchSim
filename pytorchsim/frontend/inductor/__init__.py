@@ -5,7 +5,8 @@
     device_op_overrides.py  the device code Inductor writes into an npu wrapper
     post_grad_pass.py  the FX graph after Inductor's post-grad passes (device_custom_pass)
     lowering.py        lowering patches with no Inductor hook, npu's conv decompositions
-    choices.py         NPUChoices: conv tiles, pinned blocks, reductions, recorded template picks
+    choices.py         NPUChoices: conv tiles, reductions, recorded template picks; mm tile heuristics
+    blocks.py          an Inductor kernel's blocks on this machine (tiling.fixed_config_for)
     selection.py       how a template's config is picked (TOGSim cycles in timing mode)
     codegen/           the scheduling and wrapper Inductor generates through, kernel metadata
 """

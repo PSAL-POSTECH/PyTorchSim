@@ -5,7 +5,9 @@ name: Triton codegen route (PyTorchSim-Triton-Backend)
 #
 # Separate from the main CI on purpose: it runs when the compiler pin moves. Its sweep runs every
 # test and reports them all; only a test on the allowlist (scripts/ci/triton_route_passing.txt)
-# that fails fails the job.
+# that fails fails the job. A pull request into the branch from this repository gets the base and
+# route jobs on the same paths, not the bundle (four hours on the shared runners): a fork's code
+# never runs on the self-hosted runners.
 #
 # The base job makes sure of the base image; the route job (smoke + sweep) and the bundle job
 # (the validation kernels for the compiler) then run beside each other in it. The base image is
@@ -19,16 +21,25 @@ name: Triton codegen route (PyTorchSim-Triton-Backend)
 on:
   push:
     branches: [ "pytorchsim-triton-backend" ]
-    paths:
+    paths: &route_paths
       - 'pytorchsim/**'
+      - 'device/**'
+      - 'tests/**'
       - 'third_party/pytorchsim-triton-backend.json'
+      - 'third_party/github-releases.json'
+      - 'docker/Dockerfile'
       - 'docker/Dockerfile.base'
       - 'scripts/ci/third_party_base_pin.sh'
+      - 'scripts/ci/ghcr_manifest_code.sh'
       - 'scripts/ci/triton_route_*'
       - 'scripts/ci/bundle.py'
       - 'scripts/ci/ptb_bundle_pr.sh'
       - 'scripts/ci/previous_bundle.sh'
+      - 'scripts/selection_merge.py'
       - '.github/workflows/pytorchsim_triton_backend.yml'
+  pull_request:
+    branches: [ "pytorchsim-triton-backend" ]
+    paths: *route_paths
   workflow_dispatch:
     inputs:
       sweep_jobs:
@@ -55,6 +66,7 @@ jobs:
     # curl and the base is built with plain docker build/push, as the compiler's own images workflow
     # does on aarch64. The base tag carries -arm64: docker-image.yml and tag_release.yml build the
     # x86_64 base under third_party-<PIN>.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, slurm, big, aarch64]
     timeout-minutes: 120
     permissions:
@@ -223,6 +235,7 @@ jobs:
   bundle:
     name: Validation kernel bundle
     needs: base
+    if: github.event_name != 'pull_request'
     runs-on: [self-hosted, slurm, big, aarch64]
     timeout-minutes: 240
     permissions:

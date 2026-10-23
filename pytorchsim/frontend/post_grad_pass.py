@@ -7,6 +7,7 @@ frontend/topk.py and frontend/grouped_mm.py.
 
 import torch
 from torch import fx
+from torch.fx import traceback as fx_traceback
 from torch._inductor.custom_graph_pass import CustomGraphModulePass, get_hash_for_files
 
 from pytorchsim import config
@@ -15,8 +16,6 @@ aten = torch.ops.aten
 prims = torch.ops.prims
 
 logger = config.setup_logger()
-
-_KEPT_META = ("original_aten", "stack_trace", "nn_module_stack", "source_fn_stack", "seq_nr")
 
 
 class _pytorchsim_post_grad_pass(CustomGraphModulePass):
@@ -257,8 +256,8 @@ def _to_real_pairs(graph, fake_mode, component):
 
 
 def _inserter(graph, fake_mode, origin):
-    """call(target, *args, **kwargs): a node at the insert point with its fake value set (nothing after the
-    device pass sets it) and origin's provenance (_KEPT_META), origin being the node it rewrites."""
+    """call(target, *args, **kwargs): a node at the insert point, made through FX's tracer under origin's meta
+    so FX copies its provenance and records origin in from_node; its fake value is set, as nothing after does."""
     def unwrap(a):
         if isinstance(a, (list, tuple)):
             return type(a)(unwrap(x) for x in a)
@@ -266,11 +265,11 @@ def _inserter(graph, fake_mode, origin):
             return {k: unwrap(v) for k, v in a.items()}
         return _val(a)
 
+    tracer = fx.proxy.GraphAppendingTracer(graph)
+
     def call(target, *args, **kwargs):
-        node = graph.call_function(target, args, kwargs)
-        for key in _KEPT_META:
-            if key in origin.meta:
-                node.meta[key] = origin.meta[key]
+        with fx_traceback.preserve_node_meta(), fx_traceback.set_current_meta(origin):
+            node = tracer.create_node("call_function", target, args, kwargs)
         if fake_mode is not None:
             with fake_mode:
                 node.meta["val"] = target(*unwrap(args), **unwrap(kwargs))

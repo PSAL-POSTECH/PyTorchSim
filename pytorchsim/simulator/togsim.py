@@ -265,12 +265,6 @@ class TOGSimProcess():
         except yaml.YAMLError as e:
             raise ValueError(f"Invalid YAML format: {e}")
 
-    def get_core_freq(self):
-        if "core_freq_mhz" in self.config_yaml:
-            return self.config_yaml["core_freq_mhz"] * 1000 * 1000 # MHz
-        else:
-            raise KeyError("Key 'core_freq' not found in JSON.")
-
     @staticmethod
     def get_togsim_command(config_path, togsim_path=None):
         """The Simulator of the TOGSim checkout at `togsim_path` (TOGSIM_DIR's by default), on `config_path`."""

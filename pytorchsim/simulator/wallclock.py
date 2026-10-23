@@ -23,13 +23,11 @@ PREFIX = "breakdown"
 
 TORCHSIM_COMPILE = "torchsim-compile"
 SPIKE = "spike"
-GEM5_SAMPLE = "gem5/sample"
-GEM5_BUILD = "gem5/build"
 GEM5_RUN = "gem5/run"
 TOGSIM_TABLES = "togsim/tables"
 TOGSIM_RUN = "togsim/run"
 
-ORDER = [TORCHSIM_COMPILE, SPIKE, GEM5_SAMPLE, GEM5_BUILD, GEM5_RUN, TOGSIM_TABLES, TOGSIM_RUN]
+ORDER = [TORCHSIM_COMPILE, SPIKE, GEM5_RUN, TOGSIM_TABLES, TOGSIM_RUN]
 GROUPS = tuple(dict.fromkeys(c.split("/")[0] for c in ORDER))
 
 

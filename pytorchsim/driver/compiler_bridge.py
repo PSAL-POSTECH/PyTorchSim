@@ -114,15 +114,6 @@ def compiler_env():
     return env
 
 
-def doctor():
-    """Return (ok, output) for the compiler's own toolchain check."""
-    proc = subprocess.run(
-        [config.CONFIG_TORCHSIM_COMPILE_PYTHON,
-         os.path.join(compiler_dir(), "pytorchsim-triton-compiler"), "doctor"],
-        capture_output=True, text=True, cwd=compiler_dir())
-    return proc.returncode == 0, proc.stdout + proc.stderr
-
-
 def run_pipeline(spec_path, workdir, to_stage="torchsim-compile", tog=False, timeout=1800):
     """Drive the compiler's stages over `spec_path`, writing artifacts into `workdir`.
 

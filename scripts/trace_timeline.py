@@ -30,8 +30,7 @@ import sys
 _LINE = re.compile(
     r"\[(\d+)\]\[Core (\d+)\]\[([A-Z_]+)\s*\](?:\[INST_ID=(-?\d+)\])?\s*(\w+)?(.*)")
 
-# Only 3 lanes per core. Barriers are dropped (see _HIDE).
-_LANE = {"MOVIN": "dma", "MOVOUT": "dma"}
+# Barriers are dropped (see _HIDE).
 _HIDE = {"MEMORY_BAR", "COMPUTE_BAR", "TILE_BEGIN", "TILE_END"}
 _CT_NAME = {0: "vector", 1: "matmul", 2: "preload"}
 
@@ -68,14 +67,6 @@ def _label(opcode, detail):
     m = re.search(r"addr_name=(\w+)", detail or "")
     who = m.group(1) if m else "?"
     return f"{who} (T{_tile_of(detail)} {_DMA_SHORT.get(opcode, opcode)})"
-
-
-def _lane(opcode, detail):
-    if opcode == "COMP":
-        m = re.search(r"compute_type=(\d+)", detail)
-        ct = int(m.group(1)) if m else -1
-        return "vector" if ct == 0 else "sa"
-    return _LANE.get(opcode, "dma")
 
 
 def parse(lines):

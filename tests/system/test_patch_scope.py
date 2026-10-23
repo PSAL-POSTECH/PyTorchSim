@@ -109,7 +109,35 @@ def test_conv_heuristics_are_upstream_outside_npu_choices():
     test_result("ConvHeuristicsScoped", torch.tensor(got), torch.tensor([True, True]))
 
 
+_SDP_PROBE = """
+import torch
+q = torch.randn(1, 2, 16, 8)
+b = torch.backends.cuda
+print([b.flash_sdp_enabled(), b.mem_efficient_sdp_enabled(), b.math_sdp_enabled(),
+       torch._C._get_overrideable_sdp_enabled(), torch._fused_sdp_choice(q, q, q)])
+"""
+
+
+def test_sdpa_flags_are_upstream():
+    """Loading npu leaves the process's SDPA flags, and so cpu's fused SDPA choice,
+    as a process without npu has them; npu's choice reads only the overrideable flag."""
+    import ast
+    import subprocess
+
+    env = dict(os.environ, TORCH_DEVICE_BACKEND_AUTOLOAD="0")
+    out = subprocess.run([sys.executable, "-c", _SDP_PROBE], env=env, check=True,
+                         capture_output=True, text=True).stdout
+    upstream = ast.literal_eval(out.strip().splitlines()[-1])
+    q = torch.randn(1, 2, 16, 8)
+    b = torch.backends.cuda
+    ours = [b.flash_sdp_enabled(), b.mem_efficient_sdp_enabled(), b.math_sdp_enabled(),
+            torch._C._get_overrideable_sdp_enabled(), torch._fused_sdp_choice(q, q, q)]
+    test_result("SdpaFlagsUpstream", torch.tensor([int(x) for x in ours]),
+                torch.tensor([int(x) for x in upstream]))
+
+
 if __name__ == "__main__":
+    test_sdpa_flags_are_upstream()
     test_conv_heuristics_are_upstream_outside_npu_choices()
     test_triton_presence_is_upstream()
     test_reduction_split_is_upstream_off_device()

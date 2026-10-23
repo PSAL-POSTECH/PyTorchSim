@@ -196,10 +196,32 @@ def convolution_transposed(node, x, weight, bias, stride, padding, dilation, tra
         if any(k != 1 for k in kernel):
             w = w.flip(list(range(2, 2 + n)))
         w = spread(w, [out_chan, in_chan // groups], kernel, dl)
-        out = torch.convolution(y, w, bias, [1] * n, [0] * n, [1] * n, False, [0] * n, groups)
+        if n == 1:
+            out = _conv1d_as_conv2d(y, w, bias, [1], [0], [1], groups)
+        else:
+            out = torch.convolution(y, w, bias, [1] * n, [0] * n, [1] * n, False, [0] * n, groups)
         return out.squeeze(0) if batchless else out
 
     return direct, [x, weight] + ([bias] if bias is not None else [])
+
+
+@register_rewrite(CallFunction(aten.convolution.default, *(Arg() for _ in range(9))),
+                  lambda match: match.args[6] is False and len(match.args[3]) == 1)
+def convolution_1d(node, x, weight, bias, stride, padding, dilation, transposed, output_padding,
+                   groups):
+    """A 1-D convolution as a 2-D one over a height of 1, which the conv template takes; its backward
+    graph holds convolution_backward either way, so this needs no place before AOTAutograd."""
+    def as_2d(x, weight, bias=None):
+        return _conv1d_as_conv2d(x, weight, bias, stride, padding, dilation, groups)
+
+    return as_2d, [x, weight] + ([bias] if bias is not None else [])
+
+
+def _conv1d_as_conv2d(x, weight, bias, stride, padding, dilation, groups):
+    """conv1d of [N, C, L] as conv2d of [N, C, 1, L]: the height takes stride and dilation 1, no padding."""
+    out = torch.convolution(x.unsqueeze(2), weight.unsqueeze(2), bias, [1, stride[0]],
+                            [0, padding[0]], [1, dilation[0]], False, [0, 0], groups)
+    return out.squeeze(2)
 
 
 def _is_zero_length(bias):

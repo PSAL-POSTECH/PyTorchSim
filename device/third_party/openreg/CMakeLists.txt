@@ -4,7 +4,6 @@ project(TORCH_OPENREG CXX C)
 
 
 set(LIBRARY_NAME openreg)
-set(LIBRARY_TEST ortests)
 
 file(GLOB_RECURSE SOURCE_FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/csrc/*.cpp"

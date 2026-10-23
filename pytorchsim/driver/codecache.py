@@ -72,8 +72,7 @@ def _write_path(src_code, meta):
 STAMP_NAME = "provenance.json"
 
 
-_STALE_PATTERNS = ("[0-9][0-9]-*", "tog.so", "tog_cycles.tsv", "tog_units.tsv",
-                   "trace.so", "trace_cycles.tsv", "trace_units.tsv", "timing.json")
+_STALE_PATTERNS = ("[0-9][0-9]-*", "tog.so", "tog_cycles.tsv", "tog_units.tsv", "timing.json")
 
 
 _identity = None
@@ -179,8 +178,7 @@ def store_identity(workdir):
 
 
 def clear_stale(workdir):
-    """Remove the manifest, stage artifacts and timing derivatives built by another identity. The
-    trace* names are what a frontend from before TOGSim ABI 16 left in the workdir."""
+    """Remove the manifest, stage artifacts and timing derivatives built by another identity."""
     for pattern in (contract.KERNEL_MANIFEST,) + _STALE_PATTERNS:
         for path in glob.glob(os.path.join(workdir, pattern)):
             try:

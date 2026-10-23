@@ -5,7 +5,7 @@ and a zero-length GEMM are rewritten before lowering, in post_grad_pass.py."""
 import torch
 
 from pytorchsim.frontend.inductor.choices import conv_groups
-from pytorchsim.frontend.inductor.registration import lowering_npu
+from pytorchsim.frontend.inductor.registration import is_lowering_npu
 
 
 def install():
@@ -17,7 +17,7 @@ def install():
 
 def _record_conv_groups():
     """Wrap aten.convolution's lowering to record its groups, which narrow the conv heuristic's BLOCK_N
-    to one group's channels (choices.groups_now)."""
+    to one group's channels (choices.conv_groups_now)."""
     import functools
     import inspect
 
@@ -58,7 +58,7 @@ def _size_grouped_conv_grid_per_group():
 
     @SymbolicGridFn
     def conv2d_grid(n, c, h, w, meta, *, cdiv):
-        if not lowering_npu():
+        if not is_lowering_npu():
             return orig2d(n, c, h, w, meta)
         groups = meta.get("GROUPS", 1) or 1
         return (
@@ -69,7 +69,7 @@ def _size_grouped_conv_grid_per_group():
 
     @SymbolicGridFn
     def conv3d_grid(n, c, d, h, w, meta, *, cdiv):
-        if not lowering_npu():
+        if not is_lowering_npu():
             return orig3d(n, c, d, h, w, meta)
         groups = meta.get("GROUPS", 1) or 1
         return (

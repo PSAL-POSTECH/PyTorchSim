@@ -1,7 +1,7 @@
 """The npu's post-grad pass: rewrites that keep ops with no npu kernel on the device.
 
 pytorchsim_post_grad_pass is the device_custom_pass Inductor runs on npu graphs only. A rewrite of one
-op is an Inductor graph pattern registered through npu_rewrite; complex values become real pairs per
+op is an Inductor graph pattern registered through register_rewrite; complex values become real pairs per
 component, by each op's rule in _REAL_PAIR. Ops with a Triton kernel of their own are dispatcher/.
 """
 
@@ -28,7 +28,7 @@ PATTERNS = PatternMatcherPass(pass_name="pytorchsim_post_grad_pass")
 CALLS = {}
 
 
-class _pytorchsim_post_grad_pass(CustomGraphModulePass):
+class _PostGradPass(CustomGraphModulePass):
     """The graph patterns, then complex values as real pairs; its uuid hashes this file, so an edit here
     is a new cache key."""
 
@@ -38,7 +38,7 @@ class _pytorchsim_post_grad_pass(CustomGraphModulePass):
 
         fake_mode = _fake_mode(gm.graph)
         with V.set_fake_mode(fake_mode) if fake_mode is not None else contextlib.nullcontext():
-            changed = PATTERNS.apply(gm) + rewrite_complex_as_real_pairs(gm.graph, fake_mode)
+            changed = PATTERNS.apply(gm) + complex_real_pairs(gm.graph, fake_mode)
         if changed:
             gm.graph.eliminate_dead_code()
             gm.recompile()
@@ -47,10 +47,10 @@ class _pytorchsim_post_grad_pass(CustomGraphModulePass):
         return get_hash_for_files((__file__,))
 
 
-pytorchsim_post_grad_pass = _pytorchsim_post_grad_pass()
+pytorchsim_post_grad_pass = _PostGradPass()
 
 
-def npu_rewrite(pattern, extra_check=lambda match: True):
+def register_rewrite(pattern, extra_check=lambda match: True):
     """Register fn(node, *args, **kwargs) for `pattern` (`extra_check` picks the nodes it applies to). fn
     returns (replacement, args): plain torch code Inductor traces to take the node's place; or a Decline:
     the node stays, logged with where it runs instead (the fallback). Each counts in CALLS."""
@@ -87,7 +87,7 @@ def _count(rewrite, route):
     counts[route] = counts.get(route, 0) + 1
 
 
-@npu_rewrite(CallFunctionVarArgs(aten.histc.default))
+@register_rewrite(CallFunctionVarArgs(aten.histc.default))
 def histc(node, x, *rest, **kwargs):
     """aten.histc counted on the device (counts)."""
 
@@ -125,7 +125,7 @@ def histc(node, x, *rest, **kwargs):
                              hi=said.get("max", 0)), [x]
 
 
-def _is_row_times_matrix(match):
+def _is_row(match):
     """Real floating operands, the left a 1 x K row: an mm or a plain addmm (no beta or alpha)."""
     a, b = match.args[-2:]
     av, bv = _val(a), _val(b)
@@ -133,22 +133,22 @@ def _is_row_times_matrix(match):
             and av.shape[0] == 1 and av.is_floating_point() and bv.is_floating_point())
 
 
-@npu_rewrite(CallFunction(aten.mm.default, Arg(), Arg()), _is_row_times_matrix)
-def row_times_matrix(node, a, b):
+@register_rewrite(CallFunction(aten.mm.default, Arg(), Arg()), _is_row)
+def mm_row(node, a, b):
     """A 1 x K row times a K x N matrix as the row broadcast down the matrix, a multiply and a sum over K:
     vector work, where the mm template would run it on the array."""
     return (lambda a, b: (a.reshape(-1, 1) * b).sum(0, keepdim=True)), [a, b]
 
 
-@npu_rewrite(CallFunction(aten.addmm.default, Arg(), Arg(), Arg()), _is_row_times_matrix)
-def row_times_matrix_plus(node, bias, a, b):
-    """row_times_matrix plus the bias."""
+@register_rewrite(CallFunction(aten.addmm.default, Arg(), Arg(), Arg()), _is_row)
+def addmm_row(node, bias, a, b):
+    """mm_row plus the bias."""
     return (lambda bias, a, b: (a.reshape(-1, 1) * b).sum(0, keepdim=True) + bias), [bias, a, b]
 
 
-@npu_rewrite(CallFunction(aten.convolution.default, *(Arg() for _ in range(9))),
+@register_rewrite(CallFunction(aten.convolution.default, *(Arg() for _ in range(9))),
              lambda match: match.args[6] is True)
-def transposed_conv(node, x, weight, bias, stride, padding, dilation, transposed, output_padding, groups):
+def convolution_transposed(node, x, weight, bias, stride, padding, dilation, transposed, output_padding, groups):
     """A transposed convolution as its direct equivalent: the input spread by the stride and padded by
     dilation * (kernel - 1) - padding (plus output_padding after), the weight's in and out channels
     swapped per group, flipped, and spread by the dilation; then stride, dilation 1, no padding."""
@@ -202,7 +202,7 @@ def transposed_conv(node, x, weight, bias, stride, padding, dilation, transposed
     return direct, [x, weight] + ([bias] if bias is not None else [])
 
 
-def _is_zero_length_gemm(bias):
+def _is_zero_length(bias):
     """An mm-family node whose output is empty, or whose K is zero with no bias to add."""
     def check(match):
         node = match.output_node()
@@ -213,7 +213,7 @@ def _is_zero_length_gemm(bias):
     return check
 
 
-def zero_length_gemm(node, *args, **kwargs):
+def gemm_zero_length(node, *args, **kwargs):
     """A matmul with a zero-length M or N, or K and no bias, as zeros of its output: nothing to compute,
     where the mm template would be asked for an empty tile."""
     out = _val(node)
@@ -224,10 +224,10 @@ def zero_length_gemm(node, *args, **kwargs):
 
 for _op, _bias in ((aten.mm.default, 0), (aten.bmm.default, 0), (aten.addmm.default, 1),
                    (aten.baddbmm.default, 1)):
-    npu_rewrite(CallFunctionVarArgs(_op), _is_zero_length_gemm(_bias))(zero_length_gemm)
+    register_rewrite(CallFunctionVarArgs(_op), _is_zero_length(_bias))(gemm_zero_length)
 
 
-def rewrite_complex_as_real_pairs(graph, fake_mode) -> int:
+def complex_real_pairs(graph, fake_mode) -> int:
     """Each component of complex values whose ops _REAL_PAIR has a rule for becomes real [..., 2] pairs;
     any other component stays, logged with why and where it runs. Returns the components rewritten."""
 
@@ -301,12 +301,12 @@ def rewrite_complex_as_real_pairs(graph, fake_mode) -> int:
     for component in components([n for n in graph.nodes if _is_complex(n)]):
         why = why_not_real(component)
         if why is not None:
-            _count("real_pairs", "fallback")
+            _count("complex_real_pairs", "fallback")
             logger.info("[post_grad_pass] %d complex nodes stay: %s; complex ops run as %s",
                         len(component), why, fallback_route(component[0].target))
             continue
         to_real_pairs(graph, fake_mode, component)
-        _count("real_pairs", "rewritten")
+        _count("complex_real_pairs", "rewritten")
         changed += 1
     return changed
 
@@ -338,13 +338,13 @@ def _pair_of_mul(call, n, pair):
         br, bi = call(aten.select.int, pair[other], -1, 0), call(aten.select.int, pair[other], -1, 1)
     re = call(aten.sub.Tensor, call(aten.mul.Tensor, ar, br), call(aten.mul.Tensor, ai, bi))
     im = call(aten.add.Tensor, call(aten.mul.Tensor, ar, bi), call(aten.mul.Tensor, ai, br))
-    return _join(call, re, im)
+    return _pair(call, re, im)
 
 
 def _pair_of_polar(call, n, pair):
     """polar(abs, angle): its pair is (abs*cos(angle), abs*sin(angle))."""
     r, angle = n.args[:2]
-    return _join(call, call(aten.mul.Tensor, r, call(aten.cos.default, angle)),
+    return _pair(call, call(aten.mul.Tensor, r, call(aten.cos.default, angle)),
                  call(aten.mul.Tensor, r, call(aten.sin.default, angle)))
 
 
@@ -357,7 +357,7 @@ _REAL_PAIR = {
 }
 
 
-def _join(call, re, im):
+def _pair(call, re, im):
     """The [..., 2] real pair of re and im."""
     return call(aten.cat.default, [call(aten.unsqueeze.default, re, -1),
                                    call(aten.unsqueeze.default, im, -1)], -1)

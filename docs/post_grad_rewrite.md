@@ -24,7 +24,7 @@ decomposition table, so some ops never arrive: `torch.special.ndtr`, for example
 
 `registration.py` registers `pytorchsim_post_grad_pass` as the `device_custom_pass` of the npu
 (`register_backend_for_device`), so Inductor runs it on npu graphs only. It runs the graph patterns
-(`PATTERNS.apply(gm)`), then `rewrite_complex_as_real_pairs`. Every node takes one of these routes:
+(`PATTERNS.apply(gm)`), then `complex_real_pairs`. Every node takes one of these routes:
 
 ```
 npu graph, after Inductor's decompositions
@@ -35,9 +35,9 @@ npu graph, after Inductor's decompositions
  │   └─ fn(node, *args, **kwargs) returns
  │       ├─ (replacement, example_args)             → match.replace_by_example   counted "rewritten"
  │       └─ Decline("why")                          → the node stays             logged, counted "fallback"
- └─ rewrite_complex_as_real_pairs, for each group of complex nodes joined by complex values
-     ├─ every op has a _REAL_PAIR rule              → real [..., 2] pairs    "real_pairs": "rewritten"
-     └─ otherwise                                   → the group stays        logged, "real_pairs": "fallback"
+ └─ complex_real_pairs, for each group of complex nodes joined by complex values
+     ├─ every op has a _REAL_PAIR rule              → real [..., 2] pairs    "complex_real_pairs": "rewritten"
+     └─ otherwise                                   → the group stays        logged, "complex_real_pairs": "fallback"
 ```
 
 A node that stays runs where `fallback_route(target)` says, and the log line names it: Inductor's
@@ -47,7 +47,7 @@ replacements under the graph's own fake mode, so it also runs on a graph a test 
 ## The pieces
 
 ```python
-@npu_rewrite(CallFunction(aten.my_op.default, Arg(), Arg()), extra_check)  # the nodes it takes
+@register_rewrite(CallFunction(aten.my_op.default, Arg(), Arg()), extra_check)  # the nodes it takes
 def my_op(node, x, dim):                                 # the matched node and its arguments
     def compute(x, *, dim): ...                          # the replacement, plain torch code
     if _val(x) is None:
@@ -57,12 +57,12 @@ def my_op(node, x, dim):                                 # the matched node and 
 
 | Piece | What it is |
 |---|---|
-| `npu_rewrite(pattern, extra_check)` | The decorator. It registers the function in `PATTERNS` (an Inductor `PatternMatcherPass`) and counts each result in `CALLS` under the function's name. `extra_check` defaults to taking every match. Called as a plain function, it registers one function for several patterns (`zero_length_gemm`). |
+| `register_rewrite(pattern, extra_check)` | The decorator. It registers the function in `PATTERNS` (an Inductor `PatternMatcherPass`) and counts each result in `CALLS` under the function's name. `extra_check` defaults to taking every match. Called as a plain function, it registers one function for several patterns (`gemm_zero_length`). |
 | `pattern` | Inductor's pattern language from `torch._inductor.pattern_matcher`. `CallFunction(op, Arg(), ...)` names the op and one `Arg()` per argument. `CallFunctionVarArgs(op)` takes any number of arguments, for an op whose optional arguments may be left out (histc). |
 | `extra_check(match)` | Picks the nodes the rewrite applies to. `False` means the node is not this rewrite's business: nothing is logged or counted. `match.args` are the captured arguments; read their fake values with `_val`. |
 | `fn(node, *args, **kwargs)` | Gets the matched node and its arguments. It returns `(replacement, example_args)`: `replacement` is plain torch code that Inductor traces in the node's place (`match.replace_by_example`), and `example_args` are the graph nodes it takes. Close over constants with `functools.partial`, so only tensor nodes are example arguments. |
 | `Decline("reason")` | The other return: the rewrite cannot take this node. The node stays (the fallback), and the log line gives the reason and where the node runs instead. It is the same `Decline` a fused kernel's `plan` returns. |
-| `CALLS` | `{rewrite name: {"rewritten": n, "fallback": n}}`, counted per node. Complex values count under `"real_pairs"`, once per group. |
+| `CALLS` | `{rewrite name: {"rewritten": n, "fallback": n}}`, counted per node. Complex values count under `"complex_real_pairs"`, once per group. |
 | `_REAL_PAIR` | `{complex op: rule}`. A rule writes one complex op on real `[..., 2]` pairs. It has rules for `aten.polar`, `view_as_complex`, `unsqueeze` and `mul` (`Tensor` and `Scalar`). |
 
 Complex ops are not patterns. Inductor's matcher skips a node with a complex input or output
@@ -74,14 +74,14 @@ it is.
 
 ### 1. One function in `post_grad_pass.py`
 
-Put it after the existing rewrites (`histc`, `row_times_matrix`, `transposed_conv`,
-`zero_length_gemm`), before `rewrite_complex_as_real_pairs`. The replacement goes inside the rewrite,
+Put it after the existing rewrites (`histc`, `mm_row`, `convolution_transposed`,
+`gemm_zero_length`), before `complex_real_pairs`. The replacement goes inside the rewrite,
 as `histc`'s `counts` does, and the checks and the return follow it. `histc` is the shortest real
 example. Here is a new one: `aten.logcumsumexp`, which Inductor lowers only as a fallback, so on the
 npu it runs on the CPU. Each output is a logsumexp over a prefix, and `logsumexp` lowers.
 
 ```python
-@npu_rewrite(CallFunction(aten.logcumsumexp.default, Arg(), Arg()))
+@register_rewrite(CallFunction(aten.logcumsumexp.default, Arg(), Arg()))
 def logcumsumexp(node, x, dim):
     """aten.logcumsumexp as one logsumexp per prefix (prefix_logsumexp)."""
 
@@ -159,8 +159,8 @@ must take:
 | a hand-built node whose input has no fake value | `{"logcumsumexp": {"fallback": 1}}`. The node stays. |
 | an integral input | `{"logcumsumexp": {"fallback": 1}}`. The node stays. |
 | the edge cases: `-inf` prefixes, `[-200, 0]` in float32, both signs of `dim` | rewritten, values equal to aten's |
-| a complex group with the new rule | `{"real_pairs": {"rewritten": 1}}`, no complex node left |
-| a complex group with an op without a rule | `{"real_pairs": {"fallback": 1}}`, the group unchanged |
+| a complex group with the new rule | `{"complex_real_pairs": {"rewritten": 1}}`, no complex node left |
+| a complex group with an op without a rule | `{"complex_real_pairs": {"fallback": 1}}`, the group unchanged |
 | `torch.compile(f)` on `npu:0` | the values match the CPU's |
 
 Clear `CALLS` before each case, and call `torch._dynamo.reset()` before each compiled one. The pass
@@ -181,7 +181,7 @@ These follow the maintainer's review rules for this repo.
 - **No silent fallback.** When `fn` cannot take a node, return `Decline` with the reason: the
   reason is the log line. Use `extra_check` only for nodes that are not this rewrite's business.
 - **No shape special cases.** Do not pick nodes by particular shapes or row counts, and do not add
-  a later exception that undoes one. `_is_row_times_matrix` takes the general form (any 1 x K row).
+  a later exception that undoes one. `_is_row` takes the general form (any 1 x K row).
 - **Derive constants from the machine.** Take sizes from the fake values or
   `config.CONFIG_MACHINE`. Do not hard-code them.
 - **The replacement must match the op**: the same values, dtypes and edge-case rules. `histc` keeps
@@ -199,15 +199,15 @@ These follow the maintainer's review rules for this repo.
 
 - **Optional arguments**: use `CallFunctionVarArgs(op)` and fill the defaults in `fn`, as `histc`
   does with `bins`, `min` and `max`.
-- **One check for several ops**: `row_times_matrix` (`aten.mm`) and `row_times_matrix_plus`
-  (`aten.addmm`) share `_is_row_times_matrix`, which reads the last two arguments of either.
-- **One rewrite for several ops**: call `npu_rewrite(pattern, check)(fn)` in a loop.
-  `zero_length_gemm` is registered for `mm`, `bmm`, `addmm` and `baddbmm` this way, with the check
-  built per op (`_is_zero_length_gemm(bias)`), and counts under one name in `CALLS`.
-- **A check on a constant argument**: `transposed_conv` takes `aten.convolution` only when its
+- **One check for several ops**: `mm_row` (`aten.mm`) and `addmm_row`
+  (`aten.addmm`) share `_is_row`, which reads the last two arguments of either.
+- **One rewrite for several ops**: call `register_rewrite(pattern, check)(fn)` in a loop.
+  `gemm_zero_length` is registered for `mm`, `bmm`, `addmm` and `baddbmm` this way, with the check
+  built per op (`_is_zero_length(bias)`), and counts under one name in `CALLS`.
+- **A check on a constant argument**: `convolution_transposed` takes `aten.convolution` only when its
   `transposed` argument is `True` (`match.args[6] is True`).
 - **One `Arg()` per argument.** The matcher reads one pattern object used twice as "the same value
   twice", so `CallFunction(op, *[Arg()] * 9)` matches nothing ("repeated pattern differs"). Write
-  `CallFunction(op, *(Arg() for _ in range(9)))`, as `transposed_conv` does.
+  `CallFunction(op, *(Arg() for _ in range(9)))`, as `convolution_transposed` does.
 - **Constants in the replacement**: close over them with `functools.partial`. Only graph nodes go
   in `example_args`.

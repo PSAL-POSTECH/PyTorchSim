@@ -24,7 +24,7 @@ aten 호출로 돌고, 시뮬레이터 밖으로 빠집니다. histc, 1 x K 행�
 
 `registration.py` 는 `pytorchsim_post_grad_pass` 를 npu 의 `device_custom_pass` 로 등록합니다
 (`register_backend_for_device`). 그래서 Inductor 는 이 pass 를 npu 그래프에서만 돌립니다. pass 는
-그래프 패턴(`PATTERNS.apply(gm)`)을 먼저 돌리고, 그다음 `rewrite_complex_as_real_pairs` 를 돌립니다.
+그래프 패턴(`PATTERNS.apply(gm)`)을 먼저 돌리고, 그다음 `complex_real_pairs` 를 돌립니다.
 모든 노드는 아래 경로 중 하나로 갑니다.
 
 ```
@@ -36,9 +36,9 @@ npu 그래프, Inductor 의 decomposition 뒤
  │   └─ fn(node, *args, **kwargs) 가 돌려준 것이
  │       ├─ (replacement, example_args)             → match.replace_by_example   "rewritten" 으로 셈
  │       └─ Decline("이유")                          → 노드가 남음               로그를 남기고 "fallback" 으로 셈
- └─ rewrite_complex_as_real_pairs, 복소수 값으로 이어진 복소수 노드 묶음마다
-     ├─ 모든 연산에 _REAL_PAIR 규칙이 있음           → 실수 [..., 2] 쌍       "real_pairs": "rewritten"
-     └─ 그렇지 않음                                  → 묶음이 남음            로그를 남기고 "real_pairs": "fallback"
+ └─ complex_real_pairs, 복소수 값으로 이어진 복소수 노드 묶음마다
+     ├─ 모든 연산에 _REAL_PAIR 규칙이 있음           → 실수 [..., 2] 쌍       "complex_real_pairs": "rewritten"
+     └─ 그렇지 않음                                  → 묶음이 남음            로그를 남기고 "complex_real_pairs": "fallback"
 ```
 
 남은 노드는 `fallback_route(target)` 가 말하는 곳에서 돌고, 로그 한 줄에 그 위치가 적힙니다.
@@ -48,7 +48,7 @@ Inductor 자체 커널이거나, 시뮬레이터가 보지 못하는 CPU 의 ext
 ## 구성 요소
 
 ```python
-@npu_rewrite(CallFunction(aten.my_op.default, Arg(), Arg()), extra_check)  # 이 재작성이 맡는 노드
+@register_rewrite(CallFunction(aten.my_op.default, Arg(), Arg()), extra_check)  # 이 재작성이 맡는 노드
 def my_op(node, x, dim):                                 # 맞은 노드와 그 인자
     def compute(x, *, dim): ...                          # 대체 코드, 평범한 torch 코드
     if _val(x) is None:
@@ -58,12 +58,12 @@ def my_op(node, x, dim):                                 # 맞은 노드와 그 
 
 | 구성 요소 | 설명 |
 |---|---|
-| `npu_rewrite(pattern, extra_check)` | 데코레이터. 함수를 `PATTERNS`(Inductor 의 `PatternMatcherPass`)에 등록하고, 결과를 `CALLS` 에 함수 이름으로 셉니다. `extra_check` 의 기본값은 모든 match 를 받는 것입니다. 평범한 함수로 부르면 함수 하나를 여러 패턴에 등록합니다 (`zero_length_gemm`). |
+| `register_rewrite(pattern, extra_check)` | 데코레이터. 함수를 `PATTERNS`(Inductor 의 `PatternMatcherPass`)에 등록하고, 결과를 `CALLS` 에 함수 이름으로 셉니다. `extra_check` 의 기본값은 모든 match 를 받는 것입니다. 평범한 함수로 부르면 함수 하나를 여러 패턴에 등록합니다 (`gemm_zero_length`). |
 | `pattern` | `torch._inductor.pattern_matcher` 의 Inductor 패턴 언어. `CallFunction(op, Arg(), ...)` 는 연산과 인자마다 `Arg()` 하나를 적습니다. `CallFunctionVarArgs(op)` 는 인자 개수와 상관없이 받으므로, 선택 인자가 빠질 수 있는 연산에 씁니다 (histc). |
 | `extra_check(match)` | 재작성이 적용될 노드를 고릅니다. `False` 는 이 재작성이 맡을 노드가 아니라는 뜻이라, 로그도 횟수도 남지 않습니다. `match.args` 가 잡힌 인자이고, fake 값은 `_val` 로 읽습니다. |
 | `fn(node, *args, **kwargs)` | 맞은 노드와 그 인자를 받습니다. `(replacement, example_args)` 를 돌려줍니다. `replacement` 는 Inductor 가 노드 자리에 trace 해 넣는 평범한 torch 코드이고 (`match.replace_by_example`), `example_args` 는 그 코드가 받는 그래프 노드입니다. 상수는 `functools.partial` 로 묶어서, 텐서 노드만 example 인자가 되게 합니다. |
 | `Decline("이유")` | 다른 반환값. 재작성이 이 노드를 맡을 수 없다는 뜻입니다. 노드는 남고 (fallback), 로그에 이유와 노드가 대신 도는 곳이 적힙니다. fused kernel 의 `plan` 이 돌려주는 것과 같은 `Decline` 입니다. |
-| `CALLS` | `{재작성 이름: {"rewritten": n, "fallback": n}}`, 노드마다 셉니다. 복소수 값은 `"real_pairs"` 아래에 묶음마다 한 번 셉니다. |
+| `CALLS` | `{재작성 이름: {"rewritten": n, "fallback": n}}`, 노드마다 셉니다. 복소수 값은 `"complex_real_pairs"` 아래에 묶음마다 한 번 셉니다. |
 | `_REAL_PAIR` | `{복소수 연산: 규칙}`. 규칙은 복소수 연산 하나를 실수 `[..., 2]` 쌍으로 적습니다. `aten.polar`, `view_as_complex`, `unsqueeze`, `mul` (`Tensor` 와 `Scalar`) 의 규칙이 있습니다. |
 
 복소수 연산은 패턴으로 다루지 않습니다. Inductor 의 matcher 는 입력이나 출력이 복소수인 노드를
@@ -75,14 +75,14 @@ pass 는 복소수 노드 묶음을 통째로 바꾸거나 전혀 바꾸지 않�
 
 ### 1. `post_grad_pass.py` 안의 함수 하나
 
-기존 재작성 (`histc`, `row_times_matrix`, `transposed_conv`, `zero_length_gemm`) 뒤,
-`rewrite_complex_as_real_pairs` 앞에 둡니다. 대체 코드는 `histc` 의 `counts` 처럼 재작성 함수 안에 두고,
+기존 재작성 (`histc`, `mm_row`, `convolution_transposed`, `gemm_zero_length`) 뒤,
+`complex_real_pairs` 앞에 둡니다. 대체 코드는 `histc` 의 `counts` 처럼 재작성 함수 안에 두고,
 확인과 반환은 그 뒤에 둡니다. 실제 예시 중 가장 짧은 것은 `histc` 입니다. 아래는 새로 만드는
 예시인 `aten.logcumsumexp` 입니다. Inductor 는 이 연산을 fallback 으로만 lowering 하므로 npu 에서는
 CPU 로 갑니다. 출력 하나하나는 prefix 에 대한 logsumexp 이고, `logsumexp` 는 lowering 됩니다.
 
 ```python
-@npu_rewrite(CallFunction(aten.logcumsumexp.default, Arg(), Arg()))
+@register_rewrite(CallFunction(aten.logcumsumexp.default, Arg(), Arg()))
 def logcumsumexp(node, x, dim):
     """aten.logcumsumexp as one logsumexp per prefix (prefix_logsumexp)."""
 
@@ -160,8 +160,8 @@ assert CALLS == {"logcumsumexp": {"rewritten": 1}}, CALLS
 | 입력에 fake 값이 없는, 직접 만든 노드 | `{"logcumsumexp": {"fallback": 1}}`. 노드가 남습니다. |
 | 정수 입력 | `{"logcumsumexp": {"fallback": 1}}`. 노드가 남습니다. |
 | 경계 케이스: `-inf` prefix, float32 의 `[-200, 0]`, 양수와 음수 `dim` | 재작성되고, 값이 aten 과 같습니다 |
-| 새 규칙이 있는 복소수 묶음 | `{"real_pairs": {"rewritten": 1}}`, 복소수 노드가 남지 않습니다 |
-| 규칙이 없는 연산이 있는 복소수 묶음 | `{"real_pairs": {"fallback": 1}}`, 묶음이 그대로입니다 |
+| 새 규칙이 있는 복소수 묶음 | `{"complex_real_pairs": {"rewritten": 1}}`, 복소수 노드가 남지 않습니다 |
+| 규칙이 없는 연산이 있는 복소수 묶음 | `{"complex_real_pairs": {"fallback": 1}}`, 묶음이 그대로입니다 |
 | `npu:0` 에서 `torch.compile(f)` | 값이 CPU 와 같습니다 |
 
 케이스마다 먼저 `CALLS` 를 비우고, 컴파일하는 케이스 앞에서는 `torch._dynamo.reset()` 을 부릅니다.
@@ -184,7 +184,7 @@ npu 에서 스크립트로 실행합니다: `python tests/ops/misc/test_<op>.py`
   돌려줍니다. 그 이유가 로그 한 줄이 됩니다. `extra_check` 는 이 재작성이 맡을 노드가 아닌 경우에만
   씁니다.
 - **shape 특수 케이스를 넣지 않습니다.** 특정 shape 나 행 수로 노드를 고르지 말고, 그것을 되돌리는
-  후속 예외도 만들지 마세요. `_is_row_times_matrix` 는 일반적인 형태 (모든 1 x K 행) 를 받습니다.
+  후속 예외도 만들지 마세요. `_is_row` 는 일반적인 형태 (모든 1 x K 행) 를 받습니다.
 - **상수는 머신에서 구합니다.** 크기는 fake 값이나 `config.CONFIG_MACHINE` 에서 얻습니다.
   하드코딩하지 않습니다.
 - **대체 코드는 연산과 같아야 합니다.** 값, dtype, 경계 규칙이 같아야 합니다. `histc` 는 aten 처럼
@@ -202,15 +202,15 @@ npu 에서 스크립트로 실행합니다: `python tests/ops/misc/test_<op>.py`
 
 - **선택 인자**: `CallFunctionVarArgs(op)` 를 쓰고 기본값은 `fn` 에서 채웁니다. `histc` 가 `bins`,
   `min`, `max` 를 이렇게 다룹니다.
-- **여러 연산에 같은 조건**: `row_times_matrix` (`aten.mm`) 와 `row_times_matrix_plus`
-  (`aten.addmm`) 는 `_is_row_times_matrix` 를 함께 씁니다. 이 함수는 두 연산 모두의 마지막 인자 두 개를
+- **여러 연산에 같은 조건**: `mm_row` (`aten.mm`) 와 `addmm_row`
+  (`aten.addmm`) 는 `_is_row` 를 함께 씁니다. 이 함수는 두 연산 모두의 마지막 인자 두 개를
   읽습니다.
-- **여러 연산에 같은 재작성**: `npu_rewrite(pattern, check)(fn)` 를 반복문 안에서 부릅니다.
-  `zero_length_gemm` 은 이렇게 `mm`, `bmm`, `addmm`, `baddbmm` 에 등록되고, 조건은 연산마다
-  만들며 (`_is_zero_length_gemm(bias)`), `CALLS` 에는 한 이름으로 셉니다.
-- **상수 인자에 거는 조건**: `transposed_conv` 는 `transposed` 인자가 `True` 일 때만
+- **여러 연산에 같은 재작성**: `register_rewrite(pattern, check)(fn)` 를 반복문 안에서 부릅니다.
+  `gemm_zero_length` 은 이렇게 `mm`, `bmm`, `addmm`, `baddbmm` 에 등록되고, 조건은 연산마다
+  만들며 (`_is_zero_length(bias)`), `CALLS` 에는 한 이름으로 셉니다.
+- **상수 인자에 거는 조건**: `convolution_transposed` 는 `transposed` 인자가 `True` 일 때만
   `aten.convolution` 을 받습니다 (`match.args[6] is True`).
 - **인자마다 `Arg()` 하나씩.** matcher 는 같은 패턴 객체가 두 번 쓰이면 "같은 값이 두 번"으로
   읽습니다. 그래서 `CallFunction(op, *[Arg()] * 9)` 는 아무것도 잡지 못합니다 ("repeated pattern
-  differs"). `transposed_conv` 처럼 `CallFunction(op, *(Arg() for _ in range(9)))` 로 씁니다.
+  differs"). `convolution_transposed` 처럼 `CallFunction(op, *(Arg() for _ in range(9)))` 로 씁니다.
 - **대체 코드 안의 상수**: `functools.partial` 로 묶습니다. `example_args` 에는 그래프 노드만 넣습니다.

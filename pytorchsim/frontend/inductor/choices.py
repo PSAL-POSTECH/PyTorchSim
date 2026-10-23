@@ -8,7 +8,7 @@ import threading
 from pytorchsim import config
 from pytorchsim.frontend import tiling
 from pytorchsim.frontend.inductor.blocks import blocks_for
-from pytorchsim.frontend.inductor.registration import lowering_npu
+from pytorchsim.frontend.inductor.registration import is_lowering_npu
 
 logger = config.setup_logger()
 
@@ -71,7 +71,7 @@ def _npu_choices_class():
             """Persistent only when the whole reduction fits this machine's reduction block."""
             base = InductorChoices.should_use_persistent_reduction(
                 features, cooperative_reduction)
-            if not base or not lowering_npu():
+            if not base or not is_lowering_npu():
                 return base
             try:
                 extent = int(features.reduction_numel)
@@ -124,7 +124,7 @@ def _npu_choices_class():
 
 
 def _npu_config_heuristic():
-    """npu's conv tile table: BLOCK_N is the lane count, per group (groups_now)."""
+    """npu's conv tile table: BLOCK_N is the lane count, per group (conv_groups_now)."""
     from torch._inductor.heuristics.template.triton import (
         BaseConfigHeuristic, ConvConfig)
 
@@ -143,7 +143,7 @@ def _npu_config_heuristic():
             base = super().get_conv_configs()
 
             def per_group(m, n, k, **kwargs):
-                groups = groups_now()
+                groups = conv_groups_now()
                 return base(m, max(1, n // groups) if groups > 1 else n, k,
                             **kwargs)
 
@@ -152,7 +152,7 @@ def _npu_config_heuristic():
     return NPUConfigHeuristic()
 
 
-def groups_now():
+def conv_groups_now():
     """The groups of the convolution being lowered right now (1 outside one)."""
     return getattr(conv_groups, "value", 1) or 1
 

@@ -70,7 +70,7 @@ def run_pass_graph(name):
     pg.pytorchsim_post_grad_pass(gm)
     convs = gm.graph.find_nodes(op="call_function", target=torch.ops.aten.convolution.default)
     left = [c for c in convs if c.args[6]]
-    ok = not left and len(convs) == 1 and pg.CALLS.get("transposed_conv") == {"rewritten": 1}
+    ok = not left and len(convs) == 1 and pg.CALLS.get("convolution_transposed") == {"rewritten": 1}
     check_result("ConvTranspose pass_graph", torch.tensor([ok]), torch.tensor([True]))
     return ok
 

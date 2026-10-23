@@ -56,7 +56,7 @@ def run_pass_graph(name):
     pg.CALLS.clear()
     pg.pytorchsim_post_grad_pass(gm)
     left = gm.graph.find_nodes(op="call_function", target=torch.ops.aten.mm.default)
-    ok = not left and pg.CALLS.get("zero_length_gemm") == {"rewritten": 1}
+    ok = not left and pg.CALLS.get("gemm_zero_length") == {"rewritten": 1}
     check_result("ZeroLengthGemm pass_graph", torch.tensor([ok]), torch.tensor([True]))
     return ok
 

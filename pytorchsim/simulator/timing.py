@@ -241,6 +241,16 @@ def store_meta(workdir, meta):
         json.dump(meta, f, indent=2)
 
 
+def load_tuned_blocks(workdir, meta):
+    """Give `meta` the blocks its build in `workdir` settled on: the fixed_config store_meta wrote
+    after the autotune retries, which a cache hit's caller still holds untuned."""
+    with open(os.path.join(workdir, META_JSON)) as f:
+        stored = json.load(f)
+    if "fixed_config" in stored:
+        meta["fixed_config"] = stored["fixed_config"]
+    return meta
+
+
 #: What gem5 says when it dies, as opposed to the libc backtrace that follows it.
 _GEM5_SIGNAL = re.compile(
     r"^(?:.*\b(?:panic|fatal):.*|.*Assertion.*|Program aborted at tick.*)$", re.M)

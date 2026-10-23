@@ -1,35 +1,46 @@
 """The npu's post-grad pass: rewrites that keep ops with no npu kernel on the device.
 
-pytorchsim_post_grad_pass is the device_custom_pass Inductor runs on npu graphs only, after its post-grad
-passes: histc, polar, a row times a matrix, complex values as real pairs. Ops with a Triton kernel of
-their own (topk, grouped_mm, SDPA) are frontend/dispatcher/.
+pytorchsim_post_grad_pass is the device_custom_pass Inductor runs on npu graphs only. A rewrite of one
+op is an Inductor graph pattern registered through npu_rewrite; complex values become real pairs per
+component, by each op's rule in _REAL_PAIR. Ops with a Triton kernel of their own are dispatcher/.
 """
+
+import contextlib
+import functools
 
 import torch
 from torch import fx
 from torch.fx import traceback as fx_traceback
 from torch._inductor.custom_graph_pass import CustomGraphModulePass, get_hash_for_files
+from torch._inductor.pattern_matcher import (Arg, CallFunction, CallFunctionVarArgs,
+                                             PatternMatcherPass, register_graph_pattern)
 
 from pytorchsim import config
+from pytorchsim.frontend.dispatcher.custom_fused_kernel import Decline
 
 aten = torch.ops.aten
-prims = torch.ops.prims
 
 logger = config.setup_logger()
 
+PATTERNS = PatternMatcherPass(pass_name="pytorchsim_post_grad_pass")
+
+#: rewrite name -> {"rewritten": n, "fallback": n}: the nodes each rewrite replaced or left.
+CALLS = {}
+
 
 class _pytorchsim_post_grad_pass(CustomGraphModulePass):
-    """The four rewrites in this order on an npu graph (polar before the complex values it makes); its uuid
-    hashes this file, so an edit here is a new cache key."""
+    """The graph patterns, then complex values as real pairs; its uuid hashes this file, so an edit here
+    is a new cache key."""
 
     def __call__(self, gm: fx.GraphModule) -> None:
-        graph, fake_mode = gm.graph, _fake_mode(gm.graph)
-        changed = (rewrite_aten_histc(graph, fake_mode)
-                   + rewrite_aten_polar(graph, fake_mode)
-                   + rewrite_aten_mm_addmm_row(graph, fake_mode)
-                   + rewrite_aten_view_as_complex(graph, fake_mode))
+        """Replacements trace under the graph's fake mode: Inductor sets it, a caller outside it may not."""
+        from torch._inductor.virtualized import V
+
+        fake_mode = _fake_mode(gm.graph)
+        with V.set_fake_mode(fake_mode) if fake_mode is not None else contextlib.nullcontext():
+            changed = PATTERNS.apply(gm) + rewrite_complex_as_real_pairs(gm.graph, fake_mode)
         if changed:
-            graph.eliminate_dead_code()
+            gm.graph.eliminate_dead_code()
             gm.recompile()
 
     def uuid(self):
@@ -39,31 +50,62 @@ class _pytorchsim_post_grad_pass(CustomGraphModulePass):
 pytorchsim_post_grad_pass = _pytorchsim_post_grad_pass()
 
 
-def rewrite_aten_histc(graph, fake_mode) -> int:
-    """Every aten.histc as a count on the device (_insert_histc); one without a fake value is left to aten,
-    logged. Returns how many were rewritten."""
-    def build(call, node):
-        x = node.args[0]
-        if _val(x) is None:
-            logger.info("[post_grad_pass] histc without a fake value: left to aten")
-            return None
-        said = dict(zip(("bins", "min", "max"), node.args[1:]), **node.kwargs)
-        return _insert_histc(call, x, _val(x), int(said.get("bins", 100)), said.get("min", 0), said.get("max", 0))
-    return _replace(graph, fake_mode, graph.find_nodes(op="call_function", target=aten.histc.default), build)
+def npu_rewrite(pattern, extra_check=lambda match: True):
+    """Register fn(node, *args, **kwargs) for `pattern` (`extra_check` picks the nodes it applies to). fn
+    returns (replacement, args): plain torch code Inductor traces to take the node's place; or a Decline:
+    the node stays, logged with where it runs instead (the fallback). Each counts in CALLS."""
+    def register(fn):
+        def handler(match, *args, **kwargs):
+            node = match.output_node()
+            got = fn(node, *args, **kwargs)
+            if isinstance(got, Decline):
+                _count(fn.__name__, "fallback")
+                logger.info("[post_grad_pass] %s stays: %s; it runs as %s", node.target, got,
+                            fallback_route(node.target))
+                return
+            replacement, example = got
+            match.replace_by_example(replacement, example)
+            _count(fn.__name__, "rewritten")
+        register_graph_pattern(pattern, extra_check=extra_check, pass_dict=PATTERNS)(handler)
+        return fn
+    return register
 
 
-def _insert_histc(call, x, xv, bins, lo, hi):
+def fallback_route(target):
+    """Where a node left as `target` runs: Inductor's own kernel, or an extern call aten makes on the
+    CPU, outside the simulator, when Inductor has no lowering for it or falls back."""
+    from torch._inductor.lowering import fallbacks, lowerings
+    packet = getattr(target, "overloadpacket", None)
+    lowered = target in lowerings or packet in lowerings
+    if lowered and target not in fallbacks and packet not in fallbacks:
+        return "Inductor's own kernel"
+    return "an extern aten call on the CPU (not simulated)"
+
+
+def _count(rewrite, route):
+    counts = CALLS.setdefault(rewrite, {})
+    counts[route] = counts.get(route, 0) + 1
+
+
+@npu_rewrite(CallFunctionVarArgs(aten.histc.default))
+def histc(node, x, *rest, **kwargs):
+    """aten.histc counted on the device (_histc_counts)."""
+    if _val(x) is None:
+        return Decline("its input has no fake value")
+    said = dict(zip(("bins", "min", "max"), rest), **kwargs)
+    return functools.partial(_histc_counts, bins=int(said.get("bins", 100)), lo=said.get("min", 0),
+                             hi=said.get("max", 0)), [x]
+
+
+def _histc_counts(x, *, bins, lo, hi):
     """aten's histc: bin (x - lo) * bins / (hi - lo), integral in int64 and floating in x's dtype, the top
-    edge in the last bin, outside [lo, hi] dropped; lo == hi takes x's range, widened by 1 if it is one value."""
-    integral = not xv.is_floating_point()
-    flat = call(prims.convert_element_type.default, call(aten.reshape.default, x, [-1]),
-                torch.int64 if integral else xv.dtype)
-    if lo == hi and xv.numel():
-        lo, hi = call(aten.amin.default, flat, [0]), call(aten.amax.default, flat, [0])
-        one = call(aten.eq.Tensor, lo, hi)
-        lo, hi = (call(aten.where.self, one, call(aten.sub.Tensor, lo, 1), lo),
-                  call(aten.where.self, one, call(aten.add.Tensor, hi, 1), hi))
-        width = call(aten.sub.Tensor, hi, lo)
+    edge in the last bin, outside [lo, hi] dropped; lo == hi takes x's range, widened by 1 if one value."""
+    integral = not x.is_floating_point()
+    flat = x.reshape(-1).to(torch.int64 if integral else x.dtype)
+    if lo == hi and x.numel():
+        lo, hi = flat.amin(0), flat.amax(0)
+        one = lo == hi
+        lo, hi = torch.where(one, lo - 1, lo), torch.where(one, hi + 1, hi)
     else:
         if lo == hi:
             lo, hi = lo - 1, hi + 1
@@ -71,77 +113,52 @@ def _insert_histc(call, x, xv, bins, lo, hi):
             lo, hi = int(lo), int(hi)
         if hi <= lo:
             raise RuntimeError(f"torch.histc: max must be larger than min (min {lo}, max {hi})")
-        width = hi - lo
-    scaled = call(aten.mul.Tensor, call(aten.sub.Tensor, flat, lo), bins)
+    scaled = (flat - lo) * bins
     if integral:
-        pos = call(aten.div.Tensor_mode, scaled, width, rounding_mode="floor")
+        pos = torch.div(scaled, hi - lo, rounding_mode="floor")
     else:
-        pos = call(prims.convert_element_type.default, call(aten.div.Tensor, scaled, width), torch.int64)
-    pos = call(aten.clamp_max.default, pos, bins - 1)
-    ge, le = ((aten.ge.Tensor, aten.le.Tensor) if isinstance(lo, fx.Node)
-              else (aten.ge.Scalar, aten.le.Scalar))
-    inside = call(aten.logical_and.default, call(ge, flat, lo), call(le, flat, hi))
-    seats = call(prims.iota.default, bins, start=0, step=1, dtype=torch.int64, device=xv.device,
-                 requires_grad=False)
-    hits = call(aten.logical_and.default,
-                call(aten.eq.Tensor, call(aten.reshape.default, pos, [-1, 1]),
-                     call(aten.reshape.default, seats, [1, -1])),
-                call(aten.reshape.default, inside, [-1, 1]))
-    return call(prims.convert_element_type.default, call(aten.sum.dim_IntList, hits, [0]), xv.dtype)
+        pos = (scaled / (hi - lo)).to(torch.int64)
+    pos = pos.clamp_max(bins - 1)
+    inside = (flat >= lo) & (flat <= hi)
+    seats = torch.arange(bins, dtype=torch.int64, device=x.device)
+    hits = (pos.reshape(-1, 1) == seats.reshape(1, -1)) & inside.reshape(-1, 1)
+    return hits.sum(0).to(x.dtype)
 
 
-def rewrite_aten_polar(graph, fake_mode) -> int:
-    """polar(abs, angle) as view_as_complex of the pair (abs*cos, abs*sin), built contiguous since
-    view_as_complex needs a unit last stride; rewrite_aten_view_as_complex then takes it to real pairs."""
-    def build(call, node):
-        r, angle = node.args[:2]
-        return call(aten.view_as_complex.default,
-                    _join(call, call(aten.mul.Tensor, r, call(aten.cos.default, angle)),
-                          call(aten.mul.Tensor, r, call(aten.sin.default, angle))))
-    return _replace(graph, fake_mode, graph.find_nodes(op="call_function", target=aten.polar.default), build)
-
-
-def rewrite_aten_mm_addmm_row(graph, fake_mode) -> int:
-    """Replace a 1 x K row times a K x N matrix with the row broadcast down the matrix, a
-    multiply and a sum over K: vector work, where the mm template would run it on the array."""
-    def build(call, node):
-        found = _row_times_matrix(node)
-        if found is None:
-            return None
-        a, b, bias = found
-        column = call(aten.view.default, a, [int(_val(a).shape[1]), 1])
-        out = call(aten.sum.dim_IntList, call(aten.mul.Tensor, column, b), [0], True)
-        return out if bias is None else call(aten.add.Tensor, out, bias)
-    return _replace(graph, fake_mode, graph.find_nodes(op="call_function", target=aten.mm.default)
-                    + graph.find_nodes(op="call_function", target=aten.addmm.default), build)
-
-
-def _row_times_matrix(node):
-    """(a, b, bias) of an mm or a plain addmm of real floating operands whose left one is a row, else None."""
-    if node.target is aten.mm.default:
-        (a, b), bias = node.args, None
-    elif not node.kwargs:
-        bias, a, b = node.args
-    else:
-        return None
+def _is_row_times_matrix(match):
+    """Real floating operands, the left a 1 x K row: an mm or a plain addmm (no beta or alpha)."""
+    a, b = match.args[-2:]
     av, bv = _val(a), _val(b)
-    if av is None or bv is None or av.dim() != 2 or bv.dim() != 2 or av.shape[0] != 1:
-        return None
-    if not (av.is_floating_point() and bv.is_floating_point()):
-        return None
-    return a, b, bias
+    return (av is not None and bv is not None and av.dim() == 2 and bv.dim() == 2
+            and av.shape[0] == 1 and av.is_floating_point() and bv.is_floating_point())
 
 
-def rewrite_aten_view_as_complex(graph, fake_mode) -> int:
-    """Each component of complex values whose ops _REAL_PAIR has a rule for becomes real [..., 2] pairs; any
-    other component stays as it is, logged with why. Returns the components rewritten."""
+@npu_rewrite(CallFunction(aten.mm.default, Arg(), Arg()), _is_row_times_matrix)
+def row_times_matrix(node, a, b):
+    """A 1 x K row times a K x N matrix as the row broadcast down the matrix, a multiply and a sum over K:
+    vector work, where the mm template would run it on the array."""
+    return (lambda a, b: (a.reshape(-1, 1) * b).sum(0, keepdim=True)), [a, b]
+
+
+@npu_rewrite(CallFunction(aten.addmm.default, Arg(), Arg(), Arg()), _is_row_times_matrix)
+def row_times_matrix_plus(node, bias, a, b):
+    """row_times_matrix plus the bias."""
+    return (lambda bias, a, b: (a.reshape(-1, 1) * b).sum(0, keepdim=True) + bias), [bias, a, b]
+
+
+def rewrite_complex_as_real_pairs(graph, fake_mode) -> int:
+    """Each component of complex values whose ops _REAL_PAIR has a rule for becomes real [..., 2] pairs;
+    any other component stays, logged with why and where it runs. Returns the components rewritten."""
     changed = 0
     for component in _complex_components([n for n in graph.nodes if _is_complex(n)]):
         why = _why_not_real(component)
         if why is not None:
-            logger.info("[post_grad_pass] %d complex nodes left to aten: %s", len(component), why)
+            _count("real_pairs", "fallback")
+            logger.info("[post_grad_pass] %d complex nodes stay: %s; complex ops run as %s",
+                        len(component), why, fallback_route(component[0].target))
             continue
         _to_real_pairs(graph, fake_mode, component)
+        _count("real_pairs", "rewritten")
         changed += 1
     return changed
 
@@ -221,25 +238,20 @@ def _pair_of_mul(call, n, pair):
     return _join(call, re, im)
 
 
+def _pair_of_polar(call, n, pair):
+    """polar(abs, angle): its pair is (abs*cos(angle), abs*sin(angle))."""
+    r, angle = n.args[:2]
+    return _join(call, call(aten.mul.Tensor, r, call(aten.cos.default, angle)),
+                 call(aten.mul.Tensor, r, call(aten.sin.default, angle)))
+
+
 _REAL_PAIR = {
+    aten.polar.default: _pair_of_polar,
     aten.view_as_complex.default: _pair_of_view,
     aten.unsqueeze.default: _pair_of_unsqueeze,
     aten.mul.Tensor: _pair_of_mul,
     aten.mul.Scalar: _pair_of_mul,
 }
-
-
-def _replace(graph, fake_mode, nodes, build):
-    """Each node of nodes for which build(call, node) returns a value is replaced by it and erased, call
-    being _inserter's for that node. Returns how many were replaced."""
-    changed = 0
-    for node in nodes:
-        out = build(_inserter(graph, fake_mode, node), node)
-        if out is not None:
-            node.replace_all_uses_with(out)
-            graph.erase_node(node)
-            changed += 1
-    return changed
 
 
 def _inserter(graph, fake_mode, origin):

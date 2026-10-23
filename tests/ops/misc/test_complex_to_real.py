@@ -7,7 +7,7 @@ from torch._inductor.decomposition import select_decomp_table
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
 from _pytorchsim_utils import test_result
 
-from pytorchsim.frontend.rewrite_fx_graph import ComplexToRealPairs
+from pytorchsim.frontend.post_grad_pass import pytorchsim_post_grad_pass
 
 aten = torch.ops.aten
 
@@ -23,13 +23,18 @@ def _rope(x, a):
 
 
 def _trace(fn, *args):
-    # WITH INDUCTOR'S DECOMPOSITION TABLE, because that is the graph the pass
-    # actually runs on. A bare make_fx keeps aten.polar.default, which this
-    # backend decomposes one stage earlier (pytorchsim/frontend/rewrite_fx_graph.py) and
-    # which the pass therefore does not handle -- tracing without the table
-    # measures a graph the pipeline never produces.
+    """The graph Inductor hands its post-grad passes: make_fx with Inductor's decomposition table, which
+    keeps aten.polar, so the device pass rewrites it before the complex values."""
     return make_fx(fn, decomposition_table=select_decomp_table(),
                    tracing_mode="fake")(*args)
+
+
+def _unlowered(gm):
+    """The ops of gm Inductor has no lowering for; the device pass runs after decomposition, so any it
+    inserts must lower as they are."""
+    from torch._inductor.lowering import lowerings
+    return sorted({str(m.target) for m in gm.graph.nodes if m.op == "call_function"
+                   and m.target not in lowerings and m.target.overloadpacket not in lowerings})
 
 
 def _complex_nodes(graph):
@@ -52,7 +57,7 @@ def test_pass_leaves_no_complex():
     before = _complex_nodes(gm.graph)
     assert before, "the traced graph should have complex nodes to rewrite"
 
-    ComplexToRealPairs()(gm.graph)
+    pytorchsim_post_grad_pass(gm)
     gm.recompile()
 
     after = _complex_nodes(gm.graph)
@@ -82,11 +87,50 @@ def test_complex_scalar_multiply():
 
     x = torch.randn(1, 32, 64)
     gm = _trace(f, x)
-    ComplexToRealPairs()(gm.graph)
+    pytorchsim_post_grad_pass(gm)
     gm.recompile()
     after = _complex_nodes(gm.graph)
     assert not after, f"complex nodes survived the pass: {[str(n.target) for n in after]}"
+    assert not _unlowered(gm), f"no Inductor lowering for {_unlowered(gm)}"
     test_result("complex-to-real (complex scalar)", gm(x), f(x))
+
+
+def test_components_are_judged_apart():
+    """A component the pass cannot say in real arithmetic leaves a separate one it can rewritten; every node it
+    makes keeps the stack trace of the node it replaces, and from_node is left to Inductor's observer."""
+    def f(x, y):
+        a = torch.view_as_real(torch.view_as_complex(x) * (0.6 - 0.8j))
+        b = torch.view_as_real(torch.exp(torch.view_as_complex(y)))
+        return a, b
+
+    x, y = torch.randn(4, 8, 2), torch.randn(4, 8, 2)
+    gm = _trace(f, x, y)
+    for n in gm.graph.nodes:
+        n.meta["stack_trace"] = f"user.py:{n.name}"
+        n.meta["from_node"] = [n.name]
+    before = {n.name for n in gm.graph.nodes}
+    pytorchsim_post_grad_pass(gm)
+    copied = [n.name for n in gm.graph.nodes if n.name not in before and "from_node" in n.meta]
+    assert not copied, f"from_node copied onto new nodes: {copied}"
+    left = sorted(str(n.target) for n in _complex_nodes(gm.graph))
+    assert left == ["aten.exp.default", "aten.view_as_complex.default"], f"complex nodes left: {left}"
+    bare = [n.name for n in gm.graph.nodes if n.op == "call_function" and "stack_trace" not in n.meta]
+    assert not bare, f"nodes without provenance: {bare}"
+    out = gm(x, y)
+    test_result("complex-to-real (components apart)", out[0], f(x, y)[0])
+
+
+def test_row_mm_stays_real():
+    """The GEMV rewrite takes real floating operands only: a complex 1 x K mm stays one mm."""
+    def f(a, b):
+        return torch.view_as_real(torch.view_as_complex(a) @ torch.view_as_complex(b))
+
+    a, b = torch.randn(1, 8, 2), torch.randn(8, 4, 2)
+    gm = _trace(f, a, b)
+    pytorchsim_post_grad_pass(gm)
+    mms = [n for n in gm.graph.nodes if n.target is aten.mm.default]
+    assert len(mms) == 1, f"complex mm rewritten: {[str(n.target) for n in gm.graph.nodes]}"
+    test_result("complex 1 x K mm", gm(a, b), f(a, b))
 
 
 def test_unhandled_op_is_left_alone():
@@ -100,7 +144,7 @@ def test_unhandled_op_is_left_alone():
     x = torch.randn(1, 32, 64)
     gm = _trace(f, x)
     before = [str(n.target) for n in _complex_nodes(gm.graph)]
-    ComplexToRealPairs()(gm.graph)
+    pytorchsim_post_grad_pass(gm)
     after = [str(n.target) for n in _complex_nodes(gm.graph)]
     assert before == after, f"an ineligible component was rewritten: {before} -> {after}"
     print("unhandled complex op left alone:", after)
@@ -110,5 +154,7 @@ if __name__ == "__main__":
     device = torch.device("npu:0")
     test_pass_leaves_no_complex()
     test_complex_scalar_multiply()
+    test_components_are_judged_apart()
+    test_row_mm_stays_real()
     test_unhandled_op_is_left_alone()
     test_rope_on_device(device)

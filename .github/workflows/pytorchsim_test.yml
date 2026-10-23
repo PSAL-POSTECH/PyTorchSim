@@ -79,6 +79,7 @@ jobs:
           - tests/ops/misc/test_widen_dtype.py
           - tests/ops/reduce/test_batchnorm.py
           - tests/ops/view/test_view3D_2D.py
+          - tests/system/test_attribute_sources.py
           - tests/system/test_breakdown_viewer.py
           - tests/system/test_bundle_reuse.py
           - tests/system/test_compiler_failure.py

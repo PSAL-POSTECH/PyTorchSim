@@ -296,7 +296,7 @@ class TOGSimProcess():
         Args:
             model_path: kernel-dir handle; tog.so/tog_cycles.tsv are derived from
                 its directory
-            attribute_path: Path to attribute file
+            attribute_path: the directory of the functional run's runtime attribute records
             autotune_mode: If True, run in autotune mode (silent)
             config_path: the machine file TOGSim times on (default: the one TORCHSIM_TARGET names)
             togsim_path: TOGSim repository root (optional, defaults to config.CONFIG_TOGSIM_DIR)
@@ -343,6 +343,8 @@ class TOGSimProcess():
             base_cmd = TOGSimProcess.get_togsim_command(config_path, togsim_path)
             unit_tsv = os.path.join(os.path.dirname(str(model_path)), "tog_units.tsv")
             cmd = f"{base_cmd} --tog_so {tog_so} --cycle_table {cycle_tsv} --unit_table {unit_tsv}"
+            if attribute_path:
+                cmd += f" --attribute_path {attribute_path}"
             if config.CONFIG_TOGSIM_DEBUG_LEVEL:
                 cmd += f" --log_level {config.CONFIG_TOGSIM_DEBUG_LEVEL}"
 

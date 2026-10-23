@@ -97,10 +97,16 @@ SPEC = KernelSpec(
 '''
 
 
-def write(src_code, meta, path):
+def recorded_file(kernel_name):
+    """The file beside a kernel file holding the launch values of the args it does not draw."""
+    return f"{kernel_name}_inputs.pt"
+
+
+def write(src_code, meta, path, recorded=None):
     """Write the kernel's module and the kernel file for this Inductor kernel. Returns `path`.
     A block Inductor fixed in the kernel body rather than taking as a parameter is skipped:
-    passing it would not match the signature."""
+    passing it would not match the signature. `recorded` ({arg: tensor}) is saved beside it and
+    make_inputs takes those args from there; every other input is drawn."""
     missing = [a["name"] for a in meta["args"] if not a["dtype"] or not a["numel"]]
     if missing:
         raise SpecIncomplete(
@@ -122,10 +128,17 @@ def write(src_code, meta, path):
     args_body = "\n".join(
         f"        Arg({a['name']!r}, {a['role']!r}, {a['dtype']!r}, ({a['numel']},)),"
         for a in meta["args"])
-    make_inputs_body = "\n".join(
+    recorded = recorded or {}
+    load = [f"    recorded = torch.load(os.path.join(os.path.dirname(os.path.abspath(__file__)), "
+            f"{recorded_file(meta['kernel_name'])!r}), weights_only=True)"] if recorded else []
+    make_inputs_body = "\n".join(load + [
+        f"    out[{a['name']!r}] = recorded[{a['name']!r}]" if a["name"] in recorded else
         f"    out[{a['name']!r}] = torch.randn({a['numel']}, generator=g)"
         f".to(torch.{a['dtype']})"
-        for a in meta["args"] if a["role"] in ("in", "inout")) or "    pass"
+        for a in meta["args"] if a["role"] in ("in", "inout")]) or "    pass"
+    unknown = sorted(set(recorded) - {a["name"] for a in meta["args"] if a["role"] in ("in", "inout")})
+    if unknown:
+        raise SpecIncomplete(f"{meta['kernel_name']}: recorded {unknown} are no input of it")
 
     triton_module = f"{meta['kernel_name']}_triton.py"
     with open(os.path.join(os.path.dirname(path), triton_module), "w") as f:
@@ -146,6 +159,9 @@ def write(src_code, meta, path):
         scalar_decls=[(n, c) for n, c, _ in scalars],
         scalar_values={n: v for n, _, v in scalars if v is not None},
     )
+    if recorded:
+        import torch
+        torch.save(recorded, os.path.join(os.path.dirname(path), recorded_file(meta["kernel_name"])))
     with open(path, "w") as f:
         f.write(text)
     return path

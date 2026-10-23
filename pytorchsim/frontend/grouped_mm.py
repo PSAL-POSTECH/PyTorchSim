@@ -1,6 +1,6 @@
 """aten._grouped_mm on the npu (2-D A grouped by offs, times 3-D B) as one Triton kernel in fused_moe form: a
-program is a block of BM rows of one group, its group, first row and row count read from a table the TOG takes
-as launch data; a block without rows runs its K loop zero times. Registered through torch.library."""
+program is a block of BM rows of one group, its group, first row and row count read from a table the TOG reads as
+runtime attributes; a block without rows runs its K loop zero times. Registered through torch.library."""
 
 import torch
 import triton

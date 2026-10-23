@@ -28,6 +28,7 @@ LOCK_TIMEOUT = 600
 
 _LAUNCH_OBSERVERS = {}
 _EVERY_LAUNCH = []
+_EVERY_LAUNCH_INPUTS = []
 _EVERY_EXTERN = []
 
 
@@ -44,6 +45,12 @@ def observe_launches(kernel, callback):
 def observe_every_launch(callback):
     """Call `callback(launcher)` at every launch of any kernel."""
     _EVERY_LAUNCH.append(callback)
+
+
+def observe_every_launch_inputs(callback):
+    """Call `callback(launcher, args)` at every launch of any kernel, before it runs: `args` are the
+    launch's own arguments, the tensors holding what the kernel will read."""
+    _EVERY_LAUNCH_INPUTS.append(callback)
 
 
 def observe_every_extern(callback):
@@ -95,7 +102,7 @@ def _compiler_git(compiler_dir):
 
 
 _PROBE = ("import json; from {pkg} import toolchain as t; "
-          "print(json.dumps({{'tools': dict(t.TOOLS), 'togsim_api': t.togsim_api_version(), "
+          "print(json.dumps({{'tools': dict(t.TOOLS), 'togsim_api': t.togsim_version(), "
           "'togsim_include': t.TOGSIM_INCLUDE}}))")
 
 
@@ -228,6 +235,8 @@ class TritonNPULauncher:
             observer()
         for callback in _EVERY_LAUNCH:
             callback(self)
+        for callback in _EVERY_LAUNCH_INPUTS:
+            callback(self, args)
         if config.pytorchsim_functional_mode:
             with wallclock.span(wallclock.SPIKE, self.kernel_name):
                 written = functional.run(self.workdir, self.meta, args)

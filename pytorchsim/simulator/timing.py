@@ -79,15 +79,16 @@ def write_tensors(workdir):
 
 
 def write_shape(workdir, meta, args=()):
-    """Write the grid extents the TOG reads as shape_args.
+    """Write the shape_args the TOG reads: the grid extents, then the kernel's integer scalars.
 
     The parallel numels are read off `args` by the kernel's parameter names. A
     template's trailing arguments ARE its grid, so its extents are used as is.
+    The scalars follow in the compiler's order (kernel_object.shape_args), `args` by name.
     """
     numels = dict(meta["numels"])
     if meta.get("template_grid") is not None:
         grid = list(contract.launch_extents(meta))
-        _write_extents(workdir, grid, "template grid", data_values(workdir, args))
+        _write_extents(workdir, grid, "template grid", meta, args)
         return grid
 
     passed = [k for k in numels if not k.startswith("r")]
@@ -103,29 +104,13 @@ def write_shape(workdir, meta, args=()):
                 numels[key] = val
 
     grid = list(contract.grid_of({**meta, "numels": numels}))
-    _write_extents(workdir, grid, "grid", data_values(workdir, args))
+    _write_extents(workdir, grid, "grid", meta, args)
     return grid
 
 
-def data_values(workdir, args):
-    """The elements of every argument the TOG reads as data (tile_types' data_args), off this launch's arguments;
-    shape_args carries them past the grid's extents."""
-    import json
-    path = contract.artifact(workdir, "tile_types")
-    want = json.load(open(path)).get("data_args", []) if path else []
-    out = []
-    for d in want:
-        t = args[d["arg"]]
-        vals = t.detach().reshape(-1).cpu().tolist()
-        if len(vals) != d["numel"]:
-            raise ValueError(f"argument {d['arg']} of {workdir} holds {len(vals)} elements, the TOG reads "
-                             f"{d['numel']}")
-        out += [int(v) for v in vals]
-    return out
-
-
-def _write_extents(workdir, ext, what, data=()):
-    """Write `ext` as this launch's shape_args, refusing a count it cannot use.
+def _write_extents(workdir, ext, what, meta, args):
+    """Write `ext` and the launch's integer scalars as this launch's shape_args, refusing a grid
+    count it cannot use.
 
     The count is checked against the shared TOG; the file goes in this
     process's launch directory, because the grid belongs to the launch.
@@ -140,9 +125,12 @@ def _write_extents(workdir, ext, what, data=()):
                 f"extent(s) and this launch has {len(ext)} ({ext}); the TOG "
                 f"would read past the end of shape_args. Delete the workdir to "
                 f"rebuild it.")
+    ko = compiler_bridge.compiler_contract("kernel_object")
+    shape = ko.shape_args(contract.kernel_object(workdir), dict(zip(meta.get("call_params", ()), args)),
+                          grid=ext)
     with open(os.path.join(contract.dir_for(workdir), SHAPE_TXT), "w") as f:
-        f.write("\n".join(str(int(g)) for g in list(ext) + list(data)) + "\n")
-    logger.info("[TOGSim] %s %s -> %s", what, ext, SHAPE_TXT)
+        f.write("\n".join(str(int(g)) for g in shape) + "\n")
+    logger.info("[TOGSim] %s %s, scalars %s -> %s", what, ext, shape[len(ext):], SHAPE_TXT)
 
 
 def write_cycle_tables(workdir, meta):
@@ -203,12 +191,34 @@ def run_togsim(workdir, meta, args=()):
     write_tensors(workdir)
 
     handle = os.path.join(mine, "tile_graph.onnx")
-    attribute = os.path.join(mine, "attribute")
+    attribute = attribute_dir(workdir)
     if torch.npu.get_tog_simulator() is not None:
-        return torch.npu.launch_kernel(handle, attribute)
+        return torch.npu.launch_kernel(handle, _held_for_the_session(mine, attribute))
 
     result_path = TOGSimProcess.run_standalone(handle, attribute)
     return TOGSimProcess.get_result_from_file(result_path)
+
+
+def attribute_dir(workdir):
+    """The runtime attribute records this launch's functional run left (runtime/runtime_attribute/),
+    which TOGSim reads; refused when the kernel declares attributes and no functional run left them."""
+    manifest = contract.kernel_object(workdir) or {}
+    d = os.path.join(contract.runtime_dir(workdir),
+                     compiler_bridge.compiler_contract("kernel_object").RUNTIME_ATTRIBUTE_DIR)
+    if manifest.get("runtime_attributes") and not os.path.isdir(d):
+        raise FileNotFoundError(
+            f"{d} not found -- {manifest.get('name')} reads runtime attributes, which only the "
+            f"functional run records: run with TORCHSIM_FUNCTIONAL_MODE=1")
+    return d
+
+
+def _held_for_the_session(mine, attribute):
+    """A copy of `attribute` this launch alone names: an open TOGSimulator reads it when it takes the
+    launch, after the next functional run of the kernel has rewritten the original."""
+    import tempfile
+    held = tempfile.mkdtemp(prefix="runtime_attribute-", dir=mine)
+    shutil.copytree(attribute, held, dirs_exist_ok=True)
+    return held
 
 
 def run(workdir, meta, args=()):

@@ -58,9 +58,11 @@ should_run() {
 
 # The ONLY v3 pin left: this script's reference column (baseline_cycle.csv) was
 # measured on a TPUv3, so simulating v6e here would compare two different machines.
-# Everything else validates v6e. Override TOGSIM_CONFIG if you want a v6e run anyway.
-CONFIG_DIR="$(cd "$TORCHSIM_DIR" && python3 -c 'from pytorchsim.config import CONFIG_TOGSIM_CONFIG_DIR as d; print(d)')"
-export TOGSIM_CONFIG="${TOGSIM_CONFIG:-$CONFIG_DIR/systolic_ws_128x128_c1_simple_noc_tpuv3_timing_only.yml}"
+# Everything else validates v6e. Set TORCHSIM_TARGET if you want a v6e run anyway.
+# A compiler that does not run tpuv3 refuses it at the first workload; the paper's
+# numbers are reproduced on the v1.0.0 image (README.md, Artifact Evaluation).
+export TORCHSIM_TARGET="${TORCHSIM_TARGET:-tpuv3}"
+export TORCHSIM_FUNCTIONAL_MODE="${TORCHSIM_FUNCTIONAL_MODE:-0}"
 LOG_DIR=$TORCHSIM_DIR/experiments/artifact/logs
 mkdir -p $LOG_DIR
 

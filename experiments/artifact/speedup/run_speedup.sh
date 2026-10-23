@@ -11,6 +11,12 @@ configs=(
     "systolic_ws_128x128_c2_simple_noc_tpuv3.yml"
     "systolic_ws_128x128_c2_booksim_tpuv3.yml"
 )
+for i in "${configs[@]}"; do
+  if [[ ! -f "$CONFIG_DIR/$i" ]]; then
+    echo "error: $CONFIG_DIR/$i does not exist: this script reproduces the paper on the v1.0.0 image (README.md, Artifact Evaluation)" >&2
+    exit 1
+  fi
+done
 
 target_list=(
   "gemm_512x512x512"

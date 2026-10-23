@@ -15,8 +15,9 @@ on:
 # The list below is mirrored by hand from scripts/ci/triton_route_passing.txt, one container per
 # test file, and is not identical to it: a file the allowlist runs as several entries (Gemma's
 # --preset) runs here once without arguments, which runs the same presets in one process, and
-# three tests/system tests the allowlist leaves out (test_compiler_failure, test_reduction_tiling,
-# test_select) run here too.
+# tests/system tests the allowlist leaves out run here too: test_compiler_failure,
+# test_reduction_tiling and test_select, and test_patch_scope, test_togsim_exit and
+# test_togsim_result, which emit no kernel and so are no route coverage.
 # Regenerate the allowlist with
 #   python scripts/ci/triton_route_sweep.py --all --update-allowlist
 # and mirror its files here; a test absent from both is not gated anywhere.

@@ -233,11 +233,8 @@ def pinned_blocks(kernel_tiling, features):
 
 
 def _num_cores():
-    """This machine's core count, from the TOGSim config."""
-    try:
-        return max(1, int(config.CONFIG_NUM_CORES))
-    except Exception:  # noqa: BLE001
-        return 1
+    """This machine's core count, `num_cores` of its TOGSim config (every machine file has it)."""
+    return max(1, int(config.CONFIG_NUM_CORES))
 
 
 def _kept_axis_contiguous(features):

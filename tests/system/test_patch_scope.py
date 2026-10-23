@@ -92,7 +92,25 @@ def test_triton_presence_is_upstream():
     test_result("TritonPresenceUpstream", got, torch.tensor([True, True, True]))
 
 
+def test_conv_heuristics_are_upstream_outside_npu_choices():
+    """Upstream's choices hand an npu conv upstream's generic tile table; only this
+    route's choices class answers with BLOCK_N = the lane count."""
+    from torch._inductor.heuristics.template.triton import BaseConfigHeuristic
+
+    from pytorchsim import config as sim_config
+
+    def block_n(heuristic):
+        return sorted({c.block_n for c in heuristic.conv_configs})
+
+    lanes = int(sim_config.CONFIG_MACHINE.vector_lanes)
+    upstream = block_n(BaseConfigHeuristic())
+    got = [block_n(InductorChoices().get_config_heuristics("npu")) == upstream,
+           block_n(config.inductor_choices_class().get_config_heuristics("npu")) == [lanes]]
+    test_result("ConvHeuristicsScoped", torch.tensor(got), torch.tensor([True, True]))
+
+
 if __name__ == "__main__":
+    test_conv_heuristics_are_upstream_outside_npu_choices()
     test_triton_presence_is_upstream()
     test_reduction_split_is_upstream_off_device()
     test_benchmark_operand_is_upstream_off_device()

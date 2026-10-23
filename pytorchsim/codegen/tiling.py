@@ -265,7 +265,7 @@ def kept_axis_contiguous_blocks(xnumel, rnumel, elem_bytes, lanes, lane_bytes, m
 def gemm_tiles(m, n, k, dtype_size, out_size=None):
     """This machine's mm tiles for [m, k] @ [k, n], best first, as GemmConfigs. C is held twice
     when it is stored at another width than it is summed at: the template sums halves in fp32."""
-    from torch._inductor.template_heuristics.triton import GemmConfig
+    from torch._inductor.heuristics.template.triton import GemmConfig
 
     size = int(dtype_size)
     out = int(out_size or size)

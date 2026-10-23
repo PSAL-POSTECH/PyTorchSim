@@ -17,6 +17,8 @@ _conv_groups = None
 
 _NPU_CHOICES = None
 
+_NPU_CONFIG_HEURISTIC = None
+
 _installed = False
 
 
@@ -51,10 +53,11 @@ def _register_template_heuristics():
     """Register npu's mm/bmm/addmm/baddbmm tile heuristics: this machine's tiles, then the generic set."""
     from torch._inductor.kernel.bmm import bmm_template
     from torch._inductor.kernel.mm import mm_template
-    from torch._inductor.template_heuristics.registry import (
+    from torch._inductor.heuristics.template.registry import (
         register_template_heuristic)
-    from torch._inductor.template_heuristics.triton import (
-        AddMMConfigMixin, BaseConfigHeuristic, MMTemplateConfigMixin)
+    from torch._inductor.heuristics.template.triton import (
+        BaseConfigHeuristic, MMTemplateConfigMixin)
+    from torch._inductor.heuristics.template.triton_addmm import AddMMConfigMixin
 
     @register_template_heuristic(mm_template.uid, "npu")
     @register_template_heuristic(bmm_template.uid, "npu")
@@ -218,13 +221,13 @@ def _wrap_convolution_lowering():
             inductor_lowering.lowerings[key] = wrap(inner)
 
 
-def _size_conv_blocks_from_the_machine():
-    """Give npu its own conv tile table: BLOCK_N is the lane count, per group."""
-    from torch._inductor.choices import InductorChoices
-    from torch._inductor.template_heuristics.triton import (
+def _npu_config_heuristic():
+    """npu's own conv tile table, built once: BLOCK_N is the lane count, per group."""
+    global _NPU_CONFIG_HEURISTIC
+    if _NPU_CONFIG_HEURISTIC is not None:
+        return _NPU_CONFIG_HEURISTIC()
+    from torch._inductor.heuristics.template.triton import (
         BaseConfigHeuristic, ConvConfig)
-
-    from pytorchsim import config
 
     lanes = int(config.CONFIG_MACHINE.vector_lanes)
 
@@ -247,14 +250,8 @@ def _size_conv_blocks_from_the_machine():
 
             return per_group
 
-    original = InductorChoices.get_config_heuristics
-
-    def get_config_heuristics(self, device_type="cuda"):
-        if device_type == "npu":
-            return NPUConfigHeuristic()
-        return original(self, device_type)
-
-    InductorChoices.get_config_heuristics = get_config_heuristics
+    _NPU_CONFIG_HEURISTIC = NPUConfigHeuristic
+    return NPUConfigHeuristic()
 
 
 def _size_grouped_conv_grid_per_group():
@@ -452,6 +449,12 @@ def _npu_choices_class():
                 ktc.annotations[select.SOURCE] = select.RECORDED
             return ktcs
 
+        def get_config_heuristics(self, device_type="cuda"):
+            """npu's own conv tile table; every other device keeps upstream's."""
+            if device_type == "npu":
+                return _npu_config_heuristic()
+            return super().get_config_heuristics(device_type)
+
         @staticmethod
         def should_use_persistent_reduction(features, cooperative_reduction):
             """Persistent only when the whole reduction fits this machine's reduction block."""
@@ -637,7 +640,6 @@ def install():
     _register_npu_as_gpu()
     _register_template_heuristics()
     _wrap_convolution_lowering()
-    _size_conv_blocks_from_the_machine()
     _size_grouped_conv_grid_per_group()
     _short_circuit_degenerate_gemms()
     _install_npu_choices()

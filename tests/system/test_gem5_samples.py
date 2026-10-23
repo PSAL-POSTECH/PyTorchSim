@@ -1,6 +1,6 @@
-"""The timing tables are keyed by the tile and call each gem5 dump names, through the compiler's one
-reader of m5out: dumps out of program order still land on their tile, the warm call is the one
-taken, and a run that measured a tile twice in one call is refused rather than tabled."""
+"""The timing tables hold a row per dump the compiler's one reader of m5out returns, in its order:
+dumps out of program order still land on the row of their tile and call, each row's overlap is its
+own tile's, and a run that measured a tile twice in one call is refused rather than tabled."""
 import json
 import os
 import sys
@@ -40,12 +40,14 @@ def _m5out(keys):
     return d
 
 
-def test_warm_call_keyed_by_tile():
+def test_every_call_on_its_row():
     m5out = _m5out([(1, 0, 900, 9), (0, 0, 800, 8), (1, 1, 300, 3), (0, 1, 200, 2)])
     table, rows = timing.tile_tables(m5out, [None, 100])
-    assert table == [(200, 0), (300, 200)]
-    assert rows == [(0, "Issue", "micro-ops", 8, 2), (0, "Vpu", "elements", 4, 2),
-                    (1, "Issue", "micro-ops", 8, 3), (1, "Vpu", "elements", 4, 3)]
+    assert table == [(800, 0), (900, 800), (200, 0), (300, 200)]
+    assert rows == [(0, "Issue", "micro-ops", 8, 8), (0, "Vpu", "elements", 4, 8),
+                    (1, "Issue", "micro-ops", 8, 9), (1, "Vpu", "elements", 4, 9),
+                    (2, "Issue", "micro-ops", 8, 2), (2, "Vpu", "elements", 4, 2),
+                    (3, "Issue", "micro-ops", 8, 3), (3, "Vpu", "elements", 4, 3)]
 
 
 def test_tile_measured_twice_is_refused():
@@ -59,7 +61,7 @@ def test_missing_tile_is_refused():
 
 
 if __name__ == "__main__":
-    test_warm_call_keyed_by_tile()
+    test_every_call_on_its_row()
     test_tile_measured_twice_is_refused()
     test_missing_tile_is_refused()
     print("PASS")

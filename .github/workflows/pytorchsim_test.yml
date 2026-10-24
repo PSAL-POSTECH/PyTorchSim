@@ -16,8 +16,9 @@ on:
 # test file, and is not identical to it: a file the allowlist runs as several entries (Gemma's
 # --preset) runs here once without arguments, which runs the same presets in one process, and
 # tests/system tests the allowlist leaves out run here too: test_compiler_failure,
-# test_reduction_tiling and test_select, and test_breakdown_viewer, test_patch_scope,
-# test_togsim_exit and test_togsim_result, which emit no kernel and so are no route coverage.
+# test_reduction_tiling and test_select, and test_breakdown_viewer, test_device_interface,
+# test_module_form, test_patch_scope, test_togsim_exit, test_togsim_result and
+# test_verify_golden, which emit no kernel and so are no route coverage.
 # Regenerate the allowlist with
 #   python scripts/ci/triton_route_sweep.py --all --update-allowlist
 # and mirror its files here; a test absent from both is not gated anywhere.
@@ -58,6 +59,8 @@ jobs:
           - tests/models/test_vit.py
           - tests/ops/attention/test_fused_sdpa.py
           - tests/ops/attention/test_gqa.py
+          - tests/ops/conv/test_conv_decomposition.py
+          - tests/ops/conv/test_conv_transpose.py
           - tests/ops/elementwise/test_activation.py
           - tests/ops/elementwise/test_add.py
           - tests/ops/elementwise/test_exponent.py
@@ -68,7 +71,9 @@ jobs:
           - tests/ops/fusion/test_prologue_fusion.py
           - tests/ops/gemm/test_grouped_mm.py
           - tests/ops/gemm/test_row_matmul.py
+          - tests/ops/gemm/test_zero_length_gemm.py
           - tests/ops/misc/test_complex_to_real.py
+          - tests/ops/misc/test_custom_fused_kernel.py
           - tests/ops/misc/test_eager_to_compile_recursion.py
           - tests/ops/misc/test_expert_mask.py
           - tests/ops/misc/test_histc.py
@@ -84,12 +89,15 @@ jobs:
           - tests/system/test_breakdown_viewer.py
           - tests/system/test_bundle_reuse.py
           - tests/system/test_compiler_failure.py
+          - tests/system/test_device_interface.py
           - tests/system/test_eager.py
+          - tests/system/test_module_form.py
           - tests/system/test_patch_scope.py
           - tests/system/test_reduction_tiling.py
           - tests/system/test_select.py
           - tests/system/test_togsim_exit.py
           - tests/system/test_togsim_result.py
+          - tests/system/test_verify_golden.py
     steps:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3

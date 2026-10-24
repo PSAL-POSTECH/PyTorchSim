@@ -17,7 +17,7 @@ on:
 # --preset) runs here once without arguments, which runs the same presets in one process, and
 # tests/system tests the allowlist leaves out run here too: test_compiler_failure,
 # test_reduction_tiling and test_select, and test_breakdown_viewer, test_device_interface,
-# test_module_form, test_patch_scope, test_togsim_exit, test_togsim_result and
+# test_module_form, test_patch_scope, test_route_allowlist, test_togsim_exit, test_togsim_result and
 # test_verify_golden, which emit no kernel and so are no route coverage.
 # Regenerate the allowlist with
 #   python scripts/ci/triton_route_sweep.py --all --update-allowlist
@@ -94,6 +94,7 @@ jobs:
           - tests/system/test_module_form.py
           - tests/system/test_patch_scope.py
           - tests/system/test_reduction_tiling.py
+          - tests/system/test_route_allowlist.py
           - tests/system/test_select.py
           - tests/system/test_togsim_exit.py
           - tests/system/test_togsim_result.py

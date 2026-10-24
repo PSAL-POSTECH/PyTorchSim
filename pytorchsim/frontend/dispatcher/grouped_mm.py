@@ -34,7 +34,10 @@ class GroupedMM(CustomFusedKernel):
             return Decline("a bias or another out_dtype")
         if a.dtype != b.dtype:
             return Decline(f"A {a.dtype} and B {b.dtype}")
-        bm, bn, bk = _tiles(b.shape[2], a.shape[1], a.element_size())
+        tiles = _tiles(b.shape[2], a.shape[1], a.element_size())
+        if tiles is None:
+            return Decline(f"no mm tile of {config.CONFIG_MACHINE.vector_lanes} rows fits the scratchpad")
+        bm, bn, bk = tiles
         return {"BM": bm, "BN": bn, "BK": bk}
 
     def launch(self, plan, a: torch.Tensor, b: torch.Tensor, offs: Optional[torch.Tensor],
@@ -61,11 +64,15 @@ def install():
 
 
 def _tiles(n, k, esize):
-    """(BM, BN, BK): BM the lanes, BN and BK the largest tile the machine's mm rule gives a BM-row block."""
+    """(BM, BN, BK): BM the lanes, BN and BK the largest tile the machine's mm rule gives a BM-row block;
+    None when it gives none."""
     from pytorchsim.frontend import tiling
     bm = int(config.CONFIG_MACHINE.vector_lanes)
     acc = 4
-    _, tn, tk = tiling.gemm_tile_candidates(bm, n, k, acc + esize, esize)[0]
+    tiles = tiling.gemm_tile_candidates(bm, n, k, acc + esize, esize)
+    if not tiles:
+        return None
+    _, tn, tk = tiles[0]
     return bm, tn, tk
 
 
@@ -112,12 +119,13 @@ def _blocks(offs, s, g, bm):
 
 
 def _math(a, b, offs, bias, out_dtype):
-    """Group by group with matmul: rows offs[g-1]:offs[g] of A times B[g] (aten's semantics for 2-D x 3-D)."""
-    out, lo = [], 0
-    for gi, hi in enumerate(offs.tolist()):
-        out.append(a[lo:hi] @ b[gi])
-        lo = hi
-    c = torch.cat(out) if out else a.new_empty(0, b.shape[-1])
+    """Group by group with matmul: rows offs[g-1]:offs[g] of A times B[g] into an [S, N] output whose rows
+    past offs[-1] are zero, as transformers' fallback gives them; a bias is refused, as aten refuses it."""
     if bias is not None:
-        c = c + bias
+        raise RuntimeError("Bias not supported yet")
+    c = a.new_zeros(a.shape[0], b.shape[-1])
+    lo = 0
+    for gi, hi in enumerate(offs.tolist()):
+        c[lo:hi] = a[lo:hi] @ b[gi]
+        lo = hi
     return c.to(out_dtype) if out_dtype is not None else c

@@ -1,6 +1,6 @@
 """What npu plugs into Inductor, in the order Inductor meets it:
 
-    registration/      everything npu registers, one file per registry: its DeviceInterface, a
+    registration.py    everything npu registers, one section per registry: its DeviceInterface, a
                        Triton GPU, its codegen and post-grad pass, its wrappers' device code, its
                        choices and template heuristics
     post_grad_pass.py  the FX graph after Inductor's post-grad passes (device_custom_pass)

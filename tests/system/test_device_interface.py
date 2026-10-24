@@ -45,7 +45,7 @@ def test_device_op_overrides():
     """npu gets its own overrides; cpu keeps Inductor's, which this backend no longer registers."""
     from torch._inductor.codegen.common import get_device_op_overrides
     from torch._inductor.codegen.cpu_device_op_overrides import CpuDeviceOpOverrides
-    from pytorchsim.frontend.inductor.registration.device_op_overrides import NPUDeviceOpOverrides
+    from pytorchsim.frontend.inductor.registration import NPUDeviceOpOverrides
     got = [isinstance(get_device_op_overrides("npu"), NPUDeviceOpOverrides),
            isinstance(get_device_op_overrides("cpu"), CpuDeviceOpOverrides)]
     check_result("DeviceOpOverrides", torch.tensor(got), torch.ones(len(got), dtype=torch.bool))

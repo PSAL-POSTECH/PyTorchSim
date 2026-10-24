@@ -95,6 +95,18 @@ def test_sort_duplicate_cases(device):
         gathered_u = torch.gather(x, case["dim"], out_indices_u.cpu())
         check_result(f"Sort.dup/unstable_gather {case}", gathered_u, out_values_u.cpu())
 
+
+def test_sort_float64_fallback(device):
+    """float64 runs the fallback; values one float32 holds as equal still sort by value, not by index."""
+    x = torch.tensor([1 + 2.0 ** -30, 1.0, 1 + 2.0 ** -40, -0.0, 0.0, float("nan"), -1.0],
+                     dtype=torch.float64)
+    for descending in (False, True):
+        _, out_indices = torch.compile(dynamic=False)(
+            lambda t: torch.sort(t, descending=descending, stable=True))(x.to(device=device))
+        _, ref_indices = torch.sort(x, descending=descending, stable=True)
+        test_equal(f"Sort.float64/indices descending={descending}", out_indices, ref_indices)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run sort tests")
     parser.add_argument("--shape", type=str, default="(64, 32, 16)")
@@ -108,3 +120,4 @@ if __name__ == "__main__":
 
     test_sort_stable_suite(device)
     test_sort_duplicate_cases(device)
+    test_sort_float64_fallback(device)

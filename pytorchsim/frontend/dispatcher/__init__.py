@@ -5,8 +5,9 @@ depthwise stencil (convolution.py). Rewrites after AOTAutograd are inductor/post
 
 def install():
     """Register every op's npu kernel, once each."""
-    from . import attention, convolution, grouped_mm, topk
+    from . import attention, convolution, grouped_mm, sort, topk
     attention.install()
     convolution.install()
     grouped_mm.install()
+    sort.install()
     topk.install()

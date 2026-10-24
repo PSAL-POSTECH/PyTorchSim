@@ -79,8 +79,11 @@ class _GoldenInterpreter(torch.fx.Interpreter):
 
     def run_node(self, n):
         """Every tensor output moves to CPU in its dtype, so a device-baked op or a consumer that needs
-        co-located operands (aten.index) sees CPU tensors; only the recorded golden is float32."""
+        co-located operands (aten.index) sees CPU tensors; only the recorded golden is float32. An op
+        that writes its first argument and returns nothing (Inductor's reinplaced foreach) is that argument."""
         out = super().run_node(n)
+        if out is None and _writes_first_argument(n.target):
+            out = self.fetch_args_kwargs_from_env(n)[0][0]
         out = torch.utils._pytree.tree_map(
             lambda x: x.detach().to("cpu") if isinstance(x, torch.Tensor) else x, out)
         if isinstance(out, torch.Tensor):
@@ -88,8 +91,16 @@ class _GoldenInterpreter(torch.fx.Interpreter):
         return out
 
 
+def _writes_first_argument(target):
+    """Whether an aten op's schema marks its first argument as written (Tensor(a!) or Tensor(a!)[])."""
+    schema = getattr(target, "_schema", None)
+    alias = schema.arguments[0].alias_info if schema is not None and schema.arguments else None
+    return alias is not None and alias.is_write
+
+
 def _to_cpu(x):
-    return x.detach().cpu() if isinstance(x, torch.Tensor) else x
+    """A CPU copy of a tensor, never the tensor itself: the golden runs the graph's in-place ops on it."""
+    return x.detach().to("cpu", copy=True) if isinstance(x, torch.Tensor) else x
 
 
 def verify_init(gid, inputs):

@@ -403,7 +403,8 @@ def same_values(a, b):
 def capture(name, fn, make, out):
     """Run `fn` once on make's inputs and copy each kernel it launches into out/<name>; its launches in
     order, their tile sources and the extern calls. A kernel launched again on other values of the args its
-    runtime attributes are read from stops the bundle: its directory holds one launch's."""
+    runtime attributes are read from stops the bundle: its directory holds one launch's. This process's launch
+    directories in the kernels' workdirs go after, their .raw tensors being only the launch's."""
     LAUNCHED.clear()
     EXTERNS.clear()
     RECORDED.clear()
@@ -421,6 +422,8 @@ def capture(name, fn, make, out):
             raise RuntimeError(f"[bundle] {name}: {launcher.kernel_name} is launched again on other values of "
                                f"{sorted(recorded)}, which its runtime attributes are read from")
         launches.append({"kernel": launcher.kernel_name, "dir": dirs[launcher.workdir]})
+    for workdir in dirs:
+        shutil.rmtree(contract.dir_for(workdir))
     return launches, [launcher.meta.get("tile_source") for launcher in LAUNCHED], list(EXTERNS)
 
 

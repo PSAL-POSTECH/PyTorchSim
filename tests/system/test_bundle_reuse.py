@@ -1,6 +1,7 @@
 """scripts/ci/bundle.py --reuse: a workload whose key the previous bundle holds is copied byte for byte
 without building it, and every built one gets a key; a changed input or Inductor/Triton/PyTorchSim env,
-an unpicked launch, no PTS_INPUTS or a row no longer measured is not reused; a per-run path is no input."""
+an unpicked launch, no PTS_INPUTS or a row no longer measured is not reused; a per-run path is no input; a
+built workload leaves no launch directory, its functional run's .raw tensors among it."""
 import filecmp
 import importlib.util
 import json
@@ -85,6 +86,17 @@ def test_reuse():
         assert not os.path.exists(os.path.join(e, "keys", f"{NAME}.json"))
 
 
+def test_a_built_workload_leaves_no_launch_directory():
+    with tempfile.TemporaryDirectory() as root, \
+            mock.patch.dict(os.environ, {"TORCHSIM_FUNCTIONAL_MODE": "1", "TORCHSIM_DUMP_PATH": os.path.join(root, "dump")}):
+        bundle.build(os.path.join(root, "out"), "vector", NAME)
+        workdirs = [d for d in os.listdir(os.path.join(root, "dump")) if d.startswith("triton_")]
+        left = [d for w in workdirs for d in os.listdir(os.path.join(root, "dump", w))
+                if d.startswith(bundle.contract.LAUNCH_DIR_PREFIX + "-")]
+    assert workdirs and not left, (workdirs, left)
+
+
 if __name__ == "__main__":
     test_reuse()
+    test_a_built_workload_leaves_no_launch_directory()
     print("PASS")

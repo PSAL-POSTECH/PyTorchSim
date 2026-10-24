@@ -1,22 +1,21 @@
 """TOGSim as a process: started once, fed kernels over a FIFO, read back from its log."""
+import datetime
 import os
-import numpy as np
+import re
 import shlex
 import subprocess
-import re
 import sys
-import yaml
-import time
-import datetime
 import threading
-from pathlib import Path
+import time
 import uuid
+from pathlib import Path
+
+import yaml
+from tqdm import tqdm
 
 from pytorchsim import config
 
-# Configure logger for Simulator module
 logger = config.setup_logger()
-from tqdm import tqdm
 
 
 

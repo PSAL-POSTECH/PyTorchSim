@@ -51,6 +51,11 @@ def _simulate(target_binary, obj_dir, manifest, silent_mode=False):
     return dir_path
 
 
+#: What gem5 says when it dies, as opposed to the libc backtrace that follows it.
+_GEM5_SIGNAL = re.compile(
+    r"^(?:.*\b(?:panic|fatal):.*|.*Assertion.*|Program aborted at tick.*)$", re.M)
+
+
 def _gem5_failure(proc, log_path):
     """The message a failed gem5 run should raise, from the log it redirects to.
 
@@ -114,6 +119,3 @@ def dump_cycle_table_tsv(table, path, origins=None):
     return path
 
 
-#: What gem5 says when it dies, as opposed to the libc backtrace that follows it.
-_GEM5_SIGNAL = re.compile(
-    r"^(?:.*\b(?:panic|fatal):.*|.*Assertion.*|Program aborted at tick.*)$", re.M)

@@ -7,32 +7,18 @@ from torch._inductor.decomposition import select_decomp_table
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
 from result_check import check_result
 
-from pytorchsim.frontend.inductor.post_grad_pass import pytorchsim_post_grad_pass
+from pytorchsim.frontend.inductor.postgrad import pytorchsim_post_grad_pass
 
 
 def _rope_like(a):
-    # DeepSeek-V2's RoPE: freqs arrives as a TRANSPOSED view out of a bmm, and
-    # polar is called on it. The transpose is the whole point of the test --
-    # on a contiguous input nothing here can go wrong.
+    """DeepSeek-V2's RoPE: polar on a transposed view out of a bmm; the transpose is what the test is about."""
     freqs = a.transpose(1, 2)
     return torch.view_as_real(torch.polar(torch.ones_like(freqs), freqs))
 
 
 def test_polar_on_transposed(device, n=32):
-    # aten::polar is CompositeExplicitAutograd, so it is registered for this
-    # backend too and beats the boxed CPU fallback: the composite runs here,
-    # allocates the result ITSELF (contiguous), and only then calls
-    # aten::polar.out, which is what falls back. Inductor's meta models what a
-    # real backend does -- TensorIterator carries the operands' permutation
-    # into the output -- so the two disagree:
-    #
-    #     assert_size_stride(buf14, (1, 32, 32), (1024, 1, 32),
-    #                        'torch.ops.aten.polar.default')
-    #     AssertionError: expected size 32==32, stride 32==1 at dim=1
-    #
-    # post_grad_pass takes the extern call out instead of arguing about the
-    # layout: polar's real-pair rule (_REAL_PAIR) builds (abs*cos, abs*sin)
-    # with ops this backend compiles.
+    """polar on a transposed view: as a composite it would allocate its own contiguous result while Inductor's meta
+    keeps the permutation (a stride assert); postgrad's real-pair rule computes it with ops this backend compiles."""
     x = torch.randn(1, n, n)
     cpu_out = _rope_like(x)
 

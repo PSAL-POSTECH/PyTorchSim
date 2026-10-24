@@ -7,7 +7,7 @@ import tempfile
 sys.path.insert(0, os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"))
 
 from pytorchsim import config
-from pytorchsim.simulator.togsim import TOGSimProcess
+from pytorchsim.simulator.timing.togsim import TOGSimProcess
 
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 

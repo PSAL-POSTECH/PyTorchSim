@@ -8,7 +8,7 @@ import tempfile
 
 sys.path.insert(0, os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"))
 
-from pytorchsim.simulator import timing
+from pytorchsim.simulator.timing import gem5
 
 
 def _dump(tile, call, cycles, admitted):
@@ -25,7 +25,7 @@ def _dump(tile, call, cycles, admitted):
 
 def _refusal(m5out, n_tiles):
     try:
-        timing.tile_tables(m5out, [None] * n_tiles)
+        gem5.tile_tables(m5out, [None] * n_tiles)
     except ValueError as e:
         return str(e)
     return "no refusal"
@@ -42,7 +42,7 @@ def _m5out(keys):
 
 def test_every_call_on_its_row():
     m5out = _m5out([(1, 0, 900, 9), (0, 0, 800, 8), (1, 1, 300, 3), (0, 1, 200, 2)])
-    table, rows = timing.tile_tables(m5out, [None, 100])
+    table, rows = gem5.tile_tables(m5out, [None, 100])
     assert table == [(800, 0), (900, 800), (200, 0), (300, 200)]
     assert rows == [(0, "Issue", "micro-ops", 8, 8), (0, "Vpu", "elements", 4, 8),
                     (1, "Issue", "micro-ops", 8, 9), (1, "Vpu", "elements", 4, 9),

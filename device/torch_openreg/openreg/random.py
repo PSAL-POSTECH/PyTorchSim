@@ -62,6 +62,5 @@ def manual_seed_all(seed: int) -> None:
         default_generator.manual_seed(seed)
 
 def _is_in_bad_fork():
-    # For NPU simulator, we don't have the same fork issues as CUDA
-    # Return False to indicate we're not in a bad fork state
+    """Never: the simulator has none of CUDA's fork issues."""
     return False

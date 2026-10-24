@@ -1,11 +1,8 @@
 """What npu plugs into Inductor, in the order Inductor meets it:
 
-    registration.py    everything npu registers, one section per registry: its DeviceInterface, a
-                       Triton GPU, its codegen and post-grad pass, its wrappers' device code, its
-                       choices and template heuristics
-    post_grad_pass.py  the FX graph after Inductor's post-grad passes (device_custom_pass)
-    autotune/          how each kernel's sizes are chosen: template kernels' configs and selection,
-                       generated kernels' blocks
+    registration.py    everything npu registers with Inductor, one section per registry
+    postgrad/          the npu's device_custom_pass, one module per op family
+    autotune/          how each kernel's sizes are chosen: template configs and selection, generated blocks
     codegen/           the scheduling and wrapper Inductor generates through, kernel metadata
 
 is_npu and is_lowering_npu, here, are the device tests the patches share.
@@ -26,11 +23,9 @@ def install():
 
 
 def _configure_inductor():
-    """mm/conv template autotune on, at compile time off. In timing mode a template with an epilogue
-    is picked by its fused cycles, Inductor timing the top configs one at a time in this process
-    (TritonNPUScheduling.benchmark_codegened_module); template_timing records picks, so its cache
-    stays off. No combo kernels: one picks its tensors by program id, which a TOG cannot time, and
-    blocks are pinned in triton_kernel_kwargs, a hook combo kernels skip."""
+    """mm/conv template autotune on, at compile time off, Inductor's autotune cache off (template_timing
+    records picks); no combo kernels, which pick tensors by program id (a TOG cannot time that) and skip
+    the triton_kernel_kwargs hook that pins blocks."""
     from torch._inductor import config as inductor_config
 
     inductor_config.max_autotune_gemm = True

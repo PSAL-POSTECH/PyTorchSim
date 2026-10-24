@@ -1,7 +1,6 @@
-"""The blocks of a kernel Inductor generates from nodes (any kernel but a template) on this machine:
-its numels, widest dtype and contiguous axis, read off Inductor's scheduler nodes, handed to
-tiling.fixed_config_for. blocks_for is the one place they are computed; pinning, the compile metadata
-and whether a reduction is persistent all read it. And whether a reduction splits over the cores."""
+"""The blocks of a kernel Inductor generates from nodes (any but a template) on this machine, from its
+numels, widest dtype and contiguous axis through tiling.fixed_config_for: blocks_for is the one place
+they are computed; and whether a reduction is persistent or splits over the cores."""
 
 from pytorchsim import config
 from pytorchsim.frontend import tiling
@@ -107,19 +106,16 @@ _WIDTH_NAME = {64: "float64", 32: "float32", 16: "float16", 8: "int8"}
 
 
 def _widest_dtype_args(features):
-    """The widest tensor a scheduled node makes or reads, as fixed_config_for's args; a node or
-    read with no dtype (no tensor) is not counted."""
+    """The widest tensor a scheduled node makes or reads, as fixed_config_for's args; a node with no
+    dtype (no tensor) and a read that names no buffer (Inductor's KeyError) are not counted."""
     from torch._inductor.virtualized import V
     dtypes = []
     for nd in features.scheduler_nodes():
-        try:
-            dtypes.append(nd.node.get_dtype())
-        except Exception:  # noqa: BLE001
-            pass
-        for dep in getattr(getattr(nd, "read_writes", None), "reads", ()) or ():
+        dtypes.append(nd.node.maybe_get_dtype())
+        for dep in nd.read_writes.reads:
             try:
                 dtypes.append(V.graph.get_dtype(dep.name))
-            except Exception:  # noqa: BLE001
+            except KeyError:
                 pass
     bits = [8 * d.itemsize for d in dtypes if d is not None]
     return [{"dtype": _WIDTH_NAME[max(bits)]}] if bits else []

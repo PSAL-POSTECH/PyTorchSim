@@ -1,29 +1,6 @@
-"""Per-kernel CPU cross-check for the functional (Spike) path.
-
-This is a sub-option of ``pytorchsim_functional_mode``: enable it with
-``TORCHSIM_FUNCTIONAL_VERIFY_PER_KERNEL=1`` (auto-disabled when functional
-mode is off -- there are no Spike values to verify otherwise).
-
-When enabled, the generated wrapper compares every realized buffer (the output of
-each compiled, fused kernel that Spike just produced) against a CPU "golden"
-reference. The golden is computed once per graph execution by running the
-original aten graph (``V.graph.module``) on CPU with the same inputs. The first
-buffer whose value diverges beyond tolerance pinpoints the fused op-cluster that
-injected the error -- the finest granularity observable in a fused pipeline,
-since intermediate aten ops inside a kernel are not separately materialized.
-
-Tolerances (read once at import):
-  TORCHSIM_FUNCTIONAL_VERIFY_RTOL   relative tolerance (default 1e-4)
-  TORCHSIM_FUNCTIONAL_VERIFY_ATOL   absolute tolerance (default 1e-4)
-
-The check raises FunctionalVerifyMismatch at the first divergent buffer
-(stop-at-first), after logging the kernel, originating fx op, offending indices
-and max abs diff.
-
-NOTE: codegen bakes the check calls into the wrapper only when enabled at
-*compile* time. Toggle the option and clear the codegen cache together
-(scripts/clear_codegen_cache.sh), or a cached wrapper without checks is replayed.
-"""
+"""Per-kernel CPU cross-check for the functional path (TORCHSIM_FUNCTIONAL_VERIFY_PER_KERNEL=1): each
+realized buffer is compared to a CPU golden of the aten graph, raising FunctionalVerifyMismatch at the
+first divergent one; the checks are baked in at compile time, so clear the codegen cache when toggling."""
 import dataclasses
 import os
 
@@ -41,12 +18,11 @@ logger = setup_logger(__name__)
 RTOL = float(os.environ.get("TORCHSIM_FUNCTIONAL_VERIFY_RTOL", "1e-4"))
 ATOL = float(os.environ.get("TORCHSIM_FUNCTIONAL_VERIFY_ATOL", "1e-4"))
 
-# Codegen-time registry of runnable aten graphs, keyed by an int id baked into
-# the generated wrapper. Persists in-process: the exec'd wrapper imports this
-# very module, so the dict it sees is the one populated during codegen.
+#: Runnable aten graphs by the id baked into the generated wrapper, which imports this module and so
+#: sees the dict codegen filled.
 _GRAPHS = {}
 
-# Per-run state, reset by verify_init at the top of each call(args).
+#: Per-run state, reset by verify_init at the top of each call(args).
 _STATE = {"golden": None, "n_checked": 0, "failed": False}
 
 
@@ -55,11 +31,7 @@ class FunctionalVerifyMismatch(RuntimeError):
 
 
 def enabled():
-    """True when functional mode AND the per-kernel verify sub-option are on.
-
-    Read dynamically (the config can change inside a ``with torch.npu.TOGSimulator(...)``
-    block); the config accessor already AND-gates this with functional mode.
-    """
+    """True when functional mode and the per-kernel verify sub-option are on, read on each call."""
     return bool(config.pytorchsim_functional_verify_per_kernel)
 
 
@@ -78,10 +50,12 @@ class _GoldenInterpreter(torch.fx.Interpreter):
         self.values = {}
 
     def run_node(self, n):
+        """Every tensor output moves to CPU in its dtype, so a device-baked op or a consumer that needs
+        co-located operands (aten.index) sees CPU tensors; only the recorded golden is float32. An op
+        that writes its first argument and returns nothing (Inductor's reinplaced foreach) is that argument."""
         out = super().run_node(n)
-        # Move EVERY tensor output to CPU, preserving dtype, so a device-baked op
-        # (arange(device=npu)) or a consumer that needs co-located operands (aten.index)
-        # sees CPU tensors. Only the recorded golden is cast to float32 for allclose.
+        if out is None and _writes_first_argument(n.target):
+            out = self.fetch_args_kwargs_from_env(n)[0][0]
         out = torch.utils._pytree.tree_map(
             lambda x: x.detach().to("cpu") if isinstance(x, torch.Tensor) else x, out)
         if isinstance(out, torch.Tensor):
@@ -89,8 +63,16 @@ class _GoldenInterpreter(torch.fx.Interpreter):
         return out
 
 
+def _writes_first_argument(target):
+    """Whether an aten op's schema marks its first argument as written (Tensor(a!) or Tensor(a!)[])."""
+    schema = getattr(target, "_schema", None)
+    alias = schema.arguments[0].alias_info if schema is not None and schema.arguments else None
+    return alias is not None and alias.is_write
+
+
 def _to_cpu(x):
-    return x.detach().cpu() if isinstance(x, torch.Tensor) else x
+    """A CPU copy of a tensor, never the tensor itself: the golden runs the graph's in-place ops on it."""
+    return x.detach().to("cpu", copy=True) if isinstance(x, torch.Tensor) else x
 
 
 def verify_init(gid, inputs):
@@ -109,14 +91,16 @@ def verify_init(gid, inputs):
         _STATE["golden"] = interp.values
         logger.info("[FuncVerify] golden ready: %d node tensors (rtol=%g atol=%g)",
                     len(interp.values), RTOL, ATOL)
-    except Exception as e:  # never let the verify shadow break the real run
+    except Exception as e:
         logger.warning("[FuncVerify] golden computation failed (%r); "
                        "per-kernel verify disabled for this graph", e)
         _STATE["golden"] = None
 
 
 def verify_check(value, buffer_name, node_name, op):
-    """Compare one realized buffer against its golden; raise on first divergence."""
+    """Compare one realized buffer against its golden; raise on first divergence. With
+    TORCHSIM_FUNCTIONAL_VERIFY_TRACE every buffer's error is logged instead, as the golden is the whole
+    graph on CPU and a buffer's error is all that accumulated before it."""
     if _STATE["failed"]:
         return
     golden = _STATE["golden"]
@@ -124,7 +108,7 @@ def verify_check(value, buffer_name, node_name, op):
         return
     ref = golden.get(node_name)
     if ref is None:
-        return  # no reference captured for this fx node (non-tensor / folded)
+        return
     val = value.detach().to("cpu", torch.float32)
     if val.shape != ref.shape:
         if val.numel() != ref.numel():
@@ -133,13 +117,6 @@ def verify_check(value, buffer_name, node_name, op):
 
     _STATE["n_checked"] += 1
 
-    # TRACE MODE. The golden is the WHOLE GRAPH on CPU, so a buffer's error is
-    # everything accumulated up to it, not that kernel's own. Stopping at the
-    # first buffer over tolerance therefore finds a MISCOMPILE (v3's pool was
-    # 4.85 on data of order 1) but says nothing useful when the error merely
-    # drifts. This logs every buffer's error instead of stopping, so the
-    # question "does it grow smoothly or jump" can be answered by reading the
-    # curve rather than guessed at.
     if os.environ.get("TORCHSIM_FUNCTIONAL_VERIFY_TRACE"):
         d = (val - ref).abs().max().item()
         scale = ref.abs().max().item()
@@ -153,7 +130,6 @@ def verify_check(value, buffer_name, node_name, op):
                      buffer_name, op, tuple(ref.shape))
         return
 
-    # ---- divergence ----
     _STATE["failed"] = True
     diff = (val - ref).abs()
     tol = ATOL + RTOL * ref.abs()
@@ -197,7 +173,7 @@ def _mutated(line):
         return ()
     try:
         return tuple(node.get_mutation_names())
-    except Exception:  # noqa: BLE001
+    except NotImplementedError:
         return ()
 
 
@@ -267,7 +243,7 @@ class VerifyLines:
             return []
         try:
             buf = V.graph.get_buffer(name)
-        except Exception:
+        except RuntimeError:
             buf = None
         if buf is None:
             return []

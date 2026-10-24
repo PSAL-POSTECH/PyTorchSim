@@ -7,13 +7,12 @@ import torch_openreg._C  # type: ignore[misc]
 from . import meta  # noqa: F401
 
 _initialized = False
-_default_streams = {}  # Dictionary to store default streams per device
-_tog_simulator = None  # Singleton TOGSimProcess instance
-_launch_context = threading.local() # storage for launch_kernel context
-_eager_compiled = set()  # op names already given an eager_to_compile wrapper
+_default_streams = {}
+_tog_simulator = None
+_launch_context = threading.local()
+_eager_compiled = set()
 
-# Ops with no npu kernel that Inductor can codegen. Registering them here rather
-# than per test is what keeps `every operation runs on the NPU` true by default.
+#: Ops with no npu kernel that Inductor can codegen, compiled by default rather than per test.
 DEFAULT_EAGER_TO_COMPILE = (
     "aten::cat.out",
     "aten::mm.out",
@@ -26,12 +25,8 @@ DEFAULT_EAGER_TO_COMPILE = (
 )
 
 class device:
-    r"""Context-manager that changes the selected device.
-
-    Args:
-        device (torch.device or int): device index to select. It's a no-op if
-            this argument is a negative integer or ``None``.
-    """
+    """Context-manager that selects `device` (a torch.device or index; a negative index or None
+    is a no-op) and restores the previous one on exit."""
 
     def __init__(self, device):
         self.idx = torch.accelerator._get_device_index(device, optional=True)
@@ -79,7 +74,6 @@ def _lazy_init():
     torch_openreg._C._init()
     _initialized = True
 
-    # Create default streams for all devices
     num_devices = device_count()
     for device_idx in range(num_devices):
         _default_streams[device_idx] = Stream()
@@ -91,8 +85,6 @@ class Stream:
         self._stream = torch_openreg._C._stream_create()
 
     def __del__(self):
-        # Interpreter shutdown can clear module globals before __del__ runs.
-        # Only destroy when both runtime handle and stream are still valid.
         stream = getattr(self, "_stream", None)
         backend = globals().get("torch_openreg", None)
         c_api = getattr(backend, "_C", None) if backend is not None else None
@@ -104,15 +96,10 @@ class Stream:
         try:
             destroy(stream)
         except (AttributeError, TypeError):
-            # Ignore cleanup-time teardown ordering issues.
             pass
 
     def launch_kernel(self, task):
-        """Add a Python callable kernel to this stream.
-
-        Args:
-            task: A Python callable (function) to be executed in the stream
-        """
+        """Add a Python callable kernel to this stream."""
         torch_openreg._C._add_task_to_stream(self._stream, task)
 
     @property
@@ -133,31 +120,20 @@ def default_stream(device=None):
             device_idx = current_device()
 
     if device_idx not in _default_streams:
-        # Create default stream if it doesn't exist
         _default_streams[device_idx] = Stream()
 
     return _default_streams[device_idx]
 
 
 def launch_kernel(tog_path, attribute_path):
-    """Launch a kernel on the open TOGSimProcess.
-
-    Args:
-        tog_path: Path to TOG file
-        attribute_path: Path to attribute file
-
-    Returns:
-        int: The kernel ID assigned to this launch
-
-    """
-    # Get TOGSimProcess instance
+    """Queue a launch of `tog_path` on the open TOGSimProcess, on the current device's default
+    stream, with the launch context's stream index and timestamp."""
     sim = get_tog_simulator()
     if sim is None:
         raise RuntimeError("[torch.npu] No TOGSim is open. Launch inside `with torch.npu.TOGSimulator(...)`.")
 
     device_idx = current_device()
     stream_index, timestamp = get_launch_context()
-    # Create a task function that calls TOGSimProcess.launch_kernel
     def launch_task():
         return sim.launch_kernel(device_idx, stream_index, tog_path, attribute_path, timestamp)
 
@@ -165,47 +141,32 @@ def launch_kernel(tog_path, attribute_path):
     stream.launch_kernel(launch_task)
 
 def synchronize():
-    """Synchronize all streams on the current device.
-
-    This function:
-    1. Registers TOGSimProcess.device_synchronize as a task on the default stream
-    2. Calls the underlying device_synchronize to wait for all tasks to complete
-    """
-    # Get TOGSimProcess instance
+    """Synchronize all streams on the current device: queue the open TOGSimProcess's
+    device_synchronize on the default stream, then wait for every task."""
     sim = get_tog_simulator()
     if sim is not None:
-        # Get current device index
         device_idx = current_device()
 
-        # Create a task function that calls TOGSimProcess.device_synchronize
         def sync_task():
             return sim.device_synchronize(device_idx)
 
-        # Register as task on default stream
         stream = default_stream()
         stream.launch_kernel(sync_task)
 
-    # Call underlying device_synchronize to wait for all tasks to complete
     torch_openreg._C._device_synchronize()
 
 def get_tog_simulator():
     return _tog_simulator
 
 def set_tog_simulator(simulator):
-    """Set the global TOGSimProcess instance.
-
-    Args:
-        simulator: TOGSimProcess instance or None
-    """
+    """Set the global TOGSimProcess instance (or None)."""
     global _tog_simulator
     _tog_simulator = simulator
 
 class TOGSimulator:
-    """Open a TOGSim backend and make it this device's simulator for the block.
-
-    The machine file TOGSim times on is the one kernels are compiled for, so its path
-    is exported as TORCHSIM_TARGET while the block is open and restored on exit.
-    """
+    """Open a TOGSim backend and make it this device's simulator for the block, exporting its
+    machine file as TORCHSIM_TARGET while the block is open, so kernels compile for the machine TOGSim
+    times on."""
 
     _CONFIG_ENV_UNSET = object()
 
@@ -215,7 +176,7 @@ class TOGSimulator:
         self._backend = None
 
     def __enter__(self):
-        from pytorchsim.simulator.togsim import TOGSimProcess
+        from pytorchsim.simulator.timing.togsim import TOGSimProcess
 
         self._backend = TOGSimProcess(config_path=self.config_path,
                                       togsim_path=self.togsim_path)
@@ -249,16 +210,8 @@ def get_launch_context():
     return stream_index, timestamp
 
 class launch_context:
-    """Context manager for setting launch_kernel parameters.
-
-    Args:
-        stream_index: Stream index (partition ID) to use for launch_kernel
-        timestamp: Timestamp in nanoseconds to use for launch_kernel
-
-    Example:
-        with torch.npu.launch_context(stream_index=1, timestamp=1000):
-            model(input)
-    """
+    """Context manager setting the stream index (partition id) and timestamp (ns) launch_kernel
+    uses, e.g. `with torch.npu.launch_context(stream_index=1, timestamp=1000): model(input)`."""
 
     def __init__(self, stream_index=0, timestamp=0):
         self.stream_index = stream_index
@@ -267,39 +220,19 @@ class launch_context:
         self.prev_timestamp = None
 
     def __enter__(self):
-        # Save previous context values
         self.prev_stream_index = getattr(_launch_context, 'stream_index', 0)
         self.prev_timestamp = getattr(_launch_context, 'timestamp', 0)
-        # Set new context values
         set_launch_context(self.stream_index, self.timestamp)
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        # Restore previous context values
         _launch_context.stream_index = self.prev_stream_index
         _launch_context.timestamp = self.prev_timestamp
         return False
 
 def launch_model(model, *args, stream_index=0, timestamp=0, **kwargs):
-    """Launch a compiled model on the open TOGSimulator.
-
-    Args:
-        model: Compiled model (torch.compile())
-        *args: Model input arguments
-        stream_index: Stream index (partition ID). If None, uses context value.
-        timestamp: Timestamp in nanoseconds. If None, uses context value.
-        **kwargs: Additional keyword arguments for model execution
-
-    Returns:
-        Model output (same as calling model(*args, **kwargs))
-
-    Note:
-        This function executes the compiled model and automatically launches
-        the generated kernels with the specified stream_index and timestamp.
-        If stream_index or timestamp are not provided, values from the current
-        context (set via launch_context() or set_launch_context()) are used.
-    """
-    # Get stream_index and timestamp from parameters or context
+    """Run a compiled model on the open TOGSimulator, its kernels launched on `stream_index` at
+    `timestamp` ns. Returns the model's output."""
     with launch_context(stream_index=stream_index, timestamp=timestamp):
         return model(*args, **kwargs)
 
@@ -315,13 +248,8 @@ def _tree_to(x, device):
 
 
 def _run_on_cpu(op, args, kwargs):
-    """Run `op` on CPU copies and put the answer back where the caller wants it.
-
-    This is what the C++ CPUFallback does for an op the device has no kernel
-    for, written here in Python because the re-entry below has to reach it
-    WITHOUT going through the dispatcher again -- going through the dispatcher
-    is the thing that loops.
-    """
+    """Run `op` on CPU copies and put the answer back where the caller wants it: the C++
+    CPUFallback in Python, since the re-entry it serves must not go through the dispatcher again."""
     cpu_args = _tree_to(args, "cpu")
     cpu_kwargs = {k: _tree_to(v, "cpu") for k, v in kwargs.items()}
     result = op(*cpu_args, **cpu_kwargs)
@@ -356,43 +284,13 @@ def _compile_in_flight():
 
 
 def eager_to_compile(op_name):
-    """
-    Register an eager mode operation as a graph-based implementation using torch.compile().
-
-    Args:
-        op_name: Operator name (e.g., "aten::mul.Tensor")
-
-    Example:
-        torch.npu.eager_to_compile("aten::mul.Tensor")
-
-    RE-ENTRY IS NOT RECURSION HERE, IT IS A LOOP THAT CANNOT END. The compiled
-    graph for an op is allowed to contain that same op again -- Inductor emits
-    an aten fallback for anything it cannot codegen, and for an out= variant the
-    dispatcher reaches it through the functional one -- so the registered impl
-    calls torch.compile, which produces a graph that calls the registered impl.
-    Nothing about the second trip differs from the first, so it runs until
-    Python's stack ends.
-
-        measured   torch.cat over two complex64 tensors under torch.compile
-                   with aten::cat.out registered:
-                   RecursionError: maximum recursion depth exceeded.
-                   Inductor declines complex ("Torchinductor does not support
-                   code generation for complex operators"), emits
-                   aten.cat.default, and cat.default's out-variant path lands
-                   back on this wrapper. Kimi-VL's MoonViT builds its 2D rope
-                   table exactly that way. Without the registration the same
-                   program runs; the registration is what closes the loop.
-
-    So the first entry compiles, and an entry that arrives while that graph is
-    still running executes on CPU instead. That is the same answer the device
-    gives for any op it has no kernel for -- what is lost is the compiling of
-    the inner op, which was never possible anyway.
-    """
+    """Register the eager op `op_name` (e.g. "aten::mul.Tensor") to run as a torch.compile graph.
+    An entry while that graph runs, which Inductor's own aten fallback can cause, runs on CPU instead, as
+    re-entering would compile the same graph without end."""
     in_flight = threading.local()
 
     @torch.compiler.disable
     def wrapper(*args, **kwargs):
-        # Convert "aten::mul.Tensor" -> torch.ops.aten.mul.Tensor
         namespace, op_path = op_name.split("::", 1)
         op = torch.ops
         for part in [namespace] + op_path.split("."):
@@ -417,15 +315,7 @@ def eager_to_compile(op_name):
     torch.library.impl(op_name, "npu", wrapper)
 
 def register_eager_to_compile(ops):
-    """
-    Register multiple operators at once using eager_to_compile.
-
-    Args:
-        ops: List of operator names (e.g., ["aten::mul.Tensor", "aten::add.Tensor"])
-
-    Example:
-        torch.npu.register_eager_to_compile(["aten::mul.Tensor", "aten::add.Tensor"])
-    """
+    """Register every op name in `ops` with eager_to_compile."""
     for op_name in ops:
         eager_to_compile(op_name)
 

@@ -6,14 +6,12 @@ import logging
 CONFIG_TORCHSIM_DIR = os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim')
 CONFIG_GEM5_PATH = os.environ.get('GEM5_PATH', default=os.path.join(
     os.environ.get("VCIX_ENV_ROOT", "/opt/vcix-env"), "gem5", "build", "RISCV", "gem5.opt"))
-# --- Triton codegen route ----------------------------------------------------
-# The pytorchsim-triton-compiler checkout that owns stages 1-5 (ttir -> ttshared -> the compiler passes
-# -> RISC-V ELF). It is a SEPARATE repository, deliberately not vendored.
+#: The compiler checkout (stages 1-5, ttir to the RISC-V ELF), a separate repository, not vendored.
 CONFIG_TORCHSIM_COMPILE_DIR = os.environ.get(
     "TORCHSIM_COMPILE_DIR", default=os.path.join(CONFIG_TORCHSIM_DIR, "pytorchsim-triton-compiler"))
-# Where the accelerator models are built (a kernel object's accelerator names which one it runs on).
+#: Where the accelerator models are built; a kernel object's accelerator names the one it runs on.
 CONFIG_VCIX_BUILD = os.path.join(os.environ.get("TORCHSIM_PREFIX", "/workspace"), "vcix-build")
-# the compiler runs in its own process, under this interpreter unless overridden.
+#: The interpreter the compiler's own process runs under.
 CONFIG_TORCHSIM_COMPILE_PYTHON = os.environ.get("TORCHSIM_COMPILE_PYTHON", default=sys.executable)
 
 
@@ -40,7 +38,7 @@ def get_dump_path():
     return dump_path
 
 
-# PyTorchSim's run settings: (environment variable, default, type). They are not the machine's.
+#: PyTorchSim's run settings, not the machine's: name -> (environment variable, default, type).
 RUN_SETTINGS = {
     "pytorchsim_functional_mode": ("TORCHSIM_FUNCTIONAL_MODE", 1, int),
     "pytorchsim_timing_mode": ("TORCHSIM_TIMING_MODE", 0, int),
@@ -56,8 +54,8 @@ def _run_setting(name):
 
 
 def __getattr__(name):
-    # The machine: TORCHSIM_TARGET names a TOGSim machine file ($TOGSIM_DIR/configs/<name>.yml) or
-    # gives a path to one. The compiler compiles for it and TOGSim times on it.
+    """The settings read on each access: TORCHSIM_TARGET names a TOGSim machine file
+    ($TOGSIM_DIR/configs/<name>.yml) or a path to one, which the compiler compiles for and TOGSim times on."""
     if name == "CONFIG_TORCHSIM_TARGET":
         return os.environ.get("TORCHSIM_TARGET") or "tpuv6e"
     if name == "CONFIG_MACHINE":
@@ -92,27 +90,16 @@ def togsim_simulator(togsim_dir=None):
 
 
 def setup_logger(name=None, level=None):
-    """
-    Setup a logger with consistent formatting across all modules.
-
-    Args:
-        name: Logger name (default: __name__ of calling module)
-        level: Logging level (default: DEBUG if CONFIG_DEBUG_MODE else INFO)
-
-    Returns:
-        Logger instance
-    """
+    """The logger `name` (the calling module's by default), formatted alike across modules, at `level`
+    (DEBUG in debug mode, else INFO)."""
     if name is None:
         import inspect
-        # Get the calling module's name
         frame = inspect.currentframe().f_back
         name = frame.f_globals.get('__name__', 'PyTorchSim')
 
-    # Convert logger name to lowercase
     name = name.lower()
     logger = logging.getLogger(name)
 
-    # Only configure if not already configured (avoid duplicate handlers)
     if not logger.handlers:
         handler = logging.StreamHandler()
         formatter = logging.Formatter(
@@ -122,7 +109,6 @@ def setup_logger(name=None, level=None):
         handler.setFormatter(formatter)
         logger.addHandler(handler)
 
-        # Set log level
         if level is None:
             level = logging.DEBUG if CONFIG_DEBUG_MODE else logging.INFO
         logger.setLevel(level)

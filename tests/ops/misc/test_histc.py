@@ -7,7 +7,8 @@ from torch._subclasses.fake_tensor import FakeTensorMode
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
 from result_check import check_result
 
-from pytorchsim.frontend.inductor.post_grad_pass import pytorchsim_post_grad_pass
+from pytorchsim.frontend.inductor import postgrad
+from pytorchsim.frontend.inductor.postgrad import pytorchsim_post_grad_pass
 
 aten = torch.ops.aten
 
@@ -17,22 +18,8 @@ def _histc(x, bins, lo, hi):
 
 
 def test_histc_integral(device, n=64, bins=8):
-    # An op with no npu kernel falls back, and the fallback is the CPU one, so
-    # what this device supports is what ATen's CPU kernel supports. histc is a
-    # place where that is narrower than CUDA:
-    #
-    #     NotImplementedError: "histogram_cpu" not implemented for 'Int'
-    #
-    # transformers' MoE router (integrations/moe.py) counts tokens per expert
-    # with histc and picks its input dtype by DEVICE NAME -- float for "cpu"
-    # and "mps", integral otherwise -- so `npu` gets the branch written for
-    # CUDA and the fallback then lands on the very kernel the first branch
-    # exists to avoid. That is what stopped DeepSeek-V3 under transformers
-    # 5.15.0; post_grad_pass.histc counts it on the device.
-    #
-    # Both integral widths are here because they take different paths back:
-    # the counts return in the INPUT's dtype, which is the contract the CUDA
-    # branch promised its caller.
+    """Integral histc is counted on the device and returned in the input's dtype: transformers' MoE router gives an
+    integral input on any device but cpu and mps, and ATen's CPU histc has no Int kernel to fall back to."""
     g = torch.Generator().manual_seed(0)
     for dtype in (torch.int32, torch.int64):
         cpu_x = torch.randint(0, bins, (n,), generator=g).to(dtype)
@@ -84,7 +71,7 @@ def _histc_graph(x, bins, lo, hi):
 
 def test_pass_counts_on_the_device(n=64):
     """The device pass alone leaves no aten.histc and counts what aten counts: bins that are the values,
-    wider edges, int8 past 127 bins, floats with values on and past the edges, and min == max."""
+    wider edges, int8 past 127 bins, floats with values on and past the edges, and integral min == max."""
     g = torch.Generator().manual_seed(2)
     ints = torch.randint(-4, 20, (n,), generator=g)
     floats = torch.cat([torch.rand(n, generator=g) * 3 - 1, torch.tensor([0., 0.5, 1., 1.0000001, float("nan")])])
@@ -93,7 +80,6 @@ def test_pass_counts_on_the_device(n=64):
         ("wide edges", ints.to(torch.int32), 8, 0, 15),
         ("int8 past 127 bins", torch.tensor([0, 1, 127, -100, -100, -100], dtype=torch.int8), 200, 0, 199),
         ("float", floats, 4, 0, 1),
-        ("float min == max", floats.nan_to_num(0.0), 5, 0, 0),
         ("int64 min == max", ints, 6, 0, 0),
         ("one value", torch.full((7,), 3, dtype=torch.int64), 4, 0, 0),
     )
@@ -117,8 +103,31 @@ def test_pass_counts_on_the_device(n=64):
             raise AssertionError(f"{name}: [{lo}, {hi}] was not refused")
 
 
+def test_float_min_equal_max_is_left_to_aten():
+    """min == max over floats takes the range from the values: the pass leaves that histc to aten,
+    counted as a fallback, so aten counts finite values and refuses a NaN or an inf as it does."""
+    for name, x in (("finite", torch.tensor([0.5, 1.0, 2.5, 2.5])), ("nan", torch.tensor([1.0, float("nan")])),
+                    ("inf", torch.tensor([1.0, float("inf")]))):
+        postgrad.CALLS.clear()
+        gm = _histc_graph(x, 4, 0, 0)
+        pytorchsim_post_grad_pass(gm)
+        left = [m for m in gm.graph.nodes if m.target is aten.histc.default]
+        assert len(left) == 1 and postgrad.CALLS.get("histc") == {"fallback": 1}, (name, postgrad.CALLS)
+        if name == "finite":
+            assert torch.equal(gm(x), torch.histc(x, 4, 0, 0)), name
+            continue
+        try:
+            gm(x)
+        except RuntimeError as e:
+            assert "is not finite" in str(e), f"{name}: {e}"
+        else:
+            raise AssertionError(f"{name}: a range that is not finite was not refused")
+        print(f"histc float min == max {name}: left to aten")
+
+
 if __name__ == "__main__":
     device = torch.device("npu:0")
     test_pass_counts_on_the_device()
+    test_float_min_equal_max_is_left_to_aten()
     test_histc_integral(device)
     test_histc_float_unchanged(device)

@@ -1,8 +1,8 @@
-"""The form two extension modules keep, so an addition follows it: post_grad_pass.py lists every
-rewrite in its docstring in registration order, each under a section comment naming it;
-registration.py's install() calls every _register_* function in file order, each under a section
-comment, and its docstring has one line per registry. Read with ast and tokenize, no device."""
+"""The form two extension modules keep: postgrad/ lists every rewrite in its package docstring in registration
+order, each under a section comment in its family's module; registration.py's install() calls every _register_*
+in file order, each under a section comment, one docstring line per registry. Read with ast, no device."""
 import ast
+import glob
 import io
 import os
 import re
@@ -15,7 +15,11 @@ from result_check import check_result
 
 
 def _module_tree(module):
-    source = open(module.__file__).read()
+    return _file_tree(module.__file__)
+
+
+def _file_tree(path):
+    source = open(path).read()
     comments = [(tok.start[0], tok.string) for tok in
                 tokenize.generate_tokens(io.StringIO(source).readline)
                 if tok.type == tokenize.COMMENT and tok.start[1] == 0]
@@ -34,14 +38,16 @@ def _check(name, ok):
 
 
 def test_post_grad_pass_form():
-    from pytorchsim.frontend.inductor import post_grad_pass as pg
+    from pytorchsim.frontend.inductor import postgrad as pg
     names = [*pg.REWRITES, "complex_real_pairs"]
     doc_words = re.findall(r"\w+", pg.__doc__)
     listed = [w for w in doc_words if w in names]
     order = list(dict.fromkeys(listed))
-    tree, comments = _module_tree(pg)
-    defs = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
-    missing_section = [n for n in names if n not in defs or n not in _section_comment(defs[n], comments)]
+    defs = {}
+    for path in sorted(glob.glob(os.path.join(os.path.dirname(pg.__file__), "*.py"))):
+        tree, comments = _file_tree(path)
+        defs.update({n.name: (n, comments) for n in tree.body if isinstance(n, ast.FunctionDef)})
+    missing_section = [n for n in names if n not in defs or n not in _section_comment(*defs[n])]
     print("rewrites:", names, "docstring order:", order, "without a section:", missing_section)
     _check("PostGradPassForm", order == names and not missing_section)
 

@@ -7,15 +7,13 @@ from torch._inductor.decomposition import select_decomp_table
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
 from result_check import check_result
 
-from pytorchsim.frontend.inductor.post_grad_pass import pytorchsim_post_grad_pass
+from pytorchsim.frontend.inductor.postgrad import pytorchsim_post_grad_pass
 
 aten = torch.ops.aten
 
 
 def _rope(x, a):
-    # DeepSeek-V2's apply_rotary_emb, which is the only complex path in the
-    # model suite: polar for the angles, the query read as complex pairs, one
-    # complex multiply, back to real.
+    """DeepSeek-V2's apply_rotary_emb: polar for the angles, the query as complex pairs, one complex multiply."""
     freqs = a.transpose(1, 2)
     fc = torch.polar(torch.ones_like(freqs), freqs) * 0.7
     xc = torch.view_as_complex(x.reshape(1, 32, 32, 2))
@@ -47,10 +45,8 @@ def _complex_nodes(graph):
 
 
 def test_pass_leaves_no_complex():
-    # The pass on its own, on a traced graph and no device. Inductor does not
-    # lower complex arithmetic -- every complex op becomes an extern call, and
-    # on this backend that means the CPU, so the work leaves the simulator.
-    # After the pass the graph must hold no complex value at all.
+    """The pass alone, on a traced graph: Inductor lowers no complex op (each would be a CPU extern call), so the
+    rewritten graph holds no complex value and computes the same."""
     x, a = torch.randn(1, 32, 64), torch.randn(1, 32, 32)
     gm = _trace(_rope, x, a)
 
@@ -67,10 +63,8 @@ def test_pass_leaves_no_complex():
 
 
 def test_rope_on_device(device):
-    # And end to end. Without the pass this passes too -- through the CPU
-    # fallback -- so the value check is not what pins the rewrite; the graph
-    # check above is. This one pins that the rewrite did not break the answer
-    # once real kernels compute it.
+    """End to end on the device: the rewrite does not break the answer once real kernels compute it (the graph
+    check above is what pins the rewrite; through the CPU fallback this passes too)."""
     x, a = torch.randn(1, 32, 64), torch.randn(1, 32, 32)
     cpu_out = _rope(x, a)
     npu_out = torch.compile(_rope, dynamic=False)(x.to(device=device), a.to(device=device))
@@ -138,12 +132,10 @@ def test_row_mm_stays_real():
 
 
 def test_unhandled_op_is_left_alone():
-    # WHOLE OR NOTHING. A complex op the pass cannot say in real arithmetic
-    # makes the whole component ineligible -- half a rewrite is a graph with
-    # complex values whose producers are gone.
+    """Whole or nothing: a complex op with no real-pair rule (exp) leaves its whole component complex."""
     def f(x):
         z = torch.view_as_complex(x.reshape(1, 32, 32, 2))
-        return torch.view_as_real(torch.exp(z))          # exp is not on the list
+        return torch.view_as_real(torch.exp(z))
 
     x = torch.randn(1, 32, 64)
     gm = _trace(f, x)

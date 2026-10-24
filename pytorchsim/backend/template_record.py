@@ -20,7 +20,7 @@ RECORD_LOG = "selection.jsonl"
 
 
 #: The templates whose configs are timed. Another template (a convolution) keeps the offered order.
-TIMED_TEMPLATES = ("triton::mm", "triton::bmm")
+TIMED_TEMPLATES = ("triton::mm", "triton::bmm", "triton::mm_resident")
 
 
 #: The KernelTemplateChoice annotation that says where a choice came from.
@@ -37,6 +37,10 @@ TIMED = "timed"
 
 
 HEURISTIC = "heuristic"
+
+
+#: The one config a rule of the compiler's contract gives (the resident mm, copy_node.plan): nothing to time.
+PLANNED = "planned"
 
 
 def is_timed(choice):

@@ -51,8 +51,6 @@ def run_togsim(workdir, meta, args=()):
     read; a queued launch returns its kernel id, as the stream's numbers are whole only when it closes."""
     import torch
 
-    from pytorchsim.simulator.timing.togsim import TOGSimProcess
-
     for need in SHARED:
         if not os.path.isfile(os.path.join(workdir, need)):
             raise FileNotFoundError(f"{os.path.join(workdir, need)} not found -- call write_cycle_tables first")
@@ -60,13 +58,48 @@ def run_togsim(workdir, meta, args=()):
     write_shape(workdir, meta, args)
     write_tensors(workdir)
 
-    handle = os.path.join(mine, "tile_graph.onnx")
     attribute = attribute_dir(workdir)
     if torch.npu.get_tog_simulator() is not None:
-        return torch.npu.launch_kernel(handle, _held_for_the_session(mine, attribute) if attribute else "")
+        for handle in copy_node_handles(workdir):
+            torch.npu.launch_kernel(handle, "")
+        return torch.npu.launch_kernel(os.path.join(mine, "tile_graph.onnx"),
+                                       _held_for_the_session(mine, attribute) if attribute else "")
+    return simulate_standalone(workdir, mine, attribute or "")
 
-    result_path = TOGSimProcess.run_standalone(handle, attribute or "")
-    return TOGSimProcess.read_result(result_path)
+
+def simulate_standalone(workdir, mine, attribute, **kw):
+    """read_result of the launch in `mine`, run alone: the kernel object's copy nodes, then its TOG.
+    total_cycles is the launch's sum; kernel_cycles and copy_node_cycles are the parts."""
+    from pytorchsim.simulator.timing.togsim import TOGSimProcess
+
+    copies = [TOGSimProcess.read_result(TOGSimProcess.run_standalone(h, "", **kw))["total_cycles"]
+              for h in copy_node_handles(workdir)]
+    result = TOGSimProcess.read_result(
+        TOGSimProcess.run_standalone(os.path.join(mine, "tile_graph.onnx"), attribute, **kw))
+    if copies:
+        result = dict(result, kernel_cycles=result["total_cycles"], copy_node_cycles=copies,
+                      total_cycles=result["total_cycles"] + sum(copies))
+    return result
+
+
+def copy_node_handles(workdir):
+    """The handle of each copy node the kernel object lists (the compiler's kernel_object.copy_nodes), in
+    this process's launch directory beside the tensors it moves: a TOG that only loads, empty tables."""
+    ko = compiler_bridge.compiler_contract("kernel_object")
+    handles = []
+    for node in ko.copy_nodes(contract.kernel_object(workdir) or {}):
+        so = os.path.join(workdir, node["tog_so"])
+        d = os.path.join(contract.dir_for(workdir), os.path.dirname(node["tog_so"]))
+        os.makedirs(d, exist_ok=True)
+        if os.path.lexists(os.path.join(d, TOG_SO)):
+            os.remove(os.path.join(d, TOG_SO))
+        os.symlink(so, os.path.join(d, TOG_SO))
+        for name in (CYCLE_TSV, UNITS_TSV):
+            open(os.path.join(d, name), "w").close()
+        for name in (TENSORS_TXT, TENSOR_SHAPES_TXT):
+            shutil.copyfile(os.path.join(contract.dir_for(workdir), name), os.path.join(d, name))
+        handles.append(os.path.join(d, "tile_graph.onnx"))
+    return handles
 
 
 def attribute_dir(workdir):

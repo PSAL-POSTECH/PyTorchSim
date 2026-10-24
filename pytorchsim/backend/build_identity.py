@@ -16,7 +16,7 @@ logger = config.setup_logger()
 STAMP_NAME = "provenance.json"
 
 
-_STALE_PATTERNS = ("[0-9][0-9]-*", "tog.so", "tog_cycles.tsv", "tog_units.tsv", "timing.json")
+_STALE_PATTERNS = ("[0-9][0-9]-*", "tog.so", "tog_cycles.tsv", "tog_units.tsv", "timing.json", "copy_node_*/tog.*")
 
 
 _identity = None

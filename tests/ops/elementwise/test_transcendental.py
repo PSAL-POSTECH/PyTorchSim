@@ -4,7 +4,7 @@ import torch
 import torch._dynamo
 import torch.utils.cpp_extension
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 def test_tanh(device, size=(128, 128)):
     def tanh(a):
@@ -13,7 +13,7 @@ def test_tanh(device, size=(128, 128)):
     opt_fn = torch.compile(dynamic=False)(tanh)
     res = opt_fn(x)
     out = tanh(x.cpu())
-    test_result("Tanh", res, out)
+    check_result("Tanh", res, out)
 
 def test_exp(device, size=(128, 128)):
     def exp(a):
@@ -22,7 +22,7 @@ def test_exp(device, size=(128, 128)):
     opt_fn = torch.compile(dynamic=False)(exp)
     res = opt_fn(x)
     out = exp(x.cpu())
-    test_result("Exp", res, out)
+    check_result("Exp", res, out)
 
 def test_erf(device, size=(128, 128)):
     def erf(a):
@@ -31,7 +31,7 @@ def test_erf(device, size=(128, 128)):
     opt_fn = torch.compile(dynamic=False)(erf)
     res = opt_fn(x)
     out = erf(x.cpu())
-    test_result("Erf", res, out)
+    check_result("Erf", res, out)
 
 def test_sin(device, size=(128, 128)):
     def sin(a):
@@ -40,7 +40,7 @@ def test_sin(device, size=(128, 128)):
     opt_fn = torch.compile(dynamic=False)(sin)
     res = opt_fn(x)
     out = sin(x.cpu())
-    test_result("Sin", res, out)
+    check_result("Sin", res, out)
 
 def test_cos(device, size=(128, 128)):
     def cos(a):
@@ -49,7 +49,7 @@ def test_cos(device, size=(128, 128)):
     opt_fn = torch.compile(dynamic=False)(cos)
     res = opt_fn(x)
     out = cos(x.cpu())
-    test_result("Cos", res, out)
+    check_result("Cos", res, out)
 
 if __name__ == "__main__":
     import argparse

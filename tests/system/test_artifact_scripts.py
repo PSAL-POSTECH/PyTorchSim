@@ -9,7 +9,7 @@ import sys
 REPO = os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim")
 CYCLE = os.path.join(REPO, "experiments/artifact/cycle_validation/run_cycle.sh")
 ILS = "experiments/artifact/speedup/scripts/run_speed_ils_matmul.sh"
-RESOLVE = ("import torch; from pytorchsim.driver import compiler_bridge; "
+RESOLVE = ("import torch; from pytorchsim.backend import compiler_bridge; "
            "print(compiler_bridge.target().file)")
 
 

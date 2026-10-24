@@ -6,7 +6,7 @@ import torch
 from transformers import CLIPVisionConfig, CLIPVisionModel
 
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 
 def _init_weights(m):
@@ -50,7 +50,7 @@ def test_clip(device, batch=2, image_size=224, patch_size=32, num_layers=2):
         opt_model = torch.compile(dynamic=False)(model)
         out_device = opt_model(pixel_values=x.to(device)).last_hidden_state
 
-    test_result(f"CLIP vision (batch={batch})", out_device, out_cpu)
+    check_result(f"CLIP vision (batch={batch})", out_device, out_cpu)
     print("Max diff >", torch.max(torch.abs(out_device.cpu() - out_cpu)))
     print("CLIP Simulation Done")
 

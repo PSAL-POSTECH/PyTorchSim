@@ -8,7 +8,7 @@ import tempfile
 sys.path.insert(0, os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"))
 
 import torch  # noqa: F401  the npu backend loads pytorchsim whole, before its parts are imported
-from pytorchsim.driver import autotune, compiler_bridge
+from pytorchsim.backend import autotune, compiler_bridge
 
 
 def _failed(spec_path):

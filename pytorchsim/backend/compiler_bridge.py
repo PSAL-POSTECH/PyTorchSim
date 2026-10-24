@@ -121,11 +121,8 @@ def compiler_env():
 
 
 def run_pipeline(spec_path, workdir, to_stage="torchsim-compile", tog=False, timeout=1800):
-    """Drive the compiler's stages over `spec_path`, writing artifacts into `workdir`.
-
-    Stops at `to_stage`, by default `torchsim-compile` -- the ELF: spike and verify
-    want tensors and a per-kernel reference this route has no graph-level answer for.
-    """
+    """Drive the compiler's stages over `spec_path`, writing artifacts into `workdir`, up to
+    `to_stage` (by default `torchsim-compile`, the ELF)."""
     cmd = [config.CONFIG_TORCHSIM_COMPILE_PYTHON,
            os.path.join(compiler_dir(), "pytorchsim-triton-compiler"), spec_path,
            "--from", "triton-compile", "--to", to_stage, "--workdir", workdir] + (["--tog"] if tog else [])

@@ -11,7 +11,7 @@ sys.path.insert(0, os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim
 
 import torch  # noqa: F401,E402  the npu backend loads pytorchsim whole, before its parts are imported
 from pytorchsim import config  # noqa: E402
-from pytorchsim.driver import codecache, compiler_bridge  # noqa: E402
+from pytorchsim.backend import codecache, compiler_bridge  # noqa: E402
 
 
 def _ask_compiler(expr):

@@ -20,7 +20,7 @@ import torch.utils.cpp_extension
 from torch._inductor import config
 
 sys.path.insert(0, os.path.join(os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim'), 'tests'))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 class MLP(nn.Module):
     def __init__(self, input_size, output_size, hidden_size):
@@ -57,7 +57,7 @@ def test_mlp(device):
     y1 = model_device(x1)
     y2 = model_cpu(x2)
 
-    test_result("MLP", y1, y2)
+    check_result("MLP", y1, y2)
 
 def test_train_mlp(device):
     torch.manual_seed(0)
@@ -93,13 +93,13 @@ def test_train_mlp(device):
     print("Forward")
     y1_hat = model_device(x1)
     y2_hat = model_cpu(x2)
-    test_result("MLP Forward", y1_hat, y2_hat)
+    check_result("MLP Forward", y1_hat, y2_hat)
 
     """ Loss """
     print("Loss")
     loss1 = criterion(y1_hat, y1)
     loss2 = criterion(y2_hat, y2)
-    test_result("Loss", loss1, loss2)
+    check_result("Loss", loss1, loss2)
 
     """ Backward """
     opt_zero_grad()
@@ -115,11 +115,11 @@ def test_train_mlp(device):
 
     # Check weights and gradients
     # for p1, p2 in zip(model_device.parameters(), model_cpu.parameters()):
-    #     test_result("Gradient", p1.grad, p2.grad)
-    # test_result("FC1 Gradient", model_device.fc1.weight.grad, model_cpu.fc1.weight.grad)
-    # test_result("FC1 Bias Gradient", model_device.fc1.bias.grad, model_cpu.fc1.bias.grad)
-    # test_result("FC2 Gradient", model_device.fc2.weight.grad, model_cpu.fc2.weight.grad)
-    # test_result("FC2 Bias Gradient", model_device.fc2.bias.grad, model_cpu.fc2.bias.grad)
+    #     check_result("Gradient", p1.grad, p2.grad)
+    # check_result("FC1 Gradient", model_device.fc1.weight.grad, model_cpu.fc1.weight.grad)
+    # check_result("FC1 Bias Gradient", model_device.fc1.bias.grad, model_cpu.fc1.bias.grad)
+    # check_result("FC2 Gradient", model_device.fc2.weight.grad, model_cpu.fc2.weight.grad)
+    # check_result("FC2 Bias Gradient", model_device.fc2.bias.grad, model_cpu.fc2.bias.grad)
     print("Finished")
 
 def train_mlp_mnist(device):

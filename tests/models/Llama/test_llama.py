@@ -6,7 +6,7 @@ import torch
 from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.models.llama.modeling_llama import LlamaForCausalLM, LlamaDecoderLayer, LlamaRMSNorm, LlamaRotaryEmbedding, LlamaModel
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 @torch.no_grad()
 def run_rmsnorm_test(
@@ -41,7 +41,7 @@ def run_rmsnorm_test(
     out_cpu = cpu_norm(hidden_states)
     out_dev = compiled_norm(hs_dev)
 
-    test_result("LlamaRMSNorm forward", out_dev, out_cpu, rtol=rtol, atol=atol)
+    check_result("LlamaRMSNorm forward", out_dev, out_cpu, rtol=rtol, atol=atol)
     print("Max diff >", (out_dev.detach().cpu() - out_cpu.detach().cpu()).abs().max().item())
 
 
@@ -116,8 +116,8 @@ def run_rotary_embedding_test(
 
     print(f"Output dtype check - CPU: {cos_cpu.dtype}, Device: {cos_dev.dtype}")
 
-    test_result("LlamaRotaryEmbedding (Cos)", cos_dev, cos_cpu, rtol=rtol, atol=atol)
-    test_result("LlamaRotaryEmbedding (Sin)", sin_dev, sin_cpu, rtol=rtol, atol=atol)
+    check_result("LlamaRotaryEmbedding (Cos)", cos_dev, cos_cpu, rtol=rtol, atol=atol)
+    check_result("LlamaRotaryEmbedding (Sin)", sin_dev, sin_cpu, rtol=rtol, atol=atol)
 
     diff_cos = (cos_dev.detach().cpu() - cos_cpu.detach().cpu()).abs().max().item()
     diff_sin = (sin_dev.detach().cpu() - sin_cpu.detach().cpu()).abs().max().item()
@@ -213,7 +213,7 @@ def run_decoder_layer_test(
     if isinstance(out_dev, tuple):
         out_dev = out_dev[0]
 
-    test_result("LlamaDecoderLayer forward", out_dev, out_cpu, rtol=rtol, atol=atol)
+    check_result("LlamaDecoderLayer forward", out_dev, out_cpu, rtol=rtol, atol=atol)
     print("Max diff >", (out_dev.detach().cpu() - out_cpu.detach().cpu()).abs().max().item())
 
 @torch.no_grad()
@@ -289,7 +289,7 @@ def run_custom_llama_test(
     logits_cpu = cpu_model(input_ids=input_ids_cpu, attention_mask=attn_mask_cpu)#.logits
     logits_dev = compiled(input_ids=input_ids_dev, attention_mask=attn_mask_dev)#.logits
 
-    test_result("Custom Llama forward(logits)", logits_dev, logits_cpu, rtol=rtol, atol=atol)
+    check_result("Custom Llama forward(logits)", logits_dev, logits_cpu, rtol=rtol, atol=atol)
     print("Max diff >", (logits_dev.detach().cpu() - logits_cpu.detach().cpu()).abs().max().item())
 
 @torch.no_grad()
@@ -346,7 +346,7 @@ def run_llama_model_test(
     last_hidden_state_cpu = out_cpu.last_hidden_state
     last_hidden_state_dev = out_dev.last_hidden_state
 
-    test_result("LlamaModel (last_hidden_state)", last_hidden_state_dev, last_hidden_state_cpu, rtol=rtol, atol=atol)
+    check_result("LlamaModel (last_hidden_state)", last_hidden_state_dev, last_hidden_state_cpu, rtol=rtol, atol=atol)
     diff = (last_hidden_state_dev.detach().cpu() - last_hidden_state_cpu.detach().cpu()).abs().max().item()
     print(f"Max diff > {diff}")
 

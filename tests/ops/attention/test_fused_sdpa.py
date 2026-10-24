@@ -65,7 +65,7 @@ def _err(out, ref):
 
 
 def _routed():
-    from pytorchsim.frontend import attention
+    from pytorchsim.frontend.dispatcher import attention
     return getattr(attention, "ROUTED", None)
 
 
@@ -146,7 +146,7 @@ def run_spad(name):
     since one query block's scratch is live at a time; doubling its D halves the block as the
     scratchpad bound binds, until one row per lane overruns it and fused_plan declines."""
     from pytorchsim import config
-    from pytorchsim.frontend import attention
+    from pytorchsim.frontend.dispatcher import attention
     _, B, Hq, H, _, S0, D0, causal = CASES["prefill_causal_gqa"]
 
     def plan(S, D):

@@ -12,7 +12,7 @@ from pytorchsim import config
 
 from pytorchsim import contract
 from pytorchsim.contract import storage_span
-from pytorchsim.driver import compiler_bridge
+from pytorchsim.backend import compiler_bridge
 
 logger = config.setup_logger()
 

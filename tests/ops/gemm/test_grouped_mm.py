@@ -5,9 +5,11 @@ against a float32 CPU reference, group by group.
   few_rows   fewer rows than groups: every block holds rows, the grid stops at the row count
   eager      outside torch.compile the call runs group by group (no Triton launch outside a compiled graph)
   grad       inputs that require grad run group by group, and their gradients match the CPU's
+  fallback   transformers' grouped_mm_fallback (its call when the weight is not bf16) takes the same kernel
 
 Usage: test_grouped_mm.py [case ...]   (all cases when none is named)
 """
+import importlib
 import sys
 
 import torch
@@ -40,16 +42,21 @@ def _err(out, ref):
     return ((out.float().cpu() - ref).abs().max() / ref.abs().max()).item()
 
 
-def _run_compiled(sizes, k, n):
+def _fallback(a, b, offs):
+    return torch.ops.transformers.grouped_mm_fallback(a, b, offs=offs)
+
+
+def _run_compiled(sizes, k, n, fn=_gmm, dtype=torch.bfloat16):
     """(relative error, grouped-kernel launches, calls left to aten) of one compiled call."""
-    from pytorchsim.driver import codecache
-    from pytorchsim.frontend import grouped_mm
+    from pytorchsim.backend import codecache
+    from pytorchsim.frontend.dispatcher import grouped_mm
     launches, externs = [], []
     codecache.observe_launches(grouped_mm._grouped_mm_kernel, lambda: launches.append(1))
     codecache.observe_every_extern(externs.append)
     a, b, offs = _inputs(sizes, k, n)
+    a, b = a.to(dtype), b.to(dtype)
     torch._dynamo.reset()
-    out = torch.compile(_gmm, dynamic=False)(a.to(device), b.to(device), offs.to(device))
+    out = torch.compile(fn, dynamic=False)(a.to(device), b.to(device), offs.to(device))
     return _err(out, _reference(a, b, offs)), len(launches), externs
 
 
@@ -80,7 +87,14 @@ def case_grad():
     return ea < TOL and eb < TOL, f"grad err a {ea:.3g}, b {eb:.3g}"
 
 
-CASES = {"routed": case_routed, "few_rows": case_few_rows, "eager": case_eager, "grad": case_grad}
+def case_fallback():
+    importlib.import_module("transformers.integrations.moe")
+    err, launched, externs = _run_compiled([0, 130, 7, 0, 64, 1, 0, 30], 256, 256, _fallback, torch.float32)
+    return err < TOL and launched == 1 and not externs, f"err {err:.3g}, launches {launched}, externs {externs}"
+
+
+CASES = {"routed": case_routed, "few_rows": case_few_rows, "eager": case_eager, "grad": case_grad,
+         "fallback": case_fallback}
 
 
 if __name__ == "__main__":

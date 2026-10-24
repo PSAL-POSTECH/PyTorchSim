@@ -6,7 +6,7 @@ import sys
 
 import torch
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 from torch._dynamo.testing import rand_strided
 from torch._dynamo.utils import preserve_rng_state
@@ -23,7 +23,7 @@ def test_reduction_split_is_upstream_off_device():
         device, r, n, True) for r, n in shapes]
     upstream = [InductorChoices().reduction_split_factor(
         device, r, n, True) for r, n in shapes]
-    test_result("ReductionSplitOffDevice", torch.tensor(ours),
+    check_result("ReductionSplitOffDevice", torch.tensor(ours),
                 torch.tensor(upstream))
 
 
@@ -34,7 +34,7 @@ def test_benchmark_operand_is_upstream_off_device():
     with preserve_rng_state():
         upstream = rand_strided((64,), (1,), device="cpu",
                                 dtype=torch.float32, extra_size=0)
-    test_result("BenchmarkOperandOffDevice", ours, upstream)
+    check_result("BenchmarkOperandOffDevice", ours, upstream)
 
 
 def test_device_predicate_reads_every_spelling():
@@ -43,12 +43,12 @@ def test_device_predicate_reads_every_spelling():
     A predicate that answers only torch.device sends the string form to
     upstream, whose operand is sampled -- one silent CPU fallback per call.
     """
-    from pytorchsim.frontend.inductor_patches import _is_npu
+    from pytorchsim.frontend.inductor.registration import is_npu
 
     spellings = ("npu", "npu:0", torch.device("npu"), torch.device("npu:0"),
                  "cpu", "cuda", torch.device("cpu"), None)
-    got = torch.tensor([_is_npu(d) for d in spellings])
-    test_result("DevicePredicateSpellings", got,
+    got = torch.tensor([is_npu(d) for d in spellings])
+    check_result("DevicePredicateSpellings", got,
                 torch.tensor([True, True, True, True, False, False, False, False]))
 
 
@@ -63,7 +63,7 @@ def test_conv_grid_is_upstream_off_device():
     meta = {"BLOCK_M": 64, "BLOCK_N": 128, "GROUPS": 4}
     got = torch.tensor(list(conv_kernel.conv2d_grid(2, 256, 8, 8, meta))
                        + list(conv_kernel.conv3d_grid(2, 256, 4, 8, 8, meta)))
-    test_result("ConvGridOffDevice", got, torch.tensor([2, 2, 4, 8, 2, 4]))
+    check_result("ConvGridOffDevice", got, torch.tensor([2, 2, 4, 8, 2, 4]))
 
 
 def test_this_device_still_gets_its_own_answers():
@@ -73,7 +73,7 @@ def test_this_device_still_gets_its_own_answers():
     operand = AlgorithmSelectorCache.generate_example_value(
         (64,), (1,), "npu", torch.float32, 0)
     got = torch.tensor([split, operand.numel(), operand.device.type == "npu"])
-    test_result("OnDeviceAnswersKept", got, torch.tensor([1, 64, True]))
+    check_result("OnDeviceAnswersKept", got, torch.tensor([1, 64, True]))
 
 
 def test_triton_presence_is_upstream():
@@ -89,7 +89,7 @@ def test_triton_presence_is_upstream():
     got = torch.tensor([triton_utils.has_triton(),
                         hasattr(triton_utils.has_triton, "cache_info"),
                         triton_utils.triton_hash_with_backend() == want])
-    test_result("TritonPresenceUpstream", got, torch.tensor([True, True, True]))
+    check_result("TritonPresenceUpstream", got, torch.tensor([True, True, True]))
 
 
 def test_conv_heuristics_are_upstream_outside_npu_choices():
@@ -106,7 +106,7 @@ def test_conv_heuristics_are_upstream_outside_npu_choices():
     upstream = block_n(BaseConfigHeuristic())
     got = [block_n(InductorChoices().get_config_heuristics("npu")) == upstream,
            block_n(config.inductor_choices_class().get_config_heuristics("npu")) == [lanes]]
-    test_result("ConvHeuristicsScoped", torch.tensor(got), torch.tensor([True, True]))
+    check_result("ConvHeuristicsScoped", torch.tensor(got), torch.tensor([True, True]))
 
 
 _SDP_PROBE = """
@@ -132,7 +132,7 @@ def test_sdpa_flags_are_upstream():
     b = torch.backends.cuda
     ours = [b.flash_sdp_enabled(), b.mem_efficient_sdp_enabled(), b.math_sdp_enabled(),
             torch._C._get_overrideable_sdp_enabled(), torch._fused_sdp_choice(q, q, q)]
-    test_result("SdpaFlagsUpstream", torch.tensor([int(x) for x in ours]),
+    check_result("SdpaFlagsUpstream", torch.tensor([int(x) for x in ours]),
                 torch.tensor([int(x) for x in upstream]))
 
 

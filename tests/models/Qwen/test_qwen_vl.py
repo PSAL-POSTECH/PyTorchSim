@@ -95,7 +95,7 @@ import sys
 import torch
 
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 
 # Depth is one layer on BOTH sides, for the reason the text presets give: the
@@ -323,7 +323,7 @@ def run_qwen_vl(device, version="2", preset="2b", dtype="float32",
     npu_kwargs = {k: (v.to(device) if torch.is_tensor(v) else v) for k, v in kwargs.items()}
     npu_out = _logits(model_npu(**npu_kwargs))
 
-    test_result(f"Qwen{'2' if version == '2' else '2.5'}-VL ({preset})",
+    check_result(f"Qwen{'2' if version == '2' else '2.5'}-VL ({preset})",
                 npu_out, cpu_out, rtol=rtol, atol=atol)
     print("Max diff > ", torch.max(torch.abs(npu_out.cpu() - cpu_out)))
     print("Qwen-VL Simulation Done")

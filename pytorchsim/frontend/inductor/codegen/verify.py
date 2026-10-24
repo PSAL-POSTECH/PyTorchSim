@@ -31,7 +31,7 @@ import torch
 from torch._inductor.codegen import wrapper
 from torch._inductor.virtualized import V
 
-from pytorchsim.codegen import kernel_metadata
+from pytorchsim.frontend.inductor.codegen import kernel_metadata
 
 from pytorchsim import config
 from pytorchsim.config import setup_logger

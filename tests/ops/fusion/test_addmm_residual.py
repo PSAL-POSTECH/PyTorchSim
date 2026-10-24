@@ -2,7 +2,7 @@ import os
 import sys
 import torch
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 def test_addmm_residual(device, input_size=128, hidden_size=128, output_size=128):
     def addmm_residual(a, b, c, d):
@@ -23,7 +23,7 @@ def test_addmm_residual(device, input_size=128, hidden_size=128, output_size=128
     opt_fn = torch.compile(dynamic=False)(addmm_residual)
     res = opt_fn(b1, x1, w1, r1)
     y = addmm_residual(b2, x2, w2, r2)
-    test_result("Addmm + Residual Fusion Forward", res, y)
+    check_result("Addmm + Residual Fusion Forward", res, y)
 
 if __name__ == "__main__":
     device = torch.device("npu:0")

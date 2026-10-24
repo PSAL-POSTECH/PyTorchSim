@@ -13,7 +13,7 @@ os.environ.setdefault("TORCHSIM_FUNCTIONAL_MODE", "0")
 
 import torch  # noqa: E402  the npu backend loads pytorchsim whole, before its parts are imported
 from pytorchsim import contract  # noqa: E402
-from pytorchsim.driver import compiler_input  # noqa: E402
+from pytorchsim.backend import compiler_input  # noqa: E402
 
 META = {"kernel_name": "k", "signature": {"ids_ptr": "*i32", "x_ptr": "*bf16", "o_ptr": "*bf16", "B": "constexpr"},
         "constants": {"B": 4}, "numels": {}, "template_grid": [1, 1, 1], "user_defined": True,

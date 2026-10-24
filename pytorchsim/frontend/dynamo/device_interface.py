@@ -1,7 +1,12 @@
+"""npu's DeviceInterface for Dynamo: the device, stream and properties queries Dynamo and Inductor's
+compile workers make, answered for the simulated device."""
+
 import torch
 from torch._dynamo.device_interface import DeviceInterface, caching_worker_current_devices, caching_worker_device_properties
 
-class _ExtensionDeviceProperties:   # FIXME: Dummy property values
+class _ExtensionDeviceProperties:
+    """Placeholder properties for the simulated device; multi_processor_count is what Inductor reads as
+    its SM count."""
     name: str = "Extension_device"
     platform_name: str
     vendor: str
@@ -20,7 +25,7 @@ class _ExtensionDeviceProperties:   # FIXME: Dummy property values
     has_subgroup_matrix_multiply_accumulate_tensor_float32: bool
     has_subgroup_2d_block_io: bool
     total_memory: int
-    multi_processor_count: int = 128     # gpu_subslice_count, num_sm
+    multi_processor_count: int = 128
     architecture: int
     type: str
 
@@ -81,3 +86,10 @@ class ExtensionDeviceInterface(DeviceInterface):
         is a silent CPU fallback that simulates nothing.
         """
         return True
+
+
+def install():
+    """Register ExtensionDeviceInterface as npu's DeviceInterface."""
+    from torch._dynamo.device_interface import register_interface_for_device
+
+    register_interface_for_device("npu", ExtensionDeviceInterface)

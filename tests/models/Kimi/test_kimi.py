@@ -88,7 +88,7 @@ import types
 import torch
 
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 
 #: Rung -> (model id, kind, remote). Release order; climb it in this order.
@@ -482,7 +482,7 @@ def run_rung(rung, device, preset="tiny", dtype="float32", batch=None,
     # pass/fail, this says how much room is left, and it is the number the
     # ladder note below is written from.
     print(f"  max abs diff: {(npu_out.cpu() - cpu_out).abs().max().item():.6g}")
-    test_result(f"Kimi {rung} ({preset})", npu_out, cpu_out, rtol=rtol, atol=atol)
+    check_result(f"Kimi {rung} ({preset})", npu_out, cpu_out, rtol=rtol, atol=atol)
 
 
 if __name__ == "__main__":

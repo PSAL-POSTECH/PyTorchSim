@@ -5,7 +5,7 @@ import torch._dynamo
 import torch.utils.cpp_extension
 import torch.nn.functional as F
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 def test_ReLU(device, size=(128, 128)):
     torch.manual_seed(0)
@@ -16,7 +16,7 @@ def test_ReLU(device, size=(128, 128)):
     opt_fn = torch.compile(dynamic=False)(ReLU)
     y = opt_fn(x1)
     cpu_y = ReLU(x2)
-    test_result("ReLU", y, cpu_y)
+    check_result("ReLU", y, cpu_y)
 
 def test_GeLU(device, size=(128, 128), approximate='none'):
     torch.manual_seed(0)
@@ -27,7 +27,7 @@ def test_GeLU(device, size=(128, 128), approximate='none'):
     opt_fn = torch.compile(dynamic=False)(GeLU)
     y = opt_fn(x1)
     cpu_y = GeLU(x2)
-    test_result("GeLU", y, cpu_y)
+    check_result("GeLU", y, cpu_y)
 
 def test_sigmoid(device, size=(128, 128)):
     torch.manual_seed(0)
@@ -38,7 +38,7 @@ def test_sigmoid(device, size=(128, 128)):
     opt_fn = torch.compile(dynamic=False)(Sigmoid)
     y = opt_fn(x1)
     cpu_y = Sigmoid(x2)
-    test_result("Sigmoid", y, cpu_y)
+    check_result("Sigmoid", y, cpu_y)
 
 def test_SiLU(device, size=(128, 128)):
     torch.manual_seed(0)
@@ -49,7 +49,7 @@ def test_SiLU(device, size=(128, 128)):
     opt_fn = torch.compile(dynamic=False)(SiLU)
     y = opt_fn(x1)
     cpu_y = SiLU(x2)
-    test_result("SiLU", y, cpu_y)
+    check_result("SiLU", y, cpu_y)
 
 class SwiGLU(torch.nn.Module):
     def forward(self, x):
@@ -65,7 +65,7 @@ def test_SwiGLU(device, size=(128, 128)):
     opt_fn = torch.compile(dynamic=False)(SwiGLU_fn)
     y = opt_fn(x1)
     cpu_y = SwiGLU_fn(x2)
-    test_result("SwiGLU", y, cpu_y)
+    check_result("SwiGLU", y, cpu_y)
 
 if __name__ == "__main__":
     import argparse

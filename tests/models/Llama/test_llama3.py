@@ -6,7 +6,7 @@ import torch
 from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer, LlamaModel
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 # Llama 3 is the Llama architecture with three things changed, and each one lands
 # on a different part of this backend:
@@ -103,7 +103,7 @@ def run_decoder_layer_test(device, batch=1, seq_len=32, dtype="float32",
                              position_ids=position_ids_dev,
                              position_embeddings=pos_emb_dev)[0]
 
-    test_result("Llama3 DecoderLayer forward", out_dev, out_cpu, rtol=rtol, atol=atol)
+    check_result("Llama3 DecoderLayer forward", out_dev, out_cpu, rtol=rtol, atol=atol)
     diff = (out_dev.detach().cpu() - out_cpu.detach().cpu()).abs().max().item()
     print(f"Max diff > {diff}")
 
@@ -144,7 +144,7 @@ def run_model_test(device, batch=1, seq_len=32, dtype="float32",
     out_cpu = cpu_model(input_ids=input_ids_cpu, attention_mask=attn_mask_cpu)
     out_dev = compiled_model(input_ids=input_ids_dev, attention_mask=attn_mask_dev)
 
-    test_result("Llama3 Model (last_hidden_state)", out_dev.last_hidden_state,
+    check_result("Llama3 Model (last_hidden_state)", out_dev.last_hidden_state,
                 out_cpu.last_hidden_state, rtol=rtol, atol=atol)
     diff = (out_dev.last_hidden_state.detach().cpu()
             - out_cpu.last_hidden_state.detach().cpu()).abs().max().item()

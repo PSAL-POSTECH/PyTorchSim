@@ -3,7 +3,7 @@ import sys
 import torch
 import torch._dynamo
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 def test_conv2d(device, batch_size=1, in_channels=8, out_channels=16, input_size=64, kernel_size=3, stride=1, padding=0):
     def custom_conv2d(a, b, bias):
@@ -20,7 +20,7 @@ def test_conv2d(device, batch_size=1, in_channels=8, out_channels=16, input_size
     opt_fn = torch.compile(dynamic=False)(custom_conv2d)
     res = opt_fn(conv_input, conv_kernel, conv_bias)
     out = custom_conv2d(conv_input.cpu(), conv_kernel.cpu(), conv_bias.cpu())
-    test_result("Conv2d Forward", res, out, rtol=1e-3, atol=1e-3)
+    check_result("Conv2d Forward", res, out, rtol=1e-3, atol=1e-3)
     print("Max diff > ", torch.max(torch.abs(res.cpu() - out)))
 
 if __name__ == "__main__":

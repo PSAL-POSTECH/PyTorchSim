@@ -14,7 +14,7 @@ import subprocess
 from pytorchsim import config
 
 from pytorchsim import contract
-from pytorchsim.driver import compiler_bridge
+from pytorchsim.backend import compiler_bridge
 from pytorchsim.simulator import wallclock
 
 logger = config.setup_logger()

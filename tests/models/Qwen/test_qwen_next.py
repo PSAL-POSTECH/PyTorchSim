@@ -54,7 +54,7 @@ VERIFIED (2026-08-14, transformers 5.15.0, one layer, seq 16):
                    qwen3_asr    1.19e-06   216s   32 mel x 100 frames, 13 tokens
 
     The two audio figures are max abs diff read off the same shapes at the same
-    seed before this ran as a test; `test_result` itself reports only the
+    seed before this ran as a test; `check_result` itself reports only the
     verdict, and what it reported was Passed at rtol 1e-2 / atol 1e-4.
 
 THE AUDIO PATH IS NOT GATED YET, and the reason is a pin rather than a result.
@@ -78,7 +78,7 @@ import sys
 import torch
 
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 FAMILIES = ("qwen3_vl", "qwen3_vl_moe", "qwen3_5", "qwen3_5_moe", "qwen3_next",
             "qwen2_audio", "qwen3_asr")
@@ -199,7 +199,7 @@ def run_family(family, seq_len=16, rtol=1e-2, atol=1e-4, compile_it=True):
     with torch.no_grad():
         npu_out = first(runner(**kw_npu)).cpu()
 
-    test_result(f"Qwen {family}", npu_out, cpu_out, rtol=rtol, atol=atol)
+    check_result(f"Qwen {family}", npu_out, cpu_out, rtol=rtol, atol=atol)
 
 
 def run_audio(family, rtol=1e-2, atol=1e-4, compile_it=True):
@@ -278,7 +278,7 @@ def run_audio(family, rtol=1e-2, atol=1e-4, compile_it=True):
     with torch.no_grad():
         npu_out = first(runner(**kw_npu)).cpu()
 
-    test_result(f"Qwen {family} audio", npu_out, cpu_out, rtol=rtol, atol=atol)
+    check_result(f"Qwen {family} audio", npu_out, cpu_out, rtol=rtol, atol=atol)
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ import torch
 import torch._dynamo
 import torch.utils.cpp_extension
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 def test_softmax(device, size=(128, 128), dim=1):
     torch.manual_seed(0)
@@ -26,14 +26,14 @@ def test_softmax(device, size=(128, 128), dim=1):
 
     #max = opt_fn1(x1)
     #cpu_max = softmax1(x2)
-    #test_result("Softmax Max", max, cpu_max)
+    #check_result("Softmax Max", max, cpu_max)
     #sum = opt_fn2(x1, max)
     #cpu_sum = softmax2(x2, cpu_max)
-    #test_result("Softmax Sum", sum, cpu_sum)
+    #check_result("Softmax Sum", sum, cpu_sum)
 
     #y = opt_fn3(x1, max, sum)
     #cpu_y = softmax3(x2, cpu_max, cpu_sum)
-    #test_result("Softmax", y, cpu_y)
+    #check_result("Softmax", y, cpu_y)
 
     class SoftmaxModule(torch.nn.Module):
         def __init__(self, dim):
@@ -47,7 +47,7 @@ def test_softmax(device, size=(128, 128), dim=1):
     opt_fn = torch.compile(dynamic=False)(softmax_module)
     y = opt_fn(x1)
     cpu_y = torch.nn.functional.softmax(x2, dim=dim)
-    test_result("Softmax", y, cpu_y)
+    check_result("Softmax", y, cpu_y)
 
 if __name__ == "__main__":
     import argparse

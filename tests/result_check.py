@@ -1,4 +1,5 @@
-"""Shared helpers for PyTorchSim test files.
+"""The result check PyTorchSim test files share: check_result compares an npu result to its CPU
+reference and prints the line the CI sweep reads.
 
 Module name is unique (not ``tests._utils``) because ``ultralytics``
 ships a top-level ``tests`` package in site-packages that would shadow it.
@@ -8,7 +9,7 @@ Import with:
     import os, sys
     sys.path.insert(0, os.path.join(
         os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-    from _pytorchsim_utils import test_result
+    from result_check import check_result
 """
 
 import sys
@@ -16,7 +17,7 @@ import sys
 import torch
 
 
-def test_result(name, out, expected, rtol=1e-4, atol=1e-4):
+def check_result(name, out, expected, rtol=1e-4, atol=1e-4):
     """Compare ``out`` to ``expected``; exit 1 on mismatch."""
     out_cpu = out.cpu() if hasattr(out, "cpu") else out
     expected_cpu = expected.cpu() if hasattr(expected, "cpu") else expected

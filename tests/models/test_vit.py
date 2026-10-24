@@ -7,7 +7,7 @@ from torchvision.models.vision_transformer import _vision_transformer, EncoderBl
 import os
 import sys
 sys.path.insert(0, os.path.join(os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim'), 'tests'))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 def init_vit_weights(m):
     if isinstance(m, torch.nn.Linear):
@@ -64,7 +64,7 @@ def test_vit(device, batch=1, shape=(3, 224, 224), num_layers=1, num_heads=12, h
         cpu_model = model.cpu()
         out_cpu = cpu_model(x_cpu)
 
-    test_result("VisionTransformer inference", out_device, out_cpu)
+    check_result("VisionTransformer inference", out_device, out_cpu)
     print("Max diff > ", torch.max(torch.abs(out_device.cpu() - out_cpu)))
     print("VisionTransformer Simulation Done")
 
@@ -94,7 +94,7 @@ def test_multihead_attention(device, batch=1, seq_len=32, hidden_dim=768, num_he
     with torch.no_grad():
         out_cpu, _ = mha_cpu(q2, k2, v2)
 
-    test_result("MultiheadAttention", out_device, out_cpu)
+    check_result("MultiheadAttention", out_device, out_cpu)
     print("Max diff > ", torch.max(torch.abs(out_device.cpu() - out_cpu)))
     print("MultiheadAttention Simulation Done")
 
@@ -120,7 +120,7 @@ def test_encoder_block(device, batch=1, seq_len=16, hidden_dim=768, num_heads=12
         cpu_block = block.cpu()
         out_cpu = cpu_block(x_cpu)
 
-    test_result("EncoderBlock", out_device, out_cpu)
+    check_result("EncoderBlock", out_device, out_cpu)
     print("Max diff >", torch.max(torch.abs(out_device.cpu() - out_cpu)))
     print("EncoderBlock Simulation Done")
 
@@ -172,7 +172,7 @@ def test_encoder_block_with_class_token(
         wrapper_cpu = wrapper.cpu()
         out_cpu = wrapper_cpu(input_tensor.cpu())
 
-    test_result("EncoderBlock with class token", out_device, out_cpu)
+    check_result("EncoderBlock with class token", out_device, out_cpu)
     print("Max diff >", torch.max(torch.abs(out_device.cpu() - out_cpu)))
     print("EncoderBlock with class token Simulation Done")
 

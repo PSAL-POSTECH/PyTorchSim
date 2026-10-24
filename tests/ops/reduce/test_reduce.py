@@ -4,7 +4,7 @@ import torch
 import torch._dynamo
 import torch.utils.cpp_extension
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 def test_reduce_sum(device, size, dim, keepdim=False):
     def reduce_sum(a, b, dim, keepdim):
@@ -14,7 +14,7 @@ def test_reduce_sum(device, size, dim, keepdim=False):
     opt_fn = torch.compile(dynamic=False)(reduce_sum)
     res = opt_fn(x, y, dim, keepdim)
     out = reduce_sum(x.cpu(), y.cpu(), dim, keepdim)
-    test_result("ReduceSum", res, out)
+    check_result("ReduceSum", res, out)
 
 def test_reduce_sum2(device, size, dim=-1, keepdim=False):
     def reduce_sum(a, dim, keepdim):
@@ -23,7 +23,7 @@ def test_reduce_sum2(device, size, dim=-1, keepdim=False):
     opt_fn = torch.compile(dynamic=False)(reduce_sum)
     res = opt_fn(x, dim, keepdim)
     out = reduce_sum(x.cpu(), dim, keepdim)
-    test_result("ReduceMax", res, out)
+    check_result("ReduceMax", res, out)
 
 def test_reduce_gather_bias(device, NW=4, H=3, Q=32, K=32, T=64):
     """A reduction fused with an INDIRECT gather bias, as in SwinV2 cosine-window
@@ -41,7 +41,7 @@ def test_reduce_gather_bias(device, NW=4, H=3, Q=32, K=32, T=64):
     table = torch.randn(T, H).to(device=device)
     res = torch.compile(dynamic=False)(fn)(score, idx, table)
     out = fn(score.cpu(), idx.cpu(), table.cpu())
-    test_result("ReduceGatherBias", res, out)
+    check_result("ReduceGatherBias", res, out)
 
 if __name__ == "__main__":
     import argparse

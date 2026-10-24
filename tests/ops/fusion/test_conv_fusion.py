@@ -2,7 +2,7 @@ import os
 import sys
 import torch
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
         # exit(1)
 
@@ -24,7 +24,7 @@ def test_conv_residual(device, batch_size=1, in_channels=8, out_channels=16, inp
     opt_fn = torch.compile(dynamic=False)(custom_conv2d)
     res = opt_fn(conv_input, conv_kernel, conv_bias, add_tensor)
     out = custom_conv2d(conv_input.cpu(), conv_kernel.cpu(), conv_bias.cpu(), add_tensor.cpu())
-    test_result("Conv2d Residual Fusion Forward", res, out, rtol=1e-3, atol=1e-3)
+    check_result("Conv2d Residual Fusion Forward", res, out, rtol=1e-3, atol=1e-3)
     print("Max diff > ", torch.max(torch.abs(res.cpu() - out)))
 
 
@@ -43,7 +43,7 @@ def test_conv_scalar(device, batch_size=1, in_channels=8, out_channels=16, input
     opt_fn = torch.compile(dynamic=False)(custom_conv2d)
     res = opt_fn(conv_input, conv_kernel, conv_bias, 2)
     out = custom_conv2d(conv_input.cpu(), conv_kernel.cpu(), conv_bias.cpu(), 2)
-    test_result("Conv2d + Scalar Fusion Forward", res, out, rtol=1e-3, atol=1e-3)
+    check_result("Conv2d + Scalar Fusion Forward", res, out, rtol=1e-3, atol=1e-3)
     print("Max diff > ", torch.max(torch.abs(res.cpu() - out)))
 
 def test_conv_relu(device, batch_size=1, in_channels=8, out_channels=16, input_size=64, kernel_size=3, stride=1, padding=0):
@@ -61,7 +61,7 @@ def test_conv_relu(device, batch_size=1, in_channels=8, out_channels=16, input_s
     opt_fn = torch.compile(dynamic=False)(custom_conv2d)
     res = opt_fn(conv_input, conv_kernel, conv_bias)
     out = custom_conv2d(conv_input.cpu(), conv_kernel.cpu(), conv_bias.cpu())
-    test_result("Conv2d + ReLU Fusion Forward", res, out, rtol=1e-3, atol=1e-3)
+    check_result("Conv2d + ReLU Fusion Forward", res, out, rtol=1e-3, atol=1e-3)
     print("Max diff > ", torch.max(torch.abs(res.cpu() - out)))
 
 def test_conv_bn_relu(device, batch_size=1, in_channels=8, out_channels=16, input_size=64, kernel_size=3, stride=1, padding=0):
@@ -85,7 +85,7 @@ def test_conv_bn_relu(device, batch_size=1, in_channels=8, out_channels=16, inpu
     with torch.no_grad():
         res = opt_fn(conv_input, conv_kernel, conv_bias, bn_mean, bn_var, bn_weight, bn_bias)
     out = custom_conv_bn_relu(conv_input.cpu(), conv_kernel.cpu(), conv_bias.cpu(), bn_mean.cpu(), bn_var.cpu(), bn_weight.cpu(), bn_bias.cpu())
-    test_result("Conv2d + BN + ReLU Fusion Forward", res, out, rtol=1e-3, atol=1e-3)
+    check_result("Conv2d + BN + ReLU Fusion Forward", res, out, rtol=1e-3, atol=1e-3)
     print("Max diff > ", torch.max(torch.abs(res.cpu() - out)))
 
 if __name__ == "__main__":

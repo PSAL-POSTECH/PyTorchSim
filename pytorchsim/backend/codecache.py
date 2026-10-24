@@ -19,7 +19,7 @@ from torch._inductor.codecache import get_hash
 from pytorchsim import config
 
 from pytorchsim import contract
-from pytorchsim.driver import autotune, compiler_bridge, compiler_input
+from pytorchsim.backend import autotune, compiler_bridge, compiler_input
 from pytorchsim.simulator import functional, timing, wallclock
 
 logger = config.setup_logger()

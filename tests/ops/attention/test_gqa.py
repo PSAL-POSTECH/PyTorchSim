@@ -6,7 +6,7 @@ import torch.nn.functional as F
 import torch._dynamo
 import argparse
 sys.path.insert(0, os.path.join(os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim'), 'tests'))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 
 
@@ -167,7 +167,7 @@ def test_gqa_attention(device, batch=1, seq_len=32, embed_dim=768, num_heads=12,
     with torch.no_grad():
         out_cpu = gqa_cpu(q2, k2, v2)
     
-    test_result("GQA Attention", out_device, out_cpu)
+    check_result("GQA Attention", out_device, out_cpu)
     print("Max diff > ", torch.max(torch.abs(out_device.cpu() - out_cpu)))
     print("GQA Attention Simulation Done")
 
@@ -265,11 +265,11 @@ def test_repeat_interleave_compilation(device, batch=1, seq_len=32, embed_dim=76
                                                   is_causal=False, scale=None, enable_gqa=True)
     
     # Compare results
-    test_result("repeat_interleave in scaled_dot_product_attention", output_device[0], output_cpu[0])
+    check_result("repeat_interleave in scaled_dot_product_attention", output_device[0], output_cpu[0])
     print("Max diff > ", torch.max(torch.abs(output_device[0].cpu() - output_cpu[0])))
-    test_result("repeat_interleave in scaled_dot_product_attention", output_device[1], output_cpu[1])
+    check_result("repeat_interleave in scaled_dot_product_attention", output_device[1], output_cpu[1])
     print("Max diff > ", torch.max(torch.abs(output_device[1].cpu() - output_cpu[1])))
-    test_result("repeat_interleave in scaled_dot_product_attention", output_device[2], output_cpu[2])
+    check_result("repeat_interleave in scaled_dot_product_attention", output_device[2], output_cpu[2])
     print("Max diff > ", torch.max(torch.abs(output_device[2].cpu() - output_cpu[2])))
     print("repeat_interleave compilation test Done")
 

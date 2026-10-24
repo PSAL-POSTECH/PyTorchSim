@@ -12,7 +12,7 @@ fused kernel 은 Inductor 가 만들어 줄 커널 대신, 직접 작성한 Trit
 | 연산 | 할 일 |
 |---|---|
 | Inductor 가 lowering 하고, 생성한 Triton 을 PyTorchSim-Triton-Backend 가 컴파일한다 | 없음. 대부분의 연산이 여기에 해당합니다. |
-| npu 커널이 없지만 다른 aten 연산으로 표현할 수 있다 (histc, polar, 복소수 연산) | `pytorchsim/frontend/inductor/post_grad_pass.py` 의 재작성 |
+| npu 커널이 없지만 다른 aten 연산으로 표현할 수 있다 (histc, polar, 복소수 연산) | `pytorchsim/frontend/inductor/post_grad_pass/` 의 재작성 |
 | Inductor 가 만드는 커널이 하드웨어가 실제로 돌리는 커널과 다르다 (하나로 합친 SDPA, MoE 의 grouped GEMM, 레지스터 안에서 끝나는 topk) | fused kernel. 이 문서의 대상입니다. |
 
 ## 호출이 가는 길

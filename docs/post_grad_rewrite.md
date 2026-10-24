@@ -5,7 +5,7 @@
 A post-grad rewrite replaces one op in an npu graph with other aten ops that Inductor can lower, so
 the work stays on the device. Without it, an op with no npu kernel runs as an extern aten call on
 the CPU, outside the simulator. histc, a 1 x K row times a matrix, transposed convolution,
-zero-length matmuls and complex arithmetic are rewrites. They all live in `pytorchsim/frontend/inductor/post_grad_pass.py`. A rewrite of one op is
+zero-length matmuls and complex arithmetic are rewrites. They live in `pytorchsim/frontend/inductor/post_grad_pass/`, one module per op family (`histc.py`, `gemm.py`, `convolution.py`, `complex.py`). A rewrite of one op is
 one decorated function, so you write the pattern, when it applies and the replacement, nothing else.
 
 ## First, check that you need one
@@ -50,7 +50,7 @@ replacements under the graph's own fake mode, so it also runs on a graph a test 
 @register_rewrite(CallFunction(aten.my_op.default, Arg(), Arg()), extra_check)  # the nodes it takes
 def my_op(node, x, dim):                                 # the matched node and its arguments
     def compute(x, *, dim): ...                          # the replacement, plain torch code
-    if _val(x) is None:
+    if fake_value(x) is None:
         return Decline("its input has no fake value")    # the node stays, with the reason
     return functools.partial(compute, dim=dim), [x]      # the replacement and its tensor arguments
 ```
@@ -59,7 +59,7 @@ def my_op(node, x, dim):                                 # the matched node and 
 |---|---|
 | `register_rewrite(pattern, extra_check)` | The decorator. It registers the function in `PATTERNS` (an Inductor `PatternMatcherPass`) and counts each result in `CALLS` under the function's name. `extra_check` defaults to taking every match. Called as a plain function, it registers one function for several patterns (`gemm_zero_length`). |
 | `pattern` | Inductor's pattern language from `torch._inductor.pattern_matcher`. `CallFunction(op, Arg(), ...)` names the op and one `Arg()` per argument. `CallFunctionVarArgs(op)` takes any number of arguments, for an op whose optional arguments may be left out (histc). |
-| `extra_check(match)` | Picks the nodes the rewrite applies to. `False` means the node is not this rewrite's business: nothing is logged or counted. `match.args` are the captured arguments; read their fake values with `_val`. |
+| `extra_check(match)` | Picks the nodes the rewrite applies to. `False` means the node is not this rewrite's business: nothing is logged or counted. `match.args` are the captured arguments; read their fake values with `fake_value`. |
 | `fn(node, *args, **kwargs)` | Gets the matched node and its arguments. It returns `(replacement, example_args)`: `replacement` is plain torch code that Inductor traces in the node's place (`match.replace_by_example`), and `example_args` are the graph nodes it takes. Close over constants with `functools.partial`, so only tensor nodes are example arguments. |
 | `Decline("reason")` | The other return: the rewrite cannot take this node. The node stays (the fallback), and the log line gives the reason and where the node runs instead. It is the same `Decline` a fused kernel's `plan` returns. |
 | `CALLS` | `{rewrite name: {"rewritten": n, "fallback": n}}`, counted per node. Complex values count under `"complex_real_pairs"`, once per group. |
@@ -72,11 +72,13 @@ it is.
 
 ## Step by step
 
-### 1. One function in `post_grad_pass.py`
+### 1. One function in its op family's module
 
-Put it after the existing rewrites (`histc`, `mm_row`, `convolution_transposed`,
-`gemm_zero_length`), before `complex_real_pairs`, under a section comment of its own
-(`# logcumsumexp: ...`), and add its line to the module docstring's list, in the same order.
+Put it in the module of its op family under `post_grad_pass/` (a new family is a new module,
+imported at the end of `post_grad_pass/__init__.py` with the others, in registration order, before
+`complex`), under a section comment of its own (`# logcumsumexp: ...`), and add its line to the
+package docstring's list, in the same order. A module imports `register_rewrite` and `fake_value`
+from `pytorchsim.frontend.inductor.post_grad_pass`.
 `tests/system/test_module_form.py` fails when either is missing. The replacement goes inside the rewrite,
 as `histc`'s `counts` does, and the checks and the return follow it. `histc` is the shortest real
 example. Here is a new one: `aten.logcumsumexp`, which Inductor lowers only as a fallback, so on the
@@ -97,7 +99,7 @@ def logcumsumexp(node, x, dim):
         y = torch.where(prefix, x.unsqueeze(-2), float("-inf")).logsumexp(-1)
         return y.movedim(-1, dim)
 
-    v = _val(x)
+    v = fake_value(x)
     if v is None:
         return Decline("its input has no fake value")
     if not v.is_floating_point():
@@ -178,7 +180,7 @@ These follow the maintainer's review rules for this repo.
 
 - **Judge nodes by target.** Compare `n.target is aten.x.default`, or check `callable(n.target)`.
   Do not compare op strings such as `node.op == "call_function"`, in the pass or in tests.
-- **Do not parse text.** Read fake values (`_val`), targets and arguments. Never read a printed
+- **Do not parse text.** Read fake values (`fake_value`), targets and arguments. Never read a printed
   graph or kernel source.
 - **No silent fallback.** When `fn` cannot take a node, return `Decline` with the reason: the
   reason is the log line. Use `extra_check` only for nodes that are not this rewrite's business.
@@ -193,9 +195,9 @@ These follow the maintainer's review rules for this repo.
   Inductor's own post-grad passes use, and the pass sets the graph's fake mode for tracing through
   `torch._inductor.virtualized.V.set_fake_mode`. Neither has a public counterpart, so a PR that
   adds a rewrite must say so.
-- **Keep rewrites in `post_grad_pass.py`.** The pass's `uuid` hashes that file, so an edit there is
-  a new cache key. A rewrite in another file would need adding to the hash, or a compile could
-  reuse a graph built without it.
+- **Keep rewrites in `post_grad_pass/`.** The pass's `uuid` hashes every module there, so an edit to
+  any of them is a new cache key. A rewrite outside the package would need adding to the hash, or a
+  compile could reuse a graph built without it.
 
 ## Extra patterns
 

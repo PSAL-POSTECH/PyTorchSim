@@ -1,8 +1,16 @@
-"""The npu's post-grad pass: rewrites that keep ops with no npu kernel on the device.
+"""The npu's post-grad pass (Inductor's device_custom_pass, run on npu graphs only): rewrites that
+keep ops with no npu kernel on the device. The one-op rewrites, Inductor graph patterns, run first:
 
-pytorchsim_post_grad_pass is the device_custom_pass Inductor runs on npu graphs only. A rewrite of one
-op is an Inductor graph pattern registered through register_rewrite; complex values become real pairs per
-component, by each op's rule in _REAL_PAIR. Ops with a Triton kernel of their own are dispatcher/.
+    histc                    aten.histc counted on the device
+    mm_row, addmm_row        a 1 x K row times a matrix as a multiply and a sum: vector work
+    convolution_transposed   a transposed conv as its direct equivalent
+    convolution_1d           a 1-D conv as a 2-D one over a height of 1
+    gemm_zero_length         a matmul with an empty output, or K = 0 and no bias, as zeros
+
+then complex_real_pairs: complex values as real [..., 2] pairs, by each op's rule in _REAL_PAIR.
+A rewrite returns plain torch code for the node's place, or a Decline that leaves it (logged,
+counted in CALLS); how to add one is docs/post_grad_rewrite.md. Ops with a Triton kernel of their
+own are dispatcher/.
 """
 
 import contextlib
@@ -21,6 +29,8 @@ from pytorchsim.frontend.dispatcher.custom_fused_kernel import Decline
 aten = torch.ops.aten
 
 logger = config.setup_logger()
+
+# The pass: its graph patterns, then the complex values
 
 PATTERNS = PatternMatcherPass(pass_name="pytorchsim_post_grad_pass")
 
@@ -49,6 +59,8 @@ class _PostGradPass(CustomGraphModulePass):
 
 pytorchsim_post_grad_pass = _PostGradPass()
 
+
+# register_rewrite: the form every one-op rewrite takes, its fallback and its counts
 
 def register_rewrite(pattern, extra_check=lambda match: True):
     """Register fn(node, *args, **kwargs) for `pattern` (`extra_check` picks the nodes it applies to). fn
@@ -86,6 +98,8 @@ def _count(rewrite, route):
     counts = CALLS.setdefault(rewrite, {})
     counts[route] = counts.get(route, 0) + 1
 
+
+# histc: aten.histc counted on the device
 
 @register_rewrite(CallFunctionVarArgs(aten.histc.default))
 def histc(node, x, *rest, **kwargs):
@@ -125,6 +139,8 @@ def histc(node, x, *rest, **kwargs):
                              hi=said.get("max", 0)), [x]
 
 
+# mm_row, addmm_row: a 1 x K row times a matrix
+
 def _is_row(match):
     """Real floating operands, the left a 1 x K row: an mm or a plain addmm (no beta or alpha)."""
     a, b = match.args[-2:]
@@ -145,6 +161,8 @@ def addmm_row(node, bias, a, b):
     """mm_row plus the bias."""
     return (lambda bias, a, b: (a.reshape(-1, 1) * b).sum(0, keepdim=True) + bias), [bias, a, b]
 
+
+# convolution_transposed, convolution_1d: convolutions the conv template takes once rewritten
 
 @register_rewrite(CallFunction(aten.convolution.default, *(Arg() for _ in range(9))),
              lambda match: match.args[6] is True)
@@ -224,6 +242,8 @@ def _conv1d_as_conv2d(x, weight, bias, stride, padding, dilation, groups):
     return out.squeeze(2)
 
 
+# gemm_zero_length: matmuls with nothing to compute
+
 def _is_zero_length(bias):
     """An mm-family node whose output is empty, or whose K is zero with no bias to add."""
     def check(match):
@@ -248,6 +268,8 @@ for _op, _bias in ((aten.mm.default, 0), (aten.bmm.default, 0), (aten.addmm.defa
                    (aten.baddbmm.default, 1)):
     register_rewrite(CallFunctionVarArgs(_op), _is_zero_length(_bias))(gemm_zero_length)
 
+
+# complex_real_pairs: complex values as real pairs, one rule per complex op in _REAL_PAIR
 
 def complex_real_pairs(graph, fake_mode) -> int:
     """Each component of complex values whose ops _REAL_PAIR has a rule for becomes real [..., 2] pairs;
@@ -378,6 +400,8 @@ _REAL_PAIR = {
     aten.mul.Scalar: _pair_of_mul,
 }
 
+
+# Shared by the rewrites
 
 def _pair(call, re, im):
     """The [..., 2] real pair of re and im."""

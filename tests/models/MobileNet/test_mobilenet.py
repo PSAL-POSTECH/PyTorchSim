@@ -8,7 +8,7 @@ import torch._dynamo
 import torch.utils.cpp_extension
 from torchvision.models import mobilenet_v2
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 
 
@@ -42,9 +42,9 @@ def run_mobilenet(batch):
 
     if isinstance(y_cpu, (list, tuple)):
         for i, (out_npu, out_cpu) in enumerate(zip(y_npu, y_cpu)):
-            test_result(f"MobileNet Output {i}", out_npu, out_cpu)
+            check_result(f"MobileNet Output {i}", out_npu, out_cpu)
     else:
-        test_result("MobileNet Output", y_npu, y_cpu)
+        check_result("MobileNet Output", y_npu, y_cpu)
 
     print("MobileNet Simulation Done")
 
@@ -65,7 +65,7 @@ def test_inverted_residual_module(device, batch=1, inp=32, oup=32, stride=1, exp
     compiled_model_npu = torch.compile(dynamic=False)(model_npu)
     y_npu = compiled_model_npu(x_npu)
 
-    test_result("InvertedResidual Module", y_npu, y_cpu)
+    check_result("InvertedResidual Module", y_npu, y_cpu)
     print("InvertedResidual Module Test Done")
 
 

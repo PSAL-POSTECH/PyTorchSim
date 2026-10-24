@@ -100,7 +100,7 @@ Two things the table says that the presets alone do not:
 WHAT THIS FOUND: one defect, in this repo rather than in Qwen.  Qwen3's q_norm
 fuses with rope into a PERSISTENT reduction over head_dim, and 27 live
 scratchpad tiles put it 1625120 bytes/lane over a 131072 budget.  The scratchpad
-retry in `pytorchsim/driver/codecache.py` answered that by halving R0_BLOCK, which
+retry in `pytorchsim/backend/codecache.py` answered that by halving R0_BLOCK, which
 a persistent reduction writes into its own body and never reads from the launch
 -- so 128, 8 and 1 all measured the identical overflow and the kernel was
 refused.  `_shrink_tile` now moves only a block the kernel actually takes as an
@@ -116,7 +116,7 @@ import sys
 import torch
 
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 
 # Presets shrink cost, not character.  Width carries head_dim, the GQA repeat
@@ -417,7 +417,7 @@ def run_qwen(
     npu_out = _out(model_npu(input_ids=input_ids.to(device),
                              attention_mask=attn_mask.to(device)))
 
-    test_result(f"Qwen {part} ({preset})", npu_out, cpu_out, rtol=rtol, atol=atol)
+    check_result(f"Qwen {part} ({preset})", npu_out, cpu_out, rtol=rtol, atol=atol)
     print("Max diff > ", torch.max(torch.abs(npu_out.cpu() - cpu_out)))
     print("Qwen Simulation Done")
 

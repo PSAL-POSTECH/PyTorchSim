@@ -31,7 +31,7 @@ int64_t _fused_sdp_choice(
 
   // The overrideable op carries a call it can state whole: no mask, no dropout, no gradient (its
   // npu kernel has no backward), H dividing Hq. Whether a fused kernel then takes it is
-  // pytorchsim/frontend/attention.py's fused_plan alone; what that declines runs SDPA's math.
+  // pytorchsim/frontend/dispatcher/attention.py's fused_plan alone; what that declines runs SDPA's math.
   const int64_t Hq = query.size(-3), H = key.size(-3);
   const bool grad = at::GradMode::is_enabled() &&
       (query.requires_grad() || key.requires_grad() || value.requires_grad());

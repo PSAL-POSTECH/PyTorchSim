@@ -2,7 +2,7 @@ import os
 import sys
 import torch
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 def test_maxpool(device, b=1, c=64, h=112, w=112):
     torch.manual_seed(0)
@@ -15,7 +15,7 @@ def test_maxpool(device, b=1, c=64, h=112, w=112):
     res = opt_fn(x1)
     model.to("cpu")
     out = model(x2)
-    test_result("Maxpool Forward", res, out) # TODO: MaxPool Functionality is not working
+    check_result("Maxpool Forward", res, out) # TODO: MaxPool Functionality is not working
 
 def test_avgpool(device, b=1, c=64, h=112, w=112):
     def avgpool(a):
@@ -27,7 +27,7 @@ def test_avgpool(device, b=1, c=64, h=112, w=112):
     opt_fn = torch.compile(dynamic=False)(avgpool)
     res = opt_fn(x1)
     out = avgpool(x2)
-    test_result("Avgpool Forward", res, out)
+    check_result("Avgpool Forward", res, out)
 
 if __name__ == "__main__":
     device = torch.device("npu:0")

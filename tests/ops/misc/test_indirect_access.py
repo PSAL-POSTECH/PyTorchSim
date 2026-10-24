@@ -3,7 +3,7 @@ import sys
 import torch
 import copy
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 def test_indirect_vectoradd(device, size=(128, 128)):
     def vectoradd(a, idx, b):
@@ -14,7 +14,7 @@ def test_indirect_vectoradd(device, size=(128, 128)):
     opt_fn = torch.compile(dynamic=False)(vectoradd)
     res = opt_fn(x, idx, y)
     out = vectoradd(x.cpu(), idx.cpu(), y.cpu())
-    test_result("Indirect VectorAdd", res, out)
+    check_result("Indirect VectorAdd", res, out)
 
 def test_embedding(device, vocab_size, dim):
     emb = torch.nn.Embedding(vocab_size, dim)
@@ -28,7 +28,7 @@ def test_embedding(device, vocab_size, dim):
     opt_emb = torch.compile(dynamic=False)(emb)
     res = opt_emb(prompt)
     cpu_res = cpu_emb(cpu_prompt)
-    test_result("Embedding", res, cpu_res)
+    check_result("Embedding", res, cpu_res)
 
 def test_multidim_indirect(device, size=(64, 64), n=256):
     torch.manual_seed(0)
@@ -40,7 +40,7 @@ def test_multidim_indirect(device, size=(64, 64), n=256):
     opt_fn = torch.compile(dynamic=False)(gather2d)
     res = opt_fn(x, ix, iy)
     out = gather2d(x.cpu(), ix.cpu(), iy.cpu())
-    test_result("Multi-dim Indirect (x[ix,iy])", res, out)
+    check_result("Multi-dim Indirect (x[ix,iy])", res, out)
 
 def test_multidim_indirect_index_reuse(device, size=(64, 64), n=256):
     torch.manual_seed(0)
@@ -53,7 +53,7 @@ def test_multidim_indirect_index_reuse(device, size=(64, 64), n=256):
     opt_fn = torch.compile(dynamic=False)(gather_reuse)
     res = opt_fn(x, ix, iy)
     out = gather_reuse(x.cpu(), ix.cpu(), iy.cpu())
-    test_result("Multi-dim Indirect index reuse (x[ix,iy]+ix)", res, out)
+    check_result("Multi-dim Indirect index reuse (x[ix,iy]+ix)", res, out)
 
 def test_scatter_full(device, size=(128, 128)):
     def vectoradd(a, idx, b):
@@ -66,7 +66,7 @@ def test_scatter_full(device, size=(128, 128)):
     opt_fn = torch.compile(dynamic=False)(vectoradd)
     res = opt_fn(x, idx, y)
     out = vectoradd(x_cpu, idx.cpu(), y.cpu())
-    test_result("Indirect VectorAdd", res, out)
+    check_result("Indirect VectorAdd", res, out)
 
 if __name__ == "__main__":
     device = torch.device("npu:0")

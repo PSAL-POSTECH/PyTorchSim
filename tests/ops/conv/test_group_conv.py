@@ -4,7 +4,7 @@ import torch
 import torch._dynamo
 from pytorchsim.simulator.togsim import TOGSimProcess
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 def test_group_convolution(
     device,
@@ -52,7 +52,7 @@ def test_group_convolution(
     res = opt_fn(x1, w1, b1)
     y = custom_group_conv(x2, w2, b2)
     label = f"Group Conv Forward (groups={groups}, stride={stride}, pad={padding})"
-    test_result(label, res, y, rtol=1e-3, atol=1e-3)
+    check_result(label, res, y, rtol=1e-3, atol=1e-3)
     print("Max diff > ", torch.max(torch.abs(res.cpu() - y)))
 
 

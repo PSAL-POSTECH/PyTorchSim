@@ -3,7 +3,7 @@ import sys
 import copy
 import torch
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 class Matmul_ActivationFn(torch.nn.Module):
     def __init__(self, input_size, output_size, activation_fn):
@@ -51,7 +51,7 @@ def test_matmul_activation(device, batch_size=16, input_size=32, output_size=8, 
     cpu_model = copy.deepcopy(model).to("cpu")
     cpu_y = cpu_model(x2)
     if device:
-        test_result(f"Matmul_ActivationFn {activation_fn}", y, cpu_y)
+        check_result(f"Matmul_ActivationFn {activation_fn}", y, cpu_y)
     else:
         print("CPU output > ", cpu_y)
 

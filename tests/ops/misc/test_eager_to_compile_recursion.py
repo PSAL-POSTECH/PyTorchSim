@@ -3,7 +3,7 @@ import sys
 import torch
 import torch._dynamo
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 # REGISTERED ON PURPOSE, and this file exists because of what that used to do.
 #
@@ -20,7 +20,7 @@ from _pytorchsim_utils import test_result
 #     RecursionError: maximum recursion depth exceeded
 #
 # DeepSeek-V2's RoPE closed that loop, because it multiplies complex tensors.
-# It does not close any more: rewrite_fx_graph.py rewrites the complex
+# It does not close any more: frontend/post_grad_pass.py rewrites the complex
 # multiply into real arithmetic, so Inductor generates a kernel and no fallback
 # is emitted. This test is that sentence, executable -- it recurses on a tree
 # without that pass and passes with it.
@@ -49,7 +49,7 @@ def test_registered_mul_out_does_not_recurse(device):
             "aten::mul.out recursed through its own eager_to_compile wrapper -- "
             "the complex multiply became a fallback again")
 
-    test_result("eager_to_compile mul.out + complex", npu_out, cpu_out)
+    check_result("eager_to_compile mul.out + complex", npu_out, cpu_out)
 
 
 if __name__ == "__main__":

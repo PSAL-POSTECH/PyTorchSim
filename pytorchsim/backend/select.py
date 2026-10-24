@@ -17,8 +17,8 @@ import os
 import time
 
 from pytorchsim import config, contract
-from pytorchsim.codegen import kernel_metadata
-from pytorchsim.driver import autotune, compiler_bridge, compiler_input
+from pytorchsim.frontend.inductor.codegen import kernel_metadata
+from pytorchsim.backend import autotune, compiler_bridge, compiler_input
 from pytorchsim.simulator import timing
 
 logger = config.setup_logger()
@@ -181,7 +181,7 @@ PIN_FILE = os.path.join(config.CONFIG_TORCHSIM_DIR, "third_party", "pytorchsim-t
 def identity():
     """What a recorded pick was timed with: the compiler this tree pins, the machine and TOGSim's
     runtime ABI."""
-    from pytorchsim.driver import codecache
+    from pytorchsim.backend import codecache
     with open(PIN_FILE) as f:
         pin = json.load(f)["pytorchsim_triton_backend"]["ref"]
     whole = codecache.identity()

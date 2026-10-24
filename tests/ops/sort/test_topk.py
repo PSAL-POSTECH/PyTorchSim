@@ -49,7 +49,7 @@ def _ref(x, k, dim, largest):
 
 
 def _routed():
-    from pytorchsim.frontend import topk
+    from pytorchsim.frontend.dispatcher import topk
     return topk.ROUTED
 
 

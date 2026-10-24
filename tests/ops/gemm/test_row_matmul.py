@@ -2,7 +2,7 @@ import os
 import sys
 import torch
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 
 def test_row_matmul(device, hidden_size=256, output_size=384):
@@ -14,7 +14,7 @@ def test_row_matmul(device, hidden_size=256, output_size=384):
     weight = torch.randn(hidden_size, output_size)
     opt_fn = torch.compile(dynamic=False)(row_matmul)
     res = opt_fn(row.to(device=device), weight.to(device=device))
-    test_result("Row Matmul Forward", res, row_matmul(row, weight))
+    check_result("Row Matmul Forward", res, row_matmul(row, weight))
 
 
 def test_row_addmm(device, hidden_size=256, output_size=384):
@@ -27,7 +27,7 @@ def test_row_addmm(device, hidden_size=256, output_size=384):
     bias = torch.randn(output_size)
     opt_fn = torch.compile(dynamic=False)(row_addmm)
     res = opt_fn(bias.to(device=device), row.to(device=device), weight.to(device=device))
-    test_result("Row Addmm Forward", res, row_addmm(bias, row, weight))
+    check_result("Row Addmm Forward", res, row_addmm(bias, row, weight))
 
 
 def test_row_matmul_bf16(device, hidden_size=256, output_size=384):
@@ -41,7 +41,7 @@ def test_row_matmul_bf16(device, hidden_size=256, output_size=384):
     opt_fn = torch.compile(dynamic=False)(row_matmul)
     res = opt_fn(row.to(device=device), weight.to(device=device))
     want = row_matmul(row.float(), weight.float()).to(torch.bfloat16)
-    test_result("Row Matmul bf16 Forward", res.float(), want.float(), rtol=2e-2, atol=2e-2)
+    check_result("Row Matmul bf16 Forward", res.float(), want.float(), rtol=2e-2, atol=2e-2)
 
 
 if __name__ == "__main__":

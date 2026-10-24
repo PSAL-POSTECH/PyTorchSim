@@ -13,7 +13,7 @@ import torch
 import torch.nn.functional as F
 
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 
 def test_pad_2d(device, size=(5, 10), pad=(2, 3, 1, 1)):
@@ -23,7 +23,7 @@ def test_pad_2d(device, size=(5, 10), pad=(2, 3, 1, 1)):
         return F.pad(x, pad)
     x = torch.randn(size).to(device=device)
     res = torch.compile(dynamic=False)(fn)(x)
-    test_result(f"Pad2D {size} {pad}", res, fn(x.cpu()))
+    check_result(f"Pad2D {size} {pad}", res, fn(x.cpu()))
 
 
 def test_sum_over_broadcast(device, size=(5, 13)):
@@ -35,7 +35,7 @@ def test_sum_over_broadcast(device, size=(5, 13)):
     a = torch.randn(size).to(device=device)
     b = torch.randn(size[0], 1).to(device=device)
     res = torch.compile(dynamic=False)(fn)(a, b)
-    test_result(f"SumOverBroadcast {size}", res, fn(a.cpu(), b.cpu()))
+    check_result(f"SumOverBroadcast {size}", res, fn(a.cpu(), b.cpu()))
 
 
 def test_softmax_nondividing(device, size=(4, 10)):
@@ -44,7 +44,7 @@ def test_softmax_nondividing(device, size=(4, 10)):
         return F.softmax(a, dim=1)
     a = torch.randn(size).to(device=device)
     res = torch.compile(dynamic=False)(fn)(a)
-    test_result(f"Softmax {size}", res, fn(a.cpu()))
+    check_result(f"Softmax {size}", res, fn(a.cpu()))
 
 
 def test_elementwise_nondividing(device, size=(7, 13)):
@@ -53,7 +53,7 @@ def test_elementwise_nondividing(device, size=(7, 13)):
     a = torch.randn(size).to(device=device)
     b = torch.randn(size).to(device=device)
     res = torch.compile(dynamic=False)(fn)(a, b)
-    test_result(f"Elementwise {size}", res, fn(a.cpu(), b.cpu()))
+    check_result(f"Elementwise {size}", res, fn(a.cpu(), b.cpu()))
 
 
 def test_gather_nondividing(device, rows=13, cols=10, n=17):
@@ -63,7 +63,7 @@ def test_gather_nondividing(device, rows=13, cols=10, n=17):
     x = torch.randn(rows, cols).to(device=device)
     idx = torch.randint(0, rows, [n]).to(device=device)
     res = torch.compile(dynamic=False)(fn)(x, idx)
-    test_result(f"Gather [{rows},{cols}]->{n}", res, fn(x.cpu(), idx.cpu()))
+    check_result(f"Gather [{rows},{cols}]->{n}", res, fn(x.cpu(), idx.cpu()))
 
 
 if __name__ == "__main__":

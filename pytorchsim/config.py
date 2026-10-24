@@ -61,13 +61,13 @@ def __getattr__(name):
     if name == "CONFIG_TORCHSIM_TARGET":
         return os.environ.get("TORCHSIM_TARGET") or "tpuv6e"
     if name == "CONFIG_MACHINE":
-        from pytorchsim.driver import compiler_bridge
+        from pytorchsim.backend import compiler_bridge
         return compiler_bridge.target()
     if name == "CONFIG_MACHINE_FILE":
-        from pytorchsim.driver import compiler_bridge
+        from pytorchsim.backend import compiler_bridge
         return compiler_bridge.target().file
     if name == "CONFIG_NUM_CORES":
-        from pytorchsim.driver import compiler_bridge
+        from pytorchsim.backend import compiler_bridge
         with open(compiler_bridge.target().file) as f:
             return yaml.safe_load(f)["num_cores"]
 

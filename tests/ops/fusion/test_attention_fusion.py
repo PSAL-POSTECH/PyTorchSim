@@ -3,7 +3,7 @@ import sys
 import copy
 import torch
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 def clones(module, N):
     "Produce N identical layers."
@@ -54,7 +54,7 @@ def test_MHA(device, num_heads=12, embed_dim=768, input_seq=512):
     opt_fn = torch.compile(dynamic=False)(MHA)
     res = opt_fn(query, key, value)
 
-    test_result("MHA Forward", res, cpu_res)
+    check_result("MHA Forward", res, cpu_res)
 
 if __name__ == "__main__":
     device = torch.device("npu:0")

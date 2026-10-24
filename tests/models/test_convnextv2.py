@@ -6,7 +6,7 @@ import torch
 from transformers import ConvNextV2Config, ConvNextV2Model
 
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 
 def _init_weights(m):
@@ -48,7 +48,7 @@ def test_convnextv2(device, batch=2, image_size=64, patch_size=4):
         opt_model = torch.compile(dynamic=False)(model)
         out_device = opt_model(pixel_values=x.to(device)).last_hidden_state
 
-    test_result(f"ConvNeXt V2 (batch={batch})", out_device, out_cpu)
+    check_result(f"ConvNeXt V2 (batch={batch})", out_device, out_cpu)
     print("Max diff >", torch.max(torch.abs(out_device.cpu() - out_cpu)))
     print("ConvNeXt V2 Simulation Done")
 

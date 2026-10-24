@@ -2,12 +2,9 @@ import os
 import threading
 
 import torch
-from torch._dynamo.device_interface import register_interface_for_device
 import torch_openreg._C  # type: ignore[misc]
 
 from . import meta  # noqa: F401
-from . import extension_device_op_overrides
-from .extension_device_interface import ExtensionDeviceInterface
 
 _initialized = False
 _default_streams = {}  # Dictionary to store default streams per device
@@ -80,7 +77,6 @@ def _lazy_init():
         return
 
     torch_openreg._C._init()
-    register_interface_for_device(custom_device(), ExtensionDeviceInterface)
     _initialized = True
 
     # Create default streams for all devices

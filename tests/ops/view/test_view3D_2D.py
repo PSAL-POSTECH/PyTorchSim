@@ -2,7 +2,7 @@ import os
 import sys
 import torch
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 def test_view3D_2D(device, size=(16, 8, 16), t_x=0, t_y=1):
     def view3D_2D(a):
@@ -13,7 +13,7 @@ def test_view3D_2D(device, size=(16, 8, 16), t_x=0, t_y=1):
     opt_fn = torch.compile(dynamic=False)(view3D_2D)
     res = opt_fn(input)
     out = view3D_2D(cpu_input)
-    test_result("view 3D->2D", res, out)
+    check_result("view 3D->2D", res, out)
 
 def test_view2D_3D(device, size=(512, 768), h=12, d_k=64):
     def view2D_3D(a):
@@ -24,7 +24,7 @@ def test_view2D_3D(device, size=(512, 768), h=12, d_k=64):
     opt_fn = torch.compile(dynamic=False)(view2D_3D)
     res = opt_fn(input)
     out = view2D_3D(cpu_input)
-    test_result("view 2D->3D", res, out)
+    check_result("view 2D->3D", res, out)
 
 if __name__ == "__main__":
     device = torch.device("npu:0")

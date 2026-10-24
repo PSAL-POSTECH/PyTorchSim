@@ -2,7 +2,7 @@ import os
 import sys
 import torch
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 def test_elem_broadcast_fusion(device):
     def matmul_fused(a, b, c):
@@ -20,7 +20,7 @@ def test_elem_broadcast_fusion(device):
     opt_fn = torch.compile(dynamic=False)(matmul_fused)
     res = opt_fn(x1, w1, c1)
     y = matmul_fused(x2, w2, c2)
-    test_result("Matmul Scalar Fusion Forward", res, y)
+    check_result("Matmul Scalar Fusion Forward", res, y)
 
 def test_elem_fusion(device):
     def matmul_fused(a, b, c):
@@ -38,7 +38,7 @@ def test_elem_fusion(device):
     opt_fn = torch.compile(dynamic=False)(matmul_fused)
     res = opt_fn(x1, w1, c1)
     y = matmul_fused(x2, w2, c2)
-    test_result("Matmul Element-wise Fusion Forward", res, y)
+    check_result("Matmul Element-wise Fusion Forward", res, y)
 
 def test_elem_bmm_weight_fusion(device, batch_size=1, m=512, n=512, k=64):
     def bmm(a, b, c, d):
@@ -53,7 +53,7 @@ def test_elem_bmm_weight_fusion(device, batch_size=1, m=512, n=512, k=64):
     res = opt_fn(a, b, c, d)
     out = bmm(a.cpu(), b.cpu(), c.cpu(), d.cpu())
     print(torch.max(torch.abs(res.cpu() - out)))
-    test_result("BMM Element-wise Fusion Forward", res, out)
+    check_result("BMM Element-wise Fusion Forward", res, out)
 
 def test_elem_bmm_input_fusion(device, batch_size=1, m=512, n=512, k=64):
     def bmm(a, b, c, d):
@@ -68,7 +68,7 @@ def test_elem_bmm_input_fusion(device, batch_size=1, m=512, n=512, k=64):
     res = opt_fn(a, b, c, d)
     out = bmm(a.cpu(), b.cpu(), c.cpu(), d.cpu())
     print(torch.max(torch.abs(res.cpu() - out)))
-    test_result("BMM Element-wise Fusion Forward", res, out)
+    check_result("BMM Element-wise Fusion Forward", res, out)
 
 if __name__ == "__main__":
     device = torch.device("npu:0")

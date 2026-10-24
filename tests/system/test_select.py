@@ -15,7 +15,7 @@ sys.path.insert(0, TORCHSIM_DIR)
 import torch  # noqa: E402  the npu backend loads pytorchsim whole, before its parts are imported
 from torch._inductor.select_algorithm import TritonTemplateCaller  # noqa: E402
 
-from pytorchsim.driver import select  # noqa: E402
+from pytorchsim.backend import select  # noqa: E402
 
 SHAPE = (128, 256, 256)
 
@@ -24,8 +24,8 @@ SHAPE = (128, 256, 256)
 CHILD = r"""
 import json, os, sys
 import torch
-from pytorchsim.codegen.inductor_hooks import TritonNPUScheduling
-from pytorchsim.driver import select
+from pytorchsim.frontend.inductor.codegen.scheduling import TritonNPUScheduling
+from pytorchsim.backend import select
 
 select.RECORD_DIR = os.environ["SELECT_RECORD_DIR"]
 timed = {"choices": [], "modules": []}
@@ -94,7 +94,7 @@ def _picks(dump):
 def _merge(root, dump):
     """scripts/selection_merge.py over a timed run's picks, into the record under `root`."""
     script = os.path.join(TORCHSIM_DIR, "scripts", "selection_merge.py")
-    code = (f"import runpy, sys, torch; from pytorchsim.driver import select; "
+    code = (f"import runpy, sys, torch; from pytorchsim.backend import select; "
             f"select.RECORD_DIR = {os.path.join(root, 'record')!r}; "
             f"sys.argv = [{script!r}, {os.path.join(dump, select.RECORD_LOG)!r}]; "
             f"runpy.run_path({script!r}, run_name='__main__')")

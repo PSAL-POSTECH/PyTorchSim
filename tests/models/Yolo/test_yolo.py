@@ -154,7 +154,7 @@ them were the same stop:
     a kernel would run the convolution on the HOST and simulate nothing.  The
     fix is to stop emitting it: a transposed convolution IS a direct one over
     an input with stride-1 zeros inserted, and that rewrite lives in
-    ``pytorchsim/frontend/inductor_patches.py``, wrapped around the convolution
+    ``pytorchsim/frontend/inductor/lowering.py``, wrapped around the convolution
     LOWERING.  Verified against aten over the product of stride, padding,
     output_padding, dilation, groups and kernel size before it was wired in,
     then through the route on twelve shapes.  It costs stride^2 times the
@@ -271,7 +271,7 @@ import warnings
 import torch
 
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 
 # One preset per parser version directory under ultralytics/cfg/models.  The
@@ -505,7 +505,7 @@ def run_yolo(device, version="v8", batch=1, imgsz=None, compile_model=True, rtol
     # element is already within 1e-2 of zero -- so each output gets
     # atol = tol * max|ref| instead, floored so an all-zero tensor still has a
     # threshold.  That is one criterion, applied at nine different scales.
-    # The whole table is printed BEFORE any assertion.  test_result exits on
+    # The whole table is printed BEFORE any assertion.  check_result exits on
     # the first mismatch, and a failure that reports one output while hiding
     # the other eight says nothing about where the divergence starts.
     worst = worst_rel = 0.0
@@ -523,7 +523,7 @@ def run_yolo(device, version="v8", batch=1, imgsz=None, compile_model=True, rtol
     print(f"Max diff >  {worst}")
     print(f"Max rel  >  {worst_rel}")
     for i, a, b, scaled_atol in rows:
-        test_result(f"YOLO {version} output[{i}] {tuple(b.shape)}", a, b,
+        check_result(f"YOLO {version} output[{i}] {tuple(b.shape)}", a, b,
                     rtol=rtol, atol=scaled_atol)
     print("Yolo Simulation Done")
 

@@ -3,7 +3,7 @@ import sys
 import torch
 import torch._dynamo
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 def test_conv_view_input(device, batch_size=1, channels=32, height=8, width=8, out_channels=16, kernel_size=2):
     """Conv whose input is a free view (ReinterpretView) over a lower-rank buffer.
@@ -25,7 +25,7 @@ def test_conv_view_input(device, batch_size=1, channels=32, height=8, width=8, o
     out = conv_on_view(conv_input, conv_kernel, conv_bias)
     opt_fn = torch.compile(dynamic=False)(conv_on_view)
     res = opt_fn(conv_input.to(device=device), conv_kernel.to(device=device), conv_bias.to(device=device))
-    test_result("Conv2d view input", res, out, rtol=1e-3, atol=1e-3)
+    check_result("Conv2d view input", res, out, rtol=1e-3, atol=1e-3)
     print("Max diff > ", torch.max(torch.abs(res.cpu() - out)))
 
 if __name__ == "__main__":

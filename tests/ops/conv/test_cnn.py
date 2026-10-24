@@ -2,7 +2,7 @@ import os
 import sys
 import torch
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 class CNN(torch.nn.Module):
     def __init__(self):
@@ -32,7 +32,7 @@ def test_CNN(device):
     y = opt_fn(x1)
     cpu_model = model.to("cpu")
     cpu_y = cpu_model(x2)
-    test_result("CNN Forward", y, cpu_y, rtol=2e-1, atol=2e-1)
+    check_result("CNN Forward", y, cpu_y, rtol=2e-1, atol=2e-1)
     print("Max diff > ", torch.max(torch.abs(y.cpu() - cpu_y)))
 
 if __name__ == "__main__":

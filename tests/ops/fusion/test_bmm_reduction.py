@@ -2,7 +2,7 @@ import os
 import sys
 import torch
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 def test_bmm_reduce(device, batch=12, size=512):
     def bmm(a, b):
@@ -21,8 +21,8 @@ def test_bmm_reduce(device, batch=12, size=512):
     opt_fn = torch.compile(dynamic=False)(bmm)
     res = opt_fn(x1, w1)
     y = bmm(x2, w2)
-    test_result("BMM Reduction Fusion activation", res[0], y[0])
-    test_result("BMM Reduction Fusion reduction", res[1], y[1])
+    check_result("BMM Reduction Fusion activation", res[0], y[0])
+    check_result("BMM Reduction Fusion reduction", res[1], y[1])
 
 if __name__ == "__main__":
     device = torch.device("npu:0")

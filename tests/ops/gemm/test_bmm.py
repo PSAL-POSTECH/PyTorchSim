@@ -2,7 +2,7 @@ import os
 import sys
 import torch
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 def test_BMM(device, batch_size=1, m=32, n=16, k=64):
     def bmm(a, b):
@@ -13,7 +13,7 @@ def test_BMM(device, batch_size=1, m=32, n=16, k=64):
     opt_fn = torch.compile(dynamic=False)(bmm)
     res = opt_fn(a, b)
     out = bmm(a.cpu(), b.cpu())
-    test_result("BMM Forward", res, out)
+    check_result("BMM Forward", res, out)
 
 def test_addBMM(device, batch_size=1, m=32, n=16, k=64, bias_rank=1):#TODO: Fusion should be implemented for this test
     def bmm(a, b, bias):
@@ -26,7 +26,7 @@ def test_addBMM(device, batch_size=1, m=32, n=16, k=64, bias_rank=1):#TODO: Fusi
     opt_fn = torch.compile(dynamic=False)(bmm)
     res = opt_fn(a, b, bias)
     out = bmm(a.cpu(), b.cpu(), bias.cpu())
-    test_result("BMM Forward", res, out)
+    check_result("BMM Forward", res, out)
 
 if __name__ == "__main__":
     device = torch.device("npu:0")

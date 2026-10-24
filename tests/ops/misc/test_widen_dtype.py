@@ -2,7 +2,7 @@ import os
 import sys
 import torch
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from _pytorchsim_utils import test_result
+from result_check import check_result
 
 
 def _widen(device, name, src_dtype, dst_dtype, lo, hi):
@@ -14,7 +14,7 @@ def _widen(device, name, src_dtype, dst_dtype, lo, hi):
     fn = lambda a: a.to(dst_dtype)
     res = torch.compile(dynamic=False)(fn)(a.to(device=device))
     out = fn(a)
-    test_result(name, res, out)
+    check_result(name, res, out)
 
 
 def test_widen(device):

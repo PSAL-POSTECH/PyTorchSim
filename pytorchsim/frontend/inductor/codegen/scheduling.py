@@ -7,7 +7,10 @@ from torch._inductor.codegen.triton import TritonKernel, TritonScheduling
 from torch._inductor.utils import Placeholder, get_fused_kernel_name
 from torch._inductor.virtualized import V
 
+from pytorchsim import config
 from pytorchsim.frontend.inductor.codegen import kernel_metadata
+
+_logger = config.setup_logger()
 
 
 class TritonNPUKernel(TritonKernel):
@@ -67,6 +70,8 @@ class TritonNPUScheduling(TritonScheduling):
 
         got = self._benchmarked.get(mod.__file__)
         if got is None:
+            _logger.warning("[torchsim-compile] %s was not written by generate_kernel_code_from_nodes: "
+                            "its fusion is not timed, and loses", mod.__file__)
             return float("inf"), mod.__file__
         return template_timing.time_module(*got, mod.__file__), mod.__file__
 

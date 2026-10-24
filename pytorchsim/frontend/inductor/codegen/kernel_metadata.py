@@ -9,7 +9,10 @@ from torch._inductor.virtualized import V
 
 from pytorchsim.frontend import tiling
 from pytorchsim.frontend.inductor.autotune.generated_kernel_blocks import blocks_for
+from pytorchsim import config
 from pytorchsim.contract import SpecIncomplete, storage_span
+
+_logger = config.setup_logger()
 
 #: Triton signature token -> the dtype's torch name: the one table of them on this side.
 TOKEN_DTYPE = {
@@ -26,31 +29,25 @@ TOKEN_DTYPE = {
 
 
 def _buffer_numel(name):
-    """How many elements of STORAGE an Inductor buffer spans, or None.
-
-    NOT the product of its shape: the kernel addresses with the strides, and a
-    layout with gaps reaches further (ViT's buf18, 465792 against 465708).
-    """
-    try:
-        buf = V.graph.get_buffer(name)
-        if buf is None:
-            return None
-        lay = buf.get_layout()
-        hint = V.graph.sizevars.optimization_hint
-        size = [int(hint(s)) for s in lay.size]
-        if any(s <= 0 for s in size):
-            return 0
-        try:
-            stride = [int(hint(s)) for s in lay.stride]
-        except (AttributeError, TypeError):
-            n = 1
-            for s in size:
-                n *= s
-            return n
-        return storage_span(size, stride,
-                                   int(hint(getattr(lay, "offset", 0))))
-    except Exception:
+    """How many elements of STORAGE an Inductor buffer spans, or None (logged) when its layout is not
+    static. NOT the product of its shape: the kernel addresses with the strides, and a layout with
+    gaps reaches further (ViT's buf18, 465792 against 465708)."""
+    buf = V.graph.get_buffer(name)
+    if buf is None:
         return None
+    lay = buf.get_layout()
+    hint = V.graph.sizevars.optimization_hint
+    try:
+        size = [int(hint(s)) for s in lay.size]
+        stride = [int(hint(s)) for s in lay.stride]
+        offset = int(hint(getattr(lay, "offset", 0)))
+    except (AttributeError, TypeError, ValueError) as e:
+        _logger.info("[torchsim-compile] %s has no static layout (%s): its storage span is unknown",
+                     name, e)
+        return None
+    if any(s <= 0 for s in size):
+        return 0
+    return storage_span(size, stride, offset)
 
 
 def _writes(kernel):
@@ -163,7 +160,7 @@ def collect_meta(kernel, kernel_name):
     for prefix, val in (getattr(kernel, "numels", None) or {}).items():
         try:
             numels[f"{prefix}numel"] = int(V.graph.sizevars.optimization_hint(val))
-        except Exception:
+        except (TypeError, ValueError):
             numels[f"{prefix}numel"] = None
 
     return {

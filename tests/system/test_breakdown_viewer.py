@@ -1,6 +1,6 @@
 """The perf viewer reads the breakdown wallclock writes: its file under the dump path, the compile
 records under the key the writer uses, and torchsim-compile first among the groups; a breakdown that
-cannot be written is logged. Nothing runs."""
+cannot be written is logged; a log's compile clock is its workdir's, above its launch directory."""
 import json
 import os
 import runpy
@@ -11,6 +11,7 @@ from unittest import mock
 TORCHSIM_DIR = os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim")
 sys.path.insert(0, TORCHSIM_DIR)
 
+from pytorchsim import contract  # noqa: E402
 from pytorchsim.simulator import wallclock  # noqa: E402
 
 VIEWER = runpy.run_path(os.path.join(TORCHSIM_DIR, "scripts", "util_viewer.py"))
@@ -65,8 +66,20 @@ def test_a_breakdown_that_cannot_be_written_is_logged():
     assert warned.called and "could not write" in warned.call_args[0][0], warned.call_args
 
 
+def test_a_launch_log_joins_its_workdir_timing():
+    """TOGSim is handed the launch directory's tog.so: the timing.json joined is the workdir's above it."""
+    with tempfile.TemporaryDirectory() as root:
+        workdir = os.path.join(root, KERNEL)
+        launch = contract.dir_for(workdir)
+        with open(os.path.join(workdir, "timing.json"), "w") as f:
+            json.dump(TIMING, f)
+        timing = {}
+        VIEWER["join_workdir_timing"]([{"tog_so": os.path.join(launch, "tog.so")}], timing)
+        assert list(timing) == [workdir] and timing[workdir]["label"] == KERNEL, timing
+
 if __name__ == "__main__":
     test_viewer_finds_the_file_wallclock_writes()
     test_viewer_reads_the_compile_records()
     test_a_breakdown_that_cannot_be_written_is_logged()
+    test_a_launch_log_joins_its_workdir_timing()
     print("PASS")

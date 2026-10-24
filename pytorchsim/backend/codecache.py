@@ -251,7 +251,7 @@ class TritonNPULauncher:
                         "are reported when the simulator closes",
                         self.kernel_name, result)
         else:
-            logger.info("[TOGSim] %s simulated -> %s", self.kernel_name, result)
+            logger.info("[TOGSim] %s simulated: %d cycles", self.kernel_name, result["total_cycles"])
         return result
 
 

@@ -38,12 +38,9 @@ def test_benchmark_operand_is_upstream_off_device():
 
 
 def test_device_predicate_reads_every_spelling():
-    """Inductor hands the device as a string as often as a torch.device.
-
-    A predicate that answers only torch.device sends the string form to
-    upstream, whose operand is sampled -- one silent CPU fallback per call.
-    """
-    from pytorchsim.frontend.inductor.registration import is_npu
+    """Inductor hands the device as a string as often as a torch.device; a predicate that answers only torch.device
+    would send the string form to upstream, one silent CPU fallback per call."""
+    from pytorchsim.frontend.inductor import is_npu
 
     spellings = ("npu", "npu:0", torch.device("npu"), torch.device("npu:0"),
                  "cpu", "cuda", torch.device("cpu"), None)
@@ -53,11 +50,8 @@ def test_device_predicate_reads_every_spelling():
 
 
 def test_conv_grid_is_upstream_off_device():
-    """A grouped conv grid outside an npu graph keeps upstream's channel axis.
-
-    Upstream grids all channels at once; this route grids one group's worth,
-    which is 1 program here against upstream's 2.
-    """
+    """A grouped conv grid outside an npu graph keeps upstream's channel axis: all channels at once (2 programs),
+    where this route grids one group's worth (1)."""
     import torch._inductor.kernel.conv as conv_kernel
 
     meta = {"BLOCK_M": 64, "BLOCK_N": 128, "GROUPS": 4}

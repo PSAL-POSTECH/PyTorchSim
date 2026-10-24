@@ -53,7 +53,7 @@ def test_device_op_overrides():
 
 def test_is_npu_spellings():
     """is_npu reads a device, a device string with or without an index, and a tensor's device."""
-    from pytorchsim.frontend.inductor.registration import is_npu
+    from pytorchsim.frontend.inductor import is_npu
     got = [is_npu("npu"), is_npu("npu:0"), is_npu(torch.device("npu", 0)),
            is_npu(torch.empty(1, device="npu")), not is_npu("cpu"), not is_npu(torch.empty(1))]
     check_result("IsNpuSpellings", torch.tensor(got), torch.ones(len(got), dtype=torch.bool))

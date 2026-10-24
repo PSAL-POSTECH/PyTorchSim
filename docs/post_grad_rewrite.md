@@ -75,7 +75,9 @@ it is.
 ### 1. One function in `post_grad_pass.py`
 
 Put it after the existing rewrites (`histc`, `mm_row`, `convolution_transposed`,
-`gemm_zero_length`), before `complex_real_pairs`. The replacement goes inside the rewrite,
+`gemm_zero_length`), before `complex_real_pairs`, under a section comment of its own
+(`# logcumsumexp: ...`), and add its line to the module docstring's list, in the same order.
+`tests/system/test_module_form.py` fails when either is missing. The replacement goes inside the rewrite,
 as `histc`'s `counts` does, and the checks and the return follow it. `histc` is the shortest real
 example. Here is a new one: `aten.logcumsumexp`, which Inductor lowers only as a fallback, so on the
 npu it runs on the CPU. Each output is a logsumexp over a prefix, and `logsumexp` lowers.

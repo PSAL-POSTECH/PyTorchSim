@@ -8,10 +8,14 @@ from torch._inductor.codegen.common import InplacedBuffer, is_buffer_removed
 from torch._inductor.virtualized import V
 
 from pytorchsim.frontend import tiling
-from pytorchsim.frontend.inductor.blocks import blocks_for
+from pytorchsim.frontend.inductor.autotune.generated_kernel_blocks import blocks_for
+from pytorchsim import config
 from pytorchsim.contract import SpecIncomplete, storage_span
 
-_DTYPE = {
+_logger = config.setup_logger()
+
+#: Triton signature token -> the dtype's torch name: the one table of them on this side.
+TOKEN_DTYPE = {
     "*fp64": "float64", "*fp32": "float32", "*fp16": "float16",
     "*bf16": "bfloat16",
     # fp8 has no numpy or C scalar: it rides as uint8 and is viewed back at the
@@ -25,39 +29,32 @@ _DTYPE = {
 
 
 def _buffer_numel(name):
-    """How many elements of STORAGE an Inductor buffer spans, or None.
-
-    NOT the product of its shape: the kernel addresses with the strides, and a
-    layout with gaps reaches further (ViT's buf18, 465792 against 465708).
-    """
-    try:
-        buf = V.graph.get_buffer(name)
-        if buf is None:
-            return None
-        lay = buf.get_layout()
-        hint = V.graph.sizevars.optimization_hint
-        size = [int(hint(s)) for s in lay.size]
-        if any(s <= 0 for s in size):
-            return 0
-        try:
-            stride = [int(hint(s)) for s in lay.stride]
-        except (AttributeError, TypeError):
-            n = 1
-            for s in size:
-                n *= s
-            return n
-        return storage_span(size, stride,
-                                   int(hint(getattr(lay, "offset", 0))))
-    except Exception:
+    """How many elements of STORAGE an Inductor buffer spans, or None (logged) when its layout is not
+    static. NOT the product of its shape: the kernel addresses with the strides, and a layout with
+    gaps reaches further (ViT's buf18, 465792 against 465708)."""
+    buf = V.graph.get_buffer(name)
+    if buf is None:
         return None
+    lay = buf.get_layout()
+    hint = V.graph.sizevars.optimization_hint
+    try:
+        size = [int(hint(s)) for s in lay.size]
+        stride = [int(hint(s)) for s in lay.stride]
+        offset = int(hint(getattr(lay, "offset", 0)))
+    except (AttributeError, TypeError, ValueError) as e:
+        _logger.info("[torchsim-compile] %s has no static layout (%s): its storage span is unknown",
+                     name, e)
+        return None
+    if any(s <= 0 for s in size):
+        return 0
+    return storage_span(size, stride, offset)
 
 
 def _writes(kernel):
     """names -> whether `kernel` stores to any of them: the stores Inductor renders."""
     stored = set()
-    for k in [kernel, *(getattr(kernel, "sub_kernels", None) or ())]:
-        with V.set_kernel_handler(k):
-            stored |= {n for n in getattr(k, "store_buffer_names", ()) if not is_buffer_removed(n)}
+    with V.set_kernel_handler(kernel):
+        stored |= {n for n in getattr(kernel, "store_buffer_names", ()) if not is_buffer_removed(n)}
     scheduler = getattr(V.graph, "scheduler", None)
     real = scheduler.mutation_real_name if scheduler else {}
     stored |= {real.get(n, n) for n in stored}
@@ -118,11 +115,17 @@ def _held_blocks(kernel):
 
 def _blocks_without_pin(kernel, numels, args):
     """Blocks for a kernel holding none: a TritonNPUKernel's from blocks_for, the answer pinning
-    gives; a template's or a combo kernel's from its numels and args alone."""
+    gives; a template's from its numels and args alone."""
     from pytorchsim.frontend.inductor.codegen.scheduling import TritonNPUKernel
     if isinstance(kernel, TritonNPUKernel) and all(isinstance(v, int) for v in numels.values()):
         return blocks_for(numels, kernel.features)
     return tiling.fixed_config_for(kernel, numels, args)
+
+
+def compile_call(src_code, meta, kernel_name):
+    """The wrapper's line compiling one kernel, torchsim_compile(source, meta=..., kernel_name=...):
+    the source as a Python literal, so a quote or backslash in it reaches the compiler as written."""
+    return f"torchsim_compile({src_code!r},\n    meta={meta!r},\n    kernel_name={kernel_name!r})"
 
 
 def collect_meta(kernel, kernel_name):
@@ -136,13 +139,7 @@ def collect_meta(kernel, kernel_name):
     constants = dict(triton_meta.get("constants") or {})
 
     roles = _roles(kernel)
-    arg_defs, _call_args, _precompile, arg_types = kernel.args.python_argdefs()
-
-    # A COMBO KERNEL HAS NO triton_meta ON THE OBJECT -- see
-    # `_signature_from_argdefs`. Fill only what is missing, so a kernel that
-    # does carry one keeps every token exactly as Inductor wrote it.
-    if not signature:
-        signature = _signature_from_argdefs(arg_defs, arg_types)
+    arg_defs, _call_args, _precompile, _arg_types = kernel.args.python_argdefs()
 
     call_params = [getattr(a, "name", str(a)) for a in arg_defs]
     args = []
@@ -155,7 +152,7 @@ def collect_meta(kernel, kernel_name):
             "name": name,
             "role": role,
             "buffer": buf,
-            "dtype": _DTYPE.get(signature.get(name, ""), None),
+            "dtype": TOKEN_DTYPE.get(signature.get(name, ""), None),
             "numel": _buffer_numel(buf) if buf else None,
         })
 
@@ -163,7 +160,7 @@ def collect_meta(kernel, kernel_name):
     for prefix, val in (getattr(kernel, "numels", None) or {}).items():
         try:
             numels[f"{prefix}numel"] = int(V.graph.sizevars.optimization_hint(val))
-        except Exception:
+        except (TypeError, ValueError):
             numels[f"{prefix}numel"] = None
 
     return {
@@ -175,7 +172,7 @@ def collect_meta(kernel, kernel_name):
         "numels": numels,
         "inside_reduction": bool(getattr(kernel, "inside_reduction", False)),
         "fixed_config": _held_blocks(kernel) or _blocks_without_pin(kernel, numels, args),
-        "template_grid": template_grid(kernel) or combo_grid(kernel),
+        "template_grid": template_grid(kernel),
     }
 
 
@@ -194,7 +191,7 @@ def benchmark_request_meta(req):
     tensors = list(req.input_tensor_meta) + [req.output_tensor_meta]
     roles = ["in"] * len(req.input_tensor_meta) + ["out"]
     ptrs = [n for n, t in signature.items() if t.startswith("*")]
-    args = [{"name": n, "role": r, "buffer": t.name, "dtype": _DTYPE.get(signature[n]),
+    args = [{"name": n, "role": r, "buffer": t.name, "dtype": TOKEN_DTYPE.get(signature[n]),
              "numel": storage_span(list(t.sizes), list(t.strides), t.offset)}
             for n, r, t in zip(ptrs, roles, tensors)]
     xnumel = 1
@@ -212,49 +209,6 @@ def benchmark_request_meta(req):
         "fixed_config": tiling.fixed_config_for(None, numels, args),
         "template_grid": [int(g) for g in req.extra_args],
     }
-
-
-def _signature_from_argdefs(arg_defs, arg_types):
-    """Triton signature tokens read off the ARG TYPES, for a kernel with no
-    `triton_meta`.
-
-    A ComboKernel builds its triton_meta as a local inside `codegen_kernel` and
-    writes it into the emitted source; it never lands on the object, so
-    `collect_meta`'s usual read comes back empty and every argument loses its
-    dtype. The types are still there -- `python_argdefs` returns one per arg,
-    from `V.graph.get_dtype` -- so the token is derivable, and derived here
-    rather than parsed back out of the generated text.
-    """
-    import torch
-
-    table = _dtype_tokens()
-    tokens = {}
-    for a, t in zip(arg_defs, arg_types):
-        if not isinstance(t, torch.dtype):
-            continue
-        token = table.get(t)
-        if token:
-            tokens[getattr(a, "name", str(a))] = token
-    return tokens
-
-
-#: torch dtype -> the pointer token triton's signature uses for it. Filled on
-#: first use, because this module is imported before torch is guaranteed to be.
-_TORCH_DTYPE_TOKEN = None
-
-
-def _dtype_tokens():
-    global _TORCH_DTYPE_TOKEN
-    if _TORCH_DTYPE_TOKEN is None:
-        import torch
-        _TORCH_DTYPE_TOKEN = {
-            torch.float64: "*fp64", torch.float32: "*fp32",
-            torch.float16: "*fp16", torch.bfloat16: "*bf16",
-            torch.int64: "*i64", torch.int32: "*i32", torch.int16: "*i16",
-            torch.int8: "*i8", torch.uint8: "*u8", torch.bool: "*i1",
-            torch.float8_e5m2: "*fp8e5", torch.float8_e4m3fn: "*fp8e4nv",
-        }
-    return _TORCH_DTYPE_TOKEN
 
 
 def template_grid(kernel):
@@ -281,39 +235,3 @@ def template_grid(kernel):
             f"static positive extents. Refusing rather than falling back to the "
             f"numels, which describe the output tensor and not the grid.")
     return extents
-
-
-def combo_grid(kernel):
-    """A ComboKernel's grid as [gridX, 1, 1], else None.
-
-    A COMBO KERNEL IS N KERNELS IN ONE, AND IT STATES ITS OWN GRID. Inductor
-    fuses independent small kernels horizontally -- `aten.cat` of twelve expert
-    outputs, `torch._foreach_*` over a parameter list -- into one @foreach
-    kernel that splits `program_id` into one range per piece:
-
-        num_xblocks_0 = tl.cdiv(5120, XBLOCK)
-        num_xblocks_1 = num_xblocks_0 + tl.cdiv(512, XBLOCK)   # twelve of these
-
-    So the launch is the SUM of the pieces' block counts, and `kernel.numels`
-    does not describe it -- there is no single iteration space. That is the same
-    situation `template_grid` answers, which is why this answers in the same
-    shape and rides the same `template_grid` path from there on.
-
-    `combo_grid_meta` is Inductor's own answer to the same question (it is what
-    the emitted `inductor_meta` carries), so this asks it rather than
-    reconstructing the ranges.
-    """
-    meta_fn = getattr(kernel, "combo_grid_meta", None)
-    if meta_fn is None:
-        return None
-    grid_meta = meta_fn([kernel.select_heuristics(k)[1] for k in kernel.sub_kernels])
-    xblock = (grid_meta.get("default_config") or {}).get("XBLOCK")
-    if not xblock:
-        return None
-    blocks = 0
-    for i in range(int(grid_meta.get("num_kernels", 0))):
-        n = grid_meta.get(f"xnumel_{i}")
-        if n is None:
-            return None
-        blocks += -(-int(n) // int(xblock))
-    return [blocks, 1, 1] if blocks else None

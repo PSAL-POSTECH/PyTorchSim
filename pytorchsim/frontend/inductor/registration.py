@@ -1,6 +1,6 @@
 """Everything npu registers with Inductor: its DeviceInterface, a Triton GPU (GPU_TYPES, which
 has no hook, so it patches module state), its codegen and post-grad pass, and the device code its
-wrappers carry. is_npu and lowering_npu are the device tests patches share."""
+wrappers carry. is_npu and is_lowering_npu are the device tests patches share."""
 
 from textwrap import dedent
 
@@ -54,7 +54,7 @@ def _register_npu_as_gpu():
         inductor_utils.GPU_TYPES.append("npu")
 
 
-def lowering_npu():
+def is_lowering_npu():
     """Whether the graph being lowered right now targets this device."""
     from torch._inductor.virtualized import V
 

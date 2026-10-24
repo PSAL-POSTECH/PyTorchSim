@@ -56,7 +56,7 @@ def reduction_block_for(extent, elem_bytes=4, lane_bytes=None):
     return block
 
 
-def _covers(want, n):
+def _covering_block(want, n):
     """`want`, clamped to the smallest legal block that covers `n`.
 
     A block wider than its numel strands the mask's rank-1 index rows ONE_LANE
@@ -89,12 +89,12 @@ def fixed_config_for(kernel, numels, args, contiguous=None):
     cfg = {}
     for i, p in enumerate(axes):
         if i == 0:
-            cfg[block_name(p)] = _covers(lanes, numels.get(f"{p}numel"))
+            cfg[block_name(p)] = _covering_block(lanes, numels.get(f"{p}numel"))
         elif i == len(axes) - 1:
-            cfg[block_name(p)] = _covers(per_vector, numels.get(f"{p}numel"))
+            cfg[block_name(p)] = _covering_block(per_vector, numels.get(f"{p}numel"))
         else:
             cfg[block_name(p)] = 1
-    cfg.setdefault("XBLOCK", _covers(lanes, numels.get("xnumel")))
+    cfg.setdefault("XBLOCK", _covering_block(lanes, numels.get("xnumel")))
     if not getattr(kernel, "inside_reduction", False) and axes == ["x"] and numels.get("xnumel"):
         cfg["XBLOCK"] = pointwise_block(numels["xnumel"], max(1, _element_bits(args) // 8), lanes,
                                         machine.spad_size, triton_max_numel())
@@ -138,9 +138,9 @@ def kept_axis_rows_block(xnumel, rblock, elem_bytes, lanes, lane_bytes, max_nume
     than covers `xnumel` or Triton takes in one block."""
     per_lane = reduction_block_for(1 << 62, elem_bytes, lane_bytes)
     rows = min(lanes * per_lane, max_numel) // max(1, rblock)
-    floor = _covers(lanes, xnumel)
+    floor = _covering_block(lanes, xnumel)
     block = floor
-    while block * 2 <= rows and block < _covers(1 << 62, xnumel):
+    while block * 2 <= rows and block < _covering_block(1 << 62, xnumel):
         block *= 2
     return block
 
@@ -151,7 +151,7 @@ def pointwise_block(xnumel, elem_bytes, lanes, lane_bytes, max_numel):
     At least the lane cover, as any block here. A block of one lane's width instead runs a program per
     `lanes` elements, and a program's fixed cost then outweighs its data many times over."""
     per_lane = reduction_block_for(1 << 62, elem_bytes, lane_bytes)
-    return max(_covers(lanes, xnumel), min(_covers(1 << 62, xnumel), lanes * per_lane, max_numel))
+    return max(_covering_block(lanes, xnumel), min(_covering_block(1 << 62, xnumel), lanes * per_lane, max_numel))
 
 
 def lane_axis_reduction_block(xblock, rnumel, elem_bytes, lanes, lane_bytes, max_numel):
@@ -165,7 +165,7 @@ def lane_axis_reduction_block(xblock, rnumel, elem_bytes, lanes, lane_bytes, max
     """
     per_lane = reduction_block_for(1 << 62, elem_bytes, lane_bytes)
     budget = min(lanes * per_lane, max_numel) // max(1, xblock)
-    block = _covers(1 << 62, rnumel)
+    block = _covering_block(1 << 62, rnumel)
     while block > budget and block > 1:
         block //= 2
     return block
@@ -181,12 +181,12 @@ def kept_axis_contiguous_blocks(xnumel, rnumel, elem_bytes, lanes, lane_bytes, m
     """
     per_lane = reduction_block_for(1 << 62, elem_bytes, lane_bytes)
     budget = min(lanes * per_lane, max_numel)
-    floor = _covers(lanes, xnumel)
+    floor = _covering_block(lanes, xnumel)
     best = None
     x = floor
-    while x <= _covers(1 << 62, xnumel):
+    while x <= _covering_block(1 << 62, xnumel):
         r = 1
-        while x * r <= budget and r <= _covers(1 << 62, rnumel):
+        while x * r <= budget and r <= _covering_block(1 << 62, rnumel):
             pad = -(-xnumel // x) * x - xnumel
             key = (-pad, min(x, xnumel), r)
             if best is None or key > best[0]:

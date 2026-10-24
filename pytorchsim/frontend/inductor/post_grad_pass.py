@@ -1,194 +1,336 @@
 """The npu's post-grad pass: rewrites that keep ops with no npu kernel on the device.
 
-pytorchsim_post_grad_pass is the device_custom_pass Inductor runs on npu graphs only, after its post-grad
-passes: histc, polar, a row times a matrix, complex values as real pairs. Ops with a Triton kernel of
-their own (topk, grouped_mm, SDPA) are frontend/dispatcher/.
+pytorchsim_post_grad_pass is the device_custom_pass Inductor runs on npu graphs only. A rewrite of one
+op is an Inductor graph pattern registered through register_rewrite; complex values become real pairs per
+component, by each op's rule in _REAL_PAIR. Ops with a Triton kernel of their own are dispatcher/.
 """
+
+import contextlib
+import functools
 
 import torch
 from torch import fx
 from torch.fx import traceback as fx_traceback
 from torch._inductor.custom_graph_pass import CustomGraphModulePass, get_hash_for_files
+from torch._inductor.pattern_matcher import (Arg, CallFunction, CallFunctionVarArgs,
+                                             PatternMatcherPass, register_graph_pattern)
 
 from pytorchsim import config
+from pytorchsim.frontend.dispatcher.custom_fused_kernel import Decline
 
 aten = torch.ops.aten
-prims = torch.ops.prims
 
 logger = config.setup_logger()
 
+PATTERNS = PatternMatcherPass(pass_name="pytorchsim_post_grad_pass")
 
-class _pytorchsim_post_grad_pass(CustomGraphModulePass):
-    """The four rewrites in this order on an npu graph (polar before the complex values it makes); its uuid
-    hashes this file, so an edit here is a new cache key."""
+#: rewrite name -> {"rewritten": n, "fallback": n}: the nodes each rewrite replaced or left.
+CALLS = {}
+
+
+class _PostGradPass(CustomGraphModulePass):
+    """The graph patterns, then complex values as real pairs; its uuid hashes this file, so an edit here
+    is a new cache key."""
 
     def __call__(self, gm: fx.GraphModule) -> None:
-        graph, fake_mode = gm.graph, _fake_mode(gm.graph)
-        changed = (rewrite_aten_histc(graph, fake_mode)
-                   + rewrite_aten_polar(graph, fake_mode)
-                   + rewrite_aten_mm_addmm_row(graph, fake_mode)
-                   + rewrite_aten_view_as_complex(graph, fake_mode))
+        """Replacements trace under the graph's fake mode: Inductor sets it, a caller outside it may not."""
+        from torch._inductor.virtualized import V
+
+        fake_mode = _fake_mode(gm.graph)
+        with V.set_fake_mode(fake_mode) if fake_mode is not None else contextlib.nullcontext():
+            changed = PATTERNS.apply(gm) + complex_real_pairs(gm.graph, fake_mode)
         if changed:
-            graph.eliminate_dead_code()
+            gm.graph.eliminate_dead_code()
             gm.recompile()
 
     def uuid(self):
         return get_hash_for_files((__file__,))
 
 
-pytorchsim_post_grad_pass = _pytorchsim_post_grad_pass()
+pytorchsim_post_grad_pass = _PostGradPass()
 
 
-def rewrite_aten_histc(graph, fake_mode) -> int:
-    """Every aten.histc as a count on the device (_insert_histc); one without a fake value is left to aten,
-    logged. Returns how many were rewritten."""
-    def build(call, node):
-        x = node.args[0]
-        if _val(x) is None:
-            logger.info("[post_grad_pass] histc without a fake value: left to aten")
-            return None
-        said = dict(zip(("bins", "min", "max"), node.args[1:]), **node.kwargs)
-        return _insert_histc(call, x, _val(x), int(said.get("bins", 100)), said.get("min", 0), said.get("max", 0))
-    return _replace(graph, fake_mode, graph.find_nodes(op="call_function", target=aten.histc.default), build)
+def register_rewrite(pattern, extra_check=lambda match: True):
+    """Register fn(node, *args, **kwargs) for `pattern` (`extra_check` picks the nodes it applies to). fn
+    returns (replacement, args): plain torch code Inductor traces to take the node's place; or a Decline:
+    the node stays, logged with where it runs instead (the fallback). Each counts in CALLS."""
+    def register(fn):
+        def handler(match, *args, **kwargs):
+            node = match.output_node()
+            got = fn(node, *args, **kwargs)
+            if isinstance(got, Decline):
+                _count(fn.__name__, "fallback")
+                logger.info("[post_grad_pass] %s stays: %s; it runs as %s", node.target, got,
+                            fallback_route(node.target))
+                return
+            replacement, example = got
+            match.replace_by_example(replacement, example)
+            _count(fn.__name__, "rewritten")
+        register_graph_pattern(pattern, extra_check=extra_check, pass_dict=PATTERNS)(handler)
+        return fn
+    return register
 
 
-def _insert_histc(call, x, xv, bins, lo, hi):
-    """aten's histc: bin (x - lo) * bins / (hi - lo), integral in int64 and floating in x's dtype, the top
-    edge in the last bin, outside [lo, hi] dropped; lo == hi takes x's range, widened by 1 if it is one value."""
-    integral = not xv.is_floating_point()
-    flat = call(prims.convert_element_type.default, call(aten.reshape.default, x, [-1]),
-                torch.int64 if integral else xv.dtype)
-    if lo == hi and xv.numel():
-        lo, hi = call(aten.amin.default, flat, [0]), call(aten.amax.default, flat, [0])
-        one = call(aten.eq.Tensor, lo, hi)
-        lo, hi = (call(aten.where.self, one, call(aten.sub.Tensor, lo, 1), lo),
-                  call(aten.where.self, one, call(aten.add.Tensor, hi, 1), hi))
-        width = call(aten.sub.Tensor, hi, lo)
-    else:
-        if lo == hi:
-            lo, hi = lo - 1, hi + 1
+def fallback_route(target):
+    """Where a node left as `target` runs: Inductor's own kernel, or an extern call aten makes on the
+    CPU, outside the simulator, when Inductor has no lowering for it or falls back."""
+    from torch._inductor.lowering import fallbacks, lowerings
+    packet = getattr(target, "overloadpacket", None)
+    lowered = target in lowerings or packet in lowerings
+    if lowered and target not in fallbacks and packet not in fallbacks:
+        return "Inductor's own kernel"
+    return "an extern aten call on the CPU (not simulated)"
+
+
+def _count(rewrite, route):
+    counts = CALLS.setdefault(rewrite, {})
+    counts[route] = counts.get(route, 0) + 1
+
+
+@register_rewrite(CallFunctionVarArgs(aten.histc.default))
+def histc(node, x, *rest, **kwargs):
+    """aten.histc counted on the device (counts)."""
+
+    def counts(x, *, bins, lo, hi):
+        """aten's histc: bin (x - lo) * bins / (hi - lo), integral in int64 and floating in x's dtype, the top
+        edge in the last bin, outside [lo, hi] dropped; lo == hi takes x's range, widened by 1 if one value."""
+        integral = not x.is_floating_point()
+        flat = x.reshape(-1).to(torch.int64 if integral else x.dtype)
+        if lo == hi and x.numel():
+            lo, hi = flat.amin(0), flat.amax(0)
+            one = lo == hi
+            lo, hi = torch.where(one, lo - 1, lo), torch.where(one, hi + 1, hi)
+        else:
+            if lo == hi:
+                lo, hi = lo - 1, hi + 1
+            if integral:
+                lo, hi = int(lo), int(hi)
+            if hi <= lo:
+                raise RuntimeError(f"torch.histc: max must be larger than min (min {lo}, max {hi})")
+        scaled = (flat - lo) * bins
         if integral:
-            lo, hi = int(lo), int(hi)
-        if hi <= lo:
-            raise RuntimeError(f"torch.histc: max must be larger than min (min {lo}, max {hi})")
-        width = hi - lo
-    scaled = call(aten.mul.Tensor, call(aten.sub.Tensor, flat, lo), bins)
-    if integral:
-        pos = call(aten.div.Tensor_mode, scaled, width, rounding_mode="floor")
-    else:
-        pos = call(prims.convert_element_type.default, call(aten.div.Tensor, scaled, width), torch.int64)
-    pos = call(aten.clamp_max.default, pos, bins - 1)
-    ge, le = ((aten.ge.Tensor, aten.le.Tensor) if isinstance(lo, fx.Node)
-              else (aten.ge.Scalar, aten.le.Scalar))
-    inside = call(aten.logical_and.default, call(ge, flat, lo), call(le, flat, hi))
-    seats = call(prims.iota.default, bins, start=0, step=1, dtype=torch.int64, device=xv.device,
-                 requires_grad=False)
-    hits = call(aten.logical_and.default,
-                call(aten.eq.Tensor, call(aten.reshape.default, pos, [-1, 1]),
-                     call(aten.reshape.default, seats, [1, -1])),
-                call(aten.reshape.default, inside, [-1, 1]))
-    return call(prims.convert_element_type.default, call(aten.sum.dim_IntList, hits, [0]), xv.dtype)
+            pos = torch.div(scaled, hi - lo, rounding_mode="floor")
+        else:
+            pos = (scaled / (hi - lo)).to(torch.int64)
+        pos = pos.clamp_max(bins - 1)
+        inside = (flat >= lo) & (flat <= hi)
+        seats = torch.arange(bins, dtype=torch.int64, device=x.device)
+        hits = (pos.reshape(-1, 1) == seats.reshape(1, -1)) & inside.reshape(-1, 1)
+        return hits.sum(0).to(x.dtype)
+
+    if _val(x) is None:
+        return Decline("its input has no fake value")
+    said = dict(zip(("bins", "min", "max"), rest), **kwargs)
+    return functools.partial(counts, bins=int(said.get("bins", 100)), lo=said.get("min", 0),
+                             hi=said.get("max", 0)), [x]
 
 
-def rewrite_aten_polar(graph, fake_mode) -> int:
-    """polar(abs, angle) as view_as_complex of the pair (abs*cos, abs*sin), built contiguous since
-    view_as_complex needs a unit last stride; rewrite_aten_view_as_complex then takes it to real pairs."""
-    def build(call, node):
-        r, angle = node.args[:2]
-        return call(aten.view_as_complex.default,
-                    _join(call, call(aten.mul.Tensor, r, call(aten.cos.default, angle)),
-                          call(aten.mul.Tensor, r, call(aten.sin.default, angle))))
-    return _replace(graph, fake_mode, graph.find_nodes(op="call_function", target=aten.polar.default), build)
-
-
-def rewrite_aten_mm_addmm_row(graph, fake_mode) -> int:
-    """Replace a 1 x K row times a K x N matrix with the row broadcast down the matrix, a
-    multiply and a sum over K: vector work, where the mm template would run it on the array."""
-    def build(call, node):
-        found = _row_times_matrix(node)
-        if found is None:
-            return None
-        a, b, bias = found
-        column = call(aten.view.default, a, [int(_val(a).shape[1]), 1])
-        out = call(aten.sum.dim_IntList, call(aten.mul.Tensor, column, b), [0], True)
-        return out if bias is None else call(aten.add.Tensor, out, bias)
-    return _replace(graph, fake_mode, graph.find_nodes(op="call_function", target=aten.mm.default)
-                    + graph.find_nodes(op="call_function", target=aten.addmm.default), build)
-
-
-def _row_times_matrix(node):
-    """(a, b, bias) of an mm or a plain addmm of real floating operands whose left one is a row, else None."""
-    if node.target is aten.mm.default:
-        (a, b), bias = node.args, None
-    elif not node.kwargs:
-        bias, a, b = node.args
-    else:
-        return None
+def _is_row(match):
+    """Real floating operands, the left a 1 x K row: an mm or a plain addmm (no beta or alpha)."""
+    a, b = match.args[-2:]
     av, bv = _val(a), _val(b)
-    if av is None or bv is None or av.dim() != 2 or bv.dim() != 2 or av.shape[0] != 1:
-        return None
-    if not (av.is_floating_point() and bv.is_floating_point()):
-        return None
-    return a, b, bias
+    return (av is not None and bv is not None and av.dim() == 2 and bv.dim() == 2
+            and av.shape[0] == 1 and av.is_floating_point() and bv.is_floating_point())
 
 
-def rewrite_aten_view_as_complex(graph, fake_mode) -> int:
-    """Each component of complex values whose ops _REAL_PAIR has a rule for becomes real [..., 2] pairs; any
-    other component stays as it is, logged with why. Returns the components rewritten."""
+@register_rewrite(CallFunction(aten.mm.default, Arg(), Arg()), _is_row)
+def mm_row(node, a, b):
+    """A 1 x K row times a K x N matrix as the row broadcast down the matrix, a multiply and a sum over K:
+    vector work, where the mm template would run it on the array."""
+    return (lambda a, b: (a.reshape(-1, 1) * b).sum(0, keepdim=True)), [a, b]
+
+
+@register_rewrite(CallFunction(aten.addmm.default, Arg(), Arg(), Arg()), _is_row)
+def addmm_row(node, bias, a, b):
+    """mm_row plus the bias."""
+    return (lambda bias, a, b: (a.reshape(-1, 1) * b).sum(0, keepdim=True) + bias), [bias, a, b]
+
+
+@register_rewrite(CallFunction(aten.convolution.default, *(Arg() for _ in range(9))),
+             lambda match: match.args[6] is True)
+def convolution_transposed(node, x, weight, bias, stride, padding, dilation, transposed, output_padding, groups):
+    """A transposed convolution as its direct equivalent: the input spread by the stride and padded by
+    dilation * (kernel - 1) - padding (plus output_padding after), the weight's in and out channels
+    swapped per group, flipped, and spread by the dilation; then stride, dilation 1, no padding."""
+
+    def per_dim(seq, n):
+        seq = list(seq)
+        return seq * n if len(seq) == 1 else seq
+
+    def spread(t, lead, extents, factor):
+        """factor - 1 zeros between neighbouring elements along each of the trailing dims."""
+        if all(f == 1 for f in factor):
+            return t
+        n = len(extents)
+        paired = list(lead)
+        for extent in extents:
+            paired += [extent, 1]
+        pad = []
+        for i in reversed(range(n)):
+            pad += [0, factor[i] - 1, 0, 0]
+        y = torch.constant_pad_nd(t.reshape(paired), pad, 0.0)
+        y = y.reshape(list(lead) + [extents[i] * factor[i] for i in range(n)])
+        for i in range(n):
+            if factor[i] != 1:
+                y = y.narrow(len(lead) + i, 0, extents[i] * factor[i] - (factor[i] - 1))
+        return y
+
+    def direct(x, weight, bias=None):
+        batchless = x.dim() == weight.dim() - 1
+        if batchless:
+            x = x.unsqueeze(0)
+        batch, in_chan, *spatial = x.shape
+        _, per_group, *kernel = weight.shape
+        n = len(kernel)
+        out_chan = per_group * groups
+        st, pd, dl, op = (per_dim(v, n) for v in (stride, padding, dilation, output_padding))
+        y = spread(x, [batch, in_chan], spatial, st)
+        pad = []
+        for i in reversed(range(n)):
+            lo = dl[i] * (kernel[i] - 1) - pd[i]
+            pad += [lo, lo + op[i]]
+        if any(p != 0 for p in pad):
+            y = torch.constant_pad_nd(y, pad, 0.0)
+        w = weight.reshape(groups, in_chan // groups, per_group, *kernel).transpose(1, 2)
+        w = w.reshape(out_chan, in_chan // groups, *kernel)
+        if any(k != 1 for k in kernel):
+            w = w.flip(list(range(2, 2 + n)))
+        w = spread(w, [out_chan, in_chan // groups], kernel, dl)
+        if n == 1:
+            out = _conv1d_as_conv2d(y, w, bias, [1], [0], [1], groups)
+        else:
+            out = torch.convolution(y, w, bias, [1] * n, [0] * n, [1] * n, False, [0] * n, groups)
+        return out.squeeze(0) if batchless else out
+
+    return direct, [x, weight] + ([bias] if bias is not None else [])
+
+
+@register_rewrite(CallFunction(aten.convolution.default, *(Arg() for _ in range(9))),
+                  lambda match: match.args[6] is False and len(match.args[3]) == 1)
+def convolution_1d(node, x, weight, bias, stride, padding, dilation, transposed, output_padding,
+                   groups):
+    """A 1-D convolution as a 2-D one over a height of 1, which the conv template takes; its backward
+    graph holds convolution_backward either way, so this needs no place before AOTAutograd."""
+    def as_2d(x, weight, bias=None):
+        return _conv1d_as_conv2d(x, weight, bias, stride, padding, dilation, groups)
+
+    return as_2d, [x, weight] + ([bias] if bias is not None else [])
+
+
+def _conv1d_as_conv2d(x, weight, bias, stride, padding, dilation, groups):
+    """conv1d of [N, C, L] as conv2d of [N, C, 1, L]: the height takes stride and dilation 1, no padding."""
+    out = torch.convolution(x.unsqueeze(2), weight.unsqueeze(2), bias, [1, stride[0]],
+                            [0, padding[0]], [1, dilation[0]], False, [0, 0], groups)
+    return out.squeeze(2)
+
+
+def _is_zero_length(bias):
+    """An mm-family node whose output is empty, or whose K is zero with no bias to add."""
+    def check(match):
+        node = match.output_node()
+        out, a = _val(node), _val(node.args[bias])
+        if out is None or a is None or not all(isinstance(s, int) for s in (*out.shape, *a.shape)):
+            return False
+        return out.numel() == 0 or (not bias and a.shape[-1] == 0)
+    return check
+
+
+def gemm_zero_length(node, *args, **kwargs):
+    """A matmul with a zero-length M or N, or K and no bias, as zeros of its output: nothing to compute,
+    where the mm template would be asked for an empty tile."""
+    out = _val(node)
+    shape, dtype = list(out.shape), out.dtype
+    first = next(a for a in args if isinstance(a, fx.Node))
+    return (lambda t: t.new_zeros(shape, dtype=dtype)), [first]
+
+
+for _op, _bias in ((aten.mm.default, 0), (aten.bmm.default, 0), (aten.addmm.default, 1),
+                   (aten.baddbmm.default, 1)):
+    register_rewrite(CallFunctionVarArgs(_op), _is_zero_length(_bias))(gemm_zero_length)
+
+
+def complex_real_pairs(graph, fake_mode) -> int:
+    """Each component of complex values whose ops _REAL_PAIR has a rule for becomes real [..., 2] pairs;
+    any other component stays, logged with why and where it runs. Returns the components rewritten."""
+
+    def components(nodes):
+        """The complex nodes grouped by the complex values joining them, each group in graph order."""
+        parent = {n: n for n in nodes}
+
+        def root(n):
+            while parent[n] is not n:
+                parent[n] = parent[parent[n]]
+                n = parent[n]
+            return n
+
+        for n in nodes:
+            for a in n.all_input_nodes:
+                if a in parent:
+                    parent[root(a)] = root(n)
+        groups = {}
+        for n in nodes:
+            groups.setdefault(root(n), []).append(n)
+        return list(groups.values())
+
+    def why_not_real(component):
+        """Why the component has no real-pair form, or None: a node _REAL_PAIR has no rule for (a placeholder or
+        attribute among them), or a complex value read by anything but _REAL_PAIR and view_as_real (the output too)."""
+        for n in component:
+            if n.target not in _REAL_PAIR:
+                return f"{n.op} {n.target}"
+            for user in n.users:
+                if user.target is not aten.view_as_real.default and user.target not in _REAL_PAIR:
+                    return f"{user.op} {user.name} reads {n.name}'s complex value"
+        return None
+
+    def to_real_pairs(graph, fake_mode, component):
+        """Rewrite one eligible component: each complex value becomes its [..., 2] pair and every view_as_real of
+        it reads the pair."""
+
+        def inserter(graph, fake_mode, origin):
+            """call(target, *args, **kwargs): a node just before origin, made through FX's tracer under origin's meta
+            so FX copies its provenance and records origin in from_node; its fake value is set, as nothing after does."""
+            def unwrap(a):
+                if isinstance(a, (list, tuple)):
+                    return type(a)(unwrap(x) for x in a)
+                if isinstance(a, dict):
+                    return {k: unwrap(v) for k, v in a.items()}
+                return _val(a)
+
+            tracer = fx.proxy.GraphAppendingTracer(graph)
+
+            def call(target, *args, **kwargs):
+                with graph.inserting_before(origin), fx_traceback.preserve_node_meta(), \
+                        fx_traceback.set_current_meta(origin):
+                    node = tracer.create_node("call_function", target, args, kwargs)
+                if fake_mode is not None:
+                    with fake_mode:
+                        node.meta["val"] = target(*unwrap(args), **unwrap(kwargs))
+                return node
+
+            return call
+
+        pair = {}
+        for n in component:
+            pair[n] = _REAL_PAIR[n.target](inserter(graph, fake_mode, n), n, pair)
+
+        for n in component:
+            for user in list(n.users):
+                if user.target is aten.view_as_real.default:
+                    user.replace_all_uses_with(pair[n])
+
     changed = 0
-    for component in _complex_components([n for n in graph.nodes if _is_complex(n)]):
-        why = _why_not_real(component)
+    for component in components([n for n in graph.nodes if _is_complex(n)]):
+        why = why_not_real(component)
         if why is not None:
-            logger.info("[post_grad_pass] %d complex nodes left to aten: %s", len(component), why)
+            _count("complex_real_pairs", "fallback")
+            logger.info("[post_grad_pass] %d complex nodes stay: %s; complex ops run as %s",
+                        len(component), why, fallback_route(component[0].target))
             continue
-        _to_real_pairs(graph, fake_mode, component)
+        to_real_pairs(graph, fake_mode, component)
+        _count("complex_real_pairs", "rewritten")
         changed += 1
     return changed
-
-
-def _complex_components(nodes):
-    """The complex nodes grouped by the complex values joining them, each group in graph order."""
-    parent = {n: n for n in nodes}
-
-    def root(n):
-        while parent[n] is not n:
-            parent[n] = parent[parent[n]]
-            n = parent[n]
-        return n
-
-    for n in nodes:
-        for a in n.all_input_nodes:
-            if a in parent:
-                parent[root(a)] = root(n)
-    groups = {}
-    for n in nodes:
-        groups.setdefault(root(n), []).append(n)
-    return list(groups.values())
-
-
-def _why_not_real(component):
-    """Why the component has no real-pair form, or None: a node _REAL_PAIR has no rule for (a placeholder or
-    attribute among them), or a complex value read by anything but _REAL_PAIR and view_as_real (the output too)."""
-    for n in component:
-        if n.target not in _REAL_PAIR:
-            return f"{n.op} {n.target}"
-        for user in n.users:
-            if user.target is not aten.view_as_real.default and user.target not in _REAL_PAIR:
-                return f"{user.op} {user.name} reads {n.name}'s complex value"
-    return None
-
-
-def _to_real_pairs(graph, fake_mode, component):
-    """Rewrite one eligible component: each complex value becomes its [..., 2] pair and every view_as_real of
-    it reads the pair."""
-    pair = {}
-    for n in component:
-        pair[n] = _REAL_PAIR[n.target](_inserter(graph, fake_mode, n), n, pair)
-
-    for n in component:
-        for user in list(n.users):
-            if user.target is aten.view_as_real.default:
-                user.replace_all_uses_with(pair[n])
 
 
 def _pair_of_view(call, n, pair):
@@ -218,10 +360,18 @@ def _pair_of_mul(call, n, pair):
         br, bi = call(aten.select.int, pair[other], -1, 0), call(aten.select.int, pair[other], -1, 1)
     re = call(aten.sub.Tensor, call(aten.mul.Tensor, ar, br), call(aten.mul.Tensor, ai, bi))
     im = call(aten.add.Tensor, call(aten.mul.Tensor, ar, bi), call(aten.mul.Tensor, ai, br))
-    return _join(call, re, im)
+    return _pair(call, re, im)
+
+
+def _pair_of_polar(call, n, pair):
+    """polar(abs, angle): its pair is (abs*cos(angle), abs*sin(angle))."""
+    r, angle = n.args[:2]
+    return _pair(call, call(aten.mul.Tensor, r, call(aten.cos.default, angle)),
+                 call(aten.mul.Tensor, r, call(aten.sin.default, angle)))
 
 
 _REAL_PAIR = {
+    aten.polar.default: _pair_of_polar,
     aten.view_as_complex.default: _pair_of_view,
     aten.unsqueeze.default: _pair_of_unsqueeze,
     aten.mul.Tensor: _pair_of_mul,
@@ -229,44 +379,7 @@ _REAL_PAIR = {
 }
 
 
-def _replace(graph, fake_mode, nodes, build):
-    """Each node of nodes for which build(call, node) returns a value is replaced by it and erased, call
-    being _inserter's for that node. Returns how many were replaced."""
-    changed = 0
-    for node in nodes:
-        out = build(_inserter(graph, fake_mode, node), node)
-        if out is not None:
-            node.replace_all_uses_with(out)
-            graph.erase_node(node)
-            changed += 1
-    return changed
-
-
-def _inserter(graph, fake_mode, origin):
-    """call(target, *args, **kwargs): a node just before origin, made through FX's tracer under origin's meta
-    so FX copies its provenance and records origin in from_node; its fake value is set, as nothing after does."""
-    def unwrap(a):
-        if isinstance(a, (list, tuple)):
-            return type(a)(unwrap(x) for x in a)
-        if isinstance(a, dict):
-            return {k: unwrap(v) for k, v in a.items()}
-        return _val(a)
-
-    tracer = fx.proxy.GraphAppendingTracer(graph)
-
-    def call(target, *args, **kwargs):
-        with graph.inserting_before(origin), fx_traceback.preserve_node_meta(), \
-                fx_traceback.set_current_meta(origin):
-            node = tracer.create_node("call_function", target, args, kwargs)
-        if fake_mode is not None:
-            with fake_mode:
-                node.meta["val"] = target(*unwrap(args), **unwrap(kwargs))
-        return node
-
-    return call
-
-
-def _join(call, re, im):
+def _pair(call, re, im):
     """The [..., 2] real pair of re and im."""
     return call(aten.cat.default, [call(aten.unsqueeze.default, re, -1),
                                    call(aten.unsqueeze.default, im, -1)], -1)

@@ -3,8 +3,9 @@ against a float32 CPU reference, group by group.
 
   routed     uneven groups (empty ones, one past BM rows) run as the grouped kernel, no call left to aten
   few_rows   fewer rows than groups: every block holds rows, the grid stops at the row count
-  eager      outside torch.compile the call runs group by group (no Triton launch outside a compiled graph)
-  grad       inputs that require grad run group by group, and their gradients match the CPU's
+  eager      outside torch.compile the call runs group by group (no Triton launch outside a compiled graph),
+             counted as the fallback
+  grad       inputs that require grad run group by group (no kernel launch), and their gradients match the CPU's
   fallback   transformers' grouped_mm_fallback (its call when the weight is not bf16) takes the same kernel
 
 Usage: test_grouped_mm.py [case ...]   (all cases when none is named)
@@ -46,18 +47,22 @@ def _fallback(a, b, offs):
     return torch.ops.transformers.grouped_mm_fallback(a, b, offs=offs)
 
 
+def _routed():
+    from pytorchsim.frontend.dispatcher import grouped_mm
+    return grouped_mm.GROUPED_MM.calls
+
+
 def _run_compiled(sizes, k, n, fn=_gmm, dtype=torch.bfloat16):
     """(relative error, grouped-kernel launches, calls left to aten) of one compiled call."""
     from pytorchsim.backend import codecache
-    from pytorchsim.frontend.dispatcher import grouped_mm
-    launches, externs = [], []
-    codecache.observe_launches(grouped_mm._grouped_mm_kernel, lambda: launches.append(1))
+    externs = []
+    _routed().clear()
     codecache.observe_every_extern(externs.append)
     a, b, offs = _inputs(sizes, k, n)
     a, b = a.to(dtype), b.to(dtype)
     torch._dynamo.reset()
     out = torch.compile(fn, dynamic=False)(a.to(device), b.to(device), offs.to(device))
-    return _err(out, _reference(a, b, offs)), len(launches), externs
+    return _err(out, _reference(a, b, offs)), _routed().get("_grouped_mm_kernel", 0), externs
 
 
 def case_routed():
@@ -72,9 +77,11 @@ def case_few_rows():
 
 def case_eager():
     a, b, offs = _inputs([3, 0, 9, 4], 128, 128)
+    _routed().clear()
     out = _gmm(a.to(device), b.to(device), offs.to(device))
     err = _err(out, _reference(a, b, offs))
-    return err < TOL, f"err {err:.3g}"
+    took = dict(_routed())
+    return err < TOL and took == {"fallback": 1}, f"err {err:.3g}, calls {took}"
 
 
 def case_grad():
@@ -82,9 +89,12 @@ def case_grad():
     a_ref, b_ref = a.float().requires_grad_(), b.float().requires_grad_()
     _reference(a_ref, b_ref, offs).sum().backward()
     a_npu, b_npu = a.to(device).requires_grad_(), b.to(device).requires_grad_()
+    _routed().clear()
+    torch._dynamo.reset()
     torch.compile(_gmm, dynamic=False)(a_npu, b_npu, offs.to(device)).float().sum().backward()
     ea, eb = _err(a_npu.grad, a_ref.grad), _err(b_npu.grad, b_ref.grad)
-    return ea < TOL and eb < TOL, f"grad err a {ea:.3g}, b {eb:.3g}"
+    took = dict(_routed())
+    return ea < TOL and eb < TOL and not took, f"grad err a {ea:.3g}, b {eb:.3g}, calls {took}"
 
 
 def case_fallback():

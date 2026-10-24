@@ -1,12 +1,13 @@
 """What npu plugs into Inductor, in the order Inductor meets it:
 
-    registration.py    npu as an Inductor backend: GPU_TYPES, Triton present, codegen and op overrides
-    device_op_overrides.py  the device code Inductor writes into an npu wrapper
+    registration.py    everything npu registers: its DeviceInterface (SM count, Triton, bf16), a
+                       Triton GPU, its codegen and post-grad pass, its wrappers' device code
     post_grad_pass.py  the FX graph after Inductor's post-grad passes (device_custom_pass)
     lowering.py        lowering patches with no Inductor hook, npu's conv decompositions
-    choices.py         NPUChoices: conv tiles, pinned blocks, reductions, recorded template picks
+    choices.py         NPUChoices: conv tiles, reductions, recorded template picks; mm tile heuristics
+    blocks.py          an Inductor kernel's blocks on this machine (tiling.fixed_config_for)
     selection.py       how a template's config is picked (TOGSim cycles in timing mode)
-    codegen/           the scheduling and wrapper Inductor generates through, kernel metadata, tiling
+    codegen/           the scheduling and wrapper Inductor generates through, kernel metadata
 """
 
 from pytorchsim import config

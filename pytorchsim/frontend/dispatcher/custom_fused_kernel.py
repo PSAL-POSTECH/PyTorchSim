@@ -62,10 +62,10 @@ class CustomFusedKernel:
         """Build the triton_op, count launches and register every op in `takes`; once."""
         if self._op is not None:
             return
-        from pytorchsim.backend import codecache
+        from pytorchsim.backend import launch_hooks
         self._op = self._triton_op()
         for kernel in self.kernels():
-            codecache.observe_launches(kernel, lambda name=kernel.__name__: self._count(name))
+            launch_hooks.observe_launches(kernel, lambda name=kernel.__name__: self._count(name))
         for op in self.takes:
             torch.library.impl(op if isinstance(op, str) else op.name(), _KEYS, self._entry(op))
 

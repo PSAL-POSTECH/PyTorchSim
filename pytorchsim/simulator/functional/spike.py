@@ -1,20 +1,8 @@
 """Spike: the compiler's launcher (its runtime/spike.py) run over a launch's whole grid, under the
 options the kernel object was compiled for, with this environment's spike and pk."""
 
-import os
-
+from pytorchsim import config
 from pytorchsim.backend import compiler_bridge
-
-
-_VCIX_ENV = os.environ.get("VCIX_ENV_ROOT", "/opt/vcix-env")
-
-
-SPIKE = os.environ.get("TORCHSIM_SPIKE", os.environ.get(
-    "TORCHSIM_COMPILE_SPIKE", os.path.join(_VCIX_ENV, "spike", "bin", "spike")))
-
-
-PK = os.environ.get("TORCHSIM_PK", os.environ.get(
-    "TORCHSIM_COMPILE_PK", os.path.join(_VCIX_ENV, "pk", "riscv64-unknown-elf", "bin", "pk")))
 
 
 def launch(obj_dir, manifest, runtime, raw_paths, log, scalar_values=None):
@@ -26,9 +14,9 @@ def launch(obj_dir, manifest, runtime, raw_paths, log, scalar_values=None):
         run = compiler_bridge.run_options(obj_dir, manifest)
     except (ko.ObjectError, compiler_bridge.NoTarget) as e:
         raise launcher().SpikeError(str(e)) from None
-    want = os.environ.get("TORCHSIM_SPIKE_JOBS", os.environ.get("TORCHSIM_COMPILE_SPIKE_JOBS", ""))
-    return launcher().launch(elf, manifest, runtime, raw_paths, run, spike=SPIKE, pk=PK, log=log,
-                             want_jobs=want.strip(), scalar_values=scalar_values)
+    return launcher().launch(elf, manifest, runtime, raw_paths, run, spike=config.CONFIG_SPIKE_PATH,
+                             pk=config.CONFIG_PK_PATH, log=log, want_jobs=config.CONFIG_SPIKE_JOBS,
+                             scalar_values=scalar_values)
 
 
 def launcher():

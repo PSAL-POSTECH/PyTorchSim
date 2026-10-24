@@ -4,8 +4,16 @@ import yaml
 import logging
 
 CONFIG_TORCHSIM_DIR = os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim')
+#: The vcix-accelerator environment: the RISC-V toolchain, pk, Spike and gem5.
+CONFIG_VCIX_ENV_ROOT = os.environ.get("VCIX_ENV_ROOT", "/opt/vcix-env")
 CONFIG_GEM5_PATH = os.environ.get('GEM5_PATH', default=os.path.join(
-    os.environ.get("VCIX_ENV_ROOT", "/opt/vcix-env"), "gem5", "build", "RISCV", "gem5.opt"))
+    CONFIG_VCIX_ENV_ROOT, "gem5", "build", "RISCV", "gem5.opt"))
+CONFIG_SPIKE_PATH = os.environ.get("TORCHSIM_SPIKE", os.environ.get(
+    "TORCHSIM_COMPILE_SPIKE", os.path.join(CONFIG_VCIX_ENV_ROOT, "spike", "bin", "spike")))
+CONFIG_PK_PATH = os.environ.get("TORCHSIM_PK", os.environ.get(
+    "TORCHSIM_COMPILE_PK", os.path.join(CONFIG_VCIX_ENV_ROOT, "pk", "riscv64-unknown-elf", "bin", "pk")))
+#: How many Spike processes a launch's grid is split across; empty lets the launcher choose.
+CONFIG_SPIKE_JOBS = os.environ.get("TORCHSIM_SPIKE_JOBS", os.environ.get("TORCHSIM_COMPILE_SPIKE_JOBS", "")).strip()
 #: The compiler checkout (stages 1-5, ttir to the RISC-V ELF), a separate repository, not vendored.
 CONFIG_TORCHSIM_COMPILE_DIR = os.environ.get(
     "TORCHSIM_COMPILE_DIR", default=os.path.join(CONFIG_TORCHSIM_DIR, "pytorchsim-triton-compiler"))

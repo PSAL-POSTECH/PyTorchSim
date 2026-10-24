@@ -1,11 +1,12 @@
-"""The args a kernel's runtime attributes are read from keep their launch values in a bundle: the manifest names
-them, the kernel file takes exactly those from the file beside it and draws every other input, and a source the
-launcher cannot place stops by name rather than being drawn."""
+"""The args a kernel's runtime attributes are read from keep their launch values in a bundle (the manifest names
+them, the kernel file takes those and draws every other input, an unplaceable source stops by name); a kernel
+that declares no attributes has no runtime attribute directory."""
 import importlib.util
 import os
 import sys
 import tempfile
 from types import SimpleNamespace
+from unittest import mock
 
 TORCHSIM_DIR = os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim")
 sys.path.insert(0, TORCHSIM_DIR)
@@ -13,7 +14,7 @@ os.environ.setdefault("TORCHSIM_FUNCTIONAL_MODE", "0")
 
 import torch  # noqa: E402  the npu backend loads pytorchsim whole, before its parts are imported
 from pytorchsim import contract  # noqa: E402
-from pytorchsim.backend import compiler_input  # noqa: E402
+from pytorchsim.backend import compiler_bridge, compiler_input  # noqa: E402
 
 META = {"kernel_name": "k", "signature": {"ids_ptr": "*i32", "x_ptr": "*bf16", "o_ptr": "*bf16", "B": "constexpr"},
         "constants": {"B": 4}, "numels": {}, "template_grid": [1, 1, 1], "user_defined": True,
@@ -83,7 +84,17 @@ def test_a_launch_with_no_manifest_stops_the_bundle_by_name():
                 SimpleNamespace(kernel_name="k", workdir=d, meta=META), ())
 
 
+def test_the_runtime_attribute_directory_is_the_declaring_kernels_only():
+    with tempfile.TemporaryDirectory() as workdir:
+        with mock.patch.object(contract, "kernel_object", return_value={"name": "k", "args": META["args"]}):
+            assert compiler_bridge.runtime_attribute_dir(workdir) is None
+        with mock.patch.object(contract, "kernel_object", return_value=_manifest([None])):
+            got = compiler_bridge.runtime_attribute_dir(workdir)
+        assert got is not None and got.startswith(contract.runtime_dir(workdir)), got
+
+
 if __name__ == "__main__":
+    test_the_runtime_attribute_directory_is_the_declaring_kernels_only()
     test_recorded_args_are_the_launch_values_and_the_rest_drawn()
     test_a_recorded_arg_that_is_no_input_is_refused()
     test_the_manifest_names_the_sources_in_arg_order()

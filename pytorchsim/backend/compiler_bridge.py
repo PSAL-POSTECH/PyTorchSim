@@ -86,6 +86,16 @@ def target():
     return _TARGETS[(said, here)]
 
 
+def runtime_attribute_dir(workdir):
+    """runtime/'s directory of the runtime attribute records a launch's functional run writes, when the
+    kernel object declares any, else None; its name is the compiler's kernel_object contract's."""
+    from pytorchsim import contract
+    manifest = contract.kernel_object(workdir)
+    if manifest is None or not manifest.get("runtime_attributes"):
+        return None
+    return os.path.join(contract.runtime_dir(workdir), compiler_contract("kernel_object").RUNTIME_ATTRIBUTE_DIR)
+
+
 def run_options(obj_dir, manifest):
     """Spike's --isa and -m, the model library, its --machine-config and the gem5 script for the
     kernel object in `obj_dir`: the compiler's kernel_object.run_options() of the machine it was

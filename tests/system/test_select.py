@@ -14,7 +14,7 @@ sys.path.insert(0, TORCHSIM_DIR)
 import torch  # noqa: E402
 from torch._inductor.select_algorithm import TritonTemplateCaller  # noqa: E402
 
-from pytorchsim.backend import template_timing  # noqa: E402
+from pytorchsim.backend import template_record, template_timing  # noqa: E402
 
 SHAPE = (128, 256, 256)
 
@@ -25,8 +25,9 @@ import json, os, sys
 import torch
 from pytorchsim.frontend.inductor.codegen.scheduling import TritonNPUScheduling
 from pytorchsim.backend import template_timing
+from pytorchsim.backend import template_record
 
-template_timing.RECORD_DIR = os.environ["SELECT_RECORD_DIR"]
+template_record.RECORD_DIR = os.environ["SELECT_RECORD_DIR"]
 timed = {"choices": [], "modules": []}
 
 def time_choices(choices, _orig=template_timing.time_choices):
@@ -86,16 +87,16 @@ def _templates(dump):
 
 
 def _picks(dump):
-    with open(os.path.join(dump, template_timing.RECORD_LOG)) as f:
+    with open(os.path.join(dump, template_record.RECORD_LOG)) as f:
         return [json.loads(line) for line in f]
 
 
 def _merge(root, dump):
     """scripts/selection_merge.py over a timed run's picks, into the record under `root`."""
     script = os.path.join(TORCHSIM_DIR, "scripts", "selection_merge.py")
-    code = (f"import runpy, sys, torch; from pytorchsim.backend import template_timing; "
-            f"template_timing.RECORD_DIR = {os.path.join(root, 'record')!r}; "
-            f"sys.argv = [{script!r}, {os.path.join(dump, template_timing.RECORD_LOG)!r}]; "
+    code = (f"import runpy, sys, torch; from pytorchsim.backend import template_record; "
+            f"template_record.RECORD_DIR = {os.path.join(root, 'record')!r}; "
+            f"sys.argv = [{script!r}, {os.path.join(dump, template_record.RECORD_LOG)!r}]; "
             f"runpy.run_path({script!r}, run_name='__main__')")
     proc = subprocess.run([sys.executable, "-c", code], cwd=TORCHSIM_DIR, capture_output=True,
                           text=True)
@@ -122,7 +123,7 @@ def test_select_record_and_rebuild():
         assert {k: v for k, v in pick["config"].items()
                 if k not in ("template_id", "template_hash")} == best
         (built,) = _templates(mm).values()
-        assert built["tile_source"] == template_timing.TIMED
+        assert built["tile_source"] == template_record.TIMED
         bench = [json.load(open(os.path.join(mm, "select", d, "meta.json")))
                  for d in os.listdir(os.path.join(mm, "select"))]
         assert _same_kernel(built) in [_same_kernel(b) for b in bench]
@@ -131,7 +132,7 @@ def test_select_record_and_rebuild():
         fused = [m for m, _ in relu_timed["modules"] if m["template_grid"] is not None]
         assert 1 <= len(fused) <= len(relu_timed["choices"])
         (built_relu,) = _templates(relu).values()
-        assert built_relu["tile_source"] == template_timing.TIMED
+        assert built_relu["tile_source"] == template_record.TIMED
         alone = [m for m, _ in relu_timed["modules"] if m["template_grid"] is None]
         plain, _ = _compile(root, "relu", "relu", timing=False)
         (relu_kernel,) = _kernels(plain).values()
@@ -143,17 +144,17 @@ def test_select_record_and_rebuild():
             again, timed = _compile(root, f"mm_recorded_{int(timing)}", "mm", timing=timing)
             assert timed == {"choices": [], "modules": []}
             assert {k: m["tile_source"] for k, m in _templates(again).items()} == \
-                {k: template_timing.RECORDED for k in _templates(mm)}
+                {k: template_record.RECORDED for k in _templates(mm)}
         fused_again, _ = _compile(root, "mm_relu_recorded", "mm_relu", timing=False)
         assert [m["tile_source"] for m in _templates(fused_again).values()] == \
-            [template_timing.RECORDED_UNFUSED]
+            [template_record.RECORDED_UNFUSED]
 
         path = os.path.join(root, "record", os.listdir(os.path.join(root, "record"))[0])
         rec = json.load(open(path))
         rec["identity"]["compiler"] = "another"
         json.dump(rec, open(path, "w"))
         stale, _ = _compile(root, "mm_stale", "mm", timing=False)
-        assert [m["tile_source"] for m in _templates(stale).values()] == [template_timing.HEURISTIC]
+        assert [m["tile_source"] for m in _templates(stale).values()] == [template_record.HEURISTIC]
 
 
 def _choice(name):
@@ -225,8 +226,8 @@ def test_graph_cache_key_names_the_machine():
         keys = []
         for path in paths:
             with mock.patch.dict(os.environ, TORCHSIM_TARGET=path), \
-                 mock.patch.object(template_timing, "RECORD_DIR", os.path.join(root, "record")):
-                assert template_timing.record_digest() == "none"
+                 mock.patch.object(template_record, "RECORD_DIR", os.path.join(root, "record")):
+                assert template_record.record_digest() == "none"
                 keys.append(npu_choices_class()().uuid())
                 assert keys[-1] == npu_choices_class()().uuid()
         assert len(set(keys)) == len(keys), keys

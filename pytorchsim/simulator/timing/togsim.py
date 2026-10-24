@@ -9,7 +9,6 @@ import time
 import uuid
 from pathlib import Path
 
-import yaml
 from tqdm import tqdm
 
 from pytorchsim import config
@@ -66,7 +65,8 @@ class TOGSimProcess():
 
         self.base_dir = togsim_path
         self.config_path = config_path
-        self.config_yaml = self.load_yaml(self.config_path)
+        if not os.path.isfile(self.config_path):
+            raise FileNotFoundError(f"machine file not found: {self.config_path}")
         self.process = None
         self._next_kernel_id = 0
         os.makedirs(config.CONFIG_TORCHSIM_LOG_PATH, exist_ok=True)
@@ -177,18 +177,6 @@ class TOGSimProcess():
     def device_synchronize(self, device_index):
         """Queue a DEVICE_SYNC for every stream of `device_index`. Returns its command id."""
         return self._send_command("DEVICE_SYNC", device_index, 0, "", "", 0)
-
-    def load_yaml(self, config_path):
-        config_path = Path(config_path)
-        if not config_path.is_file():
-            raise FileNotFoundError(f"YAML file not found: {config_path}")
-
-        try:
-            with open(config_path, "r") as file:
-                data = yaml.safe_load(file)
-                return data
-        except yaml.YAMLError as e:
-            raise ValueError(f"Invalid YAML format: {e}")
 
     @staticmethod
     def get_togsim_command(config_path, togsim_path=None):

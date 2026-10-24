@@ -181,7 +181,8 @@ def _replay(workdir, meta, runtime, key):
     names = _outputs_of(meta)
     if not all(os.path.isfile(os.path.join(saved, f"{n}.raw")) for n in names):
         return False
-    attributes = _attribute_dir_of(workdir)
+    attributes = compiler_bridge.runtime_attribute_dir(workdir)
+    attributes = attributes and os.path.basename(attributes)
     if attributes and not os.path.isdir(os.path.join(saved, attributes)):
         return False
     for n in names:
@@ -201,18 +202,11 @@ def _save_replay(workdir, meta, runtime, key):
     for n in _outputs_of(meta):
         shutil.copyfile(os.path.join(runtime, f"{n}.raw"),
                         os.path.join(saved, f"{n}.raw"))
-    attributes = _attribute_dir_of(workdir)
+    attributes = compiler_bridge.runtime_attribute_dir(workdir)
+    attributes = attributes and os.path.basename(attributes)
     if attributes:
         shutil.rmtree(os.path.join(saved, attributes), ignore_errors=True)
         shutil.copytree(os.path.join(runtime, attributes), os.path.join(saved, attributes))
-
-
-def _attribute_dir_of(workdir):
-    """runtime/'s directory of runtime attribute records when the kernel declares any, else None."""
-    manifest = contract.kernel_object(workdir)
-    if manifest is None or not manifest.get("runtime_attributes"):
-        return None
-    return compiler_bridge.compiler_contract("kernel_object").RUNTIME_ATTRIBUTE_DIR
 
 
 def _replay_key(workdir, meta, runtime):

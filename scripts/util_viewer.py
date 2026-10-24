@@ -6,8 +6,8 @@ the periodic `Core stat` blocks every `core_stats_print_period_cycles` already c
 the whole time series. For per-instruction Gantt detail use `trace_timeline.py`.
 
 Compile wall clock comes from the the compiler `timing.json` each kernel workdir holds,
-joined to a run by the `triton_<hash>` beside its `--tog_so` (`--trace_so` in a log from before
-TOGSim ABI 16). A PyTorchSim
+joined to a run by the workdir its `--tog_so` is in (`--trace_so` in a log from before
+TOGSim ABI 16), above the launch directory TOGSim is handed. A PyTorchSim
 `breakdown_<run>.json` (TORCHSIM_BREAKDOWN=1) adds Spike, gem5 and TOGSim on top.
 
 Usage:
@@ -24,6 +24,7 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from pytorchsim import contract  # noqa: E402
 from pytorchsim.simulator import wallclock  # noqa: E402
 
 _CMDLINE = re.compile(r"--(?:tog_so|trace_so) (\S+)")
@@ -332,7 +333,7 @@ def build_payload(runs, timing=None, breakdowns=None):
             prev["source"] = prev["source"] or r["source"]
             continue
         item = {"log": r["log"], "kernel": r["kernel"], "source": r["source"], "repeats": 1,
-                "workdir": os.path.dirname(os.path.abspath(r["tog_so"])) if r["tog_so"] else "",
+                "workdir": contract.workdir_of(r["tog_so"]) if r["tog_so"] else "",
                 "config": r["config"], "summary": summarize(r), "series": series(r),
                 "dram_channels": r["dram_channels"], "interval": r["interval"],
                 "cores": {str(k): {"vu": v["vu"], "dma": v["dma"],
@@ -1208,6 +1209,18 @@ drawAll();
 """
 
 
+def join_workdir_timing(runs, timing):
+    """Add to `timing` the timing.json of each run's workdir, the one its tog_so is in, that no root gave."""
+    for r in runs:
+        if not r["tog_so"]:
+            continue
+        wd = contract.workdir_of(r["tog_so"])
+        if wd not in timing:
+            rec = read_timing(os.path.join(wd, "timing.json"))
+            if rec:
+                timing[wd] = rec
+
+
 def main(argv=None):
     """Parse the given logs and write the viewer page."""
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -1215,8 +1228,8 @@ def main(argv=None):
                     help="log files, globs, or directories (default: togsim_results)")
     ap.add_argument("-o", "--out", default="util.html", help="output HTML path")
     ap.add_argument("--timing", nargs="*", default=None, metavar="ROOT",
-                    help="extra roots to scan for the compiler timing.json; the workdir beside "
-                         "each log's tog_so is always checked")
+                    help="extra roots to scan for the compiler timing.json; the workdir each log's "
+                         "tog_so is in is always checked")
     ap.add_argument("--breakdown", nargs="*", default=None, metavar="ROOT",
                     help="roots to scan for PyTorchSim breakdown_<run>.json (TORCHSIM_BREAKDOWN=1), "
                          "which adds Spike, gem5 and TOGSim wall clock")
@@ -1226,14 +1239,7 @@ def main(argv=None):
     breakdowns = find_breakdowns(args.breakdown or [])
     timing = find_timing(args.timing or [])
     embedded = timing_from_breakdowns(breakdowns)
-    for r in runs:
-        if not r["tog_so"]:
-            continue
-        wd = os.path.dirname(os.path.abspath(r["tog_so"]))
-        if wd not in timing:
-            rec = read_timing(os.path.join(wd, "timing.json"))
-            if rec:
-                timing[wd] = rec
+    join_workdir_timing(runs, timing)
     seen_labels = {rec.get("label") for rec in timing.values()}
     for label, rec in embedded.items():
         if label not in seen_labels:

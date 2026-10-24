@@ -162,6 +162,13 @@ def dir_for(workdir):
     return d
 
 
+def workdir_of(path):
+    """The kernel workdir `path` is in: the one holding its launch directory when `path` is in one, as
+    dir_for names it, else `path`'s own directory."""
+    d = os.path.dirname(os.path.abspath(path))
+    return os.path.dirname(d) if os.path.basename(d).startswith(f"{LAUNCH_DIR_PREFIX}-") else d
+
+
 def runtime_dir(workdir):
     """Create and return this process's directory of `.raw` launch tensors."""
     d = os.path.join(dir_for(workdir), "runtime")

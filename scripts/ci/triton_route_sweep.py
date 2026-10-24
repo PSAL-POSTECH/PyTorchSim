@@ -106,6 +106,28 @@ def load_allowlist():
                 if l.strip() and not l.lstrip().startswith("#")]
 
 
+def write_allowlist(tests, path=PASSING):
+    """Rewrite the allowlist's entries as `tests`, keeping the comment block above its first entry (a header
+    when there is none); returns the entries it had that `tests` drops."""
+    head, old = [], []
+    if os.path.isfile(path):
+        with open(path) as f:
+            for line in f:
+                if line.strip() and not line.lstrip().startswith("#"):
+                    old.append(line.strip())
+                elif not old:
+                    head.append(line)
+    if not head:
+        head = ["# Tests that pass THROUGH the Triton codegen route. One that fails, or stops emitting a kernel, in\n",
+                "# the route job's sweep (pytorchsim_triton_backend.yml) fails that job; a test off this list only "
+                "reports. Regenerate with\n",
+                "#   python scripts/ci/triton_route_sweep.py --all --update-allowlist\n"]
+    with open(path, "w") as f:
+        f.writelines(head)
+        f.writelines(t + "\n" for t in tests)
+    return [t for t in old if t not in set(tests)]
+
+
 def longest_first(tests, path):
     """Order by a previous run's results.json: longest first, a test it has not
     seen before those, ties by path. Path order when it cannot be read."""
@@ -396,16 +418,11 @@ def main():
         print(f"wrote {args.artifacts}/ ({len(failed)} failure dirs)")
 
     if args.update_allowlist:
-        with open(PASSING, "w") as f:
-            f.write("# Tests that pass THROUGH the Triton codegen route. One that fails, or stops "
-                    "emitting a kernel, in\n# the route job's sweep (pytorchsim_triton_backend.yml) fails that job; a test "
-                    "off this list only reports. Regenerate with\n"
-                    "#   python scripts/ci/triton_route_sweep.py --all "
-                    "--update-allowlist\n")
-            for r in real:
-                f.write(r["test"] + "\n")
+        dropped = write_allowlist([r["test"] for r in real])
         print(f"wrote {PASSING} ({len(real)} tests)")
-        return 0
+        for t in dropped:
+            print(f"  dropped: {t}")
+        return 1 if dropped else 0
 
     if regressed:
         print(f"\nREGRESSION: {len(regressed)} allowlisted test(s) failed or left the route")

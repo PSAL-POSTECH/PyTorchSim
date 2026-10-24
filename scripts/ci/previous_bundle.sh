@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# The newest pts-bundle on BRANCH with a selection record, whole: record/ to PICKS, out/ and keys/ to PREV (for
-# bundle.py --reuse), so the picks and the kernels are one run's. Never fails; with none both stay empty.
+# The newest pts-bundle on BRANCH with a selection record whose bundle job succeeded, whole: record/ to PICKS, out/
+# and keys/ to PREV (for bundle.py --reuse), so the picks and the kernels are one run's. Never fails; with none both
+# stay empty.
 #   GH_TOKEN=... REPO=owner/name scripts/ci/previous_bundle.sh PICKS PREV
 set -uo pipefail
 : "${GH_TOKEN:?a token that reads the actions of this repository}"
@@ -17,6 +18,9 @@ api() { curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/
 RUNS=$(api "https://api.github.com/repos/$REPO/actions/workflows/$WORKFLOW/runs?branch=$BRANCH&event=$EVENT&per_page=30") \
   || { echo "::warning::could not list the bundle runs on $BRANCH: every workload is built"; exit 0; }
 for run in $(jq -r --arg me "${GITHUB_RUN_ID:-0}" '.workflow_runs[] | select((.id|tostring) != $me) | .id' <<<"$RUNS"); do
+  ok=$(api "https://api.github.com/repos/$REPO/actions/runs/$run/jobs?per_page=100" \
+       | jq -r '[.jobs[] | select(.name == "Validation kernel bundle" and .conclusion == "success")] | length') || continue
+  [ "$ok" = 1 ] || continue
   id=$(api "https://api.github.com/repos/$REPO/actions/runs/$run/artifacts?per_page=100" \
        | jq -r '[.artifacts[] | select(.name == "pts-bundle" and (.expired|not))][0].id // empty') || continue
   [ -n "$id" ] || continue

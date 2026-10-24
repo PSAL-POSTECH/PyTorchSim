@@ -24,8 +24,7 @@ def user_kernel_compile(kernel, meta):
     """, strip=True)
     src.writeline("@triton.jit")
     src.splice(user_defined_triton_kernel_transitive_closure_source_code(kernel), strip=True)
-    return (f"torchsim_compile({src.getvalue()!r},\n    meta={meta!r},\n"
-            f"    kernel_name={kernel.__name__!r})")
+    return kernel_metadata.compile_call(src.getvalue(), meta, kernel.__name__)
 
 
 def user_kernel_meta(kernel, kwargs, triton_meta, grid):

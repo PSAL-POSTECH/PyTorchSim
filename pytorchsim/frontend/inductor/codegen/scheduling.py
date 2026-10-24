@@ -2,7 +2,7 @@
 the wrapper, and timing on TOGSim the modules Inductor's epilogue-fusion benchmark writes."""
 
 from torch._inductor.codecache import PyCodeCache, get_hash
-from torch._inductor.codegen.common import BackendFeature, IndentedBuffer
+from torch._inductor.codegen.common import BackendFeature
 from torch._inductor.codegen.triton import TritonKernel, TritonScheduling
 from torch._inductor.utils import Placeholder, get_fused_kernel_name
 from torch._inductor.virtualized import V
@@ -94,16 +94,11 @@ class TritonNPUScheduling(TritonScheduling):
         if source is not None:
             meta["tile_source"] = source
 
-        compile_wrapper = IndentedBuffer()
-        compile_wrapper.writeline(f"torchsim_compile('''{src_code}''',")
-        compile_wrapper.writeline(f"    meta={meta!r},")
-        compile_wrapper.writeline(f"    kernel_name={kernel_name!r})")
-
         origins = ", ".join(
             sorted({str(o) for n in node_schedule
                     for o in getattr(getattr(n, "node", None), "origins", ()) or ()})
         )
-        wrapper.define_kernel(kernel_name, compile_wrapper.getvalue(),
+        wrapper.define_kernel(kernel_name, kernel_metadata.compile_call(src_code, meta, kernel_name),
                               f"# origins: {origins}")
         return kernel_name
 

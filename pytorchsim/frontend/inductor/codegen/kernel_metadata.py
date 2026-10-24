@@ -124,6 +124,12 @@ def _blocks_without_pin(kernel, numels, args):
     return tiling.fixed_config_for(kernel, numels, args)
 
 
+def compile_call(src_code, meta, kernel_name):
+    """The wrapper's line compiling one kernel, torchsim_compile(source, meta=..., kernel_name=...):
+    the source as a Python literal, so a quote or backslash in it reaches the compiler as written."""
+    return f"torchsim_compile({src_code!r},\n    meta={meta!r},\n    kernel_name={kernel_name!r})"
+
+
 def collect_meta(kernel, kernel_name):
     """Everything the compile step needs, as plain repr-able data.
 

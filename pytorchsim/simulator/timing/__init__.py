@@ -181,7 +181,7 @@ def run_togsim(workdir, meta, args=()):
     """
     import torch
 
-    from pytorchsim.simulator.togsim import TOGSimProcess
+    from pytorchsim.simulator.timing.togsim import TOGSimProcess
 
     for need in SHARED:
         if not os.path.isfile(os.path.join(workdir, need)):

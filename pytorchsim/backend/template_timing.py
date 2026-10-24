@@ -42,7 +42,7 @@ def _time_tile(src_code, meta, kernel_name, workdir, cut=None):
     """TOGSim cycles of one kernel, simulated alone; inf if it does not compile or run, or `cut`
     stops its simulation. TOGSim refuses a tile over the spad at load, and that refusal and a cut
     reach here as RuntimeError."""
-    from pytorchsim.simulator.togsim import Cut, TOGSimProcess
+    from pytorchsim.simulator.timing.togsim import Cut, TOGSimProcess
     os.makedirs(workdir, exist_ok=True)
     spec_path = os.path.join(workdir, f"{kernel_name}_spec.py")
     with open(os.path.join(workdir, "kernel.py"), "w") as f:

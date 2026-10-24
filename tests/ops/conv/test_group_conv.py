@@ -2,7 +2,7 @@ import os
 import sys
 import torch
 import torch._dynamo
-from pytorchsim.simulator.togsim import TOGSimProcess
+from pytorchsim.simulator.timing.togsim import TOGSimProcess
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
 from result_check import check_result
 

@@ -37,6 +37,9 @@ PATTERNS = PatternMatcherPass(pass_name="pytorchsim_post_grad_pass")
 #: rewrite name -> {"rewritten": n, "fallback": n}: the nodes each rewrite replaced or left.
 CALLS = {}
 
+#: The one-op rewrites by name, in the order they are registered; the module docstring lists each.
+REWRITES = []
+
 
 class _PostGradPass(CustomGraphModulePass):
     """The graph patterns, then complex values as real pairs; its uuid hashes this file, so an edit here
@@ -79,6 +82,8 @@ def register_rewrite(pattern, extra_check=lambda match: True):
             match.replace_by_example(replacement, example)
             _count(fn.__name__, "rewritten")
         register_graph_pattern(pattern, extra_check=extra_check, pass_dict=PATTERNS)(handler)
+        if fn.__name__ not in REWRITES:
+            REWRITES.append(fn.__name__)
         return fn
     return register
 

@@ -76,7 +76,9 @@ pass 는 복소수 노드 묶음을 통째로 바꾸거나 전혀 바꾸지 않�
 ### 1. `post_grad_pass.py` 안의 함수 하나
 
 기존 재작성 (`histc`, `mm_row`, `convolution_transposed`, `gemm_zero_length`) 뒤,
-`complex_real_pairs` 앞에 둡니다. 대체 코드는 `histc` 의 `counts` 처럼 재작성 함수 안에 두고,
+`complex_real_pairs` 앞에 둡니다. 그 위에 섹션 주석 한 줄(`# logcumsumexp: ...`)을 달고, 모듈
+docstring 의 목록에도 같은 순서로 한 줄을 더합니다. 둘 중 하나라도 빠지면
+`tests/system/test_module_form.py` 가 실패합니다. 대체 코드는 `histc` 의 `counts` 처럼 재작성 함수 안에 두고,
 확인과 반환은 그 뒤에 둡니다. 실제 예시 중 가장 짧은 것은 `histc` 입니다. 아래는 새로 만드는
 예시인 `aten.logcumsumexp` 입니다. Inductor 는 이 연산을 fallback 으로만 lowering 하므로 npu 에서는
 CPU 로 갑니다. 출력 하나하나는 prefix 에 대한 logsumexp 이고, `logsumexp` 는 lowering 됩니다.

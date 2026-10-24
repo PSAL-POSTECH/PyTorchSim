@@ -122,12 +122,16 @@ def store_identity(workdir):
 
 
 def clear_stale(workdir):
-    """Remove the manifest, stage artifacts and timing derivatives built by another identity; one another
-    process removed first is gone already, and one that cannot be removed is raised."""
+    """Remove the manifest, stage artifacts (a stage's per-pass directory among them) and timing derivatives
+    built by another identity; one another process removed first is gone already, and one that cannot be
+    removed is raised."""
     for pattern in (contract.KERNEL_MANIFEST,) + _STALE_PATTERNS:
         for path in glob.glob(os.path.join(workdir, pattern)):
             try:
-                os.remove(path)
+                if os.path.isdir(path) and not os.path.islink(path):
+                    shutil.rmtree(path)
+                else:
+                    os.remove(path)
             except FileNotFoundError:
                 pass
 

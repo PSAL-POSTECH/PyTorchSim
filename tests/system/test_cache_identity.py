@@ -1,6 +1,6 @@
 """A cached kernel's identity is what the compiler itself resolves (its commit under "compiler", its
-tools, the TOGSim API and headers); a compiler that cannot state them stops the run, and a stale artifact
-that cannot be removed is raised rather than left to be reused."""
+tools, the TOGSim API and headers); a compiler that cannot state them stops the run; a stale artifact,
+a stage's per-pass directory among them, is removed, and one that cannot be removed is raised."""
 import json
 import os
 import subprocess
@@ -70,9 +70,20 @@ def test_a_stale_artifact_that_cannot_be_removed_is_raised():
             build_identity.clear_stale(workdir)
 
 
+def test_a_stale_stage_directory_is_removed():
+    with tempfile.TemporaryDirectory() as workdir:
+        os.makedirs(os.path.join(workdir, "08-passes"))
+        open(os.path.join(workdir, "08-passes", "0001-a.mlir"), "w").close()
+        for name in ("kernel.json", "08-transformed.mlir", "_k_spec.py"):
+            open(os.path.join(workdir, name), "w").close()
+        build_identity.clear_stale(workdir)
+        assert sorted(os.listdir(workdir)) == ["_k_spec.py"], os.listdir(workdir)
+
+
 if __name__ == "__main__":
     test_the_compiler_is_named_compiler()
     test_a_stale_artifact_that_cannot_be_removed_is_raised()
+    test_a_stale_stage_directory_is_removed()
     test_tools_are_the_compilers()
     test_tog_abi_is_the_compilers_togsim()
     test_a_compiler_that_cannot_answer_stops_the_run()

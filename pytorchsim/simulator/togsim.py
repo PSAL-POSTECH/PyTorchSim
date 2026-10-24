@@ -1,7 +1,4 @@
-"""TOGSim as a process: started once, fed kernels over a FIFO, read back from its log.
-
-Also the multi-tenant entry points built on it, and the Poisson arrivals that drive them.
-"""
+"""TOGSim as a process: started once, fed kernels over a FIFO, read back from its log."""
 import os
 import numpy as np
 import shlex
@@ -452,20 +449,6 @@ class TOGSimProcess():
                 core_metrics["Total_cycle"] = total_cycle
         return core_metrics, dram_channel_bw, avg_dram_bw, simulation_time, total_cycle
 
-
-def poisson_request_generator(lambda_requests, max_msec_time=None):
-    """Yield synthetic arrival times in milliseconds (first sample is 0)."""
-    current_time = 0.0  # msec
-
-    yield 0
-    while max_msec_time is None or current_time < max_msec_time:
-        inter_arrival_time = np.random.exponential(scale=1000 / lambda_requests)
-        current_time += inter_arrival_time
-
-        if max_msec_time is not None and current_time > max_msec_time:
-            break
-
-        yield current_time
 
 if __name__ == "__main__":
     """Drive the backend with no PyTorch in the process, which is the point of it."""

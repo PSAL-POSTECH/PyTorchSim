@@ -71,7 +71,7 @@ report next to the number it produced — never folded into a pass.
 | `pytorchsim/contract.py` | What the stages share, so none of them imports another for it: the axes and programs of a launch, how far a strided layout reaches in storage, and the kernel workdir (the manifest and artifacts the compiler left, and each process's launch directory) |
 | `pytorchsim/frontend/inductor/codegen/` | What runs while Inductor generates code: `scheduling.py` (the scheduling and wrapper classes registered for `npu`; Inductor writes the Triton source, these wrap it), `kernel_metadata.py` (what the compile step needs from an Inductor kernel, a template's grid among it), `verify.py` (the per-kernel CPU cross-check, both the lines put in the wrapper and the check they call) |
 | `pytorchsim/backend/` | Building a kernel and having it run: `codecache.py` (the compile entry point, the cache and the identity that admits it, the launcher), `template_timing.py` (a template's config: Inductor's selection timed on TOGSim, and the recorded picks), `retile.py` (smaller pinned blocks when the compiler says too big), `compiler_input.py` (what the compiler is handed: the rewritten Triton source and the KernelSpec file), `compiler_bridge.py` (PyTorchSim-Triton-Backend in a subprocess, the target description) |
-| `pytorchsim/simulator/` | What runs a kernel object: `functional.py` (tensors to disk, Spike, tensors back), `timing.py` (gem5 tile cycles, the cycle and unit tables beside the TOG, TOGSim), `togsim.py` (`TOGSimProcess`, the TOGSim process, and `poisson_request_generator`), `wallclock.py` (where the run's own time went) |
+| `pytorchsim/simulator/` | What runs a kernel object: `functional.py` (tensors to disk, Spike, tensors back), `timing.py` (gem5 tile cycles, the cycle and unit tables beside the TOG, TOGSim), `togsim.py` (`TOGSimProcess`, the TOGSim process), `wallclock.py` (where the run's own time went) |
 | `device/` | C++ PyTorch backend registering the `npu` device. Built as a pip-installed package via `setup.py`. Based on `torch_openreg` (PrivateUse1 example). Produces `_C.cpython-*.so` |
 | `$TOGSIM_DIR` (not in this repo) | TOGSim, the repository PSAL-POSTECH/TOGSim, as the compiler checkout carries it: `$TORCHSIM_COMPILE_DIR/third_party/TOGSim`. C++ source in `src/` and `include/` (`include/togsim_runtime.h` is the C ABI a TOG is compiled against), the built `build/bin/Simulator`, and `configs/` |
 | `$TOGSIM_DIR/configs/` | TOGSim machine files (YAML); `config.CONFIG_TOGSIM_CONFIG_DIR`. `TORCHSIM_TARGET` names one (`tpuv6e` by default, i.e. `tpuv6e.yml`) |
@@ -152,17 +152,15 @@ Located under `$TOGSIM_DIR/configs/*.yml` (the TOGSim repository; a change there
 - `l2d_type` (e.g., `datacache`), `l2d_config` (AccelSim-format cache config string)
 - `num_partition` + `partition: {core_0: 0, core_1: 1}` for multi-tenant `stream_index` mapping
 
-## Multi-tenant API (pytorchsim/simulator/togsim.py)
+## Multi-tenant API (torch.npu.TOGSimulator, torch.npu.launch_model)
 
 ```python
-from pytorchsim.simulator.togsim import poisson_request_generator
-
 with torch.npu.TOGSimulator(config_path=...):
     torch.npu.launch_model(opt_model, x, stream_index=0, timestamp=0)  # timestamp in ns
     torch.npu.synchronize()  # barrier
 ```
 
-`stream_index` must be a valid queue id from the YAML's `partition` map. `timestamp` is nanoseconds; pass Poisson millisecond times × 1e6.
+`stream_index` must be a valid queue id from the YAML's `partition` map. `timestamp` is nanoseconds; the README's example generates Poisson arrival times in milliseconds (× 1e6).
 
 ## Build
 

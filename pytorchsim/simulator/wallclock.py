@@ -1,9 +1,6 @@
-"""Where a run's wall clock went: torchsim-compile, Spike, gem5, TOGSim.
-
-Off unless TORCHSIM_BREAKDOWN=1; one table at process exit and a
-breakdown_<run-id>.json beside it, stamped so parallel runs do not share a file.
-Nested spans are charged self time, so gem5 inside the cycle-table build counts once.
-"""
+"""Where a run's wall clock went: torchsim-compile, Spike, gem5, TOGSim. Off unless
+TORCHSIM_BREAKDOWN=1: a table at exit and a stamped breakdown_<run-id>.json beside it; nested spans
+are charged self time."""
 
 import atexit
 import datetime

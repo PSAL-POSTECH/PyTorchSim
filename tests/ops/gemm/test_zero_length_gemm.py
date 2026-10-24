@@ -1,13 +1,6 @@
-"""A matmul with a zero-length M, N, or K (unbiased) on the npu is zeros of its output shape, against
-the CPU; an addmm with K = 0 is its bias, and is left to Inductor.
-
-  mm_m0, mm_n0, mm_k0   mm with M, N or K zero
-  bmm_n0, bmm_k0        bmm with N or K zero
-  addmm_m0              addmm with M zero
-  pass_graph            the post-grad pass leaves no zero-length mm and counts it
-
-Usage: test_zero_length_gemm.py [case ...]   (all cases when none is named)
-"""
+"""A matmul with a zero-length M, N, or K (unbiased) on the npu is zeros of its output shape, against the CPU;
+an addmm with K = 0 is its bias, left to Inductor. Cases: mm_m0, mm_n0, mm_k0, bmm_n0, bmm_k0, addmm_m0, and
+pass_graph (no zero-length mm left, and counted); run with [case ...], all when none is named."""
 import os
 import sys
 
@@ -19,7 +12,7 @@ from result_check import check_result
 
 device = torch.device("npu:0")
 
-#  name: (op, shapes)
+#: name -> (op, shapes)
 CASES = {
     "mm_m0": (torch.mm, [(0, 8), (8, 4)]),
     "mm_n0": (torch.mm, [(4, 8), (8, 0)]),
@@ -50,7 +43,7 @@ def run_pass_graph(name):
     from torch._inductor.decomposition import select_decomp_table
     from torch.fx.experimental.proxy_tensor import make_fx
 
-    from pytorchsim.frontend.inductor import post_grad_pass as pg
+    from pytorchsim.frontend.inductor import postgrad as pg
     a, b = _inputs([(4, 0), (0, 8)])
     gm = make_fx(torch.mm, decomposition_table=select_decomp_table(), tracing_mode="fake")(a, b)
     pg.CALLS.clear()

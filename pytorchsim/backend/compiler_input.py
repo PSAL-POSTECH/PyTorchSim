@@ -1,9 +1,8 @@
-"""What the compiler is handed for one kernel: the module Inductor generated, and the KernelSpec file beside it.
+"""What the compiler is handed for one kernel: Inductor's module, unrewritten, and the KernelSpec file
+beside it (`write`); store_meta keeps the codegen metadata (meta.json), which a cache hit reads its
+tuned blocks back from."""
 
-The module is Inductor's own, imported the way Inductor imports it, unrewritten. `write` puts both
-files in the kernel's workdir.
-"""
-
+import json
 import os
 
 from pytorchsim import contract
@@ -14,11 +13,8 @@ _C_TYPE = {"i32": "int32_t", "i64": "int64_t", "fp32": "float"}
 
 
 def scalar_args(meta):
-    """Scalar parameters in kernel order, as [(name, c_type, default)].
-
-    A numel's value is known at codegen; an input Inductor unwrapped to a scalar (a 0-d CPU
-    tensor, Adam's step) only at launch, so its default is None and the launch passes it.
-    """
+    """Scalar parameters in kernel order, as [(name, c_type, default)]; an input Inductor unwrapped to
+    a scalar (a 0-d CPU tensor) is known only at launch, so its default is None."""
     numels = meta["numels"]
     out = []
     for name, token in meta["signature"].items():
@@ -45,16 +41,14 @@ import os
 
 from {spec_module} import KernelSpec, Arg
 
-#: The kernel's module, beside this file. It must be a REAL file on
-#: disk, not an exec'd string: triton's @jit reads the function back with
-#: inspect.getsourcefile and rejects anything else ("@jit functions should be
-#: defined in a Python file").
+#: The kernel's module, beside this file: a real file, as triton's @jit reads the function back with
+#: inspect.getsourcefile.
 TRITON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            {triton_module!r})
 
 
 def kernel():
-    # As torch/_inductor/runtime/compile_tasks.py loads it.
+    """The kernel, loaded as torch/_inductor/runtime/compile_tasks.py loads it."""
     from torch._inductor.runtime.triton_helpers import skip_gpu_driver_setup
     spec = importlib.util.spec_from_file_location(
         {kernel_name!r} + "_triton", TRITON_PATH)
@@ -72,10 +66,8 @@ def make_inputs(torch, seed=0):
 
 
 def reference(inputs):
-    # The Inductor route has no per-kernel torch reference: correctness is
-    # checked at the graph level by the test that ran torch.compile. the compiler's
-    # stage 7 is therefore not meaningful here and the pipeline is driven to
-    # stage 6 (spike) instead.
+    """None per kernel: the test that ran torch.compile checks the graph, so the pipeline stops at
+    stage 6 (spike), before the compiler's stage 7."""
     return {{}}
 
 
@@ -103,10 +95,9 @@ def recorded_file(kernel_name):
 
 
 def write(src_code, meta, path, recorded=None):
-    """Write the kernel's module and the kernel file for this Inductor kernel. Returns `path`.
-    A block Inductor fixed in the kernel body rather than taking as a parameter is skipped:
-    passing it would not match the signature. `recorded` ({arg: tensor}) is saved beside it and
-    make_inputs takes those args from there; every other input is drawn."""
+    """Write the kernel's module and the kernel file for this Inductor kernel; returns `path`. Blocks
+    Inductor fixed in the body are not passed; `recorded` ({arg: tensor}) is saved beside it for
+    make_inputs, which draws every other input."""
     missing = [a["name"] for a in meta["args"] if not a["dtype"] or not a["numel"]]
     if missing:
         raise SpecIncomplete(
@@ -165,3 +156,23 @@ def write(src_code, meta, path, recorded=None):
     with open(path, "w") as f:
         f.write(text)
     return path
+
+
+META_JSON = "meta.json"
+
+
+def store_meta(workdir, meta):
+    """Persist codegen metadata beside the artifacts, so the timing step can
+    run standalone."""
+    with open(os.path.join(workdir, META_JSON), "w") as f:
+        json.dump(meta, f, indent=2)
+
+
+def load_tuned_blocks(workdir, meta):
+    """Give `meta` the blocks its build in `workdir` settled on: the fixed_config store_meta wrote
+    after the autotune retries, which a cache hit's caller still holds untuned."""
+    with open(os.path.join(workdir, META_JSON)) as f:
+        stored = json.load(f)
+    if "fixed_config" in stored:
+        meta["fixed_config"] = stored["fixed_config"]
+    return meta

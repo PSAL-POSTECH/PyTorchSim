@@ -9,7 +9,7 @@ from unittest import mock
 sys.path.insert(0, os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"))
 
 from pytorchsim import config
-from pytorchsim.simulator.togsim import TOGSimProcess
+from pytorchsim.simulator.timing.togsim import TOGSimProcess
 
 REFUSAL = "[error] [TOGSim] TOG k/tog.so: work-item 0 (key 10) needs 49153 bytes in the spad at once"
 STUB = """#!/bin/sh

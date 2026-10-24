@@ -1,14 +1,6 @@
-"""A transposed convolution on the npu runs as its direct equivalent (the input spread by the stride
-and padded, the weight flipped and spread by the dilation), against the CPU's conv_transpose.
-
-  stride_pad      2-D, stride 2, padding 1, output_padding 1
-  groups_dilated  2-D, two groups, dilation 2
-  one_d           1-D, stride 2
-  batchless       2-D on a [C, H, W] input
-  pass_graph      the post-grad pass leaves no transposed convolution in the graph
-
-Usage: test_conv_transpose.py [case ...]   (all cases when none is named)
-"""
+"""A transposed convolution on the npu runs as its direct equivalent, against the CPU's conv_transpose.
+Cases: stride_pad, groups_dilated, one_d, batchless, and pass_graph (the post-grad pass leaves no transposed
+convolution); run with [case ...], all when none is named."""
 import os
 import sys
 
@@ -21,7 +13,7 @@ from result_check import check_result
 
 device = torch.device("npu:0")
 
-#  name: (input shape, weight shape, stride, padding, output_padding, groups, dilation)
+#: name -> (input shape, weight shape, stride, padding, output_padding, groups, dilation)
 CASES = {
     "stride_pad": ((1, 8, 9, 9), (8, 16, 3, 3), 2, 1, 1, 1, 1),
     "groups_dilated": ((2, 8, 7, 7), (8, 4, 3, 3), 1, 0, 0, 2, 2),
@@ -61,7 +53,7 @@ def run_pass_graph(name):
     from torch._inductor.decomposition import select_decomp_table
     from torch.fx.experimental.proxy_tensor import make_fx
 
-    from pytorchsim.frontend.inductor import post_grad_pass as pg
+    from pytorchsim.frontend.inductor import postgrad as pg
     x, w, b = _inputs("stride_pad")
     params = CASES["stride_pad"][2:]
     gm = make_fx(lambda x, w, b: _conv_transpose(x, w, b, *params),

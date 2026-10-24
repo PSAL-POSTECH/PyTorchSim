@@ -1,14 +1,6 @@
-"""Which config a template kernel is built at: Inductor's own selection, timed on TOGSim.
-
-Inductor offers each mm/bmm/addmm/baddbmm config as a choice and keeps the one with the least time;
-in timing mode that time is TOGSim cycles. `time_choices` times the choices as Inductor rendered
-them, and `time_module` a module Inductor's epilogue-fusion benchmark wrote, so a template with an
-epilogue is picked by its fused cycles. Outside timing mode the offered order decides.
-
-A pick is recorded in Inductor's lookup-table format, one file per machine under `RECORD_DIR`: a
-recorded config is the only choice offered the next time, timed or not. What it records is the pick
-without an epilogue, so a recorded template built with one fused is `RECORDED_UNFUSED`.
-"""
+"""Which config a template kernel is built at: Inductor's selection, timed in TOGSim cycles in timing
+mode (time_choices, and time_module for an epilogue-fused benchmark), else the offered order. A pick is
+recorded per machine under RECORD_DIR in Inductor's lookup-table format and is the only choice next time."""
 
 import concurrent.futures
 import hashlib
@@ -42,12 +34,12 @@ def _time_tile(src_code, meta, kernel_name, workdir, cut=None):
     """TOGSim cycles of one kernel, simulated alone; inf if it does not compile or run, or `cut`
     stops its simulation. TOGSim refuses a tile over the spad at load, and that refusal and a cut
     reach here as RuntimeError."""
-    from pytorchsim.simulator.togsim import Cut, TOGSimProcess
+    from pytorchsim.simulator.timing.togsim import Cut, TOGSimProcess
     os.makedirs(workdir, exist_ok=True)
     spec_path = os.path.join(workdir, f"{kernel_name}_spec.py")
     with open(os.path.join(workdir, "kernel.py"), "w") as f:
         f.write(src_code)
-    timing.store_meta(workdir, meta)
+    compiler_input.store_meta(workdir, meta)
     compiler_input.write(src_code, meta, spec_path)
     try:
         compiler_bridge.run_pipeline(spec_path, workdir, to_stage="torchsim-compile", tog=True)
@@ -92,7 +84,6 @@ def time_choices(choices):
     CUT_FACTOR times the wall time of the first one timed is cut, and is inf."""
     out = {c: float("inf") for c in choices}
     timed = [c for c in choices if _timed(c)]
-    # Rendered here: the meta reads Inductor's state, which the worker threads do not carry.
     jobs = [(c, *kernel_metadata.benchmark_request_meta(c.bmreq)) for c in timed]
     t0, first = time.monotonic(), []
 

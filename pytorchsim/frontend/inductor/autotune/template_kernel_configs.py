@@ -37,11 +37,7 @@ def mm_config_heuristics():
 
             def configs(m, n, k, **kwargs):
                 from torch._inductor.virtualized import V
-                try:
-                    mnk = [int(V.graph.sizevars.optimization_hint(s)) for s in (m, n, k)]
-                except Exception:
-                    yield from generic(m, n, k, **kwargs)
-                    return
+                mnk = [int(V.graph.sizevars.optimization_hint(s)) for s in (m, n, k)]
                 mapped = tiling.gemm_tiles(*mnk, kwargs.get("dtype_size", 4))
                 if not mapped:
                     logger.warning(

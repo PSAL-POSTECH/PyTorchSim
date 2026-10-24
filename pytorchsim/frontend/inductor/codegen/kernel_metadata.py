@@ -1,8 +1,5 @@
-"""What the compile step needs from an Inductor kernel, read while `V.graph` is live.
-
-`collect_meta` gathers it as plain data: the arguments with their roles, dtypes and storage spans,
-the numels, the pinned blocks and the grid.
-"""
+"""What the compile step needs from an Inductor kernel, read while `V.graph` is live: collect_meta
+gathers the arguments with their roles, dtypes and storage spans, the numels, the pinned blocks and the grid."""
 
 from torch._inductor.codegen.common import InplacedBuffer, is_buffer_removed
 from torch._inductor.virtualized import V
@@ -14,13 +11,11 @@ from pytorchsim.contract import SpecIncomplete, storage_span
 
 _logger = config.setup_logger()
 
-#: Triton signature token -> the dtype's torch name: the one table of them on this side.
+#: Triton signature token -> the dtype's torch name: the one table of them on this side, holding the
+#: dtypes the compiler's contract (kernel_object.ITEMSIZE) carries.
 TOKEN_DTYPE = {
     "*fp64": "float64", "*fp32": "float32", "*fp16": "float16",
     "*bf16": "bfloat16",
-    # fp8 has no numpy or C scalar: it rides as uint8 and is viewed back at the
-    # ends, the way bf16 rides as uint16. See functional.py's _np_dtype.
-    "*fp8e5": "float8_e5m2", "*fp8e4nv": "float8_e4m3fn",
     "*i64": "int64", "*i32": "int32", "*i16": "int16", "*i8": "int8",
     "*u64": "uint64", "*u32": "uint32", "*u16": "uint16", "*u8": "uint8",
     "*i1": "bool",
@@ -62,13 +57,8 @@ def _writes(kernel):
 
 
 def _roles(kernel):
-    """arg name -> ('in'|'out'|'inout', buffer), from the kernel's tables.
-
-    `inplace_buffers` IS NOT THE WHOLE OF `inout`: a kernel can mutate a buffer
-    an EARLIER kernel produced, and `kernel.mutations` is what names that.
-
-    An `inout` the kernel never stores to is an `in`.
-    """
+    """arg name -> ('in'|'out'|'inout', buffer), from the kernel's tables: inplace_buffers and the
+    mutations of buffers earlier kernels produced are inout, unless the kernel never stores to them."""
     writes = _writes(kernel)
     out = {}
     for buf, arg in getattr(kernel.args, "input_buffers", {}).items():
@@ -96,11 +86,7 @@ def record_roles(kernel_name, meta):
 
 
 def writes_arg(kernel_name, position):
-    """Does `kernel_name` write the tensor argument at `position`?
-
-    True when nothing is recorded, so this narrows only where there is a
-    measurement to narrow it with.
-    """
+    """Whether `kernel_name` writes the tensor argument at `position`; True when nothing is recorded."""
     roles = ROLES_BY_KERNEL.get(kernel_name)
     if roles is None or position >= len(roles):
         return True
@@ -129,11 +115,8 @@ def compile_call(src_code, meta, kernel_name):
 
 
 def collect_meta(kernel, kernel_name):
-    """Everything the compile step needs, as plain repr-able data.
-
-    Must run while `V.graph` is live, i.e. inside define_kernel: by the time
-    the compile callable fires it is gone.
-    """
+    """Everything the compile step needs, as plain repr-able data; runs inside define_kernel, while
+    `V.graph` is live."""
     triton_meta = dict(getattr(kernel, "triton_meta", None) or {})
     signature = dict(triton_meta.get("signature") or {})
     constants = dict(triton_meta.get("constants") or {})
@@ -177,10 +160,9 @@ def collect_meta(kernel, kernel_name):
 
 
 def benchmark_request_meta(req):
-    """(source, meta) of a template choice as Inductor rendered it to benchmark: the module's
-    source as written, the signature off its loaded kernel, the roles and spans off the request's
-    TensorMeta (inputs, then the output). The same fields collect_meta gives the kernel the choice
-    becomes."""
+    """(source, meta) of a template choice as Inductor rendered it to benchmark: the module's source,
+    the signature off its loaded kernel, the roles and spans off the request's TensorMeta; the same
+    fields collect_meta gives the kernel the choice becomes."""
     from torch._inductor.codecache import PyCodeCache
 
     mod = PyCodeCache.load_by_key_path(req.module_cache_key, req.module_path)
@@ -212,11 +194,8 @@ def benchmark_request_meta(req):
 
 
 def template_grid(kernel):
-    """A TEMPLATE kernel's launch grid as [gridX, gridY, gridZ], else None.
-
-    mm and conv tile with their own BLOCK_M/N, so the grid is theirs to state
-    and their numels describe the output. Refuses rather than falling back.
-    """
+    """A template kernel's launch grid as [gridX, gridY, gridZ], else None: mm and conv tile with their
+    own BLOCK_M/N, so the grid is theirs to state; refuses rather than falling back."""
     grid_fn = getattr(kernel, "grid_fn", None)
     sizes = getattr(kernel, "call_sizes", None)
     if grid_fn is None or sizes is None:

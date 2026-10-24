@@ -1,21 +1,6 @@
-"""Convolutions the npu runs as other ops, against the CPU: a depthwise conv2d as a stencil on the
-vector unit (dispatcher/convolution.py, before AOTAutograd, so its backward is the stencil's), a 1-D
-conv as a 2-D one (post_grad_pass.convolution_1d); and no npu entry in Inductor's global
-decomposition table.
-
-  conv1d               Conv1d, stride 2, padding 1
-  conv1d_same          Conv1d, padding="same"
-  depthwise            depthwise conv2d, stride 2, padding 1
-  depthwise_same       depthwise conv2d, padding="same" with an even kernel (asymmetric)
-  depthwise_batchless  depthwise conv2d on a [C, H, W] input
-  grouped              a conv2d of two groups that is not depthwise: aten's own convolution
-  depthwise_grad       compiled, input and weight requiring grad: gradients match, and no
-                       convolution_backward is left to aten (it would run on the CPU)
-  depthwise_inference  compiled under inference_mode
-  no_global_decomp     aten.convolution is not in Inductor's decomposition table
-
-Usage: test_conv_decomposition.py [case ...]   (all cases when none is named)
-"""
+"""Convolutions the npu runs as other ops, against the CPU: a depthwise conv2d as a stencil (dispatcher), a 1-D
+conv as a 2-D one (postgrad), and no npu entry in Inductor's global decomposition table. Cases: conv1d, conv1d_same,
+depthwise, depthwise_same, depthwise_batchless, grouped, depthwise_grad, depthwise_inference, no_global_decomp."""
 import os
 import sys
 
@@ -28,7 +13,7 @@ from result_check import check_result
 
 device = torch.device("npu:0")
 
-#  name: (input shape, weight shape, stride, padding, groups)
+#: name -> (input shape, weight shape, stride, padding, groups)
 CASES = {
     "conv1d": ((2, 8, 32), (16, 8, 3), 2, 1, 1),
     "conv1d_same": ((2, 8, 32), (16, 8, 3), 1, "same", 1),

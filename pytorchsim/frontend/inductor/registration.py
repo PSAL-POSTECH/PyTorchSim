@@ -104,7 +104,7 @@ def _register_device_codegen():
     from torch._inductor.codegen.common import register_backend_for_device
 
     from pytorchsim.frontend.inductor.codegen import TritonNPUScheduling, TritonNPUWrapperCodegen
-    from pytorchsim.frontend.inductor.post_grad_pass import pytorchsim_post_grad_pass
+    from pytorchsim.frontend.inductor.postgrad import pytorchsim_post_grad_pass
 
     register_backend_for_device("npu", TritonNPUScheduling, TritonNPUWrapperCodegen,
                                 device_custom_pass=pytorchsim_post_grad_pass)

@@ -1,25 +1,21 @@
-"""TOGSim as a process: started once, fed kernels over a FIFO, read back from its log.
-
-Also the multi-tenant entry points built on it, and the Poisson arrivals that drive them.
-"""
+"""TOGSim as a process: started once, fed kernels over a FIFO, read back from its log."""
+import datetime
 import os
-import numpy as np
+import re
 import shlex
 import subprocess
-import re
 import sys
-import yaml
-import time
-import datetime
 import threading
-from pathlib import Path
+import time
 import uuid
+from pathlib import Path
+
+import yaml
+from tqdm import tqdm
 
 from pytorchsim import config
 
-# Configure logger for Simulator module
 logger = config.setup_logger()
-from tqdm import tqdm
 
 
 
@@ -41,12 +37,11 @@ class ProgressBar:
             self.pbar = tqdm(
                 desc=self.desc,
                 bar_format='{desc}: {elapsed}',
-                leave=False,  # Don't leave the bar when done (it will disappear)
+                leave=False,
                 ncols=80,
                 disable=False,
-                total=100,  # Use a total for smooth animation
+                total=100,
             )
-            # Update progress bar in a separate thread
             def update_progress():
                 while not self.finished:
                     self.pbar.update(1)
@@ -76,23 +71,19 @@ class TOGSimProcess():
         self.config_path = config_path
         self.config_yaml = self.load_yaml(self.config_path)
         self.process = None
-        self._next_kernel_id = 0  # Auto-incrementing kernel ID
+        self._next_kernel_id = 0
 
-        # Create FIFOs for command and event communication
         self.fifo_dir = os.path.join("/tmp", f"togsim_fifo_{os.getpid()}")
         os.makedirs(self.fifo_dir, exist_ok=True)
         self.trace_file_path = os.path.join(self.fifo_dir, "cmd_fifo")
         self.trace_log = "# command_type, kernel_id, device_index, stream_index, tog_path, attribute_path, timestamp\n"
 
-        # Create FIFOs if they don't exist
         if os.path.exists(self.trace_file_path):
             os.remove(self.trace_file_path)
         os.mkfifo(self.trace_file_path)
 
-        # Start TOGSim process
         self._start_process()
 
-        # Open trace file FIFO once and keep it open (after process starts)
         self._trace_file_lock = threading.Lock()
         try:
             self._trace_file_handle = open(self.trace_file_path, 'w')
@@ -109,8 +100,6 @@ class TOGSimProcess():
         if self.process is None:
             self.process = subprocess.Popen(
                 shlex.split(cmd),
-                #stdout=subprocess.PIPE,
-                #stderr=subprocess.PIPE,
                 universal_newlines=True
             )
         else:
@@ -127,36 +116,20 @@ class TOGSimProcess():
             logger.warning(f"[TOGSim] Failed to clean up FIFOs: {e}")
 
     def _send_command(self, command_type, device_index, stream_index, tog_path="", attribute_path="", timestamp=0):
-        """
-        Internal method to send a command to TOGSim via FIFO.
-
-        Args:
-            command_type: Type of command ("LAUNCH_KERNEL" or "DEVICE_SYNC")
-            device_index: Device index
-            stream_index: Stream index
-            tog_path: kernel-dir handle; TOGSim derives tog.so/tog_cycles.tsv from
-                its directory - empty for DEVICE_SYNC
-            attribute_path: Path to attribute file - empty for DEVICE_SYNC
-            timestamp: Timestamp in nanoseconds (default: 0)
-
-        Returns:
-            int: The kernel ID assigned to this command
-        """
+        """Write one command (LAUNCH_KERNEL or DEVICE_SYNC) to TOGSim's FIFO. Returns its kernel id.
+        tog_path is the kernel-dir handle TOGSim derives tog.so from; both paths are empty for DEVICE_SYNC."""
         if self.process is None:
             raise RuntimeError("[TOGSim] Simulator process is not running")
 
         if self.process.poll() is not None:
             raise RuntimeError("[TOGSim] Simulator process has terminated")
 
-        # Get and increment kernel ID
         kernel_id = self._next_kernel_id
         self._next_kernel_id += 1
 
-        # Format command: command_type,kernel_id,device_index,stream_index,tog_path,attribute_path,timestamp
         command = f"{command_type},{kernel_id},{device_index},{stream_index},{tog_path},{attribute_path},{timestamp}"
 
         with self._trace_file_lock:
-            # Write command to TOGSim
             try:
                 self._trace_file_handle.write(command + '\n')
                 self._trace_file_handle.flush()
@@ -171,11 +144,10 @@ class TOGSimProcess():
         """Close the FIFO, wait for TOGSim to exit, and write its log and trace; a Simulator that
         exited non-zero (a kernel it refuses ends the session) is a RuntimeError raised after that.
         Assumes every queued kernel has already been sent: draining the stream is its owner's."""
-        # Close trace file handle if open
         if self._trace_file_handle is not None:
             try:
                 self._trace_file_handle.close()
-            except:
+            except BrokenPipeError:
                 pass
             self._trace_file_handle = None
 
@@ -183,7 +155,6 @@ class TOGSimProcess():
         if self.process:
             status = self.process.wait()
 
-            # Read output streams
             stdout_output = ""
             stderr_output = ""
             if self.process.stdout:
@@ -191,12 +162,10 @@ class TOGSimProcess():
             if self.process.stderr:
                 stderr_output = self.process.stderr.read()
 
-            # Print stderr immediately if there's any error output
             if stderr_output:
                 sys.stderr.write(stderr_output)
                 sys.stderr.flush()
 
-            # Save stdout to result file
             if stdout_output:
                 result_path = config.CONFIG_TORCHSIM_LOG_PATH
                 os.makedirs(result_path, exist_ok=True)
@@ -207,7 +176,6 @@ class TOGSimProcess():
                 logger.info(f'[TOGSim] Simulation log is stored to "{result_path}"')
             self.process = None
 
-        # Save trace_log with same name but .trace extension
         if self.trace_log:
             result_path = config.CONFIG_TORCHSIM_LOG_PATH
             os.makedirs(result_path, exist_ok=True)
@@ -217,40 +185,18 @@ class TOGSimProcess():
                 f.write(self.trace_log)
             logger.info(f'[TOGSim] Trace log is stored to "{trace_path}"')
 
-        # Clean up FIFOs
         self._cleanup_fifos()
         if status:
             raise RuntimeError(f"TOGSim Simulator exited with status {status}: the session did not run "
                                f"every kernel it was sent, and the Simulator's own output says why")
 
     def launch_kernel(self, device_index, stream_index, tog_path, attribute_path, timestamp=0):
-        """
-        Launch a kernel via FIFO communication.
-
-        Args:
-            device_index: Device index
-            stream_index: Stream index
-            tog_path: kernel-dir handle; TOGSim derives tog.so from its directory
-            attribute_path: Path to attribute file
-            timestamp: Timestamp in nanoseconds (default: 0)
-
-        Returns:
-            int: The kernel ID assigned to this launch
-        """
+        """Queue one kernel on `stream_index` at `timestamp` ns. Returns its kernel id; TOGSim derives
+        tog.so from tog_path's directory."""
         return self._send_command("LAUNCH_KERNEL", device_index, stream_index, tog_path, attribute_path, timestamp)
 
     def device_synchronize(self, device_index):
-        """
-        Synchronize all streams on a device via FIFO communication.
-
-        Args:
-            device_index: Device index to synchronize
-            timestamp: Timestamp in nanoseconds (default: 0)
-
-        Returns:
-            int: The command ID assigned to this synchronization
-        """
-        # For device_synchronize, stream_index is not meaningful, use 0
+        """Queue a DEVICE_SYNC for every stream of `device_index`. Returns its command id."""
         return self._send_command("DEVICE_SYNC", device_index, 0, "", "", 0)
 
     def load_yaml(self, config_path):
@@ -288,34 +234,14 @@ class TOGSimProcess():
         togsim_path=None,
         cut=None,
     ):
-        """
-        Run a single kernel simulation in standalone mode.
-        This method starts a new TOGSim process, runs the kernel, and waits for completion.
-        For streaming multiple kernels, use launch_kernel() instead.
-
-        Args:
-            model_path: kernel-dir handle; tog.so/tog_cycles.tsv are derived from
-                its directory
-            attribute_path: the directory of the functional run's runtime attribute records
-            autotune_mode: If True, run in autotune mode (silent)
-            config_path: the machine file TOGSim times on (default: the one TORCHSIM_TARGET names)
-            togsim_path: TOGSim repository root (optional, defaults to config.CONFIG_TOGSIM_DIR)
-            cut: called while the Simulator runs; when it returns a reason, the Simulator is
-                killed and the run raises Cut with it (autotune cuts a slow candidate)
-
-        Returns:
-            Path to the simulation result log file
-
-        Raises:
-            RuntimeError: the Simulator exited non-zero (a kernel it refuses), the message
-                carrying its exit status and the last line it printed; or `cut` gave a reason
-        """
+        """Run one kernel in a TOGSim of its own and wait. Returns the path of its log. `cut`, polled
+        while it runs, kills it with a reason (raised as Cut); a Simulator that exits non-zero is a
+        RuntimeError carrying its status and its last line."""
         if config_path is None:
             config_path = config.CONFIG_MACHINE_FILE
         if togsim_path is None:
             togsim_path = config.CONFIG_TOGSIM_DIR
 
-        # Create result path with appropriate filename
         if autotune_mode:
             base_dir = Path(model_path).parent / "togsim_result"
         else:
@@ -327,7 +253,6 @@ class TOGSimProcess():
         result_path = base_dir / f"{file_name}.log"
         trace_file_path = base_dir / f"{file_name}.trace"
 
-        # Create trace file in result directory
         kernel_id, device_index, stream_index, timestamp = 0, 0, 0, 0
         command = f"LAUNCH_KERNEL,{kernel_id},{device_index},{stream_index},{model_path},{attribute_path},{timestamp}\n"
         with open(trace_file_path, 'w') as trace_file:
@@ -373,7 +298,6 @@ class TOGSimProcess():
             raise RuntimeError(f"TOGSim Simulator exited with status {e.returncode}: "
                                f"{said[-1] if said else 'it printed nothing'}") from e
 
-        # Prevent race condition
         with open(result_path, "w") as f:
             f.write(result.decode())
             f.flush()
@@ -452,20 +376,6 @@ class TOGSimProcess():
                 core_metrics["Total_cycle"] = total_cycle
         return core_metrics, dram_channel_bw, avg_dram_bw, simulation_time, total_cycle
 
-
-def poisson_request_generator(lambda_requests, max_msec_time=None):
-    """Yield synthetic arrival times in milliseconds (first sample is 0)."""
-    current_time = 0.0  # msec
-
-    yield 0
-    while max_msec_time is None or current_time < max_msec_time:
-        inter_arrival_time = np.random.exponential(scale=1000 / lambda_requests)
-        current_time += inter_arrival_time
-
-        if max_msec_time is not None and current_time > max_msec_time:
-            break
-
-        yield current_time
 
 if __name__ == "__main__":
     """Drive the backend with no PyTorch in the process, which is the point of it."""

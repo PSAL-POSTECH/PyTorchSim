@@ -178,7 +178,7 @@
 #                 alias key covers PrivateUse1, so the CPU fallback never gets
 #                 a turn, and a kernel would run the convolution on the host
 #                 and simulate nothing. Fixed by not emitting it:
-#                 post_grad_pass.convolution_transposed rewrites a transposed
+#                 postgrad.convolution_transposed rewrites a transposed
 #                 convolution as the direct one it is, before the convolution
 #                 lowering. OUT OF THE GATE ON RUNTIME -- 498s
 #                 would take the gate to about 1600s against an 1800s budget
@@ -253,6 +253,8 @@ tests/models/test_transformer.py
 tests/models/test_vit.py
 tests/ops/attention/test_fused_sdpa.py
 tests/ops/attention/test_gqa.py
+tests/ops/conv/test_conv_decomposition.py
+tests/ops/conv/test_conv_transpose.py
 tests/ops/elementwise/test_activation.py
 tests/ops/elementwise/test_add.py
 tests/ops/elementwise/test_exponent.py
@@ -263,7 +265,9 @@ tests/ops/fusion/test_matmul_vector.py
 tests/ops/fusion/test_prologue_fusion.py
 tests/ops/gemm/test_grouped_mm.py
 tests/ops/gemm/test_row_matmul.py
+tests/ops/gemm/test_zero_length_gemm.py
 tests/ops/misc/test_complex_to_real.py
+tests/ops/misc/test_custom_fused_kernel.py
 tests/ops/misc/test_eager_to_compile_recursion.py
 tests/ops/misc/test_expert_mask.py
 tests/ops/misc/test_histc.py

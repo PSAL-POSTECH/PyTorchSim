@@ -12,7 +12,7 @@ sys.path.insert(0, os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim
 import torch  # noqa: F401,E402  the npu backend loads pytorchsim whole, before its parts are imported
 from pytorchsim import contract  # noqa: E402
 from pytorchsim.backend import codecache  # noqa: E402
-from pytorchsim.simulator import timing  # noqa: E402
+from pytorchsim.backend import compiler_input  # noqa: E402
 
 SRC = "def kernel(): pass\n"
 
@@ -27,7 +27,7 @@ def test_a_hit_launches_the_tuned_tile():
         untuned = _meta(1024)
         workdir = codecache._write_path(SRC, untuned)
         os.makedirs(workdir)
-        timing.store_meta(workdir, _meta(256))
+        compiler_input.store_meta(workdir, _meta(256))
         with mock.patch.object(codecache, "cached_elf", return_value=os.path.join(workdir, "k.elf")), \
                 mock.patch.object(codecache.config, "pytorchsim_timing_mode", 0):
             launcher = codecache.torchsim_compile(SRC, _meta(1024), "k")

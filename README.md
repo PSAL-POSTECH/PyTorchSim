@@ -266,10 +266,22 @@ Here `stream_index=0` selects queue `0` (core_0), `stream_index=1` selects queue
 
 ### 3. Load generation (Poisson arrivals)
 
-The `poisson_request_generator` in `pytorchsim.simulator.togsim` yields synthetic **arrival times** (in **milliseconds**). Merge those with `launch_model`: convert each time to **nanoseconds** for `timestamp`, set `stream_index` to the target partition queue, and run all launches inside one `with torch.npu.TOGSimulator(...)` so a **single** log captures the full trace.
+A Poisson generator of synthetic **arrival times** (in **milliseconds**), written in the example below, drives the load. Merge those with `launch_model`: convert each time to **nanoseconds** for `timestamp`, set `stream_index` to the target partition queue, and run all launches inside one `with torch.npu.TOGSimulator(...)` so a **single** log captures the full trace.
 
 ```python
-from pytorchsim.simulator.togsim import poisson_request_generator
+import numpy as np
+
+
+def poisson_request_generator(lambda_requests, max_msec_time=None):
+    """Yield synthetic arrival times in milliseconds (first sample is 0)."""
+    current_time = 0.0
+    yield 0
+    while max_msec_time is None or current_time < max_msec_time:
+        current_time += np.random.exponential(scale=1000 / lambda_requests)
+        if max_msec_time is not None and current_time > max_msec_time:
+            break
+        yield current_time
+
 
 model0_lambda = 5.0
 model1_lambda = 3.0

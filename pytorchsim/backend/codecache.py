@@ -1,10 +1,6 @@
-"""Compile cache for the codegen route: one kernel in, one launcher out.
-
-    define_kernel   ->  torchsim_compile(src, meta, kernel_name)  ->  launcher
-    call site       ->  launcher(arg0, arg1, ..., xnumel)
-
-One directory per source hash, holding the compiler kernel file and every artifact.
-"""
+"""Compile cache for the codegen route: torchsim_compile(src, meta, kernel_name) turns one kernel into
+a launcher the call site calls with the kernel's args; one directory per source hash holds the
+compiler's kernel file and every artifact."""
 
 import glob
 import hashlib
@@ -219,11 +215,8 @@ def cached_elf(workdir, kernel_name):
 
 
 class TritonNPULauncher:
-    """What a compiled kernel name is bound to in the generated wrapper.
-
-    Each call is one launch of the whole grid, Spike first so the tensors hold
-    real values even if TOGSim fails. Both halves switch on the config keys.
-    """
+    """What a compiled kernel name is bound to in the generated wrapper: each call launches the whole
+    grid, Spike first so the tensors hold real values even if TOGSim fails."""
     def __init__(self, kernel_name, workdir, meta):
         self.kernel_name = kernel_name
         self.workdir = workdir
@@ -263,11 +256,8 @@ class TritonNPULauncher:
 
 
 def torchsim_compile(src_code, meta, kernel_name):
-    """Compile one Inductor-generated Triton kernel through the compiler.
-
-    Called from the generated wrapper at module import time. Synchronous, on
-    purpose: a thread pool buys nothing until the pipeline itself is proven.
-    """
+    """Compile one Inductor-generated Triton kernel through the compiler, synchronously, when the
+    generated wrapper is imported."""
     write_path = _write_path(src_code, meta)
     os.makedirs(write_path, exist_ok=True)
 
@@ -283,7 +273,7 @@ def torchsim_compile(src_code, meta, kernel_name):
         if elf is None:
             with open(os.path.join(write_path, "kernel.py"), "w") as f:
                 f.write(src_code)
-            timing.store_meta(write_path, meta)
+            compiler_input.store_meta(write_path, meta)
             retries = retile.smaller_tiles(src_code, meta)
             while True:
                 compiler_input.write(src_code, meta, spec_path)
@@ -308,9 +298,9 @@ def torchsim_compile(src_code, meta, kernel_name):
                     logger.info("[torchsim-compile] %s: %s, trying %s", kernel_name, why, tile)
             with open(os.path.join(write_path, "kernel.py"), "w") as f:
                 f.write(src_code)
-            timing.store_meta(write_path, meta)
+            compiler_input.store_meta(write_path, meta)
             store_identity(write_path)
         else:
-            timing.load_tuned_blocks(write_path, meta)
+            compiler_input.load_tuned_blocks(write_path, meta)
         logger.info("[torchsim-compile] %s -> %s", kernel_name, write_path)
         return TritonNPULauncher(kernel_name, write_path, meta)

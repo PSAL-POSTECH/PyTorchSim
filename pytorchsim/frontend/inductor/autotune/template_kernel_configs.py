@@ -57,6 +57,20 @@ def mm_config_heuristics():
     return NPUMMTemplateConfigHeuristic, NPUAddmmTemplateConfigHeuristic
 
 
+def mm_resident_config_heuristic():
+    """The resident mm's heuristic class: its one config from the compiler's copy_node.plan
+    (mm_resident.configs); registration.py registers it for npu."""
+    from torch._inductor.heuristics.template.base import TemplateConfigHeuristics
+
+    from pytorchsim.frontend.inductor.autotune import mm_resident
+
+    class NPUResidentMMConfigHeuristic(TemplateConfigHeuristics):
+        def _get_template_configs_impl(self, kernel_inputs, op_name):
+            yield from mm_resident.configs(kernel_inputs)
+
+    return NPUResidentMMConfigHeuristic
+
+
 def conv_config_heuristic():
     """npu's conv tile table: BLOCK_N is the lane count, per group (conv_groups_now)."""
     from torch._inductor.heuristics.template.triton import (

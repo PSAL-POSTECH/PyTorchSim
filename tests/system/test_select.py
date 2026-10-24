@@ -1,6 +1,6 @@
-"""A template's config is Inductor's selection: in timing mode each offered config is timed on TOGSim and the
-fewest cycles wins, an epilogue fused when one is there; the pick is recorded and built again without timing.
-Each compile runs in a child process, as the timing mode is fixed per process."""
+"""A template's config is Inductor's selection: in timing mode each offered config of a bmm is timed on TOGSim
+and the fewest cycles wins, an epilogue fused when one is there; the pick is recorded and built again untimed.
+Each compile runs in a child process. A bmm, as an mm copy_node.plan holds is planned, not timed."""
 import json
 import os
 import subprocess
@@ -47,9 +47,9 @@ TritonNPUScheduling.benchmark_codegened_module = bench
 
 op = sys.argv[1]
 m, k, n = map(int, sys.argv[2:5])
-a = torch.randn(m, k).to(torch.bfloat16).to("npu:0")
-b = torch.randn(k, n).to(torch.bfloat16).to("npu:0")
-f = {"mm": lambda x, y: x @ y, "mm_relu": lambda x, y: torch.relu(x @ y),
+a = torch.randn(2, m, k).to(torch.bfloat16).to("npu:0")
+b = torch.randn(2, k, n).to(torch.bfloat16).to("npu:0")
+f = {"bmm": torch.bmm, "bmm_relu": lambda x, y: torch.relu(torch.bmm(x, y)),
      "relu": lambda x, y: torch.relu(x)}[op]
 torch.compile(dynamic=False)(f)(a, b)
 with open(os.environ["SELECT_TIMED"], "w") as fh:
@@ -116,7 +116,7 @@ def test_select_record_and_rebuild():
     are timed fused, the epilogue alone at its built blocks. Recorded: built again untimed. A record timed with
     another compiler is not used."""
     with tempfile.TemporaryDirectory() as root:
-        mm, mm_timed = _compile(root, "mm_timed", "mm", timing=True)
+        mm, mm_timed = _compile(root, "mm_timed", "bmm", timing=True)
         cycles = [t for _, t in mm_timed["choices"]]
         best = mm_timed["choices"][cycles.index(min(cycles))][0]
         (pick,) = _picks(mm)
@@ -128,7 +128,7 @@ def test_select_record_and_rebuild():
                  for d in os.listdir(os.path.join(mm, "select"))]
         assert _same_kernel(built) in [_same_kernel(b) for b in bench]
 
-        relu, relu_timed = _compile(root, "mm_relu_timed", "mm_relu", timing=True)
+        relu, relu_timed = _compile(root, "mm_relu_timed", "bmm_relu", timing=True)
         fused = [m for m, _ in relu_timed["modules"] if m["template_grid"] is not None]
         assert 1 <= len(fused) <= len(relu_timed["choices"])
         (built_relu,) = _templates(relu).values()
@@ -141,11 +141,11 @@ def test_select_record_and_rebuild():
 
         _merge(root, mm)
         for timing in (False, True):
-            again, timed = _compile(root, f"mm_recorded_{int(timing)}", "mm", timing=timing)
+            again, timed = _compile(root, f"mm_recorded_{int(timing)}", "bmm", timing=timing)
             assert timed == {"choices": [], "modules": []}
             assert {k: m["tile_source"] for k, m in _templates(again).items()} == \
                 {k: template_record.RECORDED for k in _templates(mm)}
-        fused_again, _ = _compile(root, "mm_relu_recorded", "mm_relu", timing=False)
+        fused_again, _ = _compile(root, "mm_relu_recorded", "bmm_relu", timing=False)
         assert [m["tile_source"] for m in _templates(fused_again).values()] == \
             [template_record.RECORDED_UNFUSED]
 
@@ -153,7 +153,7 @@ def test_select_record_and_rebuild():
         rec = json.load(open(path))
         rec["identity"]["compiler"] = "another"
         json.dump(rec, open(path, "w"))
-        stale, _ = _compile(root, "mm_stale", "mm", timing=False)
+        stale, _ = _compile(root, "mm_stale", "bmm", timing=False)
         assert [m["tile_source"] for m in _templates(stale).values()] == [template_record.HEURISTIC]
 
 

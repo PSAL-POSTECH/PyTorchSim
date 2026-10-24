@@ -6,7 +6,7 @@ from torch import fx
 from torch.fx import traceback as fx_traceback
 
 from pytorchsim import config
-from pytorchsim.frontend.inductor.post_grad_pass import count, fake_value, fallback_route
+from pytorchsim.frontend.inductor.postgrad import count, fake_value, fallback_route
 
 aten = torch.ops.aten
 

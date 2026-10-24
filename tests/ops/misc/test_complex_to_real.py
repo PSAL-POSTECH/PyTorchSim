@@ -7,7 +7,7 @@ from torch._inductor.decomposition import select_decomp_table
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
 from result_check import check_result
 
-from pytorchsim.frontend.inductor.post_grad_pass import pytorchsim_post_grad_pass
+from pytorchsim.frontend.inductor.postgrad import pytorchsim_post_grad_pass
 
 aten = torch.ops.aten
 

@@ -7,7 +7,7 @@ from torch._inductor.decomposition import select_decomp_table
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
 from result_check import check_result
 
-from pytorchsim.frontend.inductor.post_grad_pass import pytorchsim_post_grad_pass
+from pytorchsim.frontend.inductor.postgrad import pytorchsim_post_grad_pass
 
 
 def _rope_like(a):
@@ -30,7 +30,7 @@ def test_polar_on_transposed(device, n=32):
     #                        'torch.ops.aten.polar.default')
     #     AssertionError: expected size 32==32, stride 32==1 at dim=1
     #
-    # post_grad_pass takes the extern call out instead of arguing about the
+    # postgrad takes the extern call out instead of arguing about the
     # layout: polar's real-pair rule (_REAL_PAIR) builds (abs*cos, abs*sin)
     # with ops this backend compiles.
     x = torch.randn(1, n, n)

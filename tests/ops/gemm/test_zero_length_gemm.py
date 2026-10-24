@@ -50,7 +50,7 @@ def run_pass_graph(name):
     from torch._inductor.decomposition import select_decomp_table
     from torch.fx.experimental.proxy_tensor import make_fx
 
-    from pytorchsim.frontend.inductor import post_grad_pass as pg
+    from pytorchsim.frontend.inductor import postgrad as pg
     a, b = _inputs([(4, 0), (0, 8)])
     gm = make_fx(torch.mm, decomposition_table=select_decomp_table(), tracing_mode="fake")(a, b)
     pg.CALLS.clear()

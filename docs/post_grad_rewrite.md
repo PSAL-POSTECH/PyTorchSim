@@ -5,7 +5,7 @@
 A post-grad rewrite replaces one op in an npu graph with other aten ops that Inductor can lower, so
 the work stays on the device. Without it, an op with no npu kernel runs as an extern aten call on
 the CPU, outside the simulator. histc, a 1 x K row times a matrix, transposed convolution,
-zero-length matmuls and complex arithmetic are rewrites. They live in `pytorchsim/frontend/inductor/post_grad_pass/`, one module per op family (`histc.py`, `gemm.py`, `convolution.py`, `complex.py`). A rewrite of one op is
+zero-length matmuls and complex arithmetic are rewrites. They live in `pytorchsim/frontend/inductor/postgrad/`, one module per op family (`histc.py`, `gemm.py`, `convolution.py`, `complex.py`). A rewrite of one op is
 one decorated function, so you write the pattern, when it applies and the replacement, nothing else.
 
 ## First, check that you need one
@@ -74,11 +74,11 @@ it is.
 
 ### 1. One function in its op family's module
 
-Put it in the module of its op family under `post_grad_pass/` (a new family is a new module,
-imported at the end of `post_grad_pass/__init__.py` with the others, in registration order, before
+Put it in the module of its op family under `postgrad/` (a new family is a new module,
+imported at the end of `postgrad/__init__.py` with the others, in registration order, before
 `complex`), under a section comment of its own (`# logcumsumexp: ...`), and add its line to the
 package docstring's list, in the same order. A module imports `register_rewrite` and `fake_value`
-from `pytorchsim.frontend.inductor.post_grad_pass`.
+from `pytorchsim.frontend.inductor.postgrad`.
 `tests/system/test_module_form.py` fails when either is missing. The replacement goes inside the rewrite,
 as `histc`'s `counts` does, and the checks and the return follow it. `histc` is the shortest real
 example. Here is a new one: `aten.logcumsumexp`, which Inductor lowers only as a fallback, so on the
@@ -195,7 +195,7 @@ These follow the maintainer's review rules for this repo.
   Inductor's own post-grad passes use, and the pass sets the graph's fake mode for tracing through
   `torch._inductor.virtualized.V.set_fake_mode`. Neither has a public counterpart, so a PR that
   adds a rewrite must say so.
-- **Keep rewrites in `post_grad_pass/`.** The pass's `uuid` hashes every module there, so an edit to
+- **Keep rewrites in `postgrad/`.** The pass's `uuid` hashes every module there, so an edit to
   any of them is a new cache key. A rewrite outside the package would need adding to the hash, or a
   compile could reuse a graph built without it.
 

@@ -121,5 +121,5 @@ def _fake_mode(graph):
 
 # The op families, in registration order
 
-from pytorchsim.frontend.inductor.post_grad_pass import histc, gemm, convolution  # noqa: E402,F401
-from pytorchsim.frontend.inductor.post_grad_pass.complex import complex_real_pairs  # noqa: E402
+from pytorchsim.frontend.inductor.postgrad import histc, gemm, convolution  # noqa: E402,F401
+from pytorchsim.frontend.inductor.postgrad.complex import complex_real_pairs  # noqa: E402

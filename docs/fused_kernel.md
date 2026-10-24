@@ -12,7 +12,7 @@ class registers every one the same way, so you write the kernel and when it appl
 | The op | What to do |
 |---|---|
 | Inductor lowers it, and PyTorchSim-Triton-Backend compiles the Triton it generates | Nothing. Most ops are this. |
-| It has no npu kernel, and other aten ops can express it (histc, polar, complex arithmetic) | A rewrite in `pytorchsim/frontend/inductor/post_grad_pass/` |
+| It has no npu kernel, and other aten ops can express it (histc, polar, complex arithmetic) | A rewrite in `pytorchsim/frontend/inductor/postgrad/` |
 | Inductor's kernels for it are not the kernel the hardware runs (SDPA as one fused kernel, MoE's grouped GEMM, topk in registers) | A fused kernel: this guide |
 
 ## How a call is routed

@@ -3,7 +3,7 @@
     registration.py    everything npu registers, one section per registry: its DeviceInterface, a
                        Triton GPU, its codegen and post-grad pass, its wrappers' device code, its
                        choices and template heuristics
-    post_grad_pass/    the FX graph after Inductor's post-grad passes (device_custom_pass), one
+    postgrad/          the FX graph after Inductor's post-grad passes (device_custom_pass), one
                        module per op family
     autotune/          how each kernel's sizes are chosen: template kernels' configs and selection,
                        generated kernels' blocks

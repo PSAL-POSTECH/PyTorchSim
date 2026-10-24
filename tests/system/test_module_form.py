@@ -1,4 +1,4 @@
-"""The form two extension modules keep, so an addition follows it: post_grad_pass/ lists every
+"""The form two extension modules keep, so an addition follows it: postgrad/ lists every
 rewrite in its package docstring in registration order, each under a section comment naming it in its
 family's module;
 registration.py's install() calls every _register_* function in file order, each under a section
@@ -40,7 +40,7 @@ def _check(name, ok):
 
 
 def test_post_grad_pass_form():
-    from pytorchsim.frontend.inductor import post_grad_pass as pg
+    from pytorchsim.frontend.inductor import postgrad as pg
     names = [*pg.REWRITES, "complex_real_pairs"]
     doc_words = re.findall(r"\w+", pg.__doc__)
     listed = [w for w in doc_words if w in names]

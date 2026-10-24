@@ -61,7 +61,7 @@ def run_pass_graph(name):
     from torch._inductor.decomposition import select_decomp_table
     from torch.fx.experimental.proxy_tensor import make_fx
 
-    from pytorchsim.frontend.inductor import post_grad_pass as pg
+    from pytorchsim.frontend.inductor import postgrad as pg
     x, w, b = _inputs("stride_pad")
     params = CASES["stride_pad"][2:]
     gm = make_fx(lambda x, w, b: _conv_transpose(x, w, b, *params),

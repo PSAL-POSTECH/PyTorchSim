@@ -7,7 +7,7 @@ from torch._subclasses.fake_tensor import FakeTensorMode
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
 from result_check import check_result
 
-from pytorchsim.frontend.inductor.post_grad_pass import pytorchsim_post_grad_pass
+from pytorchsim.frontend.inductor.postgrad import pytorchsim_post_grad_pass
 
 aten = torch.ops.aten
 
@@ -28,7 +28,7 @@ def test_histc_integral(device, n=64, bins=8):
     # and "mps", integral otherwise -- so `npu` gets the branch written for
     # CUDA and the fallback then lands on the very kernel the first branch
     # exists to avoid. That is what stopped DeepSeek-V3 under transformers
-    # 5.15.0; post_grad_pass.histc counts it on the device.
+    # 5.15.0; postgrad.histc counts it on the device.
     #
     # Both integral widths are here because they take different paths back:
     # the counts return in the INPUT's dtype, which is the contract the CUDA

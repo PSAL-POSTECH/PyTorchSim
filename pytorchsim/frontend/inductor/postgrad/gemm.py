@@ -4,7 +4,7 @@ import torch
 from torch import fx
 from torch._inductor.pattern_matcher import Arg, CallFunction, CallFunctionVarArgs
 
-from pytorchsim.frontend.inductor.post_grad_pass import fake_value, register_rewrite
+from pytorchsim.frontend.inductor.postgrad import fake_value, register_rewrite
 
 aten = torch.ops.aten
 

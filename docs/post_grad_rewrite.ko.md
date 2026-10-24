@@ -5,7 +5,7 @@
 post-grad 재작성은 npu 그래프 안의 연산 하나를 Inductor 가 lowering 할 수 있는 다른 aten 연산들로
 바꿔서, 그 일이 장치에 남게 하는 것입니다. 재작성이 없으면 npu 커널이 없는 연산은 CPU 의 extern
 aten 호출로 돌고, 시뮬레이터 밖으로 빠집니다. histc, 1 x K 행과 행렬의 곱, transposed convolution,
-길이가 0 인 행렬곱, 복소수 연산이 재작성으로 처리됩니다. 모두 `pytorchsim/frontend/inductor/post_grad_pass/` 에 op 계열마다 모듈 하나씩(`histc.py`, `gemm.py`, `convolution.py`, `complex.py`) 있습니다. 연산 하나의 재작성은
+길이가 0 인 행렬곱, 복소수 연산이 재작성으로 처리됩니다. 모두 `pytorchsim/frontend/inductor/postgrad/` 에 op 계열마다 모듈 하나씩(`histc.py`, `gemm.py`, `convolution.py`, `complex.py`) 있습니다. 연산 하나의 재작성은
 데코레이터를 붙인 함수 하나이므로, 작성자는 패턴과 적용 조건과 대체 코드만 적으면 됩니다.
 
 ## 먼저: 정말 필요한지 확인
@@ -75,10 +75,10 @@ pass 는 복소수 노드 묶음을 통째로 바꾸거나 전혀 바꾸지 않�
 
 ### 1. op 계열 모듈 안의 함수 하나
 
-`post_grad_pass/` 안에서 그 op 계열의 모듈에 둡니다. 새 계열이면 모듈을 새로 만들고,
-`post_grad_pass/__init__.py` 끝에서 다른 모듈들과 함께 등록 순서대로, `complex` 보다 앞에 import 합니다.
+`postgrad/` 안에서 그 op 계열의 모듈에 둡니다. 새 계열이면 모듈을 새로 만들고,
+`postgrad/__init__.py` 끝에서 다른 모듈들과 함께 등록 순서대로, `complex` 보다 앞에 import 합니다.
 그 위에 섹션 주석 한 줄(`# logcumsumexp: ...`)을 달고, 패키지 docstring 의 목록에도 같은 순서로 한 줄을
-더합니다. 모듈은 `register_rewrite` 와 `fake_value` 를 `pytorchsim.frontend.inductor.post_grad_pass` 에서
+더합니다. 모듈은 `register_rewrite` 와 `fake_value` 를 `pytorchsim.frontend.inductor.postgrad` 에서
 import 합니다. 둘 중 하나라도 빠지면
 `tests/system/test_module_form.py` 가 실패합니다. 대체 코드는 `histc` 의 `counts` 처럼 재작성 함수 안에 두고,
 확인과 반환은 그 뒤에 둡니다. 실제 예시 중 가장 짧은 것은 `histc` 입니다. 아래는 새로 만드는
@@ -198,7 +198,7 @@ npu 에서 스크립트로 실행합니다: `python tests/ops/misc/test_<op>.py`
   자체의 post-grad pass 들이 쓰는 방식이고, pass 는 trace 할 때 그래프의 fake mode 를
   `torch._inductor.virtualized.V.set_fake_mode` 로 정합니다. 둘 다 공개된 대응물이 없습니다. 그러므로 재작성을 더하는 PR 에는
   그렇게 적어야 합니다.
-- **재작성은 `post_grad_pass/` 안에 둡니다.** pass 의 `uuid` 가 그 안의 모듈을 모두 해시하므로, 어느
+- **재작성은 `postgrad/` 안에 둡니다.** pass 의 `uuid` 가 그 안의 모듈을 모두 해시하므로, 어느
   모듈을 고쳐도 캐시 키가 바뀝니다. 패키지 밖에 둔 재작성은 해시에 그 파일을 더해야 합니다. 그러지 않으면
   재작성 없이 만든 그래프를 컴파일이 재사용할 수 있습니다.
 

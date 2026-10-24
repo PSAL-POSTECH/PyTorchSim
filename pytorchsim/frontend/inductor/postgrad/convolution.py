@@ -4,7 +4,7 @@ dispatcher/convolution.py, before AOTAutograd."""
 import torch
 from torch._inductor.pattern_matcher import Arg, CallFunction
 
-from pytorchsim.frontend.inductor.post_grad_pass import register_rewrite
+from pytorchsim.frontend.inductor.postgrad import register_rewrite
 
 aten = torch.ops.aten
 

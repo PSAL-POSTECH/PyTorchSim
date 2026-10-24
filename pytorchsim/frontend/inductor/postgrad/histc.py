@@ -6,7 +6,7 @@ import torch
 from torch._inductor.pattern_matcher import CallFunctionVarArgs
 
 from pytorchsim.frontend.dispatcher.custom_fused_kernel import Decline
-from pytorchsim.frontend.inductor.post_grad_pass import fake_value, register_rewrite
+from pytorchsim.frontend.inductor.postgrad import fake_value, register_rewrite
 
 aten = torch.ops.aten
 

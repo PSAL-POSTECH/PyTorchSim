@@ -1,6 +1,6 @@
 """Convolutions the npu runs as other ops, against the CPU: a depthwise conv2d as a stencil on the
 vector unit (dispatcher/convolution.py, before AOTAutograd, so its backward is the stencil's), a 1-D
-conv as a 2-D one (post_grad_pass.convolution_1d); and no npu entry in Inductor's global
+conv as a 2-D one (postgrad.convolution_1d); and no npu entry in Inductor's global
 decomposition table.
 
   conv1d               Conv1d, stride 2, padding 1

@@ -32,7 +32,7 @@ class TritonNPUKernel(TritonKernel):
         """Pin this machine's blocks here, where every kernel of this class is made: the one
         Inductor emits and the one its fusion benchmark times are then the same kernel."""
         if fixed_config is None:
-            from pytorchsim.frontend.inductor_patches import pinned_blocks
+            from pytorchsim.frontend.choices import pinned_blocks
             fixed_config = pinned_blocks(tiling, kwargs.get("features"))
         super().__init__(tiling, *args, fixed_config=fixed_config, **kwargs)
 

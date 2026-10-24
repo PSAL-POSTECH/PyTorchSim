@@ -106,7 +106,7 @@ def reduction_block_for(extent, elem_bytes=4, lane_bytes=None):
 
     Cover the extent and no more, then shrink to the budget: half of one lane's
     scratchpad, shared by the tiles a reduction keeps live. Two callers must
-    agree: this pins the block, inductor_patches asks if persistence matches.
+    agree: this pins the block, choices.NPUChoices asks if persistence matches.
     Both see the machine's scratchpad when `lane_bytes` is left to this
     function; a persistent reduction rendered for a bigger one than the target
     has is a kernel the compiler refuses as over budget, whatever XBLOCK shrinks to.

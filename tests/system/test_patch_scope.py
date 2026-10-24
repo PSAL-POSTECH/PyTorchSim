@@ -43,11 +43,11 @@ def test_device_predicate_reads_every_spelling():
     A predicate that answers only torch.device sends the string form to
     upstream, whose operand is sampled -- one silent CPU fallback per call.
     """
-    from pytorchsim.frontend.inductor_patches import _is_npu
+    from pytorchsim.frontend.triton_gpu import is_npu
 
     spellings = ("npu", "npu:0", torch.device("npu"), torch.device("npu:0"),
                  "cpu", "cuda", torch.device("cpu"), None)
-    got = torch.tensor([_is_npu(d) for d in spellings])
+    got = torch.tensor([is_npu(d) for d in spellings])
     test_result("DevicePredicateSpellings", got,
                 torch.tensor([True, True, True, True, False, False, False, False]))
 

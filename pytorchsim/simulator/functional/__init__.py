@@ -1,18 +1,17 @@
-"""The functional half of the Triton route: real tensors -> Spike -> real tensors.
+"""The functional path: a launch's tensors -> runtime/*.raw -> Spike -> its tensors.
 
-    run(workdir, meta, args)    args -> runtime/*.raw -> spike -> args
-
-The binary is shape-specialised, so a launch whose shapes differ from the
-compiled ones is rejected rather than run against the wrong bounds.
+    run(workdir, meta, args)    write the inputs, run Spike (spike.py), read the outputs back
+    write_inputs, read_outputs  tensors <-> .raw files; the binary is shape-specialised, so a launch
+                                whose shapes differ from the compiled ones is refused
+    replay                      a saved run's outputs, opt-in (TORCHSIM_TRITON_REPLAY=1)
 """
 
 import os
 
-from pytorchsim import config
-
-from pytorchsim import contract
-from pytorchsim.contract import storage_span
+from pytorchsim import config, contract
 from pytorchsim.backend import compiler_bridge
+from pytorchsim.contract import storage_span
+from pytorchsim.simulator.functional import spike
 
 logger = config.setup_logger()
 
@@ -264,40 +263,10 @@ def run(workdir, meta, args):
                  for a in manifest["args"]}
     values = dict(zip(meta.get("call_params", ()), args))
     try:
-        launch(workdir, manifest, runtime, raw_paths, logger.debug, scalar_values=values)
-    except spike().SpikeError as e:
+        spike.launch(workdir, manifest, runtime, raw_paths, logger.debug, scalar_values=values)
+    except spike.launcher().SpikeError as e:
         raise RuntimeError(f"[Spike] {meta['kernel_name']} failed:\n{e}") from None
 
     if key:
         _save_replay(workdir, meta, runtime, key)
     return read_outputs(workdir, meta, args)
-
-
-_VCIX_ENV = os.environ.get("VCIX_ENV_ROOT", "/opt/vcix-env")
-
-
-SPIKE = os.environ.get("TORCHSIM_SPIKE", os.environ.get(
-    "TORCHSIM_COMPILE_SPIKE", os.path.join(_VCIX_ENV, "spike", "bin", "spike")))
-
-
-PK = os.environ.get("TORCHSIM_PK", os.environ.get(
-    "TORCHSIM_COMPILE_PK", os.path.join(_VCIX_ENV, "pk", "riscv64-unknown-elf", "bin", "pk")))
-
-
-def launch(obj_dir, manifest, runtime, raw_paths, log, scalar_values=None):
-    """Run the whole launch grid with the compiler's launcher (its runtime/spike.py), under the options
-    the object was compiled for, leaving each written argument in its .raw."""
-    ko = compiler_bridge.compiler_contract("kernel_object")
-    try:
-        elf = ko.artifact(obj_dir, "elf", manifest=manifest)
-        run = compiler_bridge.run_options(obj_dir, manifest)
-    except (ko.ObjectError, compiler_bridge.NoTarget) as e:
-        raise spike().SpikeError(str(e)) from None
-    want = os.environ.get("TORCHSIM_SPIKE_JOBS", os.environ.get("TORCHSIM_COMPILE_SPIKE_JOBS", ""))
-    return spike().launch(elf, manifest, runtime, raw_paths, run, spike=SPIKE, pk=PK, log=log,
-                          want_jobs=want.strip(), scalar_values=scalar_values)
-
-
-def spike():
-    """The compiler's Spike launcher module, from the checkout TORCHSIM_COMPILE_DIR names."""
-    return compiler_bridge.compiler_module("runtime.spike")

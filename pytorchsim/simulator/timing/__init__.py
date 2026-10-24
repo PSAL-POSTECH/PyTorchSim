@@ -1,21 +1,20 @@
-"""The timing half of the Triton route: the compiler's tile-operation-graph (TOG), tog.so -> TOGSim.
+"""The timing path: the compiler's tile-operation graph (tog.so) -> TOGSim.
 
     run(workdir, meta, args)            write the tables if needed, then simulate, under the lock
-    write_cycle_tables(workdir, meta)   the compiler's tog.so + gem5 cycles -> tog_cycles.tsv, tog_units.tsv
-    run_togsim(workdir, ...)            hand them to TOGSim, return its parsed result
+    write_cycle_tables(workdir, meta)   tog.so + gem5's sampled tiles (gem5.py) -> tog_cycles.tsv,
+                                        tog_units.tsv
+    run_togsim(workdir, ...)            hand them to TOGSim (togsim.py), return its result
+    write_shape, write_tensors          the per-launch files TOGSim reads: grid and scalars, sizes
 """
 
 import json
 import os
-import re
 import shutil
-import subprocess
 
-from pytorchsim import config
-
-from pytorchsim import contract
+from pytorchsim import config, contract
 from pytorchsim.backend import compiler_bridge
 from pytorchsim.simulator import wallclock
+from pytorchsim.simulator.timing import gem5
 
 logger = config.setup_logger()
 
@@ -26,37 +25,11 @@ SHARED = (TOG_SO, CYCLE_TSV, UNITS_TSV)
 SHAPE_TXT = "tog_shape.txt"
 TENSORS_TXT = "tog_tensors.txt"
 TENSOR_SHAPES_TXT = "tog_tensor_shapes.txt"
-META_JSON = "meta.json"
 
 AXES_TXT = "tog_axes.txt"
 
 LOCK_NAME = ".timing.lock"
 LOCK_TIMEOUT = 1800
-
-
-
-def run_cycle_binary(workdir, meta):
-    """The m5out of the compiler's cycle ELF run under gem5, or None when gem5 could not run it."""
-
-    kernel_name = meta["kernel_name"]
-    elf = contract.artifact(workdir, "cycle_elf")
-    if elf is None:
-        logger.warning("[Gem5] %s has no cycle_elf; it was compiled without --tog", workdir)
-        return None
-    try:
-        with wallclock.span(wallclock.GEM5_RUN, kernel_name):
-            return CycleSimulator().compile_and_simulate(
-                elf, workdir, contract.kernel_object(workdir), silent_mode=True)
-    except Exception as e:
-        logger.warning("[Gem5] sampling failed: %s", e)
-        return None
-
-
-def tile_tables(m5out, overlap_offsets):
-    """The cycle table and the unit rows of a gem5 run: a row per dump the compiler's gem5_samples
-    reads, in the order it returns them; whatever that reader refuses is raised, not sampled around."""
-    dumps = compiler_bridge.compiler_contract("gem5_samples").read(m5out, len(overlap_offsets))
-    return cycle_table(overlap_offsets, dumps), unit_rows(dumps)
 
 
 def write_tensors(workdir):
@@ -138,7 +111,6 @@ def write_cycle_tables(workdir, meta):
 
     Returns the number of compute tiles gem5 measured.
     """
-    import json
 
 
     kernel = meta["kernel_name"]
@@ -154,12 +126,12 @@ def write_cycle_tables(workdir, meta):
     axes = tiles["parallel_axes"]
     n_tiles = len(offsets)
 
-    m5out = run_cycle_binary(workdir, meta)
+    m5out = gem5.run_cycle_binary(workdir, meta)
     if m5out is None:
         raise RuntimeError(
             f"[Gem5] sampling failed for {kernel}, so compute latency would "
             f"not be modelled at all")
-    table, rows = tile_tables(m5out, offsets)
+    table, rows = gem5.tile_tables(m5out, offsets)
 
     if os.path.abspath(so_path) != os.path.abspath(os.path.join(workdir, TOG_SO)):
         shutil.copyfile(so_path, os.path.join(workdir, TOG_SO))
@@ -168,7 +140,7 @@ def write_cycle_tables(workdir, meta):
 
     with open(os.path.join(workdir, UNITS_TSV), "w") as f:
         f.write("".join("\t".join(str(v) for v in r) + "\n" for r in rows))
-    dump_cycle_table_tsv(table, os.path.join(workdir, CYCLE_TSV))
+    gem5.dump_cycle_table_tsv(table, os.path.join(workdir, CYCLE_TSV))
     logger.info("[Gem5] tile cycles: %s", table)
     return n_tiles
 
@@ -242,107 +214,3 @@ def run(workdir, meta, args=()):
                     write_cycle_tables(workdir, meta)
     with wallclock.span(wallclock.TOGSIM_RUN, kernel):
         return run_togsim(workdir, meta, args)
-
-
-def store_meta(workdir, meta):
-    """Persist codegen metadata beside the artifacts, so the timing step can
-    run standalone."""
-    with open(os.path.join(workdir, META_JSON), "w") as f:
-        json.dump(meta, f, indent=2)
-
-
-def load_tuned_blocks(workdir, meta):
-    """Give `meta` the blocks its build in `workdir` settled on: the fixed_config store_meta wrote
-    after the autotune retries, which a cache hit's caller still holds untuned."""
-    with open(os.path.join(workdir, META_JSON)) as f:
-        stored = json.load(f)
-    if "fixed_config" in stored:
-        meta["fixed_config"] = stored["fixed_config"]
-    return meta
-
-
-#: What gem5 says when it dies, as opposed to the libc backtrace that follows it.
-_GEM5_SIGNAL = re.compile(
-    r"^(?:.*\b(?:panic|fatal):.*|.*Assertion.*|Program aborted at tick.*)$", re.M)
-
-
-def _gem5_failure(proc, log_path):
-    """The message a failed gem5 run should raise, from the log it redirects to.
-
-    `-r` sends stdout AND stderr to `--stdout-file`, so the pipes are empty and
-    a return code on its own says nothing: gem5 panics and aborts.
-    """
-    how = (f"signal {-proc.returncode}" if proc.returncode < 0
-           else f"exit {proc.returncode}")
-    try:
-        with open(log_path, errors="replace") as fh:
-            text = fh.read()
-    except OSError:
-        text = (proc.stderr or "") + (proc.stdout or "")
-    hits = [h.strip() for h in _GEM5_SIGNAL.findall(text)]
-    if not hits:
-        hits = [l.strip() for l in text.strip().splitlines()[-3:]]
-    if not hits:
-        hits = [f"gem5 left no diagnostic; see {log_path}"]
-    return (f"Gem5 Simulation Failed ({how}); full log in {log_path}\n  "
-            + "\n  ".join(h[:300] for h in hits[:3]))
-
-
-class CycleSimulator():
-    def __init__(self) -> None:
-        pass
-
-    def compile_and_simulate(self, target_binary, obj_dir, manifest, silent_mode=False):
-        """gem5 over one tile of the kernel object in `obj_dir`, under what it was compiled for."""
-        dir_path = os.path.join(os.path.dirname(target_binary), "m5out")
-        machine = compiler_bridge.compiled_for(manifest)
-        run = compiler_bridge.run_options(obj_dir, manifest)
-        gem5_cmd = [config.CONFIG_GEM5_PATH, "-r", "--stdout-file=sto.log", "-d", dir_path,
-                    run["gem5_script"], "-c", target_binary,
-                    "--model", run["model"],
-                    "--machine-config", run["machine_config"],
-                    "--vlane", str(machine.vector_lanes), "--vlen", str(machine.vlen_bits)]
-
-        if not silent_mode:
-            logger.debug(f"[Gem5] cmd> {' '.join(gem5_cmd)}")
-            logger.info("[Gem5] Gem5 simulation started")
-
-        proc = subprocess.run(gem5_cmd, capture_output=True, text=True, errors="replace")
-        if proc.returncode != 0:
-            raise RuntimeError(_gem5_failure(proc, os.path.join(dir_path, "sto.log")))
-
-        return dir_path
-
-
-def unit_rows(dumps):
-    """TOGSim's --unit_table rows, one per table row and unit, from gem5's dumps in row order:
-    (row, unit, unit_of_work, capacity per cycle, admitted)."""
-    rows = []
-    for row, dump in enumerate(dumps):
-        for name, u in dump["units"].items():
-            if "admitted" not in u or "capacity" not in u:
-                raise ValueError(f"gem5 dump of tile {dump['tile']} call {dump['call']}: unit {name} "
-                                 f"lacks admitted or capacity")
-            rows.append((row, name, u["unit_of_work"], int(u["capacity"]), int(u["admitted"])))
-    return rows
-
-
-def cycle_table(overlap_offsets, dumps):
-    """[(cycle, overlapping_cycle), ...], one per gem5 dump in row order. The compiler states each
-    tile's overlap offset (None where nothing of it overlaps), and each dump names its tile."""
-    return [(int(d["cycles"]), 0 if (off := overlap_offsets[d["tile"]]) is None
-             else max(int(d["cycles"]) - int(off), 0))
-            for d in dumps]
-
-
-def dump_cycle_table_tsv(table, path, origins=None):
-    """cycle<TAB>overlapping per line, in row order, for TOGSim's loader.
-
-    origins is appended as a trailing comment line, which the loader stops at.
-    """
-    with open(path, "w") as fh:
-        for cycle, overlapping in table:
-            fh.write("%d\t%d\n" % (int(cycle), int(overlapping)))
-        if origins:
-            fh.write("# origins: %s\n" % ", ".join(sorted(str(o) for o in origins)))
-    return path

@@ -1,9 +1,11 @@
 """What the compiler is handed for one kernel: the module Inductor generated, and the KernelSpec file beside it.
 
 The module is Inductor's own, imported the way Inductor imports it, unrewritten. `write` puts both
-files in the kernel's workdir.
+files in the kernel's workdir; store_meta keeps the codegen metadata beside them (meta.json), which a
+cache hit reads its tuned blocks back from.
 """
 
+import json
 import os
 
 from pytorchsim import contract
@@ -165,3 +167,23 @@ def write(src_code, meta, path, recorded=None):
     with open(path, "w") as f:
         f.write(text)
     return path
+
+
+META_JSON = "meta.json"
+
+
+def store_meta(workdir, meta):
+    """Persist codegen metadata beside the artifacts, so the timing step can
+    run standalone."""
+    with open(os.path.join(workdir, META_JSON), "w") as f:
+        json.dump(meta, f, indent=2)
+
+
+def load_tuned_blocks(workdir, meta):
+    """Give `meta` the blocks its build in `workdir` settled on: the fixed_config store_meta wrote
+    after the autotune retries, which a cache hit's caller still holds untuned."""
+    with open(os.path.join(workdir, META_JSON)) as f:
+        stored = json.load(f)
+    if "fixed_config" in stored:
+        meta["fixed_config"] = stored["fixed_config"]
+    return meta

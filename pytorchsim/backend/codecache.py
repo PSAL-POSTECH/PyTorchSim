@@ -283,7 +283,7 @@ def torchsim_compile(src_code, meta, kernel_name):
         if elf is None:
             with open(os.path.join(write_path, "kernel.py"), "w") as f:
                 f.write(src_code)
-            timing.store_meta(write_path, meta)
+            compiler_input.store_meta(write_path, meta)
             retries = retile.smaller_tiles(src_code, meta)
             while True:
                 compiler_input.write(src_code, meta, spec_path)
@@ -308,9 +308,9 @@ def torchsim_compile(src_code, meta, kernel_name):
                     logger.info("[torchsim-compile] %s: %s, trying %s", kernel_name, why, tile)
             with open(os.path.join(write_path, "kernel.py"), "w") as f:
                 f.write(src_code)
-            timing.store_meta(write_path, meta)
+            compiler_input.store_meta(write_path, meta)
             store_identity(write_path)
         else:
-            timing.load_tuned_blocks(write_path, meta)
+            compiler_input.load_tuned_blocks(write_path, meta)
         logger.info("[torchsim-compile] %s -> %s", kernel_name, write_path)
         return TritonNPULauncher(kernel_name, write_path, meta)

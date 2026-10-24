@@ -47,7 +47,7 @@ def _time_tile(src_code, meta, kernel_name, workdir, cut=None):
     spec_path = os.path.join(workdir, f"{kernel_name}_spec.py")
     with open(os.path.join(workdir, "kernel.py"), "w") as f:
         f.write(src_code)
-    timing.store_meta(workdir, meta)
+    compiler_input.store_meta(workdir, meta)
     compiler_input.write(src_code, meta, spec_path)
     try:
         compiler_bridge.run_pipeline(spec_path, workdir, to_stage="torchsim-compile", tog=True)

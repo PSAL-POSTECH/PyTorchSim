@@ -117,8 +117,6 @@ def read_outputs(workdir, meta, args):
             raise RuntimeError(
                 f"{path} holds {flat.size} element(s), expected {m['numel']} "
                 f"-- Spike did not write the whole tensor")
-        # view, not .to(): the carrier holds the output's own bits, and a
-        # conversion here would read a bf16's bits as an integer.
         stored = torch.from_numpy(flat)
         if stored.dtype != t.dtype:
             stored = stored.view(t.dtype)

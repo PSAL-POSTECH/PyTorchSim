@@ -37,12 +37,11 @@ class ProgressBar:
             self.pbar = tqdm(
                 desc=self.desc,
                 bar_format='{desc}: {elapsed}',
-                leave=False,  # Don't leave the bar when done (it will disappear)
+                leave=False,
                 ncols=80,
                 disable=False,
-                total=100,  # Use a total for smooth animation
+                total=100,
             )
-            # Update progress bar in a separate thread
             def update_progress():
                 while not self.finished:
                     self.pbar.update(1)
@@ -72,23 +71,19 @@ class TOGSimProcess():
         self.config_path = config_path
         self.config_yaml = self.load_yaml(self.config_path)
         self.process = None
-        self._next_kernel_id = 0  # Auto-incrementing kernel ID
+        self._next_kernel_id = 0
 
-        # Create FIFOs for command and event communication
         self.fifo_dir = os.path.join("/tmp", f"togsim_fifo_{os.getpid()}")
         os.makedirs(self.fifo_dir, exist_ok=True)
         self.trace_file_path = os.path.join(self.fifo_dir, "cmd_fifo")
         self.trace_log = "# command_type, kernel_id, device_index, stream_index, tog_path, attribute_path, timestamp\n"
 
-        # Create FIFOs if they don't exist
         if os.path.exists(self.trace_file_path):
             os.remove(self.trace_file_path)
         os.mkfifo(self.trace_file_path)
 
-        # Start TOGSim process
         self._start_process()
 
-        # Open trace file FIFO once and keep it open (after process starts)
         self._trace_file_lock = threading.Lock()
         try:
             self._trace_file_handle = open(self.trace_file_path, 'w')
@@ -105,8 +100,6 @@ class TOGSimProcess():
         if self.process is None:
             self.process = subprocess.Popen(
                 shlex.split(cmd),
-                #stdout=subprocess.PIPE,
-                #stderr=subprocess.PIPE,
                 universal_newlines=True
             )
         else:
@@ -144,15 +137,12 @@ class TOGSimProcess():
         if self.process.poll() is not None:
             raise RuntimeError("[TOGSim] Simulator process has terminated")
 
-        # Get and increment kernel ID
         kernel_id = self._next_kernel_id
         self._next_kernel_id += 1
 
-        # Format command: command_type,kernel_id,device_index,stream_index,tog_path,attribute_path,timestamp
         command = f"{command_type},{kernel_id},{device_index},{stream_index},{tog_path},{attribute_path},{timestamp}"
 
         with self._trace_file_lock:
-            # Write command to TOGSim
             try:
                 self._trace_file_handle.write(command + '\n')
                 self._trace_file_handle.flush()
@@ -167,11 +157,10 @@ class TOGSimProcess():
         """Close the FIFO, wait for TOGSim to exit, and write its log and trace; a Simulator that
         exited non-zero (a kernel it refuses ends the session) is a RuntimeError raised after that.
         Assumes every queued kernel has already been sent: draining the stream is its owner's."""
-        # Close trace file handle if open
         if self._trace_file_handle is not None:
             try:
                 self._trace_file_handle.close()
-            except:
+            except BrokenPipeError:
                 pass
             self._trace_file_handle = None
 
@@ -179,7 +168,6 @@ class TOGSimProcess():
         if self.process:
             status = self.process.wait()
 
-            # Read output streams
             stdout_output = ""
             stderr_output = ""
             if self.process.stdout:
@@ -187,12 +175,10 @@ class TOGSimProcess():
             if self.process.stderr:
                 stderr_output = self.process.stderr.read()
 
-            # Print stderr immediately if there's any error output
             if stderr_output:
                 sys.stderr.write(stderr_output)
                 sys.stderr.flush()
 
-            # Save stdout to result file
             if stdout_output:
                 result_path = config.CONFIG_TORCHSIM_LOG_PATH
                 os.makedirs(result_path, exist_ok=True)
@@ -203,7 +189,6 @@ class TOGSimProcess():
                 logger.info(f'[TOGSim] Simulation log is stored to "{result_path}"')
             self.process = None
 
-        # Save trace_log with same name but .trace extension
         if self.trace_log:
             result_path = config.CONFIG_TORCHSIM_LOG_PATH
             os.makedirs(result_path, exist_ok=True)
@@ -213,7 +198,6 @@ class TOGSimProcess():
                 f.write(self.trace_log)
             logger.info(f'[TOGSim] Trace log is stored to "{trace_path}"')
 
-        # Clean up FIFOs
         self._cleanup_fifos()
         if status:
             raise RuntimeError(f"TOGSim Simulator exited with status {status}: the session did not run "
@@ -241,12 +225,10 @@ class TOGSimProcess():
 
         Args:
             device_index: Device index to synchronize
-            timestamp: Timestamp in nanoseconds (default: 0)
 
         Returns:
             int: The command ID assigned to this synchronization
         """
-        # For device_synchronize, stream_index is not meaningful, use 0
         return self._send_command("DEVICE_SYNC", device_index, 0, "", "", 0)
 
     def load_yaml(self, config_path):
@@ -311,7 +293,6 @@ class TOGSimProcess():
         if togsim_path is None:
             togsim_path = config.CONFIG_TOGSIM_DIR
 
-        # Create result path with appropriate filename
         if autotune_mode:
             base_dir = Path(model_path).parent / "togsim_result"
         else:
@@ -323,7 +304,6 @@ class TOGSimProcess():
         result_path = base_dir / f"{file_name}.log"
         trace_file_path = base_dir / f"{file_name}.trace"
 
-        # Create trace file in result directory
         kernel_id, device_index, stream_index, timestamp = 0, 0, 0, 0
         command = f"LAUNCH_KERNEL,{kernel_id},{device_index},{stream_index},{model_path},{attribute_path},{timestamp}\n"
         with open(trace_file_path, 'w') as trace_file:
@@ -369,7 +349,6 @@ class TOGSimProcess():
             raise RuntimeError(f"TOGSim Simulator exited with status {e.returncode}: "
                                f"{said[-1] if said else 'it printed nothing'}") from e
 
-        # Prevent race condition
         with open(result_path, "w") as f:
             f.write(result.decode())
             f.flush()

@@ -78,10 +78,9 @@ class _GoldenInterpreter(torch.fx.Interpreter):
         self.values = {}
 
     def run_node(self, n):
+        """Every tensor output moves to CPU in its dtype, so a device-baked op or a consumer that needs
+        co-located operands (aten.index) sees CPU tensors; only the recorded golden is float32."""
         out = super().run_node(n)
-        # Move EVERY tensor output to CPU, preserving dtype, so a device-baked op
-        # (arange(device=npu)) or a consumer that needs co-located operands (aten.index)
-        # sees CPU tensors. Only the recorded golden is cast to float32 for allclose.
         out = torch.utils._pytree.tree_map(
             lambda x: x.detach().to("cpu") if isinstance(x, torch.Tensor) else x, out)
         if isinstance(out, torch.Tensor):
@@ -109,14 +108,16 @@ def verify_init(gid, inputs):
         _STATE["golden"] = interp.values
         logger.info("[FuncVerify] golden ready: %d node tensors (rtol=%g atol=%g)",
                     len(interp.values), RTOL, ATOL)
-    except Exception as e:  # never let the verify shadow break the real run
+    except Exception as e:
         logger.warning("[FuncVerify] golden computation failed (%r); "
                        "per-kernel verify disabled for this graph", e)
         _STATE["golden"] = None
 
 
 def verify_check(value, buffer_name, node_name, op):
-    """Compare one realized buffer against its golden; raise on first divergence."""
+    """Compare one realized buffer against its golden; raise on first divergence. With
+    TORCHSIM_FUNCTIONAL_VERIFY_TRACE every buffer's error is logged instead, as the golden is the whole
+    graph on CPU and a buffer's error is all that accumulated before it."""
     if _STATE["failed"]:
         return
     golden = _STATE["golden"]
@@ -124,7 +125,7 @@ def verify_check(value, buffer_name, node_name, op):
         return
     ref = golden.get(node_name)
     if ref is None:
-        return  # no reference captured for this fx node (non-tensor / folded)
+        return
     val = value.detach().to("cpu", torch.float32)
     if val.shape != ref.shape:
         if val.numel() != ref.numel():
@@ -133,13 +134,6 @@ def verify_check(value, buffer_name, node_name, op):
 
     _STATE["n_checked"] += 1
 
-    # TRACE MODE. The golden is the WHOLE GRAPH on CPU, so a buffer's error is
-    # everything accumulated up to it, not that kernel's own. Stopping at the
-    # first buffer over tolerance therefore finds a MISCOMPILE (v3's pool was
-    # 4.85 on data of order 1) but says nothing useful when the error merely
-    # drifts. This logs every buffer's error instead of stopping, so the
-    # question "does it grow smoothly or jump" can be answered by reading the
-    # curve rather than guessed at.
     if os.environ.get("TORCHSIM_FUNCTIONAL_VERIFY_TRACE"):
         d = (val - ref).abs().max().item()
         scale = ref.abs().max().item()
@@ -153,7 +147,6 @@ def verify_check(value, buffer_name, node_name, op):
                      buffer_name, op, tuple(ref.shape))
         return
 
-    # ---- divergence ----
     _STATE["failed"] = True
     diff = (val - ref).abs()
     tol = ATOL + RTOL * ref.abs()

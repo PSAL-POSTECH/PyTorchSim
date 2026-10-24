@@ -56,7 +56,7 @@ TRITON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 
 def kernel():
-    # As torch/_inductor/runtime/compile_tasks.py loads it.
+    """The kernel, loaded as torch/_inductor/runtime/compile_tasks.py loads it."""
     from torch._inductor.runtime.triton_helpers import skip_gpu_driver_setup
     spec = importlib.util.spec_from_file_location(
         {kernel_name!r} + "_triton", TRITON_PATH)
@@ -74,10 +74,8 @@ def make_inputs(torch, seed=0):
 
 
 def reference(inputs):
-    # The Inductor route has no per-kernel torch reference: correctness is
-    # checked at the graph level by the test that ran torch.compile. the compiler's
-    # stage 7 is therefore not meaningful here and the pipeline is driven to
-    # stage 6 (spike) instead.
+    """None per kernel: the test that ran torch.compile checks the graph, so the pipeline stops at
+    stage 6 (spike), before the compiler's stage 7."""
     return {{}}
 
 

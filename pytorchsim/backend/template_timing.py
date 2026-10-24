@@ -92,7 +92,6 @@ def time_choices(choices):
     CUT_FACTOR times the wall time of the first one timed is cut, and is inf."""
     out = {c: float("inf") for c in choices}
     timed = [c for c in choices if _timed(c)]
-    # Rendered here: the meta reads Inductor's state, which the worker threads do not carry.
     jobs = [(c, *kernel_metadata.benchmark_request_meta(c.bmreq)) for c in timed]
     t0, first = time.monotonic(), []
 

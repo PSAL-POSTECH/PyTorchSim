@@ -56,8 +56,8 @@ def _run_setting(name):
 
 
 def __getattr__(name):
-    # The machine: TORCHSIM_TARGET names a TOGSim machine file ($TOGSIM_DIR/configs/<name>.yml) or
-    # gives a path to one. The compiler compiles for it and TOGSim times on it.
+    """The settings read on each access: TORCHSIM_TARGET names a TOGSim machine file
+    ($TOGSIM_DIR/configs/<name>.yml) or a path to one, which the compiler compiles for and TOGSim times on."""
     if name == "CONFIG_TORCHSIM_TARGET":
         return os.environ.get("TORCHSIM_TARGET") or "tpuv6e"
     if name == "CONFIG_MACHINE":
@@ -104,15 +104,12 @@ def setup_logger(name=None, level=None):
     """
     if name is None:
         import inspect
-        # Get the calling module's name
         frame = inspect.currentframe().f_back
         name = frame.f_globals.get('__name__', 'PyTorchSim')
 
-    # Convert logger name to lowercase
     name = name.lower()
     logger = logging.getLogger(name)
 
-    # Only configure if not already configured (avoid duplicate handlers)
     if not logger.handlers:
         handler = logging.StreamHandler()
         formatter = logging.Formatter(
@@ -122,7 +119,6 @@ def setup_logger(name=None, level=None):
         handler.setFormatter(formatter)
         logger.addHandler(handler)
 
-        # Set log level
         if level is None:
             level = logging.DEBUG if CONFIG_DEBUG_MODE else logging.INFO
         logger.setLevel(level)

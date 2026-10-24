@@ -49,7 +49,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 import torch  # noqa: E402  (first: its device autoload installs pytorchsim)
 
 from pytorchsim import config, contract  # noqa: E402
-from pytorchsim.backend import codecache, compiler_bridge, compiler_input, select  # noqa: E402
+from pytorchsim.backend import codecache, compiler_bridge, compiler_input, template_timing  # noqa: E402
 from pytorchsim.simulator import functional  # noqa: E402
 
 #: The head dimension the compiler's attention measurements were taken at.
@@ -447,7 +447,7 @@ def key_inputs(suite, name, dims, csv_name):
         return None
     return {"pts": pts, "base_image": os.environ.get("BASE_IMAGE", ""), "torch": torch.__version__,
             "env": keyed_env(),
-            "identity": select.identity(), "target": config.CONFIG_TORCHSIM_TARGET,
+            "identity": template_timing.identity(), "target": config.CONFIG_TORCHSIM_TARGET,
             "run": {s: getattr(config, s) for s in config.RUN_SETTINGS},
             "workload": {"suite": suite, "csv": csv_name, "name": name, "dims": dims, "dtype": DTYPE}}
 
@@ -474,8 +474,8 @@ def build(out, suite, name, keys=None):
     with open(os.path.join(out, name, "manifest.json"), "w") as f:
         json.dump({"workload": name, "suite": suite, **dims, "dtype": DTYPE, "launches": launches,
                    "externs": externs}, f, indent=1)
-    unpicked = [la["kernel"] for la, s in zip(launches, sources) if s == select.HEURISTIC]
-    unfused = [la["kernel"] for la, s in zip(launches, sources) if s == select.RECORDED_UNFUSED]
+    unpicked = [la["kernel"] for la, s in zip(launches, sources) if s == template_timing.HEURISTIC]
+    unfused = [la["kernel"] for la, s in zip(launches, sources) if s == template_timing.RECORDED_UNFUSED]
     calls = [e["call"] for e in externs]
     inputs = key_inputs(suite, name, dims, csv_name)
     if keys and inputs is not None and not unpicked:
@@ -502,13 +502,13 @@ def reuse(prev, out, keys, suite, name, dims, csv_name):
     except (OSError, ValueError):
         return None
     if inputs is None or old.get("key") != workload_key(inputs) \
-            or select.HEURISTIC in old.get("tile_sources", [select.HEURISTIC]):
+            or template_timing.HEURISTIC in old.get("tile_sources", [template_timing.HEURISTIC]):
         return None
     shutil.rmtree(os.path.join(out, name), ignore_errors=True)
     shutil.copytree(os.path.join(prev, "out", name), os.path.join(out, name))
     write_key(keys, name, inputs, old["tile_sources"], old["externs"])
     kernels = [la["kernel"] for la in manifest["launches"]]
-    unfused = [k for k, s in zip(kernels, old["tile_sources"]) if s == select.RECORDED_UNFUSED]
+    unfused = [k for k, s in zip(kernels, old["tile_sources"]) if s == template_timing.RECORDED_UNFUSED]
     return name, kernels, [], unfused, old["externs"]
 
 
@@ -559,7 +559,7 @@ def main(out, suites=None, jobs=1, keys=None, prev=None):
         pool.close()
         pool.join()
     with open(os.path.join(out, "bundle.json"), "w") as f:
-        json.dump({"pytorchsim": pts_commit(), "torch": torch.__version__, **select.identity()}, f,
+        json.dump({"pytorchsim": pts_commit(), "torch": torch.__version__, **template_timing.identity()}, f,
                   indent=1, sort_keys=True)
     for name, kernel in unfused:
         print(f"[bundle] warning: {name} {kernel} is the recorded pick without its fused epilogue")

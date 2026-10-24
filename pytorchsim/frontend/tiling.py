@@ -1,8 +1,5 @@
-"""How a kernel is cut into blocks: the sizes pinned at codegen time and the mm tiles.
-
-The compiler builds one binary per kernel and nothing tunes it later, so block sizes and the mm
-tiles this machine can take are decided here, from the machine and the kernel.
-"""
+"""How a kernel is cut into blocks: the sizes pinned at codegen time and the mm tiles this machine
+takes, decided from the machine and the kernel, since nothing tunes the compiled binary later."""
 
 from pytorchsim import config
 from pytorchsim.contract import block_name, parallel_axes, reduction_axes
@@ -10,21 +7,12 @@ from pytorchsim.contract import block_name, parallel_axes, reduction_axes
 _REDUCTION_LIVE_TILES = 12
 
 
-_DTYPE_BITS = {"float64": 64, "float32": 32, "float16": 16, "bfloat16": 16,
-               "float8_e5m2": 8, "float8_e4m3fn": 8,
-               "int64": 64, "int32": 32, "int16": 16, "int8": 8,
-               "uint64": 64, "uint32": 32, "uint16": 16, "uint8": 8,
-               "bool": 8}
-
-
 def _element_bits(args):
-    """Widest tensor element in the kernel, in bits.
+    """Widest tensor element in the kernel, in bits (32 with no typed tensor argument): the block has to
+    be one register's worth for every operand."""
+    import torch
 
-    Widest, not narrowest: the block has to be one register's worth for EVERY
-    operand. A kernel with no typed tensor argument falls back to 32.
-    """
-    bits = [_DTYPE_BITS[a["dtype"]] for a in (args or [])
-            if a.get("dtype") in _DTYPE_BITS]
+    bits = [8 * getattr(torch, a["dtype"]).itemsize for a in (args or []) if a.get("dtype")]
     return max(bits) if bits else 32
 
 
@@ -38,15 +26,9 @@ def triton_max_numel():
 
 
 def reduction_block_for(extent, elem_bytes=4, lane_bytes=None):
-    """The R0_BLOCK this backend pins for a reduction of `extent`.
-
-    Cover the extent and no more, then shrink to the budget: half of one lane's
-    scratchpad, shared by the tiles a reduction keeps live. Two callers must
-    agree: this pins the block, choices.NPUChoices asks if persistence matches.
-    Both see the machine's scratchpad when `lane_bytes` is left to this
-    function; a persistent reduction rendered for a bigger one than the target
-    has is a kernel the compiler refuses as over budget, whatever XBLOCK shrinks to.
-    """
+    """The R0_BLOCK pinned for a reduction of `extent`: the extent covered and no more, shrunk to half
+    of one lane's scratchpad (the machine's, when `lane_bytes` is left out), shared by the live tiles;
+    the pinned block and NPUChoices' persistence answer both come from here."""
     if lane_bytes is None:
         lane_bytes = config.CONFIG_MACHINE.spad_size
     budget = lane_bytes // 2 // _REDUCTION_LIVE_TILES
@@ -57,12 +39,8 @@ def reduction_block_for(extent, elem_bytes=4, lane_bytes=None):
 
 
 def _covering_block(want, n):
-    """`want`, clamped to the smallest legal block that covers `n`.
-
-    A block wider than its numel strands the mask's rank-1 index rows ONE_LANE
-    against banked data, and a numel of 1 under a lane-wide block is a tile of
-    digits whose mask the DMA cannot state; the lanes go to another axis.
-    """
+    """`want`, clamped to the smallest legal block that covers `n`: a block wider than its numel
+    leaves a mask the DMA cannot state, so the lanes go to another axis."""
     if not n:
         return want
     cover = 1
@@ -72,15 +50,9 @@ def _covering_block(want, n):
 
 
 def fixed_config_for(kernel, numels, args, contiguous=None):
-    """Block sizes pinned at codegen time, from the machine and the numels.
-
-    `numels` is the <prefix>numel-keyed dict, NOT kernel.numels. THESE ARE SIZES,
-    NOT A LAYOUT -- the lane axis is the compiler's select_lane_axis, passes later.
-    `contiguous` is the axis ('x' or 'r') the kernel's largest read is unit-stride along;
-    a reduction contiguous along x takes its blocks from kept_axis_contiguous_blocks.
-    A reduction whose rows are too few to fill the lanes takes its R0_BLOCK from
-    lane_axis_reduction_block, any other its XBLOCK from kept_axis_rows_block.
-    """
+    """Block sizes (not a layout) pinned at codegen time from the machine and the <prefix>numel-keyed
+    `numels`; `contiguous` ('x' or 'r') is the axis the largest read is unit-stride along, which picks
+    kept_axis_contiguous_blocks, lane_axis_reduction_block or kept_axis_rows_block for a reduction."""
     machine = config.CONFIG_MACHINE
     lanes = machine.vector_lanes
     per_vector = max(1, machine.vlen_bits // _element_bits(args))
@@ -146,23 +118,17 @@ def kept_axis_rows_block(xnumel, rblock, elem_bytes, lanes, lane_bytes, max_nume
 
 
 def pointwise_block(xnumel, elem_bytes, lanes, lane_bytes, max_numel):
-    """The XBLOCK of a pointwise kernel over one axis: the extent covered, up to the tile the budget
-    reduction_block_for gives one lane fills on every lane, and no more than Triton takes in one block.
-    At least the lane cover, as any block here. A block of one lane's width instead runs a program per
-    `lanes` elements, and a program's fixed cost then outweighs its data many times over."""
+    """The XBLOCK of a pointwise kernel over one axis: the extent covered, at least the lane cover, up to
+    the tile reduction_block_for's one-lane budget fills on every lane, and no more than Triton takes in
+    one block."""
     per_lane = reduction_block_for(1 << 62, elem_bytes, lane_bytes)
     return max(_covering_block(lanes, xnumel), min(_covering_block(1 << 62, xnumel), lanes * per_lane, max_numel))
 
 
 def lane_axis_reduction_block(xblock, rnumel, elem_bytes, lanes, lane_bytes, max_numel):
-    """R0_BLOCK of a reduction whose reduced axis rides the lanes.
-
-    The compiler lays a reduction's axis across the lanes when its rows fill fewer lanes than the
-    machine has, whatever it combines by (PTB TorchsimAnchorLayouts.cpp anchorReduce). A lane then holds
-    `xblock` rows of R0_BLOCK / lanes elements, so the tile takes the budget reduction_block_for
-    gives one lane, times the lanes, and no more than Triton takes in one block -- as
-    kept_axis_contiguous_blocks and pointwise_block do -- covering the extent and no more.
-    """
+    """R0_BLOCK of a reduction whose reduced axis rides the lanes (its rows fill fewer lanes than the
+    machine has): the extent covered and no more, within reduction_block_for's one-lane budget times the
+    lanes and what Triton takes in one block."""
     per_lane = reduction_block_for(1 << 62, elem_bytes, lane_bytes)
     budget = min(lanes * per_lane, max_numel) // max(1, xblock)
     block = _covering_block(1 << 62, rnumel)
@@ -172,13 +138,9 @@ def lane_axis_reduction_block(xblock, rnumel, elem_bytes, lanes, lane_bytes, max
 
 
 def kept_axis_contiguous_blocks(xnumel, rnumel, elem_bytes, lanes, lane_bytes, max_numel):
-    """(XBLOCK, R0_BLOCK) for a reduction whose largest read is contiguous along the kept axis.
-
-    Power-of-two blocks whose tile fits the budget reduction_block_for gives one lane, times the
-    lanes, with XBLOCK at least the lane cover; ranked by no padding on x, then the longest
-    contiguous run (XBLOCK covered elements), then the larger R0_BLOCK. Padding on r is not
-    counted: the reduce stops at its mask. XBLOCK = lanes gives today's R0_BLOCK.
-    """
+    """(XBLOCK, R0_BLOCK) for a reduction whose largest read is contiguous along the kept axis: power-of-two
+    blocks within reduction_block_for's one-lane budget times the lanes, XBLOCK at least the lane cover,
+    ranked by no padding on x, then the longest contiguous run, then the larger R0_BLOCK."""
     per_lane = reduction_block_for(1 << 62, elem_bytes, lane_bytes)
     budget = min(lanes * per_lane, max_numel)
     floor = _covering_block(lanes, xnumel)

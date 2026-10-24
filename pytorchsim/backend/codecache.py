@@ -19,7 +19,7 @@ from torch._inductor.codecache import get_hash
 from pytorchsim import config
 
 from pytorchsim import contract
-from pytorchsim.backend import autotune, compiler_bridge, compiler_input
+from pytorchsim.backend import retile, compiler_bridge, compiler_input
 from pytorchsim.simulator import functional, timing, wallclock
 
 logger = config.setup_logger()
@@ -284,7 +284,7 @@ def torchsim_compile(src_code, meta, kernel_name):
             with open(os.path.join(write_path, "kernel.py"), "w") as f:
                 f.write(src_code)
             timing.store_meta(write_path, meta)
-            retries = autotune.smaller_tiles(src_code, meta)
+            retries = retile.smaller_tiles(src_code, meta)
             while True:
                 compiler_input.write(src_code, meta, spec_path)
                 try:
@@ -295,7 +295,7 @@ def torchsim_compile(src_code, meta, kernel_name):
                     wallclock.ingest_compile(write_path, kernel_name)
                     break
                 except compiler_bridge.CompilerError as exc:
-                    why = autotune.too_big(exc)
+                    why = retile.too_big(exc)
                     if why is None:
                         raise
                     retry = next(retries, None)

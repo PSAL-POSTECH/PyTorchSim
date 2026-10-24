@@ -18,7 +18,7 @@ import time
 
 from pytorchsim import config, contract
 from pytorchsim.frontend.inductor.codegen import kernel_metadata
-from pytorchsim.backend import autotune, compiler_bridge, compiler_input
+from pytorchsim.backend import retile, compiler_bridge, compiler_input
 from pytorchsim.simulator import timing
 
 logger = config.setup_logger()
@@ -60,7 +60,7 @@ def _time_tile(src_code, meta, kernel_name, workdir, cut=None):
                                               autotune_mode=True, cut=cut)
         return TOGSimProcess.get_result_from_file(result)[-1]
     except (compiler_bridge.CompilerError, RuntimeError, FileNotFoundError) as exc:
-        why = autotune.too_big(exc) or (f"cut, {exc}" if isinstance(exc, Cut) else type(exc).__name__)
+        why = retile.too_big(exc) or (f"cut, {exc}" if isinstance(exc, Cut) else type(exc).__name__)
         logger.info("[select] %s %s: %s", kernel_name, workdir, why)
         return float("inf")
 

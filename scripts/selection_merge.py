@@ -10,9 +10,9 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import torch  # noqa: E402,F401  (first: its device autoload installs pytorchsim, which imports select)
+import torch  # noqa: E402,F401  (first: its device autoload installs pytorchsim, which imports template_timing)
 
-from pytorchsim.backend import select  # noqa: E402
+from pytorchsim.backend import template_timing  # noqa: E402
 
 
 def main(paths):
@@ -26,7 +26,7 @@ def main(paths):
     if len(identities) != 1:
         sys.exit(f"the picks carry {len(identities)} identities; merge one run's at a time")
     identity = picks[0]["identity"]
-    path = select.record_path()
+    path = template_timing.record_path()
     try:
         with open(path) as f:
             rec = json.load(f)

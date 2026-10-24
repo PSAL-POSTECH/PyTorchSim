@@ -60,10 +60,7 @@ def enabled():
     Read dynamically (the config can change inside a ``with torch.npu.TOGSimulator(...)``
     block); the config accessor already AND-gates this with functional mode.
     """
-    try:
-        return bool(config.pytorchsim_functional_verify_per_kernel)
-    except Exception:
-        return False
+    return bool(config.pytorchsim_functional_verify_per_kernel)
 
 
 def register_graph(gm):

@@ -1,7 +1,6 @@
-"""Reduction blocks on a machine of 128 lanes and 1 MiB of scratchpad per lane: a reduction whose
-largest read runs along the kept axis takes that axis as wide as its unpadded power-of-two part
-allows; a reduction whose rows fill fewer lanes than the machine has takes the reduced axis on the
-lanes and budgets it over all of them; any other reduction takes rows of its R0_BLOCK up to the budget."""
+"""Reduction blocks on a machine of 128 lanes and 1 MiB of spad per lane: a largest read along the kept axis takes
+it as wide as its power-of-two part allows; rows that fill fewer lanes put the reduced axis on the lanes; any other
+reduction takes rows of its R0_BLOCK up to the budget."""
 import os
 import sys
 
@@ -47,7 +46,7 @@ def test_kept_axis_is_the_unit_stride_axis_of_the_largest_read():
     from torch._inductor.dependencies import MemoryDep
     from torch._inductor.sizevars import SizeVarAllocator
     from torch._inductor.virtualized import V
-    from pytorchsim.frontend.inductor.blocks import _kept_axis_contiguous
+    from pytorchsim.frontend.inductor.autotune.generated_kernel_blocks import _kept_axis_contiguous
     c0, c1 = sympy.symbols("c0 c1", integer=True, nonnegative=True)
     graph = type("G", (), {"sizevars": SizeVarAllocator(), "get_dtype": lambda self, n: torch.bfloat16})()
 

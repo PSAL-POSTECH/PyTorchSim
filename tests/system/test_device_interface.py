@@ -1,6 +1,7 @@
 """What npu registers with Inductor, as Inductor reads it: the SM count is the machine's lane count
 for any spelling of the device; Triton is present (through the interface, not a patch) and npu is a
-Triton GPU; cpu keeps its own device op overrides; is_npu reads every spelling of the device."""
+Triton GPU; cpu keeps its own device op overrides; is_npu reads every spelling of the device; torch.npu's
+RNG state reads and writes back for every spelling, its default included."""
 import os
 import sys
 
@@ -59,9 +60,20 @@ def test_is_npu_spellings():
     check_result("IsNpuSpellings", torch.tensor(got), torch.ones(len(got), dtype=torch.bool))
 
 
+def test_rng_state_for_every_spelling():
+    """get_rng_state and set_rng_state take the default device, an index and the npu strings."""
+    state = torch.npu.get_rng_state()
+    for device in (0, "npu", "npu:0"):
+        torch.npu.set_rng_state(state, device)
+    torch.npu.set_rng_state(state)
+    got = [bool(torch.equal(torch.npu.get_rng_state(*d), state)) for d in ((), (0,), ("npu",), ("npu:0",))]
+    check_result("RngStateSpellings", torch.tensor(got), torch.ones(4, dtype=torch.bool))
+
+
 if __name__ == "__main__":
     test_sm_count_is_the_lane_count()
     test_device_answers()
     test_triton_and_gpu_type()
     test_device_op_overrides()
     test_is_npu_spellings()
+    test_rng_state_for_every_spelling()

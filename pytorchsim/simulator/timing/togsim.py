@@ -3,6 +3,7 @@ import datetime
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import threading
 import time
@@ -68,6 +69,7 @@ class TOGSimProcess():
         if not os.path.isfile(self.config_path):
             raise FileNotFoundError(f"machine file not found: {self.config_path}")
         self.process = None
+        self.held = []
         self._next_kernel_id = 0
         os.makedirs(config.CONFIG_TORCHSIM_LOG_PATH, exist_ok=True)
         stem = os.path.join(config.CONFIG_TORCHSIM_LOG_PATH, _stamp())
@@ -141,9 +143,9 @@ class TOGSimProcess():
         return kernel_id
 
     def shutdown(self):
-        """Close the FIFO, wait for TOGSim to exit, and write its log and trace; a Simulator that
-        exited non-zero (a kernel it refuses ends the session) is a RuntimeError raised after that.
-        Assumes every queued kernel has already been sent: draining the stream is its owner's."""
+        """Close the FIFO, wait for TOGSim to exit, remove the launches' held copies and write its log and
+        trace; a Simulator that exited non-zero is a RuntimeError raised after that. Assumes every queued
+        kernel has already been sent: draining the stream is its owner's."""
         if self._trace_file_handle is not None:
             try:
                 self._trace_file_handle.close()
@@ -159,6 +161,9 @@ class TOGSimProcess():
             if not status:
                 logger.info(f'[TOGSim] Simulation result is stored to "{self.result_path}"')
             self.process = None
+        for held in self.held:
+            shutil.rmtree(held)
+        self.held = []
 
         with open(self.trace_path, "w") as f:
             f.write(self.trace_log)

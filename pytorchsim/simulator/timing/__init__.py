@@ -29,7 +29,7 @@ LOCK_TIMEOUT = 1800
 
 def run(workdir, meta, args=()):
     """Measure the tiles and write the cycle table if it is missing, then simulate. Returns TOGSim's
-    result. Only the build is locked; simulating is per launch and runs concurrently."""
+    result, or None for a launch queued on an open TOGSimulator. Only the build is locked."""
     from filelock import FileLock
 
     kernel = meta["kernel_name"]
@@ -48,7 +48,7 @@ def run(workdir, meta, args=()):
 
 def run_togsim(workdir, meta, args=()):
     """Simulate the TOG, or hand it to an open TOGSimulator. Standalone returns the result TOGSim wrote,
-    read; a queued launch returns its kernel id, as the stream's numbers are whole only when it closes."""
+    read; a queued launch returns None, as the stream's numbers are whole only when it closes."""
     import torch
 
     for need in SHARED:
@@ -59,11 +59,13 @@ def run_togsim(workdir, meta, args=()):
     write_tensors(workdir)
 
     attribute = attribute_dir(workdir)
-    if torch.npu.get_tog_simulator() is not None:
+    sim = torch.npu.get_tog_simulator()
+    if sim is not None:
         for handle in copy_node_handles(workdir):
             torch.npu.launch_kernel(handle, "")
-        return torch.npu.launch_kernel(os.path.join(mine, "tile_graph.onnx"),
-                                       _held_for_the_session(mine, attribute) if attribute else "")
+        torch.npu.launch_kernel(os.path.join(mine, "tile_graph.onnx"),
+                                _held_for_the_session(sim, mine, attribute) if attribute else "")
+        return None
     return simulate_standalone(workdir, mine, attribute or "")
 
 
@@ -113,12 +115,13 @@ def attribute_dir(workdir):
     return d
 
 
-def _held_for_the_session(mine, attribute):
-    """A copy of `attribute` this launch alone names: an open TOGSimulator reads it when it takes the
-    launch, after the next functional run of the kernel has rewritten the original."""
+def _held_for_the_session(sim, mine, attribute):
+    """A copy of `attribute` this launch alone names, which `sim` reads when it takes the launch, after
+    the next functional run has rewritten the original; `sim` removes it when it shuts down."""
     import tempfile
     held = tempfile.mkdtemp(prefix="runtime_attribute-", dir=mine)
     shutil.copytree(attribute, held, dirs_exist_ok=True)
+    sim.held.append(held)
     return held
 
 

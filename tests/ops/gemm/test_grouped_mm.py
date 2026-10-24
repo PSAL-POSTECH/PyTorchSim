@@ -7,6 +7,9 @@ against a float32 CPU reference, group by group.
              counted as the fallback
   grad       inputs that require grad run group by group (no kernel launch), and their gradients match the CPU's
   fallback   transformers' grouped_mm_fallback (its call when the weight is not bf16) takes the same kernel
+  tail       offs ending before A's last row: the output keeps A's rows, eager ones past offs[-1] zero as
+             transformers gives them, compiled ones match the reference up to offs[-1]
+  bias       a bias is refused, as aten refuses it
 
 Usage: test_grouped_mm.py [case ...]   (all cases when none is named)
 """
@@ -103,8 +106,31 @@ def case_fallback():
     return err < TOL and launched == 1 and not externs, f"err {err:.3g}, launches {launched}, externs {externs}"
 
 
+def case_tail():
+    a, b, offs = _inputs([3, 0, 9, 4], 128, 128)
+    a = torch.cat([a, a[:5]])
+    ref = _reference(a, b, offs)
+    eager = _gmm(a.to(device), b.to(device), offs.to(device)).float().cpu()
+    torch._dynamo.reset()
+    compiled = torch.compile(_gmm, dynamic=False)(a.to(device), b.to(device), offs.to(device)).float().cpu()
+    rows, ok_shape = int(offs[-1]), eager.shape == compiled.shape == (a.shape[0], b.shape[2])
+    err_e, err_c = _err(eager[:rows], ref), _err(compiled[:rows], ref)
+    zeros = bool((eager[rows:] == 0).all())
+    return ok_shape and zeros and err_e < TOL and err_c < TOL, \
+        f"shapes {tuple(eager.shape)} {tuple(compiled.shape)}, tail zero {zeros}, err {err_e:.3g} {err_c:.3g}"
+
+
+def case_bias():
+    a, b, offs = _inputs([3, 0, 9, 4], 128, 128)
+    try:
+        torch._grouped_mm(a.to(device), b.to(device), offs.to(device), torch.zeros(4, 128).to(device))
+    except RuntimeError as e:
+        return "Bias not supported" in str(e), str(e)
+    return False, "a bias was taken"
+
+
 CASES = {"routed": case_routed, "few_rows": case_few_rows, "eager": case_eager, "grad": case_grad,
-         "fallback": case_fallback}
+         "fallback": case_fallback, "tail": case_tail, "bias": case_bias}
 
 
 if __name__ == "__main__":

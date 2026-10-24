@@ -133,10 +133,11 @@ def _network(x, dim, descending):
     e = int(t.shape[-1])
     n = next_pow2(e)
     if t.is_floating_point():
-        f = t.float()
+        f = t.double() if t.element_size() == 8 else t.float()
         f = torch.where(f == 0, torch.zeros_like(f), f)
-        bits = torch.where(f.isnan(), torch.full_like(f, float("nan")), f).view(torch.int32)
-        key = (bits ^ ((bits >> 31) & 0x7FFFFFFF)).to(torch.int64)
+        bits = torch.where(f.isnan(), torch.full_like(f, float("nan")), f)
+        bits = bits.view(torch.int64 if f.element_size() == 8 else torch.int32)
+        key = (bits ^ ((bits >> (8 * f.element_size() - 1)) & torch.iinfo(bits.dtype).max)).to(torch.int64)
     else:
         key = t.to(torch.int64)
     if descending:

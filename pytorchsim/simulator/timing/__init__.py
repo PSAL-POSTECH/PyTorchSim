@@ -47,8 +47,8 @@ def run(workdir, meta, args=()):
 
 
 def run_togsim(workdir, meta, args=()):
-    """Simulate the TOG, or hand it to an open TOGSimulator. Standalone returns the parsed result;
-    a queued launch returns its kernel id, as the stream's numbers are whole only when it closes."""
+    """Simulate the TOG, or hand it to an open TOGSimulator. Standalone returns the result TOGSim wrote,
+    read; a queued launch returns its kernel id, as the stream's numbers are whole only when it closes."""
     import torch
 
     from pytorchsim.simulator.timing.togsim import TOGSimProcess
@@ -66,7 +66,7 @@ def run_togsim(workdir, meta, args=()):
         return torch.npu.launch_kernel(handle, _held_for_the_session(mine, attribute))
 
     result_path = TOGSimProcess.run_standalone(handle, attribute)
-    return TOGSimProcess.get_result_from_file(result_path)
+    return TOGSimProcess.read_result(result_path)
 
 
 def attribute_dir(workdir):

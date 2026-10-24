@@ -14,13 +14,11 @@ from pytorchsim.contract import SpecIncomplete, storage_span
 
 _logger = config.setup_logger()
 
-#: Triton signature token -> the dtype's torch name: the one table of them on this side.
+#: Triton signature token -> the dtype's torch name: the one table of them on this side, holding the
+#: dtypes the compiler's contract (kernel_object.ITEMSIZE) carries.
 TOKEN_DTYPE = {
     "*fp64": "float64", "*fp32": "float32", "*fp16": "float16",
     "*bf16": "bfloat16",
-    # fp8 has no numpy or C scalar: it rides as uint8 and is viewed back at the
-    # ends, the way bf16 rides as uint16. See functional.py's _np_dtype.
-    "*fp8e5": "float8_e5m2", "*fp8e4nv": "float8_e4m3fn",
     "*i64": "int64", "*i32": "int32", "*i16": "int16", "*i8": "int8",
     "*u64": "uint64", "*u32": "uint32", "*u16": "uint16", "*u8": "uint8",
     "*i1": "bool",

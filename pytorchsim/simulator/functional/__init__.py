@@ -22,13 +22,6 @@ class ShapeMismatch(RuntimeError):
     """The launch does not match the shapes the binary was compiled for."""
 
 
-#: Dtypes numpy cannot name, and the unsigned int of the same width that carries their bytes
-#: instead. The .raw file holds the ORIGINAL bits either way -- the view is a reinterpretation,
-#: never a conversion. Same table as the compiler's contract/kernel_object.py NP_DTYPE.
-_NP_CARRIER = {"float8_e5m2": "uint8", "float8_e4m3fn": "uint8",
-               "bfloat16": "uint16"}
-
-
 def run(workdir, meta, args):
     """Execute the kernel on the launch's tensors. Returns the names written.
 
@@ -125,7 +118,7 @@ def read_outputs(workdir, meta, args):
                 f"{path} holds {flat.size} element(s), expected {m['numel']} "
                 f"-- Spike did not write the whole tensor")
         # view, not .to(): the carrier holds the output's own bits, and a
-        # conversion here would read an fp8 byte as the integer 60.
+        # conversion here would read a bf16's bits as an integer.
         stored = torch.from_numpy(flat)
         if stored.dtype != t.dtype:
             stored = stored.view(t.dtype)
@@ -178,19 +171,28 @@ def _storage_numel(t):
     return storage_span(t.shape, t.stride())
 
 
+def _np_name(name):
+    """The numpy dtype a .raw file holds `name`'s bits in, as the compiler's contract states it
+    (kernel_object.NP_DTYPE: bf16 rides as uint16, bool as int8)."""
+    table = compiler_bridge.compiler_contract("kernel_object").NP_DTYPE
+    if name not in table:
+        raise ShapeMismatch(f"{name} has no .raw form in the compiler's contract "
+                            f"(it carries {sorted(table)})")
+    return table[name]
+
+
 def _np_dtype(name):
     import numpy as np
-    if name == "bool":
-        return np.dtype("bool")
-    return np.dtype(_NP_CARRIER.get(name, name))
+    return np.dtype(_np_name(name))
 
 
 def _as_carrier(t):
-    """`t` retyped to whatever numpy can hold, bit for bit."""
+    """`t` retyped to the dtype its .raw file holds, bit for bit: a view, never a conversion."""
     import torch
 
-    carrier = _NP_CARRIER.get(str(t.dtype).removeprefix("torch."))
-    return t.view(getattr(torch, carrier)) if carrier else t
+    name = str(t.dtype).removeprefix("torch.")
+    carrier = _np_name(name)
+    return t if carrier == name else t.view(getattr(torch, carrier))
 
 
 def _replay(workdir, meta, runtime, key):

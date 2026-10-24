@@ -1,6 +1,6 @@
 """The args a kernel's runtime attributes are read from keep their launch values in a bundle (the manifest names
-them, the kernel file takes those and draws every other input, an unplaceable source stops by name); a kernel
-that declares no attributes has no runtime attribute directory."""
+them, the kernel file takes those and draws every other input, an unplaceable source stops by name), and so do
+the scalars its meta gives no value for; a kernel that declares no attributes has no runtime attribute directory."""
 import importlib.util
 import os
 import sys
@@ -93,6 +93,23 @@ def test_the_runtime_attribute_directory_is_the_declaring_kernels_only():
         assert got is not None and got.startswith(contract.runtime_dir(workdir)), got
 
 
+def test_a_scalar_known_only_at_launch_keeps_its_launch_value():
+    """topk's row count: a user kernel's meta holds no value for it, so the bundle passes the launch's."""
+    spec = importlib.util.spec_from_file_location("bundle", os.path.join(TORCHSIM_DIR, "scripts", "ci", "bundle.py"))
+    bundle = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bundle)
+    meta = dict(META, signature=dict(META["signature"], rows="i32"), call_params=["ids_ptr", "x_ptr", "o_ptr", "rows"])
+    launcher = SimpleNamespace(kernel_name="k", meta=meta)
+    got = bundle.launch_scalars(launcher, (IDS, torch.zeros(8), torch.zeros(8), 4))
+    assert got == {"rows": 4}, got
+    with tempfile.TemporaryDirectory() as d:
+        path = compiler_input.write("", meta, os.path.join(d, "k_spec.py"), scalars=got)
+        with open(path) as f:
+            assert "'scalar_values': {'rows': 4}" in f.read().replace('"scalar_values"', "'scalar_values'")
+        _raises(contract.SpecIncomplete, ["w"], compiler_input.write, "", meta, os.path.join(d, "k_spec.py"),
+                scalars={"w": 1})
+
+
 if __name__ == "__main__":
     test_the_runtime_attribute_directory_is_the_declaring_kernels_only()
     test_recorded_args_are_the_launch_values_and_the_rest_drawn()
@@ -100,4 +117,5 @@ if __name__ == "__main__":
     test_the_manifest_names_the_sources_in_arg_order()
     test_a_source_the_manifest_does_not_place_is_refused()
     test_a_launch_with_no_manifest_stops_the_bundle_by_name()
+    test_a_scalar_known_only_at_launch_keeps_its_launch_value()
     print("PASS")

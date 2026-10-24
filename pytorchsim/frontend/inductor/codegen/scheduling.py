@@ -131,7 +131,7 @@ class TritonNPUScheduling(TritonScheduling):
 
 
 def _tile_source(node_schedule):
-    """How a template kernel's config was chosen, one of select's sources; None for any other
+    """How a template kernel's config was chosen, one of template_timing's sources; None for any other
     kernel. A recorded config is the pick without an epilogue, so built with one fused it is
     RECORDED_UNFUSED; a MultiTemplateBuffer is only made for choices timed in cycles."""
     from torch._inductor.ir import MultiTemplateBuffer

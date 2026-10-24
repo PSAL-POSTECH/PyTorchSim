@@ -58,7 +58,7 @@ def _time_tile(src_code, meta, kernel_name, workdir, cut=None):
         result = TOGSimProcess.run_standalone(os.path.join(mine, "tile_graph.onnx"),
                                               os.path.join(mine, "attribute"),
                                               autotune_mode=True, cut=cut)
-        return TOGSimProcess.get_result_from_file(result)[-1]
+        return TOGSimProcess.read_result(result)["total_cycles"]
     except (compiler_bridge.CompilerError, RuntimeError, FileNotFoundError) as exc:
         why = autotune.too_big(exc) or (f"cut, {exc}" if isinstance(exc, Cut) else type(exc).__name__)
         logger.info("[select] %s %s: %s", kernel_name, workdir, why)

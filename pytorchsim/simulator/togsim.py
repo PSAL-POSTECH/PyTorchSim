@@ -1,12 +1,12 @@
-"""TOGSim as a process: started once, fed kernels over a FIFO, read back from its log.
+"""TOGSim as a process: started once, fed kernels over a FIFO, read back from the result file it writes.
 
 Also the multi-tenant entry points built on it, and the Poisson arrivals that drive them.
 """
+import json
 import os
 import numpy as np
 import shlex
 import subprocess
-import re
 import sys
 import yaml
 import time
@@ -64,8 +64,6 @@ class ProgressBar:
 
 
 class TOGSimProcess():
-    TOGSIM_RESULT_PATH_KEY = "TOGSIM_RESULT_PATH"
-    FINISH_STR = "Simulation finished"
     def __init__(self, config_path=None, togsim_path=None) -> None:
         if config_path is None:
             config_path = config.CONFIG_MACHINE_FILE
@@ -77,6 +75,9 @@ class TOGSimProcess():
         self.config_yaml = self.load_yaml(self.config_path)
         self.process = None
         self._next_kernel_id = 0  # Auto-incrementing kernel ID
+        os.makedirs(config.CONFIG_TORCHSIM_LOG_PATH, exist_ok=True)
+        self.result_path = os.path.join(config.CONFIG_TORCHSIM_LOG_PATH, datetime.datetime.now().strftime(
+            '%Y%m%d_%H%M%S') + f"_{uuid.uuid4().hex[:8]}.json")
 
         # Create FIFOs for command and event communication
         self.fifo_dir = os.path.join("/tmp", f"togsim_fifo_{os.getpid()}")
@@ -101,7 +102,8 @@ class TOGSimProcess():
             raise RuntimeError(f"Failed to open trace file: {e}")
 
     def _start_process(self):
-        cmd = f"{self.get_togsim_command(self.config_path, self.base_dir)} --models_list {self.trace_file_path}"
+        cmd = (f"{self.get_togsim_command(self.config_path, self.base_dir)} --models_list {self.trace_file_path}"
+               f" --result {self.result_path}")
         if config.CONFIG_TOGSIM_DEBUG_LEVEL:
             cmd += f" --log_level {config.CONFIG_TOGSIM_DEBUG_LEVEL}"
 
@@ -205,6 +207,8 @@ class TOGSimProcess():
                 with open(result_path, "w") as f:
                     f.write(stdout_output)
                 logger.info(f'[TOGSim] Simulation log is stored to "{result_path}"')
+            if not status:
+                logger.info(f'[TOGSim] Simulation result is stored to "{self.result_path}"')
             self.process = None
 
         # Save trace_log with same name but .trace extension
@@ -304,7 +308,7 @@ class TOGSimProcess():
                 killed and the run raises Cut with it (autotune cuts a slow candidate)
 
         Returns:
-            Path to the simulation result log file
+            Path to the result file TOGSim wrote (--result), beside the log
 
         Raises:
             RuntimeError: the Simulator exited non-zero (a kernel it refuses), the message
@@ -324,7 +328,8 @@ class TOGSimProcess():
         base_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
         file_name = f"{timestamp}_{uuid.uuid4().hex[:8]}"
-        result_path = base_dir / f"{file_name}.log"
+        log_path = base_dir / f"{file_name}.log"
+        result_path = base_dir / f"{file_name}.json"
         trace_file_path = base_dir / f"{file_name}.trace"
 
         # Create trace file in result directory
@@ -342,7 +347,8 @@ class TOGSimProcess():
                 raise FileNotFoundError(f"{tog_so} not found -- the kernel has no TOG to simulate")
             base_cmd = TOGSimProcess.get_togsim_command(config_path, togsim_path)
             unit_tsv = os.path.join(os.path.dirname(str(model_path)), "tog_units.tsv")
-            cmd = f"{base_cmd} --tog_so {tog_so} --cycle_table {cycle_tsv} --unit_table {unit_tsv}"
+            cmd = (f"{base_cmd} --tog_so {tog_so} --cycle_table {cycle_tsv} --unit_table {unit_tsv}"
+                   f" --result {result_path}")
             if attribute_path:
                 cmd += f" --attribute_path {attribute_path}"
             if config.CONFIG_TOGSIM_DEBUG_LEVEL:
@@ -374,7 +380,7 @@ class TOGSimProcess():
                                f"{said[-1] if said else 'it printed nothing'}") from e
 
         # Prevent race condition
-        with open(result_path, "w") as f:
+        with open(log_path, "w") as f:
             f.write(result.decode())
             f.flush()
             os.fsync(f.fileno())
@@ -382,75 +388,15 @@ class TOGSimProcess():
         if not autotune_mode:
             import logging as _logging
             model_path_log = f' of "{model_path}" ' if logger.isEnabledFor(_logging.DEBUG) else " "
-            logger.info(f'[TOGSim] Simulation log{model_path_log}is stored to "{result_path}"')
+            logger.info(f'[TOGSim] Simulation log{model_path_log}is stored to "{log_path}"')
         return result_path
 
-    _UNIT_LINE = re.compile(r"\] (Core \[\d+\]|Total) : (.+?) utilization\(%\): (\d+\.?\d*), "
-                            r"active_cycles: (\d+), idle_cycles: (\d+)")
-    _DRAM_CHANNEL = re.compile(r"\[DRAM\] channel (\d+) \| .*?(\d+\.?\d*)% of utilization")
-    _DRAM_COMBINED = re.compile(r"\[DRAM\] channels .* combined \| .*?(\d+\.?\d*)% of utilization")
-
     @staticmethod
-    def get_result_from_file(result_path):
-        """(core_metrics, dram_channel_bw, avg_dram_bw, simulation_time, total_cycle) of a run's log.
-        core_metrics["units"] holds every 'Core [i]' and 'Total' unit row; the flat keys read the
-        machine's array unit (its systolic_array_unit) and Vpu off the Total row, else the one core."""
-        core_metrics = {}
-        dram_channel_bw = {}
-        avg_dram_bw = 0.0
-        simulation_time = float("inf")
-        total_cycle = float("inf")
-
-        with open(result_path, "r") as f:
-            lines = f.readlines()
-
-        for idx, line in enumerate(lines):
-            if TOGSimProcess.FINISH_STR in line:
-                break
-        else:
-            logger.warning(f"[TOGSim] Warning: Unable to parse the output file ({result_path}). The file may be improperly formatted.")
-            return core_metrics, dram_channel_bw, avg_dram_bw, simulation_time, total_cycle
-
-        units = {}
-        combined = None
-        for line in lines[idx:]:
-            m = TOGSimProcess._UNIT_LINE.search(line)
-            if m:
-                units.setdefault(m.group(1), {})[m.group(2)] = {
-                    "utilization": float(m.group(3)), "active_cycles": int(m.group(4)),
-                    "idle_cycles": int(m.group(5))}
-                continue
-            m = TOGSimProcess._DRAM_CHANNEL.search(line)
-            if m:
-                dram_channel_bw[f"CH[{m.group(1)}]"] = float(m.group(2))
-                continue
-            m = TOGSimProcess._DRAM_COMBINED.search(line)
-            if m:
-                combined = float(m.group(1))
-            elif 'Total execution cycles' in line:
-                total_cycle = int(re.search(r'Total execution cycles: (\d+)', line).group(1))
-            elif 'Wall-clock time for simulation' in line:
-                simulation_time = float(re.search(r'Wall-clock time for simulation: (\d+\.?\d*) seconds', line).group(1))
-
-        if combined is not None:
-            avg_dram_bw = combined
-        elif dram_channel_bw:
-            avg_dram_bw = sum(dram_channel_bw.values()) / len(dram_channel_bw)
-
-        if units:
-            core_metrics["units"] = units
-            whole = units.get("Total") or next(iter(units.values()))
-            array = whole.get(config.CONFIG_MACHINE.togsim_unit)
-            vector = whole.get("Vpu")
-            if array:
-                core_metrics["Systolic_Array_Utilization"] = array["utilization"]
-                core_metrics["MatMul_active_cycle"] = array["active_cycles"]
-            if vector:
-                core_metrics["Vector_Unit_Utilization"] = vector["utilization"]
-                core_metrics["Vector_active_cycle"] = vector["active_cycles"]
-            if total_cycle != float("inf"):
-                core_metrics["Total_cycle"] = total_cycle
-        return core_metrics, dram_channel_bw, avg_dram_bw, simulation_time, total_cycle
+    def read_result(result_path):
+        """The results TOGSim wrote with --result: total_cycles, wall_clock_s, core_cycles, units, dma, dram
+        and kernels, each as its end-of-run line prints it (TOGSim's docs/output-lines.md)."""
+        with open(result_path) as f:
+            return json.load(f)
 
 
 def poisson_request_generator(lambda_requests, max_msec_time=None):

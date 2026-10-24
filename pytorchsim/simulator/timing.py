@@ -176,7 +176,7 @@ def write_cycle_tables(workdir, meta):
 def run_togsim(workdir, meta, args=()):
     """Simulate the TOG, or hand it to an open TOGSimulator.
 
-    Standalone returns the parsed result; a queued launch returns its kernel id,
+    Standalone returns the result TOGSim wrote, read; a queued launch returns its kernel id,
     since the stream's numbers are only whole when the simulator closes.
     """
     import torch
@@ -196,7 +196,7 @@ def run_togsim(workdir, meta, args=()):
         return torch.npu.launch_kernel(handle, _held_for_the_session(mine, attribute))
 
     result_path = TOGSimProcess.run_standalone(handle, attribute)
-    return TOGSimProcess.get_result_from_file(result_path)
+    return TOGSimProcess.read_result(result_path)
 
 
 def attribute_dir(workdir):

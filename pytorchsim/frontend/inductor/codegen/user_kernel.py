@@ -51,7 +51,7 @@ def user_kernel_meta(kernel, kwargs, triton_meta, grid):
             "name": arg,
             "role": "inout" if writes is None or arg in writes else "in",
             "buffer": node.get_name(),
-            "dtype": kernel_metadata._DTYPE[token],
+            "dtype": kernel_metadata.TOKEN_DTYPE[token],
             "numel": storage_span([int(hint(s)) for s in layout.size],
                                   [int(hint(s)) for s in layout.stride]),
         })

@@ -10,21 +10,15 @@ from pytorchsim.contract import block_name, parallel_axes, reduction_axes
 _REDUCTION_LIVE_TILES = 12
 
 
-_DTYPE_BITS = {"float64": 64, "float32": 32, "float16": 16, "bfloat16": 16,
-               "float8_e5m2": 8, "float8_e4m3fn": 8,
-               "int64": 64, "int32": 32, "int16": 16, "int8": 8,
-               "uint64": 64, "uint32": 32, "uint16": 16, "uint8": 8,
-               "bool": 8}
-
-
 def _element_bits(args):
     """Widest tensor element in the kernel, in bits.
 
     Widest, not narrowest: the block has to be one register's worth for EVERY
     operand. A kernel with no typed tensor argument falls back to 32.
     """
-    bits = [_DTYPE_BITS[a["dtype"]] for a in (args or [])
-            if a.get("dtype") in _DTYPE_BITS]
+    import torch
+
+    bits = [8 * getattr(torch, a["dtype"]).itemsize for a in (args or []) if a.get("dtype")]
     return max(bits) if bits else 32
 
 

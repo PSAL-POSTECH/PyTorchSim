@@ -11,7 +11,8 @@ from pytorchsim.frontend import tiling
 from pytorchsim.frontend.inductor.autotune.generated_kernel_blocks import blocks_for
 from pytorchsim.contract import SpecIncomplete, storage_span
 
-_DTYPE = {
+#: Triton signature token -> the dtype's torch name: the one table of them on this side.
+TOKEN_DTYPE = {
     "*fp64": "float64", "*fp32": "float32", "*fp16": "float16",
     "*bf16": "bfloat16",
     # fp8 has no numpy or C scalar: it rides as uint8 and is viewed back at the
@@ -141,13 +142,7 @@ def collect_meta(kernel, kernel_name):
     constants = dict(triton_meta.get("constants") or {})
 
     roles = _roles(kernel)
-    arg_defs, _call_args, _precompile, arg_types = kernel.args.python_argdefs()
-
-    # A COMBO KERNEL HAS NO triton_meta ON THE OBJECT -- see
-    # `_signature_from_argdefs`. Fill only what is missing, so a kernel that
-    # does carry one keeps every token exactly as Inductor wrote it.
-    if not signature:
-        signature = _signature_from_argdefs(arg_defs, arg_types)
+    arg_defs, _call_args, _precompile, _arg_types = kernel.args.python_argdefs()
 
     call_params = [getattr(a, "name", str(a)) for a in arg_defs]
     args = []
@@ -160,7 +155,7 @@ def collect_meta(kernel, kernel_name):
             "name": name,
             "role": role,
             "buffer": buf,
-            "dtype": _DTYPE.get(signature.get(name, ""), None),
+            "dtype": TOKEN_DTYPE.get(signature.get(name, ""), None),
             "numel": _buffer_numel(buf) if buf else None,
         })
 
@@ -199,7 +194,7 @@ def benchmark_request_meta(req):
     tensors = list(req.input_tensor_meta) + [req.output_tensor_meta]
     roles = ["in"] * len(req.input_tensor_meta) + ["out"]
     ptrs = [n for n, t in signature.items() if t.startswith("*")]
-    args = [{"name": n, "role": r, "buffer": t.name, "dtype": _DTYPE.get(signature[n]),
+    args = [{"name": n, "role": r, "buffer": t.name, "dtype": TOKEN_DTYPE.get(signature[n]),
              "numel": storage_span(list(t.sizes), list(t.strides), t.offset)}
             for n, r, t in zip(ptrs, roles, tensors)]
     xnumel = 1
@@ -217,49 +212,6 @@ def benchmark_request_meta(req):
         "fixed_config": tiling.fixed_config_for(None, numels, args),
         "template_grid": [int(g) for g in req.extra_args],
     }
-
-
-def _signature_from_argdefs(arg_defs, arg_types):
-    """Triton signature tokens read off the ARG TYPES, for a kernel with no
-    `triton_meta`.
-
-    A ComboKernel builds its triton_meta as a local inside `codegen_kernel` and
-    writes it into the emitted source; it never lands on the object, so
-    `collect_meta`'s usual read comes back empty and every argument loses its
-    dtype. The types are still there -- `python_argdefs` returns one per arg,
-    from `V.graph.get_dtype` -- so the token is derivable, and derived here
-    rather than parsed back out of the generated text.
-    """
-    import torch
-
-    table = _dtype_tokens()
-    tokens = {}
-    for a, t in zip(arg_defs, arg_types):
-        if not isinstance(t, torch.dtype):
-            continue
-        token = table.get(t)
-        if token:
-            tokens[getattr(a, "name", str(a))] = token
-    return tokens
-
-
-#: torch dtype -> the pointer token triton's signature uses for it. Filled on
-#: first use, because this module is imported before torch is guaranteed to be.
-_TORCH_DTYPE_TOKEN = None
-
-
-def _dtype_tokens():
-    global _TORCH_DTYPE_TOKEN
-    if _TORCH_DTYPE_TOKEN is None:
-        import torch
-        _TORCH_DTYPE_TOKEN = {
-            torch.float64: "*fp64", torch.float32: "*fp32",
-            torch.float16: "*fp16", torch.bfloat16: "*bf16",
-            torch.int64: "*i64", torch.int32: "*i32", torch.int16: "*i16",
-            torch.int8: "*i8", torch.uint8: "*u8", torch.bool: "*i1",
-            torch.float8_e5m2: "*fp8e5", torch.float8_e4m3fn: "*fp8e4nv",
-        }
-    return _TORCH_DTYPE_TOKEN
 
 
 def template_grid(kernel):

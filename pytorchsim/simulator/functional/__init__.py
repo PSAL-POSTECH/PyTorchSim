@@ -29,63 +29,39 @@ _NP_CARRIER = {"float8_e5m2": "uint8", "float8_e4m3fn": "uint8",
                "bfloat16": "uint16"}
 
 
-def _np_dtype(name):
-    import numpy as np
-    if name == "bool":
-        return np.dtype("bool")
-    return np.dtype(_NP_CARRIER.get(name, name))
+def run(workdir, meta, args):
+    """Execute the kernel on the launch's tensors. Returns the names written.
 
-
-def _as_carrier(t):
-    """`t` retyped to whatever numpy can hold, bit for bit."""
-    import torch
-
-    carrier = _NP_CARRIER.get(str(t.dtype).removeprefix("torch."))
-    return t.view(getattr(torch, carrier)) if carrier else t
-
-
-def tensor_args(meta, args):
-    """[(arg_meta, tensor)] for the launch, paired by position.
-
-    Inductor passes the tensors first and the numels after, in signature order,
-    so `meta["args"]` lines up with the leading arguments.
+    No lock: every file this writes is under `workdir.runtime_dir`, which is
+    this process's own, so concurrent launches of one kernel never meet.
+    Replay is OFF by default -- a result out of a file is not one the simulator
+    produced today; it is for the inner loop, not for reporting.
     """
-    import torch
+    runtime = write_inputs(workdir, meta, args)
 
-    tensors = [a for a in args if isinstance(a, torch.Tensor)]
-    metas = meta["args"]
-    if len(tensors) != len(metas):
-        raise ShapeMismatch(
-            f"{meta['kernel_name']}: launch passed {len(tensors)} tensor(s), "
-            f"but the spec declares {len(metas)} ({[m['name'] for m in metas]})")
-    return list(zip(metas, tensors))
+    key = None
+    if os.environ.get("TORCHSIM_TRITON_REPLAY", "0") == "1":
+        key = _replay_key(workdir, meta, runtime)
+        if key and _replay(workdir, meta, runtime, key):
+            logger.info("[Spike] %s replayed %s (same ELF, same inputs)",
+                        meta["kernel_name"], key)
+            return read_outputs(workdir, meta, args)
 
+    manifest = contract.kernel_object(workdir)
+    if manifest is None:
+        raise FileNotFoundError(
+            f"{workdir} has no kernel.json -- compile the kernel first")
+    raw_paths = {a["name"]: os.path.join(runtime, f"{a['name']}.raw")
+                 for a in manifest["args"]}
+    values = dict(zip(meta.get("call_params", ()), args))
+    try:
+        spike.launch(workdir, manifest, runtime, raw_paths, logger.debug, scalar_values=values)
+    except spike.launcher().SpikeError as e:
+        raise RuntimeError(f"[Spike] {meta['kernel_name']} failed:\n{e}") from None
 
-def _storage_numel(t):
-    """How many elements of storage `t` spans -- its last addressable one.
-
-    NOT `t.numel()`: the .raw round trip is a flat file and has to be as long
-    as the addresses the kernel computes. Same definition as the compile side.
-    """
-    return storage_span(t.shape, t.stride())
-
-
-def _check(meta, pairs):
-    for m, t in pairs:
-        if _storage_numel(t) != m["numel"]:
-            raise ShapeMismatch(
-                f"{meta['kernel_name']}: '{m['name']}' spans "
-                f"{_storage_numel(t)} element(s) of storage, but the binary was "
-                f"compiled for {m['numel']}. "
-                f"the compiler bakes the extents and the grid into the kernel, so a "
-                f"dynamic-shape graph reuses an ELF that does not fit. The timing "
-                f"path does handle this (it takes the grid at run time); set "
-                f"TORCHSIM_FUNCTIONAL_MODE=0 to study cycles alone, or keep "
-                f"shapes static to check values.")
-        if str(t.dtype).removeprefix("torch.") != m["dtype"]:
-            raise ShapeMismatch(
-                f"{meta['kernel_name']}: '{m['name']}' is {t.dtype}, but the "
-                f"binary was compiled for {m['dtype']}")
+    if key:
+        _save_replay(workdir, meta, runtime, key)
+    return read_outputs(workdir, meta, args)
 
 
 def write_inputs(workdir, meta, args):
@@ -158,40 +134,63 @@ def read_outputs(workdir, meta, args):
     return written
 
 
-def _replay_root(workdir):
-    """Beside the workdirs, not inside one.
+def tensor_args(meta, args):
+    """[(arg_meta, tensor)] for the launch, paired by position.
 
-    A compiler-side fix is picked up by DELETING `outputs/triton_*`, and a cache
-    kept inside a workdir would go with it every time it was most wanted.
+    Inductor passes the tensors first and the numels after, in signature order,
+    so `meta["args"]` lines up with the leading arguments.
     """
-    return os.path.join(os.path.dirname(os.path.abspath(workdir)), REPLAY_DIR)
+    import torch
+
+    tensors = [a for a in args if isinstance(a, torch.Tensor)]
+    metas = meta["args"]
+    if len(tensors) != len(metas):
+        raise ShapeMismatch(
+            f"{meta['kernel_name']}: launch passed {len(tensors)} tensor(s), "
+            f"but the spec declares {len(metas)} ({[m['name'] for m in metas]})")
+    return list(zip(metas, tensors))
 
 
-def _replay_key(workdir, meta, runtime):
-    """What this launch's outputs are a function of.
+def _check(meta, pairs):
+    for m, t in pairs:
+        if _storage_numel(t) != m["numel"]:
+            raise ShapeMismatch(
+                f"{meta['kernel_name']}: '{m['name']}' spans "
+                f"{_storage_numel(t)} element(s) of storage, but the binary was "
+                f"compiled for {m['numel']}. "
+                f"the compiler bakes the extents and the grid into the kernel, so a "
+                f"dynamic-shape graph reuses an ELF that does not fit. The timing "
+                f"path does handle this (it takes the grid at run time); set "
+                f"TORCHSIM_FUNCTIONAL_MODE=0 to study cycles alone, or keep "
+                f"shapes static to check values.")
+        if str(t.dtype).removeprefix("torch.") != m["dtype"]:
+            raise ShapeMismatch(
+                f"{meta['kernel_name']}: '{m['name']}' is {t.dtype}, but the "
+                f"binary was compiled for {m['dtype']}")
 
-    The ELF's own bytes, so a fix anywhere in the compiler misses, and the bytes of
-    every input. The Triton source is already in the workdir path.
+
+def _storage_numel(t):
+    """How many elements of storage `t` spans -- its last addressable one.
+
+    NOT `t.numel()`: the .raw round trip is a flat file and has to be as long
+    as the addresses the kernel computes. Same definition as the compile side.
     """
-    import hashlib
-
-    h = hashlib.sha256()
-    elf = [f for f in sorted(os.listdir(workdir)) if f.endswith(".elf")]
-    if not elf:
-        return None
-    with open(os.path.join(workdir, elf[0]), "rb") as f:
-        h.update(f.read())
-    for m in meta["args"]:
-        h.update(("%s|%s|%s|%s;" % (m["name"], m["role"], m["dtype"],
-                                    m["numel"])).encode())
-        if m["role"] in ("in", "inout"):
-            with open(os.path.join(runtime, f"{m['name']}.raw"), "rb") as f:
-                h.update(f.read())
-    return h.hexdigest()[:32]
+    return storage_span(t.shape, t.stride())
 
 
-def _outputs_of(meta):
-    return [m["name"] for m in meta["args"] if m["role"] in ("out", "inout")]
+def _np_dtype(name):
+    import numpy as np
+    if name == "bool":
+        return np.dtype("bool")
+    return np.dtype(_NP_CARRIER.get(name, name))
+
+
+def _as_carrier(t):
+    """`t` retyped to whatever numpy can hold, bit for bit."""
+    import torch
+
+    carrier = _NP_CARRIER.get(str(t.dtype).removeprefix("torch."))
+    return t.view(getattr(torch, carrier)) if carrier else t
 
 
 def _replay(workdir, meta, runtime, key):
@@ -237,36 +236,37 @@ def _attribute_dir_of(workdir):
     return compiler_bridge.compiler_contract("kernel_object").RUNTIME_ATTRIBUTE_DIR
 
 
-def run(workdir, meta, args):
-    """Execute the kernel on the launch's tensors. Returns the names written.
+def _replay_key(workdir, meta, runtime):
+    """What this launch's outputs are a function of.
 
-    No lock: every file this writes is under `workdir.runtime_dir`, which is
-    this process's own, so concurrent launches of one kernel never meet.
-    Replay is OFF by default -- a result out of a file is not one the simulator
-    produced today; it is for the inner loop, not for reporting.
+    The ELF's own bytes, so a fix anywhere in the compiler misses, and the bytes of
+    every input. The Triton source is already in the workdir path.
     """
-    runtime = write_inputs(workdir, meta, args)
+    import hashlib
 
-    key = None
-    if os.environ.get("TORCHSIM_TRITON_REPLAY", "0") == "1":
-        key = _replay_key(workdir, meta, runtime)
-        if key and _replay(workdir, meta, runtime, key):
-            logger.info("[Spike] %s replayed %s (same ELF, same inputs)",
-                        meta["kernel_name"], key)
-            return read_outputs(workdir, meta, args)
+    h = hashlib.sha256()
+    elf = [f for f in sorted(os.listdir(workdir)) if f.endswith(".elf")]
+    if not elf:
+        return None
+    with open(os.path.join(workdir, elf[0]), "rb") as f:
+        h.update(f.read())
+    for m in meta["args"]:
+        h.update(("%s|%s|%s|%s;" % (m["name"], m["role"], m["dtype"],
+                                    m["numel"])).encode())
+        if m["role"] in ("in", "inout"):
+            with open(os.path.join(runtime, f"{m['name']}.raw"), "rb") as f:
+                h.update(f.read())
+    return h.hexdigest()[:32]
 
-    manifest = contract.kernel_object(workdir)
-    if manifest is None:
-        raise FileNotFoundError(
-            f"{workdir} has no kernel.json -- compile the kernel first")
-    raw_paths = {a["name"]: os.path.join(runtime, f"{a['name']}.raw")
-                 for a in manifest["args"]}
-    values = dict(zip(meta.get("call_params", ()), args))
-    try:
-        spike.launch(workdir, manifest, runtime, raw_paths, logger.debug, scalar_values=values)
-    except spike.launcher().SpikeError as e:
-        raise RuntimeError(f"[Spike] {meta['kernel_name']} failed:\n{e}") from None
 
-    if key:
-        _save_replay(workdir, meta, runtime, key)
-    return read_outputs(workdir, meta, args)
+def _replay_root(workdir):
+    """Beside the workdirs, not inside one.
+
+    A compiler-side fix is picked up by DELETING `outputs/triton_*`, and a cache
+    kept inside a workdir would go with it every time it was most wanted.
+    """
+    return os.path.join(os.path.dirname(os.path.abspath(workdir)), REPLAY_DIR)
+
+
+def _outputs_of(meta):
+    return [m["name"] for m in meta["args"] if m["role"] in ("out", "inout")]

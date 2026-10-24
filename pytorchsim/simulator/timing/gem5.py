@@ -29,16 +29,26 @@ def run_cycle_binary(workdir, meta):
         return None
 
 
-def tile_tables(m5out, overlap_offsets):
-    """The cycle table and the unit rows of a gem5 run: a row per dump the compiler's gem5_samples
-    reads, in the order it returns them; whatever that reader refuses is raised, not sampled around."""
-    dumps = compiler_bridge.compiler_contract("gem5_samples").read(m5out, len(overlap_offsets))
-    return cycle_table(overlap_offsets, dumps), unit_rows(dumps)
+def _simulate(target_binary, obj_dir, manifest, silent_mode=False):
+    """gem5 over one tile of the kernel object in `obj_dir`, under what it was compiled for."""
+    dir_path = os.path.join(os.path.dirname(target_binary), "m5out")
+    machine = compiler_bridge.compiled_for(manifest)
+    run = compiler_bridge.run_options(obj_dir, manifest)
+    gem5_cmd = [config.CONFIG_GEM5_PATH, "-r", "--stdout-file=sto.log", "-d", dir_path,
+                run["gem5_script"], "-c", target_binary,
+                "--model", run["model"],
+                "--machine-config", run["machine_config"],
+                "--vlane", str(machine.vector_lanes), "--vlen", str(machine.vlen_bits)]
 
+    if not silent_mode:
+        logger.debug(f"[Gem5] cmd> {' '.join(gem5_cmd)}")
+        logger.info("[Gem5] Gem5 simulation started")
 
-#: What gem5 says when it dies, as opposed to the libc backtrace that follows it.
-_GEM5_SIGNAL = re.compile(
-    r"^(?:.*\b(?:panic|fatal):.*|.*Assertion.*|Program aborted at tick.*)$", re.M)
+    proc = subprocess.run(gem5_cmd, capture_output=True, text=True, errors="replace")
+    if proc.returncode != 0:
+        raise RuntimeError(_gem5_failure(proc, os.path.join(dir_path, "sto.log")))
+
+    return dir_path
 
 
 def _gem5_failure(proc, log_path):
@@ -63,26 +73,19 @@ def _gem5_failure(proc, log_path):
             + "\n  ".join(h[:300] for h in hits[:3]))
 
 
-def _simulate(target_binary, obj_dir, manifest, silent_mode=False):
-    """gem5 over one tile of the kernel object in `obj_dir`, under what it was compiled for."""
-    dir_path = os.path.join(os.path.dirname(target_binary), "m5out")
-    machine = compiler_bridge.compiled_for(manifest)
-    run = compiler_bridge.run_options(obj_dir, manifest)
-    gem5_cmd = [config.CONFIG_GEM5_PATH, "-r", "--stdout-file=sto.log", "-d", dir_path,
-                run["gem5_script"], "-c", target_binary,
-                "--model", run["model"],
-                "--machine-config", run["machine_config"],
-                "--vlane", str(machine.vector_lanes), "--vlen", str(machine.vlen_bits)]
+def tile_tables(m5out, overlap_offsets):
+    """The cycle table and the unit rows of a gem5 run: a row per dump the compiler's gem5_samples
+    reads, in the order it returns them; whatever that reader refuses is raised, not sampled around."""
+    dumps = compiler_bridge.compiler_contract("gem5_samples").read(m5out, len(overlap_offsets))
+    return cycle_table(overlap_offsets, dumps), unit_rows(dumps)
 
-    if not silent_mode:
-        logger.debug(f"[Gem5] cmd> {' '.join(gem5_cmd)}")
-        logger.info("[Gem5] Gem5 simulation started")
 
-    proc = subprocess.run(gem5_cmd, capture_output=True, text=True, errors="replace")
-    if proc.returncode != 0:
-        raise RuntimeError(_gem5_failure(proc, os.path.join(dir_path, "sto.log")))
-
-    return dir_path
+def cycle_table(overlap_offsets, dumps):
+    """[(cycle, overlapping_cycle), ...], one per gem5 dump in row order. The compiler states each
+    tile's overlap offset (None where nothing of it overlaps), and each dump names its tile."""
+    return [(int(d["cycles"]), 0 if (off := overlap_offsets[d["tile"]]) is None
+             else max(int(d["cycles"]) - int(off), 0))
+            for d in dumps]
 
 
 def unit_rows(dumps):
@@ -98,14 +101,6 @@ def unit_rows(dumps):
     return rows
 
 
-def cycle_table(overlap_offsets, dumps):
-    """[(cycle, overlapping_cycle), ...], one per gem5 dump in row order. The compiler states each
-    tile's overlap offset (None where nothing of it overlaps), and each dump names its tile."""
-    return [(int(d["cycles"]), 0 if (off := overlap_offsets[d["tile"]]) is None
-             else max(int(d["cycles"]) - int(off), 0))
-            for d in dumps]
-
-
 def dump_cycle_table_tsv(table, path, origins=None):
     """cycle<TAB>overlapping per line, in row order, for TOGSim's loader.
 
@@ -117,3 +112,8 @@ def dump_cycle_table_tsv(table, path, origins=None):
         if origins:
             fh.write("# origins: %s\n" % ", ".join(sorted(str(o) for o in origins)))
     return path
+
+
+#: What gem5 says when it dies, as opposed to the libc backtrace that follows it.
+_GEM5_SIGNAL = re.compile(
+    r"^(?:.*\b(?:panic|fatal):.*|.*Assertion.*|Program aborted at tick.*)$", re.M)

@@ -1,20 +1,68 @@
-"""aten._grouped_mm and transformers' grouped_mm_fallback on the npu (2-D A grouped by offs, times 3-D B) as one
-Triton kernel in fused_moe form: a program is a block of BM rows of one group, its group, first row and row count
-read from a table the TOG reads as runtime attributes. Both ops register one entry through torch.library."""
+"""aten._grouped_mm and transformers' grouped_mm_fallback (2-D A grouped by offs, times 3-D B) as one
+Triton kernel in fused_moe form: a program is BM rows of one group, read from a table the TOG reads as
+runtime attributes. No backward, so a call needing a gradient runs group by group."""
+
+from typing import Optional
 
 import torch
 import triton
 import triton.language as tl
-from torch.library import triton_op, wrap_triton
+from torch.library import wrap_triton
 
 from pytorchsim import config
+from pytorchsim.frontend.dispatcher.custom_fused_kernel import CustomFusedKernel, Decline
 
-logger = config.setup_logger()
+
+class GroupedMM(CustomFusedKernel):
+    name = "torchsim::grouped_mm"
+    #: By name: transformers defines grouped_mm_fallback only once imported, after install.
+    takes = (torch.ops.aten._grouped_mm.default, "transformers::grouped_mm_fallback")
+
+    def kernels(self):
+        return (_grouped_mm_kernel,)
+
+    def arguments(self, op, a, b, offs=None, bias=None, out_dtype=None):
+        """aten's call, and transformers' (A, B, offs) as the same call without bias or out_dtype."""
+        return a, b, offs, bias, out_dtype
+
+    def plan(self, a, b, offs, bias, out_dtype):
+        """(BM, BN, BK) for 2-D A times 3-D B grouped by offs, in one dtype, with no bias."""
+        if a.dim() != 2 or b.dim() != 3 or offs is None:
+            return Decline(f"A {a.dim()}-D, B {b.dim()}-D, offs {'given' if offs is not None else 'none'} "
+                           "(it takes 2-D x 3-D)")
+        if bias is not None or (out_dtype is not None and out_dtype != a.dtype):
+            return Decline("a bias or another out_dtype")
+        if a.dtype != b.dtype:
+            return Decline(f"A {a.dtype} and B {b.dtype}")
+        bm, bn, bk = _tiles(b.shape[2], a.shape[1], a.element_size())
+        return {"BM": bm, "BN": bn, "BK": bk}
+
+    def launch(self, plan, a: torch.Tensor, b: torch.Tensor, offs: Optional[torch.Tensor],
+               bias: Optional[torch.Tensor], out_dtype: Optional[torch.dtype]) -> torch.Tensor:
+        s, k = a.shape
+        g, _, n = b.shape
+        bm, bn, bk = plan["BM"], plan["BN"], plan["BK"]
+        grp, first, rows, nb = _blocks(offs, s, g, bm)
+        c = a.new_empty(s, n)
+        wrap_triton(_grouped_mm_kernel)[(nb, triton.cdiv(n, bn), 1)](
+            a.contiguous(), b, grp, first, rows, c, b.stride(0), b.stride(1), b.stride(2),
+            k, triton.cdiv(k, bk) * bk, n, bm, bn, bk)
+        return c
+
+    def fallback(self, a, b, offs, bias, out_dtype):
+        return _math(a, b, offs, bias, out_dtype)
+
+
+GROUPED_MM = GroupedMM()
+
+
+def install():
+    GROUPED_MM.install()
 
 
 def _tiles(n, k, esize):
     """(BM, BN, BK): BM the lanes, BN and BK the largest tile the machine's mm rule gives a BM-row block."""
-    from pytorchsim.frontend.inductor.codegen import tiling
+    from pytorchsim.frontend import tiling
     bm = int(config.CONFIG_MACHINE.vector_lanes)
     acc = 4
     _, tn, tk = tiling.gemm_tile_candidates(bm, n, k, acc + esize, esize)[0]
@@ -63,19 +111,6 @@ def _blocks(offs, s, g, bm):
     return grp.to(torch.int32), first.to(torch.int32), rows.to(torch.int32), nb
 
 
-@triton_op("torchsim::grouped_mm", mutates_args=())
-def grouped_mm(a: torch.Tensor, b: torch.Tensor, offs: torch.Tensor) -> torch.Tensor:
-    s, k = a.shape
-    g, _, n = b.shape
-    bm, bn, bk = _tiles(n, k, a.element_size())
-    grp, first, rows, nb = _blocks(offs, s, g, bm)
-    c = a.new_empty(s, n)
-    wrap_triton(_grouped_mm_kernel)[(nb, triton.cdiv(n, bn), 1)](
-        a.contiguous(), b, grp, first, rows, c, b.stride(0), b.stride(1), b.stride(2),
-        k, triton.cdiv(k, bk) * bk, n, bm, bn, bk)
-    return c
-
-
 def _math(a, b, offs, bias, out_dtype):
     """Group by group with matmul: rows offs[g-1]:offs[g] of A times B[g] (aten's semantics for 2-D x 3-D)."""
     out, lo = [], 0
@@ -86,47 +121,3 @@ def _math(a, b, offs, bias, out_dtype):
     if bias is not None:
         c = c + bias
     return c.to(out_dtype) if out_dtype is not None else c
-
-
-def _decline(a, b, offs, bias, out_dtype):
-    """Why the kernel does not take this call, or None."""
-    if a.dim() != 2 or b.dim() != 3 or offs is None:
-        return f"A {a.dim()}-D, B {b.dim()}-D, offs {'given' if offs is not None else 'none'} (it takes 2-D x 3-D)"
-    if bias is not None or (out_dtype is not None and out_dtype != a.dtype):
-        return "a bias or another out_dtype"
-    if a.dtype != b.dtype:
-        return f"A {a.dtype} and B {b.dtype}"
-    if torch.is_grad_enabled() and (a.requires_grad or b.requires_grad):
-        return "a gradient (the kernel has no backward)"
-    return None
-
-
-def _aten_grouped_mm(a, b, offs=None, bias=None, out_dtype=None):
-    why = _decline(a, b, offs, bias, out_dtype)
-    if why is not None:
-        logger.info("[grouped_mm] %s x %s: math, %s", tuple(a.shape), tuple(b.shape), why)
-        return _math(a, b, offs, bias, out_dtype)
-    if not torch.compiler.is_compiling():
-        return _math(a, b, offs, bias, out_dtype)
-    return grouped_mm(a, b, offs)
-
-
-def _transformers_grouped_mm_fallback(input, weight, offs):
-    """transformers' grouped_mm_fallback, which it calls instead of aten._grouped_mm (under torch.compile when the
-    weight is not bf16), on aten._grouped_mm's route."""
-    return _aten_grouped_mm(input, weight, offs)
-
-
-_libs = []
-
-
-def install():
-    """Register the npu kernel of aten._grouped_mm and of transformers::grouped_mm_fallback above autograd and
-    functionalization, and at the backend key, where a call made under inference_mode lands."""
-    if not _libs:
-        for ns, op, fn in (("aten", "_grouped_mm", _aten_grouped_mm),
-                           ("transformers", "grouped_mm_fallback", _transformers_grouped_mm_fallback)):
-            lib = torch.library.Library(ns, "IMPL")
-            for key in ("AutogradPrivateUse1", "PrivateUse1"):
-                lib.impl(op, fn, key)
-            _libs.append(lib)

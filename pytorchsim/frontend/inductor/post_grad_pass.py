@@ -2,7 +2,7 @@
 
 pytorchsim_post_grad_pass is the device_custom_pass Inductor runs on npu graphs only, after its post-grad
 passes: histc, polar, a row times a matrix, complex values as real pairs. Ops with a Triton kernel of
-their own (topk, grouped_mm, SDPA) are frontend/triton_ops/.
+their own (topk, grouped_mm, SDPA) are frontend/dispatcher/.
 """
 
 import torch

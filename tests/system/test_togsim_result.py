@@ -1,6 +1,6 @@
-"""TOGSim's results reach the frontend through the file it writes with --result, never its log, and a
-session keeps the Simulator's output in its .log. The Simulator is a stub writing a tpuv6e test_matmul.py
-run's result, so no TOGSim is needed."""
+"""TOGSim's results reach the frontend through the file it writes with --result, never its log; a
+session keeps the Simulator's output in its .log, a launch it queues has no result yet, and the attribute
+copies its launches held go when it shuts down. The Simulator is a stub, so no TOGSim is needed."""
 import os
 import stat
 import sys
@@ -10,6 +10,8 @@ from unittest import mock
 sys.path.insert(0, os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"))
 
 from pytorchsim import config
+from pytorchsim.backend import codecache
+from pytorchsim.simulator import timing
 from pytorchsim.simulator.timing.togsim import TOGSimProcess
 
 RESULT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "togsim_tpuv6e.json")
@@ -83,8 +85,30 @@ def test_a_run_without_a_result_file_is_an_error():
         raise AssertionError(f"{path} was read though the Simulator wrote no result")
 
 
+def test_a_session_removes_the_attribute_copies_its_launches_held():
+    with tempfile.TemporaryDirectory() as root, _logs_in(root):
+        machine, handle, attribute = _checkout(root)
+        os.makedirs(attribute)
+        open(os.path.join(attribute, "arg0"), "w").close()
+        sim = TOGSimProcess(config_path=machine, togsim_path=root)
+        held = timing._held_for_the_session(sim, os.path.dirname(handle), attribute)
+        assert os.path.isfile(os.path.join(held, "arg0"))
+        sim.launch_kernel(0, 0, handle, held)
+        sim.shutdown()
+        assert not os.path.exists(held) and os.path.isdir(attribute)
+
+
+def test_a_launch_queued_on_a_session_returns_no_result():
+    launcher = codecache.TritonNPULauncher("k", "/nonexistent", {"kernel_name": "k"})
+    with mock.patch.dict(os.environ, TORCHSIM_TIMING_MODE="1", TORCHSIM_FUNCTIONAL_MODE="0"), \
+         mock.patch.object(codecache.timing, "run", return_value=None):
+        assert launcher() is None
+
+
 if __name__ == "__main__":
     test_standalone_reads_the_result_file()
     test_session_writes_its_result_file()
     test_a_run_without_a_result_file_is_an_error()
+    test_a_session_removes_the_attribute_copies_its_launches_held()
+    test_a_launch_queued_on_a_session_returns_no_result()
     print("PASS")

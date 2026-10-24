@@ -54,10 +54,9 @@ class TritonNPULauncher:
             return None
 
         result = timing.run(self.workdir, self.meta, args)
-        if isinstance(result, int):
-            logger.info("[TOGSim] %s queued as kernel %d; the stream's cycles "
-                        "are reported when the simulator closes",
-                        self.kernel_name, result)
+        if result is None:
+            logger.info("[TOGSim] %s queued on the open TOGSimulator; the stream's cycles "
+                        "are reported when the simulator closes", self.kernel_name)
         else:
             logger.info("[TOGSim] %s simulated: %d cycles", self.kernel_name, result["total_cycles"])
         return result

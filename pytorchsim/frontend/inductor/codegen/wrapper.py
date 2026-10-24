@@ -16,6 +16,14 @@ from pytorchsim.frontend.inductor.codegen.user_kernel import user_kernel_compile
 class TritonNPUWrapperCodegen(verify.VerifyLines, wrapper.PythonWrapperCodegen):
     """The npu wrapper: kernels are compiled by torchsim_compile and called as plain functions."""
 
+    def __init__(self):
+        """A model's own Triton kernels: the kernels define_kernel is collecting for the one being
+        defined (None between), Inductor's metadata line of each, the name of each launch variant."""
+        self._npu_user_kernel = None
+        self._npu_user_notes = {}
+        self._npu_user_variants = {}
+        super().__init__()
+
     @classmethod
     def create(
         cls,
@@ -115,11 +123,11 @@ class TritonNPUWrapperCodegen(verify.VerifyLines, wrapper.PythonWrapperCodegen):
             defined = self._npu_user_kernel
         finally:
             self._npu_user_kernel = None
-        notes = self.__dict__.setdefault("_npu_user_notes", {})
+        notes = self._npu_user_notes
         for _, metadata in defined:
             notes[name] = metadata
         meta = user_kernel_meta(kernel, kwargs, triton_meta, grids[0])
-        variants = self.__dict__.setdefault("_npu_user_variants", {})
+        variants = self._npu_user_variants
         key = (name, repr(meta))
         if key not in variants:
             count = sum(1 for n, _ in variants if n == name)
@@ -132,7 +140,7 @@ class TritonNPUWrapperCodegen(verify.VerifyLines, wrapper.PythonWrapperCodegen):
                       cpp_definition=None):
         """Inductor's own, except the async_compile.triton of the user-defined Triton kernel
         being defined, which define_user_defined_triton_kernel replaces."""
-        if getattr(self, "_npu_user_kernel", None) is not None:
+        if self._npu_user_kernel is not None:
             self._npu_user_kernel.append((kernel_name, metadata))
             return None
         return super().define_kernel(kernel_name, kernel_body, metadata, gpu, cpp_definition)

@@ -32,7 +32,7 @@ def user_kernel_meta(kernel, kwargs, triton_meta, grid):
     Inductor's triton_meta, each pointer's dtype and span from its IR argument, and its role inout
     where torch's mutation analysis says the launch writes it (every pointer, without that analysis)."""
     from pytorchsim.contract import storage_span
-    from pytorchsim.backend.codecache import user_kernel_id
+    from pytorchsim.backend.launch_hooks import user_kernel_id
 
     hint = V.graph.sizevars.optimization_hint
     signature = {str(k): str(v) for k, v in triton_meta["signature"].items()}

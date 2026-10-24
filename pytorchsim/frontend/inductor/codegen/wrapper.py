@@ -46,7 +46,8 @@ class TritonNPUWrapperCodegen(verify.VerifyLines, wrapper.PythonWrapperCodegen):
             f"""
                 from pytorchsim.config import setup_logger
                 from pytorchsim.frontend.inductor.codegen import verify as _fverify
-                from pytorchsim.backend.codecache import torchsim_compile, torchsim_extern
+                from pytorchsim.backend.codecache import torchsim_compile
+                from pytorchsim.backend.launch_hooks import torchsim_extern
 
                 _logger = setup_logger("pytorchsim.frontend.inductor.codegen.generated_wrapper")
                 _logger.info(f'Wrapper Codegen Path = {{__file__}}')

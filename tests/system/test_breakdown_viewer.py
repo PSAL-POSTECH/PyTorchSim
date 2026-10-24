@@ -1,5 +1,6 @@
 """The perf viewer reads the breakdown wallclock writes: its file under the dump path, the compile
-records under the key the writer uses, and torchsim-compile first among the groups. Nothing runs."""
+records under the key the writer uses, and torchsim-compile first among the groups; a breakdown that
+cannot be written is logged. Nothing runs."""
 import json
 import os
 import runpy
@@ -53,7 +54,19 @@ def test_viewer_reads_the_compile_records():
         assert names[:2] == [wallclock.TORCHSIM_COMPILE, wallclock.SPIKE], names
 
 
+def test_a_breakdown_that_cannot_be_written_is_logged():
+    with tempfile.TemporaryDirectory() as root, \
+            mock.patch.dict(os.environ, {"TORCHSIM_BREAKDOWN": "1", "TORCHSIM_DUMP_PATH": root}), \
+            mock.patch.object(wallclock, "REC", wallclock.Record()), \
+            mock.patch.object(wallclock.logger, "warning") as warned:
+        wallclock.REC.add(wallclock.SPIKE, KERNEL, 0.1)
+        with mock.patch("builtins.open", side_effect=OSError("read-only")):
+            wallclock._at_exit()
+    assert warned.called and "could not write" in warned.call_args[0][0], warned.call_args
+
+
 if __name__ == "__main__":
     test_viewer_finds_the_file_wallclock_writes()
     test_viewer_reads_the_compile_records()
+    test_a_breakdown_that_cannot_be_written_is_logged()
     print("PASS")

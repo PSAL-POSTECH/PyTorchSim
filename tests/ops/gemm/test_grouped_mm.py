@@ -54,10 +54,10 @@ def _routed():
 
 def _run_compiled(sizes, k, n, fn=_gmm, dtype=torch.bfloat16):
     """(relative error, grouped-kernel launches, calls left to aten) of one compiled call."""
-    from pytorchsim.backend import codecache
+    from pytorchsim.backend import launch_hooks
     externs = []
     _routed().clear()
-    codecache.observe_every_extern(externs.append)
+    launch_hooks.observe_every_extern(externs.append)
     a, b, offs = _inputs(sizes, k, n)
     a, b = a.to(dtype), b.to(dtype)
     torch._dynamo.reset()

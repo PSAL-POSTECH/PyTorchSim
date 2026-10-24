@@ -17,6 +17,7 @@ def install():
     from torch._inductor.select_algorithm import AlgorithmSelectorCache
 
     from pytorchsim.backend import template_timing
+    from pytorchsim.backend import template_record
 
     orig_benchmark = AlgorithmSelectorCache.__dict__["benchmark_choices"].__func__
     orig_call = AlgorithmSelectorCache.__call__
@@ -68,8 +69,8 @@ def install():
     AlgorithmSelectorCache.make_precompile_fn = make_precompile_fn
     AlgorithmSelectorCache.generate_example_value = staticmethod(
         generate_example_value)
-    select_algorithm.add_preprocessing_fn(template_timing.keep_recorded)
-    select_algorithm.add_feedback_saver(template_timing.record)
+    select_algorithm.add_preprocessing_fn(template_record.keep_recorded)
+    select_algorithm.add_feedback_saver(template_record.record)
 
 
 def pick_config(choices):

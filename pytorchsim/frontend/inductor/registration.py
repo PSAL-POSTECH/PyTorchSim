@@ -164,7 +164,7 @@ def npu_choices_class():
     from torch._inductor.choices import InductorChoices
     from torch._inductor.lookup_table import LookupTableChoices
 
-    from pytorchsim.backend import template_timing
+    from pytorchsim.backend import template_record
     from pytorchsim.frontend.inductor import is_lowering_npu
     from pytorchsim.frontend.inductor.autotune import (generated_kernel_blocks,
                                                        template_kernel_configs)
@@ -172,7 +172,7 @@ def npu_choices_class():
     class NPUChoices(LookupTableChoices):
         def uuid(self):
             """This class's part of Inductor's cache key: the machine and the picks it hands out."""
-            return f"pytorchsim-npu-choices-4-{template_timing.graph_digest()}"
+            return f"pytorchsim-npu-choices-4-{template_record.graph_digest()}"
 
         def get_config_heuristics(self, device_type="cuda"):
             if device_type == "npu":
@@ -181,19 +181,19 @@ def npu_choices_class():
 
         def _get_lookup_table(self):
             """This machine's recorded picks; Inductor's own looks only on CUDA."""
-            return template_timing.lookup_table()
+            return template_record.lookup_table()
 
         @staticmethod
         def _get_device_key(device):
             if getattr(device, "type", None) == "npu":
-                return template_timing.device_key()
+                return template_record.device_key()
             return LookupTableChoices._get_device_key(device)
 
         def _create_lookup_choices(self, *args, **kwargs):
             """Inductor's choices from the recorded configs, each marked as recorded."""
             ktcs = super()._create_lookup_choices(*args, **kwargs)
             for ktc in ktcs:
-                ktc.annotations[template_timing.SOURCE] = template_timing.RECORDED
+                ktc.annotations[template_record.SOURCE] = template_record.RECORDED
             return ktcs
 
         def triton_kernel_kwargs(self, kernel_cls, features, groups, kernel_kwargs):

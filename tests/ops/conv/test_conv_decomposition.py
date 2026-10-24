@@ -46,9 +46,9 @@ def run_case(name):
 
 
 def run_grad(name):
-    from pytorchsim.backend import codecache
+    from pytorchsim.backend import launch_hooks
     externs = []
-    codecache.observe_every_extern(externs.append)
+    launch_hooks.observe_every_extern(externs.append)
     x, w, b = _inputs("depthwise")
     params = CASES["depthwise"][2:]
     xr, wr = x.clone().requires_grad_(), w.clone().requires_grad_()

@@ -1,5 +1,6 @@
 """A Simulator that exits non-zero is a RuntimeError on both paths: run_standalone carries its last
-line, shutdown its status. The Simulator here is a stub, so no TOGSim is needed."""
+line, shutdown its status; a session on a machine file that is not there is refused before it starts.
+The Simulator here is a stub, so no TOGSim is needed."""
 import os
 import stat
 import sys
@@ -77,6 +78,17 @@ def test_session_that_ran_shuts_down_quietly():
         assert _raised(sim.shutdown) is None
 
 
+def test_session_on_a_missing_machine_file_is_refused():
+    with tempfile.TemporaryDirectory() as root, _logs_in(root):
+        _checkout(root, 0)
+        try:
+            TOGSimProcess(config_path=os.path.join(root, "absent.yml"), togsim_path=root)
+        except FileNotFoundError as e:
+            assert "absent.yml" in str(e), e
+            return
+    raise AssertionError("a session started on a machine file that is not there")
+
+
 def test_environment_is_left_as_found():
     """No TOGSIM_CONFIG (which the compiler bridge refuses) or log path outlives a test here."""
     before = dict(os.environ)
@@ -89,5 +101,6 @@ if __name__ == "__main__":
     test_standalone_refusal_is_a_runtime_error()
     test_session_refusal_is_a_runtime_error()
     test_session_that_ran_shuts_down_quietly()
+    test_session_on_a_missing_machine_file_is_refused()
     test_environment_is_left_as_found()
     print("PASS")

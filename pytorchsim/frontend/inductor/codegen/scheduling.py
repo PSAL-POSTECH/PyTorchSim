@@ -112,16 +112,16 @@ def _tile_source(node_schedule):
     RECORDED_UNFUSED; a MultiTemplateBuffer is only made for choices timed in cycles."""
     from torch._inductor.ir import MultiTemplateBuffer
 
-    from pytorchsim.backend import template_timing
+    from pytorchsim.backend import template_record
 
     nodes = [n for n in node_schedule if hasattr(n, "is_template")]
     template = next((n for n in nodes if n.is_template()), None)
     if template is None:
         return None
     if isinstance(template.node, MultiTemplateBuffer):
-        return template_timing.TIMED
+        return template_record.TIMED
     ktc = getattr(template.node, "annotations", {}).get("ktc")
-    source = ktc.annotations.get(template_timing.SOURCE) if ktc is not None else None
-    if source == template_timing.RECORDED and len(nodes) > 1:
-        return template_timing.RECORDED_UNFUSED
-    return source or template_timing.HEURISTIC
+    source = ktc.annotations.get(template_record.SOURCE) if ktc is not None else None
+    if source == template_record.RECORDED and len(nodes) > 1:
+        return template_record.RECORDED_UNFUSED
+    return source or template_record.HEURISTIC

@@ -56,7 +56,7 @@ def test_reuse():
         assert _run(a) == [NAME]
         with open(os.path.join(a, "keys", f"{NAME}.json")) as f:
             key = json.load(f)
-        assert key["inputs"]["pts"] == INPUTS.split() and bundle.template_timing.HEURISTIC not in key["tile_sources"]
+        assert key["inputs"]["pts"] == INPUTS.split() and bundle.template_record.HEURISTIC not in key["tile_sources"]
 
         shutil.copytree(os.path.join(a, "out", NAME), os.path.join(a, "out", "vector_dropped_1x1_bf16"))
         shutil.copy(os.path.join(a, "keys", f"{NAME}.json"), os.path.join(a, "keys", "vector_dropped_1x1_bf16.json"))
@@ -77,7 +77,7 @@ def test_reuse():
 
         shutil.copytree(a, d)
         with open(os.path.join(d, "keys", f"{NAME}.json"), "w") as f:
-            json.dump(dict(key, tile_sources=[bundle.template_timing.HEURISTIC]), f)
+            json.dump(dict(key, tile_sources=[bundle.template_record.HEURISTIC]), f)
         assert _run(e, prev=d) == [NAME]
 
         shutil.rmtree(e)

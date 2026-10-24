@@ -1,17 +1,18 @@
-"""A cached kernel's identity is what the compiler itself resolves: the tools it would run, and the
-TOGSim API and headers its tog.so is compiled against. A compiler that cannot state them stops the
-run, rather than leaving every cached kernel guarded by its commit alone."""
+"""A cached kernel's identity is what the compiler itself resolves (its commit under "compiler", its
+tools, the TOGSim API and headers); a compiler that cannot state them stops the run, and a stale artifact
+that cannot be removed is raised rather than left to be reused."""
 import json
 import os
 import subprocess
 import sys
+import tempfile
 from unittest import mock
 
 sys.path.insert(0, os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"))
 
 import torch  # noqa: F401,E402  the npu backend loads pytorchsim whole, before its parts are imported
 from pytorchsim import config  # noqa: E402
-from pytorchsim.backend import codecache, compiler_bridge  # noqa: E402
+from pytorchsim.backend import build_identity, compiler_bridge  # noqa: E402
 
 
 def _ask_compiler(expr):
@@ -23,8 +24,8 @@ def _ask_compiler(expr):
 
 
 def _fresh_identity():
-    with mock.patch.object(codecache, "_identity", None):
-        return codecache.identity()
+    with mock.patch.object(build_identity, "_identity", None):
+        return build_identity.identity()
 
 
 def test_tools_are_the_compilers():
@@ -50,7 +51,28 @@ def test_a_compiler_that_cannot_answer_stops_the_run():
     raise AssertionError("identity() answered without the compiler")
 
 
+def test_the_compiler_is_named_compiler():
+    got = _fresh_identity()
+    assert "compiler" in got and "the compiler" not in got, sorted(got)
+
+
+def test_a_stale_artifact_that_cannot_be_removed_is_raised():
+    with tempfile.TemporaryDirectory() as workdir:
+        open(os.path.join(workdir, "kernel.json"), "w").close()
+        with mock.patch.object(os, "remove", side_effect=PermissionError("read-only")):
+            try:
+                build_identity.clear_stale(workdir)
+            except PermissionError:
+                pass
+            else:
+                raise AssertionError("clear_stale passed over a removal that failed")
+        with mock.patch.object(os, "remove", side_effect=FileNotFoundError("gone")):
+            build_identity.clear_stale(workdir)
+
+
 if __name__ == "__main__":
+    test_the_compiler_is_named_compiler()
+    test_a_stale_artifact_that_cannot_be_removed_is_raised()
     test_tools_are_the_compilers()
     test_tog_abi_is_the_compilers_togsim()
     test_a_compiler_that_cannot_answer_stops_the_run()

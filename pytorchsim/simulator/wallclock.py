@@ -145,14 +145,13 @@ def _at_exit():
         return
     text = render(REC.as_dict())
     print("\n" + text, flush=True)
+    path = os.path.join(config.get_dump_path(), f"{PREFIX}_{REC.run_id}.json")
     try:
-        path = os.path.join(config.get_dump_path(),
-                            f"{PREFIX}_{REC.run_id}.json")
         with open(path, "w") as f:
             json.dump(REC.as_dict(), f, indent=2)
         print(f"  {os.path.basename(path)}: {path}", flush=True)
-    except OSError:
-        pass
+    except OSError as e:
+        logger.warning("[breakdown] could not write %s: %s", path, e)
 
 
 def _sum_compiles(records, key):

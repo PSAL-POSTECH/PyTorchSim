@@ -645,9 +645,10 @@ def install():
     _install_npu_choices()
     _decompose_convolution_for_npu()
     _install_selection()
-    from pytorchsim.frontend import attention, grouped_mm, topk
+    from pytorchsim.frontend import attention, grouped_mm, sort, topk
     attention.install()
     grouped_mm.install()
+    sort.install()
     topk.install()
 
     inductor_config.max_autotune_gemm = True

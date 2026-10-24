@@ -27,7 +27,7 @@ def pinned_blocks(kernel_tiling, features):
 def blocks_for(numels, features):
     """tiling.fixed_config_for for a scheduled kernel of `numels` (<prefix>numel -> int)."""
     shim = type("K", (), {"inside_reduction": bool(features.is_reduction()), "numels": numels})()
-    return tiling.fixed_config_for(shim, numels, _elem_args(features),
+    return tiling.fixed_config_for(shim, numels, _widest_dtype_args(features),
                                    contiguous=_kept_axis_contiguous(features)) or {}
 
 
@@ -58,7 +58,7 @@ def _kept_axis_contiguous(features):
 _WIDTH_NAME = {64: "float64", 32: "float32", 16: "float16", 8: "int8"}
 
 
-def _elem_args(features):
+def _widest_dtype_args(features):
     """The widest tensor a scheduled node makes or reads, as fixed_config_for's args; a node or
     read with no dtype (no tensor) is not counted."""
     from torch._inductor.virtualized import V

@@ -4,6 +4,7 @@ allows; a reduction whose rows fill fewer lanes than the machine has takes the r
 lanes and budgets it over all of them; any other reduction takes rows of its R0_BLOCK up to the budget."""
 import os
 import sys
+import types
 
 import torch
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
@@ -104,6 +105,21 @@ def test_few_rows_budget_the_reduced_axis_over_every_lane():
     test_result("FewRowsLaneBlocks", torch.tensor(got), torch.tensor([w for _, w in cases]))
 
 
+def test_the_tile_budget_is_the_machine_s_spad_budget():
+    """The budget is a lane's scratchpad over the machine's spad_buffers, as the compiler's spad_budget:
+    four buffers halve the reduction block two give, and leave fewer GEMM tiles, each among two's."""
+    from pytorchsim import config
+    real = config.CONFIG_MACHINE
+    four = types.SimpleNamespace(spad_size=real.spad_size, spad_buffers=4, vector_lanes=real.vector_lanes,
+                                 spad_budget=real.spad_size // 4)
+    two = tiling.reduction_block_for(1 << 20, 4, LANE_BYTES), set(tiling.gemm_tile_candidates(4096, 4096, 4096, 4, 2))
+    config.CONFIG_MACHINE = four
+    try:
+        got = tiling.reduction_block_for(1 << 20, 4, LANE_BYTES), set(tiling.gemm_tile_candidates(4096, 4096, 4096, 4, 2))
+    finally:
+        del config.CONFIG_MACHINE
+    test_result("SpadBudgetIsTheMachines", torch.tensor([got[0] * 2, int(got[1] < two[1])]), torch.tensor([two[0], 1]))
+
 if __name__ == "__main__":
     test_gemv_blocks_follow_the_contiguous_kept_axis()
     test_lane_cover_and_budget_are_never_crossed()
@@ -111,3 +127,4 @@ if __name__ == "__main__":
     test_row_reduction_rows_fill_the_tile_budget()
     test_other_reductions_keep_todays_blocks()
     test_few_rows_budget_the_reduced_axis_over_every_lane()
+    test_the_tile_budget_is_the_machine_s_spad_budget()

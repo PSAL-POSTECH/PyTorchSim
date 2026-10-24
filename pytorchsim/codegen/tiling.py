@@ -102,18 +102,12 @@ def triton_max_numel():
 
 
 def reduction_block_for(extent, elem_bytes=4, lane_bytes=None):
-    """The R0_BLOCK this backend pins for a reduction of `extent`.
-
-    Cover the extent and no more, then shrink to the budget: half of one lane's
-    scratchpad, shared by the tiles a reduction keeps live. Two callers must
-    agree: this pins the block, inductor_patches asks if persistence matches.
-    Both see the machine's scratchpad when `lane_bytes` is left to this
-    function; a persistent reduction rendered for a bigger one than the target
-    has is a kernel the compiler refuses as over budget, whatever XBLOCK shrinks to.
-    """
+    """The R0_BLOCK this backend pins for a reduction of `extent`: the extent covered, shrunk to a lane's
+    scratchpad over the machine's spad_buffers shared by the live tiles. inductor_patches asks the same
+    for persistence, and both read the machine's scratchpad unless given `lane_bytes`."""
     if lane_bytes is None:
         lane_bytes = config.CONFIG_MACHINE.spad_size
-    budget = lane_bytes // 2 // _REDUCTION_LIVE_TILES
+    budget = lane_bytes // int(config.CONFIG_MACHINE.spad_buffers) // _REDUCTION_LIVE_TILES
     block = 1 << (int(extent) - 1).bit_length()
     while block * elem_bytes > budget and block > 1:
         block //= 2
@@ -276,13 +270,12 @@ def gemm_tiles(m, n, k, dtype_size, out_size=None):
 
 
 def gemm_tile_candidates(M, N, K, c_bytes, precision_bytes):
-    """Every (tile_M, tile_N, tile_K) whose A, B and C are blocks Triton accepts and fit half the
-    scratchpad, largest first. Each side is a lane multiple times a power of two (TTGIR's layouts
+    """Every (tile_M, tile_N, tile_K) whose A, B and C are blocks Triton accepts and fit the
+    machine's spad_budget, largest first. Each side is a lane multiple times a power of two (TTGIR's layouts
     need them), the tail masked."""
     lanes = int(config.CONFIG_MACHINE.vector_lanes)
-    spad_per_lane = config.CONFIG_MACHINE.spad_size
-    max_spad = spad_per_lane * lanes // 2
-    max_spad_per_lane = spad_per_lane // 2
+    max_spad_per_lane = int(config.CONFIG_MACHINE.spad_budget)
+    max_spad = max_spad_per_lane * lanes
     max_numel = triton_max_numel()
 
     def per_lane(rows, cols):

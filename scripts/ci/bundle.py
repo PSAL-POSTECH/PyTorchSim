@@ -374,8 +374,17 @@ def attribute_inputs(launcher, args):
             if m["name"] in names}
 
 
+def launch_scalars(launcher, args):
+    """{name: launch value} of `launcher`'s scalars its meta gives no value for (a user kernel's row count),
+    which a kernel file run on its own needs."""
+    unset = {n for n, _, v in compiler_input.scalar_args(launcher.meta) if v is None}
+    return {n: a.item() if isinstance(a, torch.Tensor) else a
+            for n, a in zip(launcher.meta["call_params"], args) if n in unset}
+
+
 RECORDED = []
-launch_hooks.observe_every_launch_inputs(lambda launcher, args: RECORDED.append(attribute_inputs(launcher, args)))
+launch_hooks.observe_every_launch_inputs(
+    lambda launcher, args: RECORDED.append((attribute_inputs(launcher, args), launch_scalars(launcher, args))))
 
 
 def kernel_files(launcher):
@@ -384,20 +393,23 @@ def kernel_files(launcher):
 
 
 def copy_kernel(launcher, recorded, dest):
-    """`launcher`'s kernel files into `dest`; with `recorded` ({arg: launch value}) its kernel file is written
-    again to take those args from the values saved beside it."""
-    if not recorded:
+    """`launcher`'s kernel files into `dest`; with `recorded` (its attribute args' and unset scalars' launch
+    values) its kernel file is written again to take them from the launch."""
+    tensors, scalars = recorded
+    if not tensors and not scalars:
         for f in kernel_files(launcher):
             shutil.copy(os.path.join(launcher.workdir, f), os.path.join(dest, f))
         return
     spec, triton = kernel_files(launcher)
     with open(os.path.join(launcher.workdir, triton)) as f:
         src = f.read()
-    compiler_input.write(src, launcher.meta, os.path.join(dest, spec), recorded=recorded)
+    compiler_input.write(src, launcher.meta, os.path.join(dest, spec), recorded=tensors, scalars=scalars)
 
 
 def same_values(a, b):
-    return a.keys() == b.keys() and all(torch.equal(a[k], b[k]) for k in a)
+    """Whether two launches' recorded (tensors, scalars) are the same values."""
+    (ta, sa), (tb, sb) = a, b
+    return ta.keys() == tb.keys() and all(torch.equal(ta[k], tb[k]) for k in ta) and sa == sb
 
 
 def capture(name, fn, make, out):
@@ -420,7 +432,8 @@ def capture(name, fn, make, out):
             dirs[launcher.workdir], kept[launcher.workdir] = d, recorded
         elif not same_values(kept[launcher.workdir], recorded):
             raise RuntimeError(f"[bundle] {name}: {launcher.kernel_name} is launched again on other values of "
-                               f"{sorted(recorded)}, which its runtime attributes are read from")
+                               f"{sorted(recorded[0]) + sorted(recorded[1])}, which its kernel file takes from the "
+                               f"launch")
         launches.append({"kernel": launcher.kernel_name, "dir": dirs[launcher.workdir]})
     for workdir in dirs:
         shutil.rmtree(contract.dir_for(workdir))

@@ -94,10 +94,10 @@ def recorded_file(kernel_name):
     return f"{kernel_name}_inputs.pt"
 
 
-def write(src_code, meta, path, recorded=None):
-    """Write the kernel's module and the kernel file for this Inductor kernel; returns `path`. Blocks
-    Inductor fixed in the body are not passed; `recorded` ({arg: tensor}) is saved beside it for
-    make_inputs, which draws every other input."""
+def write(src_code, meta, path, recorded=None, scalars=None):
+    """Write the kernel's module and the kernel file for this Inductor kernel; returns `path`. `recorded`
+    ({arg: tensor}) is saved beside it for make_inputs, which draws every other input; `scalars` ({name: value})
+    gives a scalar its launch value where the meta has none."""
     missing = [a["name"] for a in meta["args"] if not a["dtype"] or not a["numel"]]
     if missing:
         raise SpecIncomplete(
@@ -135,7 +135,11 @@ def write(src_code, meta, path, recorded=None):
     with open(os.path.join(os.path.dirname(path), triton_module), "w") as f:
         f.write(src_code)
 
+    given = dict(scalars or {})
     scalars = scalar_args(meta)
+    extra = sorted(set(given) - {n for n, _, _ in scalars})
+    if extra:
+        raise SpecIncomplete(f"{meta['kernel_name']}: launch values for {extra}, which are no scalar of it")
     text = SPEC_TEMPLATE.format(
         kernel_name=meta["kernel_name"],
         spec_module=f"{compiler_bridge.COMPILER_PKG}.contract.kernel_spec",
@@ -148,7 +152,7 @@ def write(src_code, meta, path, recorded=None):
         grid=contract.grid_xyz(meta),
         parallel_axes=tuple(contract.launch_axes(meta)),
         scalar_decls=[(n, c) for n, c, _ in scalars],
-        scalar_values={n: v for n, _, v in scalars if v is not None},
+        scalar_values={n: v if v is not None else given[n] for n, _, v in scalars if v is not None or n in given},
     )
     if recorded:
         import torch

@@ -15,7 +15,8 @@ aten = torch.ops.aten
 
 @register_rewrite(CallFunctionVarArgs(aten.histc.default))
 def histc(node, x, *rest, **kwargs):
-    """aten.histc counted on the device (counts)."""
+    """aten.histc counted on the device (counts). A floating input with min == max is left to aten:
+    its range comes from its values, and aten refuses a range that is not finite."""
 
     def counts(x, *, bins, lo, hi):
         """aten's histc: bin (x - lo) * bins / (hi - lo), integral in int64 and floating in x's dtype, the top
@@ -47,5 +48,7 @@ def histc(node, x, *rest, **kwargs):
     if fake_value(x) is None:
         return Decline("its input has no fake value")
     said = dict(zip(("bins", "min", "max"), rest), **kwargs)
-    return functools.partial(counts, bins=int(said.get("bins", 100)), lo=said.get("min", 0),
-                             hi=said.get("max", 0)), [x]
+    lo, hi = said.get("min", 0), said.get("max", 0)
+    if lo == hi and fake_value(x).is_floating_point():
+        return Decline("min == max over a floating input: aten refuses a range of its values that is not finite")
+    return functools.partial(counts, bins=int(said.get("bins", 100)), lo=lo, hi=hi), [x]

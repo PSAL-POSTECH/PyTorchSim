@@ -192,7 +192,7 @@ npu 에서 스크립트로 실행합니다: `python tests/ops/misc/test_<op>.py`
 - **상수는 머신에서 구합니다.** 크기는 fake 값이나 `config.CONFIG_MACHINE` 에서 얻습니다.
   하드코딩하지 않습니다.
 - **대체 코드는 연산과 같아야 합니다.** 값, dtype, 경계 규칙이 같아야 합니다. `histc` 는 aten 처럼
-  위쪽 끝 값을 마지막 bin 에 넣고, `[min, max]` 밖의 값은 버리고, `min == max` 면 범위를 넓히고,
+  위쪽 끝 값을 마지막 bin 에 넣고, `[min, max]` 밖의 값은 버리고, 정수형 `min == max` 면 범위를 넓히고(실수형은 범위가 유한하지 않으면 거절하는 aten 에 맡기고),
   입력의 dtype 으로 돌려줍니다. 이런 규칙마다 테스트를 둡니다.
 - **공개 경로가 있으면 PyTorch 공개 API 를 씁니다.** `torch._inductor.pattern_matcher` 는 Inductor
   자체의 post-grad pass 들이 쓰는 방식이고, pass 는 trace 할 때 그래프의 fake mode 를

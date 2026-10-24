@@ -189,7 +189,7 @@ These follow the maintainer's review rules for this repo.
 - **Derive constants from the machine.** Take sizes from the fake values or
   `config.CONFIG_MACHINE`. Do not hard-code them.
 - **The replacement must match the op**: the same values, dtypes and edge-case rules. `histc` keeps
-  aten's top edge in the last bin, drops values outside `[min, max]`, widens `min == max`, and
+  aten's top edge in the last bin, drops values outside `[min, max]`, widens an integral `min == max` (a floating one is left to aten, which refuses a range that is not finite), and
   returns the input's dtype. Test each such rule.
 - **Use public PyTorch where one exists.** `torch._inductor.pattern_matcher` is the mechanism
   Inductor's own post-grad passes use, and the pass sets the graph's fake mode for tracing through

@@ -7,7 +7,6 @@ from textwrap import dedent
 import torch
 from torch._dynamo.device_interface import DeviceInterface
 from torch._inductor.codegen.common import DeviceOpOverrides
-from torch._inductor.codegen.cpu_device_op_overrides import CpuDeviceOpOverrides
 
 from pytorchsim import config
 
@@ -22,8 +21,8 @@ def install():
 
 
 def _register_backend():
-    """npu's codegen route: Inductor's Triton codegen through TritonNPUScheduling and its wrapper, with
-    pytorchsim_post_grad_pass run on every npu graph."""
+    """npu's codegen route: Inductor's Triton codegen through TritonNPUScheduling and its wrapper,
+    with pytorchsim_post_grad_pass run on every npu graph."""
     from torch._inductor.codegen.common import register_backend_for_device
 
     from pytorchsim.frontend.inductor.codegen import TritonNPUScheduling, TritonNPUWrapperCodegen
@@ -41,11 +40,10 @@ def _register_device_interface():
 
 
 def _register_device_op_overrides():
-    """The device code Inductor writes into an npu wrapper, and cpu's own beside it."""
+    """The device code Inductor writes into an npu wrapper; Inductor registers its own devices'."""
     from torch._inductor.codegen.common import register_device_op_overrides
 
     register_device_op_overrides("npu", NPUDeviceOpOverrides())
-    register_device_op_overrides("cpu", CpuDeviceOpOverrides())
 
 
 def _register_npu_as_gpu():
@@ -62,7 +60,7 @@ def lowering_npu():
 
     try:
         return V.graph.get_current_device_or_throw().type == "npu"
-    except Exception:  # noqa: BLE001
+    except (AttributeError, RuntimeError):
         return False
 
 
@@ -71,7 +69,7 @@ def is_npu(obj):
     dev = getattr(obj, "device", obj)
     dev = getattr(dev, "device", dev)
     if isinstance(dev, str):
-        return dev.split(":")[0] == "npu"
+        dev = torch.device(dev)
     return getattr(dev, "type", None) == "npu"
 
 

@@ -28,7 +28,9 @@ def install():
 def _configure_inductor():
     """mm/conv template autotune on, at compile time off. In timing mode a template with an epilogue
     is picked by its fused cycles, Inductor timing the top configs one at a time in this process
-    (TritonNPUScheduling.benchmark_codegened_module); select records picks, so its cache stays off."""
+    (TritonNPUScheduling.benchmark_codegened_module); template_timing records picks, so its cache
+    stays off. No combo kernels: one picks its tensors by program id, which a TOG cannot time, and
+    blocks are pinned in triton_kernel_kwargs, a hook combo kernels skip."""
     from torch._inductor import config as inductor_config
 
     inductor_config.max_autotune_gemm = True
@@ -39,6 +41,7 @@ def _configure_inductor():
     inductor_config.benchmark_epilogue_fusion = timed
     inductor_config.max_epilogue_benchmarked_choices = config.codegen_autotune_template_topk
     inductor_config.autotune_local_cache = False
+    inductor_config.combo_kernels = False
     if timed:
         inductor_config.compile_threads = 1
 

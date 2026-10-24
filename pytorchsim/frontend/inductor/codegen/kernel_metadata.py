@@ -55,9 +55,8 @@ def _buffer_numel(name):
 def _writes(kernel):
     """names -> whether `kernel` stores to any of them: the stores Inductor renders."""
     stored = set()
-    for k in [kernel, *(getattr(kernel, "sub_kernels", None) or ())]:
-        with V.set_kernel_handler(k):
-            stored |= {n for n in getattr(k, "store_buffer_names", ()) if not is_buffer_removed(n)}
+    with V.set_kernel_handler(kernel):
+        stored |= {n for n in getattr(kernel, "store_buffer_names", ()) if not is_buffer_removed(n)}
     scheduler = getattr(V.graph, "scheduler", None)
     real = scheduler.mutation_real_name if scheduler else {}
     stored |= {real.get(n, n) for n in stored}
@@ -118,7 +117,7 @@ def _held_blocks(kernel):
 
 def _blocks_without_pin(kernel, numels, args):
     """Blocks for a kernel holding none: a TritonNPUKernel's from blocks_for, the answer pinning
-    gives; a template's or a combo kernel's from its numels and args alone."""
+    gives; a template's from its numels and args alone."""
     from pytorchsim.frontend.inductor.codegen.scheduling import TritonNPUKernel
     if isinstance(kernel, TritonNPUKernel) and all(isinstance(v, int) for v in numels.values()):
         return blocks_for(numels, kernel.features)
@@ -175,7 +174,7 @@ def collect_meta(kernel, kernel_name):
         "numels": numels,
         "inside_reduction": bool(getattr(kernel, "inside_reduction", False)),
         "fixed_config": _held_blocks(kernel) or _blocks_without_pin(kernel, numels, args),
-        "template_grid": template_grid(kernel) or combo_grid(kernel),
+        "template_grid": template_grid(kernel),
     }
 
 
@@ -281,39 +280,3 @@ def template_grid(kernel):
             f"static positive extents. Refusing rather than falling back to the "
             f"numels, which describe the output tensor and not the grid.")
     return extents
-
-
-def combo_grid(kernel):
-    """A ComboKernel's grid as [gridX, 1, 1], else None.
-
-    A COMBO KERNEL IS N KERNELS IN ONE, AND IT STATES ITS OWN GRID. Inductor
-    fuses independent small kernels horizontally -- `aten.cat` of twelve expert
-    outputs, `torch._foreach_*` over a parameter list -- into one @foreach
-    kernel that splits `program_id` into one range per piece:
-
-        num_xblocks_0 = tl.cdiv(5120, XBLOCK)
-        num_xblocks_1 = num_xblocks_0 + tl.cdiv(512, XBLOCK)   # twelve of these
-
-    So the launch is the SUM of the pieces' block counts, and `kernel.numels`
-    does not describe it -- there is no single iteration space. That is the same
-    situation `template_grid` answers, which is why this answers in the same
-    shape and rides the same `template_grid` path from there on.
-
-    `combo_grid_meta` is Inductor's own answer to the same question (it is what
-    the emitted `inductor_meta` carries), so this asks it rather than
-    reconstructing the ranges.
-    """
-    meta_fn = getattr(kernel, "combo_grid_meta", None)
-    if meta_fn is None:
-        return None
-    grid_meta = meta_fn([kernel.select_heuristics(k)[1] for k in kernel.sub_kernels])
-    xblock = (grid_meta.get("default_config") or {}).get("XBLOCK")
-    if not xblock:
-        return None
-    blocks = 0
-    for i in range(int(grid_meta.get("num_kernels", 0))):
-        n = grid_meta.get(f"xnumel_{i}")
-        if n is None:
-            return None
-        blocks += -(-int(n) // int(xblock))
-    return [blocks, 1, 1] if blocks else None

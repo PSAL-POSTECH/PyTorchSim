@@ -27,6 +27,7 @@ def npu_choices_class():
     from torch._inductor.lookup_table import LookupTableChoices
 
     from pytorchsim.backend import template_timing
+    from pytorchsim.frontend.inductor import is_lowering_npu
     from pytorchsim.frontend.inductor.autotune import (generated_kernel_blocks,
                                                        template_kernel_configs)
 
@@ -56,6 +57,15 @@ def npu_choices_class():
             for ktc in ktcs:
                 ktc.annotations[template_timing.SOURCE] = template_timing.RECORDED
             return ktcs
+
+        def triton_kernel_kwargs(self, kernel_cls, features, groups, kernel_kwargs):
+            """This machine's blocks pinned into every npu kernel Inductor generates (Inductor's
+            hook for a fixed config): the one it emits and the one its fusion benchmark times are
+            made the same way, so they are the same kernel."""
+            kwargs = super().triton_kernel_kwargs(kernel_cls, features, groups, kernel_kwargs)
+            if is_lowering_npu() and kwargs.get("fixed_config") is None:
+                kwargs["fixed_config"] = generated_kernel_blocks.pinned_blocks(groups[0], features)
+            return kwargs
 
         @staticmethod
         def should_use_persistent_reduction(features, cooperative_reduction):

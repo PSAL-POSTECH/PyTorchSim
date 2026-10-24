@@ -23,18 +23,8 @@ _logger = config.setup_logger()
 
 
 class TritonNPUKernel(TritonKernel):
-    """A TritonKernel launched as a plain call.
-
-    Upstream emits `kernel.run(..., grid=..., stream=...)`, resolved at runtime.
-    There is no autotuner here, which is why the blocks are fixed at codegen.
-    """
-    def __init__(self, tiling, *args, fixed_config=None, **kwargs):
-        """Pin this machine's blocks here, where every kernel of this class is made: the one
-        Inductor emits and the one its fusion benchmark times are then the same kernel."""
-        if fixed_config is None:
-            from pytorchsim.frontend.inductor.autotune.generated_kernel_blocks import pinned_blocks
-            fixed_config = pinned_blocks(tiling, kwargs.get("features"))
-        super().__init__(tiling, *args, fixed_config=fixed_config, **kwargs)
+    """A TritonKernel launched as a plain call: upstream emits `kernel.run(..., grid=..., stream=...)`,
+    resolved at runtime. Its blocks are fixed when it is made (NPUChoices.triton_kernel_kwargs)."""
 
     def call_kernel(self, name: str, node=None, **kwargs):
         wrapper = V.graph.wrapper_code

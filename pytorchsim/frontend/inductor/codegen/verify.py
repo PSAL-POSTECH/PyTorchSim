@@ -190,7 +190,7 @@ def _mutated(line):
         return ()
     try:
         return tuple(node.get_mutation_names())
-    except Exception:  # noqa: BLE001
+    except NotImplementedError:
         return ()
 
 
@@ -260,7 +260,7 @@ class VerifyLines:
             return []
         try:
             buf = V.graph.get_buffer(name)
-        except Exception:
+        except RuntimeError:
             buf = None
         if buf is None:
             return []

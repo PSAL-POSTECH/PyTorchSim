@@ -40,7 +40,7 @@ def convolution_transposed(node, x, weight, bias, stride, padding, dilation, tra
                 y = y.narrow(len(lead) + i, 0, extents[i] * factor[i] - (factor[i] - 1))
         return y
 
-    def direct(x, weight, bias=None):
+    def direct(x, weight, bias):
         batchless = x.dim() == weight.dim() - 1
         if batchless:
             x = x.unsqueeze(0)
@@ -67,7 +67,7 @@ def convolution_transposed(node, x, weight, bias, stride, padding, dilation, tra
             out = torch.convolution(y, w, bias, [1] * n, [0] * n, [1] * n, False, [0] * n, groups)
         return out.squeeze(0) if batchless else out
 
-    return direct, [x, weight] + ([bias] if bias is not None else [])
+    return _exact_arity(direct, x, weight, bias)
 
 
 # convolution_1d: a 1-D conv as a 2-D one over a height of 1
@@ -78,10 +78,10 @@ def convolution_1d(node, x, weight, bias, stride, padding, dilation, transposed,
                    groups):
     """A 1-D convolution as a 2-D one over a height of 1, which the conv template takes; its backward
     graph holds convolution_backward either way, so this needs no place before AOTAutograd."""
-    def as_2d(x, weight, bias=None):
+    def as_2d(x, weight, bias):
         return _conv1d_as_conv2d(x, weight, bias, stride, padding, dilation, groups)
 
-    return as_2d, [x, weight] + ([bias] if bias is not None else [])
+    return _exact_arity(as_2d, x, weight, bias)
 
 
 def _conv1d_as_conv2d(x, weight, bias, stride, padding, dilation, groups):
@@ -89,3 +89,11 @@ def _conv1d_as_conv2d(x, weight, bias, stride, padding, dilation, groups):
     out = torch.convolution(x.unsqueeze(2), weight.unsqueeze(2), bias, [1, stride[0]],
                             [0, padding[0]], [1, dilation[0]], False, [0, 0], groups)
     return out.squeeze(2)
+
+
+def _exact_arity(fn, x, weight, bias):
+    """fn(x, weight, bias) as a replacement taking exactly the operands it is handed: Inductor traces
+    every parameter, so with no bias the replacement takes (x, weight) and passes None itself."""
+    if bias is None:
+        return (lambda x, weight: fn(x, weight, None)), [x, weight]
+    return fn, [x, weight, bias]

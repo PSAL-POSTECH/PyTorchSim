@@ -96,15 +96,16 @@ def runtime_attribute_dir(workdir):
     return os.path.join(contract.runtime_dir(workdir), compiler_contract("kernel_object").RUNTIME_ATTRIBUTE_DIR)
 
 
-def run_options(obj_dir, manifest):
-    """Spike's --isa and -m, the model library, its --machine-config and the gem5 script for the
-    kernel object in `obj_dir`: the compiler's kernel_object.run_options() of the machine it was
-    compiled for. TORCHSIM_GEM5_SCRIPT, when set, is taken for the script."""
+def run_options(obj_dir, manifest, keys=None):
+    """Spike's --isa and -m, the model library, its --machine-config and the gem5 script (or only
+    `keys` of them) for the kernel object in `obj_dir`: the compiler's kernel_object.run_options() of
+    the machine it was compiled for. TORCHSIM_GEM5_SCRIPT, when set, is taken for the script."""
     ko, v = compiler_contract("kernel_object"), compiler_contract("vcix_model")
     machine = compiled_for(manifest)
+    script = {} if keys is not None and "gem5_script" not in keys else {
+        "gem5_script": os.environ.get("TORCHSIM_GEM5_SCRIPT")}
     try:
-        return ko.run_options(machine, obj_dir, config.CONFIG_VCIX_BUILD, manifest,
-                              gem5_script=os.environ.get("TORCHSIM_GEM5_SCRIPT"))
+        return ko.run_options(machine, obj_dir, config.CONFIG_VCIX_BUILD, manifest, keys, **script)
     except v.ModelError as e:
         raise NoTarget(f"{e}: {manifest['name']} was compiled for {machine.name}") from None
     except ko.ObjectError as e:

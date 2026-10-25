@@ -1,6 +1,7 @@
 """A Triton kernel a model registers itself (torch.library.triton_op, wrap_triton) on npu: its spec
 meta per launch and its torchsim_compile call, its source the kernel's own and its jit helpers'."""
 
+import dis
 import types
 
 from torch._inductor.codegen.common import IndentedBuffer
@@ -32,8 +33,11 @@ def user_kernel_compile(kernel, meta):
 
 
 def _extra_imports(kernel):
-    """An import of each triton.language.extra module (torchsim's vcix and lane_layout among them) the
-    kernel or a jit helper it calls names, under that name: the closure's source carries none of them."""
+    """An import of each Triton module the kernel or a jit helper it calls reads as a global, under
+    that name (`torchsim` for triton.language.extra.torchsim's vcix and lane_layout). Inductor's
+    closure imports what such a global names by its __module__ (`from <module> import <name>`), which
+    a module has none of, so a module other than the triton and tl the source imports is imported
+    here, by the same rule: the kernel's unqualified loads, triton's own."""
     from triton.runtime.jit import JITFunction
 
     lines, seen, todo = [], set(), [kernel]
@@ -42,15 +46,16 @@ def _extra_imports(kernel):
         if fn is None or id(fn) in seen:
             continue
         seen.add(id(fn))
-        for name in fn.__code__.co_names:
+        for name in {i.argval for i in dis.Bytecode(fn) if i.opname == "LOAD_GLOBAL"}:
             value = fn.__globals__.get(name)
-            if isinstance(value, types.ModuleType) and value.__name__.startswith("triton.language.extra."):
+            if (isinstance(value, types.ModuleType) and name not in ("triton", "tl")
+                    and value.__name__.split(".")[0] == "triton"):
                 line = f"import {value.__name__} as {name}"
                 if line not in lines:
                     lines.append(line)
             elif isinstance(value, JITFunction):
                 todo.append(value)
-    return lines
+    return sorted(lines)
 
 
 def user_kernel_meta(kernel, kwargs, triton_meta, grid):

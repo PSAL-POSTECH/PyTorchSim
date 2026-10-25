@@ -1,6 +1,7 @@
 """Convolutions the npu runs as other ops, against the CPU: a depthwise conv2d as a stencil (dispatcher), a 1-D
 conv as a 2-D one (postgrad), and no npu entry in Inductor's global decomposition table. Cases: conv1d, conv1d_same,
-depthwise, depthwise_same, depthwise_batchless, grouped, depthwise_grad, depthwise_inference, no_global_decomp."""
+depthwise, depthwise_same, depthwise_batchless, grouped, conv1d_no_bias, depthwise_grad, depthwise_inference,
+no_global_decomp."""
 import os
 import sys
 
@@ -45,6 +46,17 @@ def run_case(name):
     check_result(f"ConvDecomposition {name}", out, _conv(x, w, b, *params), rtol=1e-3, atol=1e-3)
 
 
+def run_no_bias(name):
+    """A 1-D conv with no bias: its 2-D replacement is traced with (x, weight) alone."""
+    x, w, _ = _inputs("conv1d")
+    params = CASES["conv1d"][2:]
+    torch._dynamo.reset()
+    f = torch.compile(lambda x, w: _conv(x, w, None, *params), dynamic=False)
+    with torch.no_grad():
+        out = f(x.to(device), w.to(device))
+    check_result("ConvDecomposition conv1d_no_bias", out, _conv(x, w, None, *params), rtol=1e-3, atol=1e-3)
+
+
 def run_grad(name):
     from pytorchsim.backend import launch_hooks
     externs = []
@@ -81,7 +93,7 @@ def run_no_global_decomp(name):
                  torch.tensor([True]))
 
 
-EXTRA = {"depthwise_grad": run_grad, "depthwise_inference": run_inference,
+EXTRA = {"conv1d_no_bias": run_no_bias, "depthwise_grad": run_grad, "depthwise_inference": run_inference,
          "no_global_decomp": run_no_global_decomp}
 
 

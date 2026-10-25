@@ -1,6 +1,6 @@
 """A transposed convolution on the npu runs as its direct equivalent, against the CPU's conv_transpose.
-Cases: stride_pad, groups_dilated, one_d, batchless, and pass_graph (the post-grad pass leaves no transposed
-convolution); run with [case ...], all when none is named."""
+Cases: stride_pad, groups_dilated, one_d, batchless, one_d_no_bias, and pass_graph (the post-grad pass leaves no
+transposed convolution); run with [case ...], all when none is named."""
 import os
 import sys
 
@@ -48,6 +48,19 @@ def run_case(name):
     return True
 
 
+def run_no_bias(name):
+    """A 1-D transposed conv with no bias: its direct replacement is traced with (x, weight) alone."""
+    x, w, _ = _inputs("one_d")
+    params = CASES["one_d"][2:]
+    ref = _conv_transpose(x, w, None, *params)
+    torch._dynamo.reset()
+    f = torch.compile(lambda x, w: _conv_transpose(x, w, None, *params), dynamic=False)
+    with torch.no_grad():
+        out = f(x.to(device), w.to(device))
+    check_result("ConvTranspose one_d_no_bias", out, ref, rtol=1e-3, atol=1e-3)
+    return True
+
+
 def run_pass_graph(name):
     """On a traced graph: the pass rewrites every transposed convolution into a direct one."""
     from torch._inductor.decomposition import select_decomp_table
@@ -67,7 +80,7 @@ def run_pass_graph(name):
     return ok
 
 
-EXTRA = {"pass_graph": run_pass_graph}
+EXTRA = {"one_d_no_bias": run_no_bias, "pass_graph": run_pass_graph}
 
 
 if __name__ == "__main__":

@@ -37,6 +37,8 @@ def install():
                 "epilogue-fusion benchmark follows the mode the process started in")
         if timed and template_timing.times(choices):
             return template_timing.time_choices(choices)
+        if not timed:
+            template_record.warn_untimed_autotune()
         return pick_config(choices)
 
     def __call__(self, name, choices, *args, **kwargs):

@@ -17,6 +17,8 @@ from torch._inductor.codegen.common import DeviceOpOverrides
 
 from pytorchsim import config
 
+logger = config.setup_logger()
+
 
 def install():
     """Register npu in every registry: the device interface first, since Inductor's Triton check
@@ -172,16 +174,68 @@ def npu_choices_class():
     class NPUChoices(LookupTableChoices):
         def uuid(self):
             """This class's part of Inductor's cache key: the machine and the picks it hands out."""
-            return f"pytorchsim-npu-choices-4-{template_record.graph_digest()}"
+            return f"pytorchsim-npu-choices-5-{template_record.graph_digest()}"
+
+        def _finalize_template_configs(self, template_choices, kernel_inputs, templates, op_name,
+                                       kwarg_overrides=None):
+            """An npu template's choices: the external mapping's tile, else a recorded pick (an
+            autotune strategy's only), else the heuristic's tiles."""
+            if getattr(kernel_inputs, "device_type", None) == "npu":
+                external = self._external_choices(kernel_inputs, templates, op_name)
+                if external:
+                    return external
+                if not template_record.autotunes():
+                    return InductorChoices._finalize_template_configs(
+                        self, template_choices, kernel_inputs, templates, op_name, kwarg_overrides)
+            return super()._finalize_template_configs(
+                template_choices, kernel_inputs, templates, op_name, kwarg_overrides)
+
+        @staticmethod
+        def _external_tile_for(kernel_inputs, templates):
+            """The tile the external mapping states for this npu mm or bmm, or None."""
+            from torch._inductor.kernel_inputs import MMKernelInputs
+
+            if getattr(kernel_inputs, "device_type", None) != "npu" or \
+                    not isinstance(kernel_inputs, MMKernelInputs) or \
+                    not any(t.uid in template_record.EXTERNAL_TEMPLATES for t in templates):
+                return None
+            return template_record.external_tile(*kernel_inputs.mnk_hinted())
+
+        def _external_choices(self, kernel_inputs, templates, op_name):
+            """The choice built at the tile the external mapping states for this mm or bmm's
+            shape, marked external; [] when it states none. A tile this machine cannot build is refused."""
+            from pytorchsim.frontend import tiling
+
+            tile = self._external_tile_for(kernel_inputs, templates)
+            if tile is None:
+                return []
+            uids = [t.uid for t in templates if t.uid in template_record.EXTERNAL_TEMPLATES]
+            m, n, k = kernel_inputs.mnk_hinted()
+            legal = [(c.block_m, c.block_n, c.block_k)
+                     for c in tiling.gemm_tiles(m, n, k, kernel_inputs.dtype().itemsize)]
+            if tile not in legal:
+                raise ValueError(
+                    f"{config.codegen_external_mapping_file}: {m}_{n}_{k} -> {tile} is no tile this "
+                    f"machine builds (each side a lane multiple times a power of two, A, B and C in "
+                    f"the spad budget); its tiles, largest first: {legal[:8]}")
+            tm, tn, tk = tile
+            entry = {"BLOCK_M": tm, "BLOCK_N": tn, "BLOCK_K": tk, "EVEN_K": k % tk == 0}
+            ktcs = LookupTableChoices._create_lookup_choices(
+                self, {uid: [entry] for uid in uids}, templates, kernel_inputs, op_name)
+            for ktc in ktcs:
+                ktc.annotations[template_record.SOURCE] = template_record.EXTERNAL
+            logger.info("[select] %s %sx%sx%s: the external mapping's tile %s", op_name, m, n, k, tile)
+            return ktcs
 
         def get_template_configs(self, kernel_inputs, templates, op_name, kwarg_overrides=None):
             """Inductor's choices of `templates`, an npu mm or addmm offered the resident mm alone where
-            it holds (mm_resident.templates_for), its config marked as planned."""
+            it holds (mm_resident.templates_for) and the external mapping states no tile for it, its
+            config marked as planned."""
             from pytorchsim.backend import template_record
             from pytorchsim.frontend.inductor.autotune import mm_resident
-            got = super().get_template_configs(
-                kernel_inputs, mm_resident.templates_for(kernel_inputs, templates, op_name), op_name,
-                kwarg_overrides)
+            offered = templates if self._external_tile_for(kernel_inputs, templates) else \
+                mm_resident.templates_for(kernel_inputs, templates, op_name)
+            got = super().get_template_configs(kernel_inputs, offered, op_name, kwarg_overrides)
             for c in got:
                 ktc = c.annotations.get("ktc")
                 if ktc is not None and ktc.template is mm_resident.mm_resident_template:

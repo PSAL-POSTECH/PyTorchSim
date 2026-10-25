@@ -36,19 +36,70 @@ def get_dump_path():
     return dump_path
 
 
-#: PyTorchSim's run settings, not the machine's: name -> (environment variable, default, type).
 RUN_SETTINGS = {
     "pytorchsim_functional_mode": ("TORCHSIM_FUNCTIONAL_MODE", 1, int),
     "pytorchsim_timing_mode": ("TORCHSIM_TIMING_MODE", 0, int),
     "pytorchsim_functional_verify_per_kernel": ("TORCHSIM_FUNCTIONAL_VERIFY_PER_KERNEL", 0, int),
     "codegen_autotune_template_topk": ("TORCHSIM_CODEGEN_AUTOTUNE_TEMPLATE_TOPK", 4, int),
+    "codegen_mapping_strategy": ("TORCHSIM_CODEGEN_MAPPING_STRATEGY", "autotune", str),
+    "codegen_external_mapping_file": ("TORCHSIM_CODEGEN_EXTERNAL_MAPPING_FILE", "", str),
 }
+
+MAPPING_STRATEGIES = ("heuristic", "autotune", "external-then-heuristic", "external-then-autotune")
+
+_machine_settings_cache = {}
+
+
+def machine_settings():
+    """({run setting: value}, path) of the machine file TORCHSIM_TARGET names: a run setting is its
+    environment variable, else this key, else its default. The compiler and TOGSim read no such key."""
+    from pytorchsim.backend import compiler_bridge
+    path = compiler_bridge.target().file
+    mtime = os.path.getmtime(path)
+    got = _machine_settings_cache.get(path)
+    if got is None or got[0] != mtime:
+        with open(path) as f:
+            raw = yaml.safe_load(f) or {}
+        got = (mtime, {k: raw[k] for k in RUN_SETTINGS if raw.get(k) is not None})
+        _machine_settings_cache[path] = got
+    return got[1], path
+
+
+def run_setting_source(name):
+    """Where a run setting's value comes from: "env", "machine" or "default"."""
+    env = RUN_SETTINGS[name][0]
+    if os.environ.get(env, "") != "":
+        return "env"
+    return "machine" if name in machine_settings()[0] else "default"
 
 
 def _run_setting(name):
     env, default, kind = RUN_SETTINGS[name]
-    got = os.environ.get(env)
-    return kind(default if got is None or got == "" else got)
+    source = run_setting_source(name)
+    if source == "env":
+        return kind(os.environ[env])
+    if source == "machine":
+        return kind(machine_settings()[0][name])
+    return default
+
+
+def _mapping_strategy():
+    got = _run_setting("codegen_mapping_strategy")
+    if got not in MAPPING_STRATEGIES:
+        raise ValueError(f"codegen_mapping_strategy {got!r} ({run_setting_source('codegen_mapping_strategy')}) "
+                         f"is none of {', '.join(MAPPING_STRATEGIES)}")
+    return got
+
+
+def _external_mapping_file():
+    """The external mapping file, absolute: a relative path the machine file states is its
+    directory's, one TORCHSIM_CODEGEN_EXTERNAL_MAPPING_FILE states is the working directory's."""
+    got = _run_setting("codegen_external_mapping_file")
+    if not got:
+        return ""
+    if run_setting_source("codegen_external_mapping_file") == "machine" and not os.path.isabs(got):
+        got = os.path.join(os.path.dirname(machine_settings()[1]), got)
+    return os.path.abspath(got)
 
 
 def __getattr__(name):
@@ -69,6 +120,10 @@ def __getattr__(name):
 
     if name == "pytorchsim_functional_verify_per_kernel":
         return bool(_run_setting(name)) and bool(_run_setting("pytorchsim_functional_mode"))
+    if name == "codegen_mapping_strategy":
+        return _mapping_strategy()
+    if name == "codegen_external_mapping_file":
+        return _external_mapping_file()
     if name in RUN_SETTINGS:
         return _run_setting(name)
 

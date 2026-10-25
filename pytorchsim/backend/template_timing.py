@@ -49,8 +49,9 @@ def _workdir(name):
 
 
 def times(choices):
-    """Whether these choices are picked by their cycles: some are configs of a timed template."""
-    return any(template_record.is_timed(c) for c in choices)
+    """Whether these choices are picked by their cycles: the strategy autotunes, and some are
+    configs of a timed template that no record or external mapping fixed."""
+    return template_record.autotunes() and any(template_record.is_timed(c) for c in choices)
 
 
 #: A config still simulating this many times the wall time the first config to finish took is cut.

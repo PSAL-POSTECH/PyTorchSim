@@ -1,6 +1,8 @@
 """A Triton kernel a model registers itself (torch.library.triton_op, wrap_triton) on npu: its spec
 meta per launch and its torchsim_compile call, its source the kernel's own and its jit helpers'."""
 
+import types
+
 from torch._inductor.codegen.common import IndentedBuffer
 from torch._inductor.virtualized import V
 
@@ -22,9 +24,33 @@ def user_kernel_compile(kernel, meta):
         import triton
         import triton.language as tl
     """, strip=True)
+    for line in _extra_imports(kernel):
+        src.writeline(line)
     src.writeline("@triton.jit")
     src.splice(user_defined_triton_kernel_transitive_closure_source_code(kernel), strip=True)
     return kernel_metadata.compile_call(src.getvalue(), meta, kernel.__name__)
+
+
+def _extra_imports(kernel):
+    """An import of each triton.language.extra module (torchsim's vcix and lane_layout among them) the
+    kernel or a jit helper it calls names, under that name: the closure's source carries none of them."""
+    from triton.runtime.jit import JITFunction
+
+    lines, seen, todo = [], set(), [kernel]
+    while todo:
+        fn = getattr(todo.pop(), "fn", None)
+        if fn is None or id(fn) in seen:
+            continue
+        seen.add(id(fn))
+        for name in fn.__code__.co_names:
+            value = fn.__globals__.get(name)
+            if isinstance(value, types.ModuleType) and value.__name__.startswith("triton.language.extra."):
+                line = f"import {value.__name__} as {name}"
+                if line not in lines:
+                    lines.append(line)
+            elif isinstance(value, JITFunction):
+                todo.append(value)
+    return lines
 
 
 def user_kernel_meta(kernel, kwargs, triton_meta, grid):

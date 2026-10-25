@@ -31,8 +31,8 @@ def mm_config_heuristics():
 
     class NPUMMTemplateConfigHeuristic(MMTemplateConfigMixin, BaseConfigHeuristic):
         def _get_config_generator(self):
-            """Configs for one m, n, k: the first codegen_autotune_template_topk of gemm_tiles,
-            or the generic set when none of this machine's tiles is a legal block."""
+            """Configs for one m, n, k: the first codegen_autotune_template_topk of gemm_tiles (the
+            first alone unless the strategy autotunes), or the generic set when none is a legal block."""
             generic = super()._get_config_generator()
 
             def configs(m, n, k, **kwargs):
@@ -45,8 +45,9 @@ def mm_config_heuristics():
                         "Triton block; falling back to the generic set", *mnk)
                     yield from generic(m, n, k, **kwargs)
                     return
-                yield from self._finalize_mm_configs(
-                    mapped[:config.codegen_autotune_template_topk])
+                from pytorchsim.backend import template_record
+                topk = config.codegen_autotune_template_topk if template_record.autotunes() else 1
+                yield from self._finalize_mm_configs(mapped[:topk])
 
             return configs
 

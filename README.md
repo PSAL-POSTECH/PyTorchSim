@@ -321,13 +321,24 @@ Depending on tensor shape, use different convolution template:
 
 ## Mapping
 A GEMM's tile is chosen the way Inductor chooses any template config: the mm/bmm/addmm/baddbmm
-template is offered at this machine's tiles (the `TORCHSIM_CODEGEN_AUTOTUNE_TEMPLATE_TOPK`
+template is offered at this machine's tiles (the `codegen_autotune_template_topk`
 largest that fit the scratchpad, 4 by default), and the selection keeps one.
+`codegen_mapping_strategy` says how (see [Run settings](#run-settings)):
 
-- **Timing mode** (`TORCHSIM_TIMING_MODE=1`): each offered config is compiled and simulated on
+- **`autotune`** (the default), in timing mode: each offered config is compiled and simulated on
   TOGSim, and the fewest cycles wins. A template with an epilogue (bias, activation) is picked by
   Inductor's epilogue-fusion benchmark, which simulates the top configs with the epilogue fused.
-- **Otherwise**: the first offered config, the largest tile.
+  Outside timing mode, the first offered config, the largest tile.
+- **`heuristic`**: the first offered config only, timed or not; a recorded pick is not used.
+- **`external-then-heuristic`**, **`external-then-autotune`**: the tile `codegen_external_mapping_file`
+  states for the shape, when it states one; otherwise as `heuristic` or `autotune`. The file maps
+  `"M_N_K"` (a bmm's per batch) to exactly `TILE_M`, `TILE_N` and `TILE_K`, and a tile this machine
+  cannot build is refused:
+  ```json
+  {"1024_1024_1024": {"TILE_M": 512, "TILE_N": 512, "TILE_K": 256}}
+  ```
+- **Resident mm**: an mm whose operand the compiler's `copy_node.plan` can hold whole is built as the
+  resident mm at its planned tile, under every strategy; only an external tile for the shape replaces it.
 - **Recorded picks**: `pytorchsim/selection/<machine>.json` holds picks in Inductor's lookup-table
   format, for the compiler, machine and TOGSim they were timed with. A recorded config is the only
   one offered, in either mode. A timed run appends its picks to `$TORCHSIM_DUMP_PATH/selection.jsonl`;
@@ -335,13 +346,27 @@ largest that fit the scratchpad, 4 by default), and the selection keeps one.
   holds the pick without an epilogue.
 
 Each kernel's `meta.json` says where its tile came from: `tile_source` is `timed`, `recorded`,
-`recorded_unfused` (a recorded pick built with an epilogue fused) or `heuristic`.
+`recorded_unfused` (a recorded pick built with an epilogue fused), `planned` (the resident mm), `external` or `heuristic`.
+
+### Run settings
+Each is its environment variable, else the key of the same name in the machine file
+`TORCHSIM_TARGET` names, else its default. The compiler and TOGSim read none of these keys.
+`pytorchsim_timing_mode` is fixed once `torch` is imported.
+
+| Key | Environment variable | Default |
+|---|---|---|
+| `pytorchsim_functional_mode` | `TORCHSIM_FUNCTIONAL_MODE` | `1` (run Spike) |
+| `pytorchsim_timing_mode` | `TORCHSIM_TIMING_MODE` | `0` (no TOGSim) |
+| `pytorchsim_functional_verify_per_kernel` | `TORCHSIM_FUNCTIONAL_VERIFY_PER_KERNEL` | `0` |
+| `codegen_autotune_template_topk` | `TORCHSIM_CODEGEN_AUTOTUNE_TEMPLATE_TOPK` | `4` |
+| `codegen_mapping_strategy` | `TORCHSIM_CODEGEN_MAPPING_STRATEGY` | `autotune` |
+| `codegen_external_mapping_file` | `TORCHSIM_CODEGEN_EXTERNAL_MAPPING_FILE` | none; a relative path is the machine file's directory's (the working directory's from the variable) |
 
 ## L2 Cache
 TOGSim models an optional L2 data cache between the cores and DRAM. Set `l2d_type: datacache` and `l2d_config` in the [TOGSim config](#togsim-configuration) to use it. The `l2d_config` follows the same configuration method as [AccelSim](https://github.com/accel-sim/accel-sim-framework).
 
 ## Compiler Configuration
-`pytorchsim/config.py` reads PyTorchSim's settings from environment variables. The machine itself is a TOGSim YAML file (see [TOGSim Configuration](#togsim-configuration)).
+`pytorchsim/config.py` reads PyTorchSim's settings from environment variables, else from the machine file's keys of the same name (see [Run settings](#run-settings)). The machine itself is a TOGSim YAML file (see [TOGSim Configuration](#togsim-configuration)).
 ```bash
 export TORCHSIM_DIR=/workspace/PyTorchSim # home directory
 export TOGSIM_DIR=/workspace/pytorchsim-triton-compiler/third_party/TOGSim # TOGSim checkout: include/, build/bin/Simulator, configs/ (default: the one the compiler carries)
@@ -351,11 +376,13 @@ export TORCHSIM_TIMING_MODE=1 # 1 = time each kernel on gem5 and TOGSim (default
 export TORCHSIM_FUNCTIONAL_MODE=0 # 0 = skip Spike for faster runs; outputs are then not computed (default 1)
 export TORCHSIM_FUNCTIONAL_VERIFY_PER_KERNEL=1 # check each kernel against a CPU golden (default 0)
 export TORCHSIM_CODEGEN_AUTOTUNE_TEMPLATE_TOPK=4 # GEMM tiles offered to the selection (default 4)
+export TORCHSIM_CODEGEN_MAPPING_STRATEGY=autotune # heuristic | autotune | external-then-heuristic | external-then-autotune (default autotune)
+export TORCHSIM_CODEGEN_EXTERNAL_MAPPING_FILE=tiles.json # "M_N_K" -> TILE_M/N/K, read by the external- strategies
 ```
 ## TOGSim Configuration
 ![NPU_Core](./docs/npu_core.jpg)
 
-TOGSim is its own repository, [PSAL-POSTECH/TOGSim](https://github.com/PSAL-POSTECH/TOGSim), which the compiler carries as `third_party/TOGSim`. Its `configs/` directory holds **YAML** (`.yml`) hardware descriptions: `$TOGSIM_DIR/configs`, which is `/workspace/pytorchsim-triton-compiler/third_party/TOGSim/configs` in the Docker image. Set `TORCHSIM_TARGET` to one of them, by name (`tpuv6e`) or by path. The **same file** is read by the **compiler** (`vpu_*`, `isa`, `vcix`, `address_map`) and by **TOGSim** (`src/Common.cc` there) for the simulator-specific keys below.
+TOGSim is its own repository, [PSAL-POSTECH/TOGSim](https://github.com/PSAL-POSTECH/TOGSim), which the compiler carries as `third_party/TOGSim`. Its `configs/` directory holds **YAML** (`.yml`) hardware descriptions: `$TOGSIM_DIR/configs`, which is `/workspace/pytorchsim-triton-compiler/third_party/TOGSim/configs` in the Docker image. Set `TORCHSIM_TARGET` to one of them, by name (`tpuv6e`) or by path. The **same file** is read by the **compiler** (`vpu_*`, `isa`, `vcix`, `address_map`), by **PyTorchSim** (`pytorchsim/config.py`) for the [run settings](#run-settings) (`pytorchsim_*`, `codegen_*`), and by **TOGSim** (`src/Common.cc` there) for the simulator-specific keys below.
 
 ### Reference layout
 
@@ -416,6 +443,13 @@ icnt_injection_ports_per_core: 32
 # For icnt_type: booksim2, use booksim_config_path:
 # booksim_config_path: ../configs/booksim2_configs/fly_c16_m16.icnt
 
+# --- Run settings (PyTorchSim; the compiler and TOGSim ignore them) ---
+pytorchsim_functional_mode: 1  # 1 = run Spike validation, 0 = skip for faster runs
+pytorchsim_timing_mode: 1
+codegen_autotune_template_topk: 4
+codegen_mapping_strategy: autotune    # heuristic | autotune | external-then-heuristic | external-then-autotune
+codegen_external_mapping_file: ''    # read by the external- strategies
+
 # --- Optional partitions (TOGSim; multi-queue) ---
 # num_partition: 2
 # partition:
@@ -431,9 +465,10 @@ One-line meaning for each group (details in the YAML block above).
 - **VPU / ISA (`vpu_*`, `isa`, `vcix`, `address_map`)**: vector lane count and per-lane scratchpad (KB), the ISA and accelerator the **compiler** targets, and the address map. A machine file that leaves any of them out is refused.
 - **DRAM (`dram_type`, `dram_channels`, …)**: `ramulator2` uses `ramulator_config_path`; `simple` uses fixed latency and optional bandwidth caps (`dram_bandwidth_gbps_*`, `dram_freq_mhz` when capped). `dram_num_partitions` splits channels for NUMA-style addressing.
 - **Interconnect (`icnt_*`, `booksim_config_path`)**: `simple` adds fixed hop latency (`icnt_latency_cycles`); `booksim2` points at a BookSim2 topology file.
+- **Codegen (`codegen_*`)**: how many of this machine's GEMM tiles are offered to the selection, how one is picked, and the external tiles (see [Mapping](#mapping)).
 - **L2 (`l2d_type`, `l2d_config`, optional `l2d_hit_latency`)**: optional data cache between cores and DRAM; `l2d_config` uses AccelSim-style cache geometry strings.
 - **Partitions (`num_partition`, `partition`)**: request queues per partition and `core_i` → queue index mapping for multi-tenant / `launch_model` routing. The shipped machines define one queue.
-- Run settings (timing, Spike, per-kernel check, GEMM tiles offered) are environment variables, not YAML keys: see [Compiler Configuration](#compiler-configuration).
+- **Run settings (`pytorchsim_*`, `codegen_*`)**: timing, Spike, per-kernel check and how a GEMM's tile is picked; each is its environment variable, else this file's key, else its default (see [Run settings](#run-settings)).
 
 ## Tutorial
 Check out our [ISPASS 2026 tutorial](https://www.youtube.com/playlist?list=PLYIb5dkr4isJ1ERKTKFoWdCKMUOaay2Nn) to learn:

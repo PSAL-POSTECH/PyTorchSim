@@ -11,7 +11,7 @@ def launch(obj_dir, manifest, runtime, raw_paths, log, scalar_values=None):
     ko = compiler_bridge.compiler_contract("kernel_object")
     try:
         elf = ko.artifact(obj_dir, "elf", manifest=manifest)
-        run = compiler_bridge.run_options(obj_dir, manifest)
+        run = compiler_bridge.run_options(obj_dir, manifest, ko.SPIKE_OPTIONS)
     except (ko.ObjectError, compiler_bridge.NoTarget) as e:
         raise launcher().SpikeError(str(e)) from None
     return launcher().launch(elf, manifest, runtime, raw_paths, run, spike=config.CONFIG_SPIKE_PATH,

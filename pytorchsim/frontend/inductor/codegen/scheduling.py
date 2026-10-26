@@ -94,6 +94,7 @@ class TritonNPUScheduling(TritonScheduling):
 
         meta = kernel_metadata.collect_meta(kernel, kernel_name)
         meta["graph_prefetch"] = graph_prefetch.statement(kernel, meta["args"])
+        meta["aten_ops"] = kernel_metadata.aten_ops(node_schedule)
         kernel_metadata.record_roles(kernel_name, meta)
         source = _tile_source(node_schedule)
         if source is not None:

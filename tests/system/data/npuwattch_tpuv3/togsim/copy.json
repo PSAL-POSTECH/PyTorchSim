@@ -1,0 +1,33 @@
+{
+  "version": "1.0.0",
+  "total_cycles": 1368,
+  "wall_clock_s": null,
+  "core_cycles": {
+    "0": 1368
+  },
+  "units": {},
+  "dma": {
+    "0": {"active_cycles": 256, "idle_cycles": 1112, "dram_bw_gbps": 90, "responses": 4096}
+  },
+  "dram": {"channels": {
+      "0": {"bandwidth_gbps": 5.629005847953216, "utilization_pct": 18.713450339861854, "reads": 256, "writes": 0},
+      "1": {"bandwidth_gbps": 5.629005847953216, "utilization_pct": 18.713450339861854, "reads": 256, "writes": 0},
+      "2": {"bandwidth_gbps": 5.629005847953216, "utilization_pct": 18.713450339861854, "reads": 256, "writes": 0},
+      "3": {"bandwidth_gbps": 5.629005847953216, "utilization_pct": 18.713450339861854, "reads": 256, "writes": 0},
+      "4": {"bandwidth_gbps": 5.629005847953216, "utilization_pct": 18.713450339861854, "reads": 256, "writes": 0},
+      "5": {"bandwidth_gbps": 5.629005847953216, "utilization_pct": 18.713450339861854, "reads": 256, "writes": 0},
+      "6": {"bandwidth_gbps": 5.629005847953216, "utilization_pct": 18.713450339861854, "reads": 256, "writes": 0},
+      "7": {"bandwidth_gbps": 5.629005847953216, "utilization_pct": 18.713450339861854, "reads": 256, "writes": 0},
+      "8": {"bandwidth_gbps": 5.629005847953216, "utilization_pct": 18.713450339861854, "reads": 256, "writes": 0},
+      "9": {"bandwidth_gbps": 5.629005847953216, "utilization_pct": 18.713450339861854, "reads": 256, "writes": 0},
+      "10": {"bandwidth_gbps": 5.629005847953216, "utilization_pct": 18.713450339861854, "reads": 256, "writes": 0},
+      "11": {"bandwidth_gbps": 5.629005847953216, "utilization_pct": 18.713450339861854, "reads": 256, "writes": 0},
+      "12": {"bandwidth_gbps": 5.629005847953216, "utilization_pct": 18.713450339861854, "reads": 256, "writes": 0},
+      "13": {"bandwidth_gbps": 5.629005847953216, "utilization_pct": 18.713450339861854, "reads": 256, "writes": 0},
+      "14": {"bandwidth_gbps": 5.629005847953216, "utilization_pct": 18.713450339861854, "reads": 256, "writes": 0},
+      "15": {"bandwidth_gbps": 5.629005847953216, "utilization_pct": 18.713450339861854, "reads": 256, "writes": 0}
+    }, "combined": {"bandwidth_gbps": 90.06409356725146, "utilization_pct": 18.713450339861854, "reads": 4096, "writes": 0}},
+  "kernels": [
+    {"scheduler": 0, "kernel_id": 0, "started": 1, "finished": 1368}
+  ]
+}

@@ -1,0 +1,112 @@
+{
+  "format": 9,
+  "name": "pytorchsim_triton_compiler_fused_mm_cd3jcbco",
+  "grid": [
+    1,
+    1,
+    1
+  ],
+  "target": {
+    "vpu_num_lanes": 128,
+    "vpu_spad_size_kb_per_lane": 128,
+    "isa": [
+      "m",
+      "a",
+      "f",
+      "d",
+      "c",
+      "v",
+      "zvfh",
+      "zvfbfmin",
+      "zvl256b",
+      "pytorchsim_tpuv3",
+      "spad-vector-memory"
+    ],
+    "vcix": {
+      "tpu_mxu_queue_entries": 512,
+      "tpu_mxu_delay_cycles": 97,
+      "tpu_mxu_registers": 1,
+      "tpu_mxu_issue_slots": 1,
+      "tpu_mxu_word_a_cycle": 0,
+      "tpu_xlu_queue_entries": 256,
+      "tpu_xlu_latency_cycles": 137,
+      "tpu_xlu_elements_per_cycle": 8,
+      "tpu_xlu_issue_per_cycle": 1,
+      "tpu_sfu_latency_cycles": 10,
+      "tpu_sfu_queue_registers": 16
+    },
+    "address_map": {
+      "spad_vaddr": 1073741824,
+      "dram_base": 2147483648,
+      "dram_size": 17179869184
+    },
+    "systolic_array_unit": "TPUV3_MXU",
+    "dma_load_latency_cycles": 27,
+    "name": "tpuv3_booksim_fixed",
+    "file": "/workspace/PyTorchSim/.npuw_probe/tpuv3_booksim_fixed.yml"
+  },
+  "args": [
+    {
+      "name": "arg_A",
+      "role": "in",
+      "dtype": "bfloat16",
+      "shape": [
+        65536
+      ]
+    },
+    {
+      "name": "arg_B",
+      "role": "in",
+      "dtype": "bfloat16",
+      "shape": [
+        65536
+      ]
+    },
+    {
+      "name": "out_ptr0",
+      "role": "out",
+      "dtype": "bfloat16",
+      "shape": [
+        65536
+      ]
+    }
+  ],
+  "scalars": [],
+  "abi": {
+    "parallel_axes": [
+      "z",
+      "y",
+      "x"
+    ],
+    "kernel_addr": [
+      66526,
+      67144
+    ]
+  },
+  "artifacts": {
+    "elf": "11-pytorchsim_triton_compiler_fused_mm_cd3jcbco.elf",
+    "post_vcix_ir": "09-custom.mlir",
+    "llvm_ir": "11-kernel.ll",
+    "asm": "11-kernel.s",
+    "wrapper_c": "11-wrapper.c",
+    "quality": "08-quality.json",
+    "machine_config": "machine.yml",
+    "tog_cpp": "tog.cpp",
+    "tog_so": "tog.so",
+    "tile_types": "tile_types.json",
+    "cycle_elf": "cycle_bin"
+  },
+  "widths": {
+    "dot_lmul": {},
+    "lmul": 8,
+    "loop_lmul": {}
+  },
+  "copy_nodes": [
+    {
+      "arg": 1,
+      "bytes": 131072,
+      "held_buffer": 1,
+      "tog_so": "copy_node_1/tog.so"
+    }
+  ]
+}

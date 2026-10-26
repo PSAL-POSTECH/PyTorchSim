@@ -16,6 +16,8 @@ import shutil
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
 from result_check import check_result
 
+_IMGSZ = 640
+
 def run_yolo(batch):
     import copy
 
@@ -31,9 +33,8 @@ def run_yolo(batch):
     response = requests.get(url)
     img = Image.open(BytesIO(response.content)).convert("RGB")
 
-    imgsz = 64
     transform = transforms.Compose([
-        transforms.Resize((imgsz, imgsz)),
+        transforms.Resize((_IMGSZ, _IMGSZ)),
         transforms.ToTensor(),
     ])
 

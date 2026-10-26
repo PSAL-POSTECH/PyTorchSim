@@ -8,11 +8,40 @@ from transformers.models.llama.modeling_llama import LlamaForCausalLM, LlamaDeco
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
 from result_check import check_result
 
+# meta-llama/Llama-2-7b-hf, as published; only num_hidden_layers is cut.
+_LLAMA2_7B = dict(
+    vocab_size=32000,
+    hidden_size=4096,
+    intermediate_size=11008,
+    num_attention_heads=32,
+    num_key_value_heads=32,
+    max_position_embeddings=4096,
+    rms_norm_eps=1e-5,
+    rope_theta=10000.0,
+    rope_scaling=None,
+    hidden_act="silu",
+    attention_bias=False,
+    mlp_bias=False,
+    pretraining_tp=1,
+    tie_word_embeddings=False,
+    bos_token_id=1,
+    eos_token_id=2,
+    initializer_range=0.02,
+)
+
+
+def llama2_config(seq_len, dtype="float32", layers=1, **overrides):
+    """Llama-2-7B at its published sizes with `layers` blocks; raises past its 4096 positions."""
+    if seq_len > _LLAMA2_7B["max_position_embeddings"]:
+        raise ValueError(f"seq {seq_len} exceeds Llama-2-7B's "
+                         f"{_LLAMA2_7B['max_position_embeddings']} positions")
+    return LlamaConfig(**_LLAMA2_7B, num_hidden_layers=layers, torch_dtype=dtype, **overrides)
+
 @torch.no_grad()
 def run_rmsnorm_test(
     device,
     batch=1,
-    seq_len=32,
+    seq_len=128,
     dtype="float32",
     rtol=1e-3,
     atol=1e-3,
@@ -21,8 +50,8 @@ def run_rmsnorm_test(
     dtype_map = {"float32": torch.float32, "float16": torch.float16, "bfloat16": torch.bfloat16}
     torch_dtype = dtype_map.get(dtype, torch.float32)
 
-    hidden_size = 4096
-    eps = 1e-6
+    hidden_size = _LLAMA2_7B["hidden_size"]
+    eps = _LLAMA2_7B["rms_norm_eps"]
 
     print(f"Building LlamaRMSNorm (hidden_size={hidden_size}, eps={eps})")
     base_norm = LlamaRMSNorm(hidden_size=hidden_size, eps=eps).eval()
@@ -49,7 +78,7 @@ def run_rmsnorm_test(
 def run_rotary_embedding_test(
     device,
     batch=1,
-    seq_len=32,
+    seq_len=128,
     dtype="float32",
     rtol=1e-3,
     atol=1e-3,
@@ -58,38 +87,10 @@ def run_rotary_embedding_test(
     dtype_map = {"float32": torch.float32, "float16": torch.float16, "bfloat16": torch.bfloat16}
     torch_dtype = dtype_map.get(dtype, torch.float32)
 
-    hidden_size = 4096
-    num_heads = 32
-    head_dim = hidden_size // num_heads
+    num_heads = _LLAMA2_7B["num_attention_heads"]
+    head_dim = _LLAMA2_7B["hidden_size"] // num_heads
 
-    cfg = LlamaConfig(
-        _name_or_path="custom-llama",
-        architectures=["LlamaForCausalLM"],
-        attention_bias=False,
-        attention_dropout=0.0,
-        bos_token_id=1,
-        eos_token_id=2,
-        hidden_act="silu",
-        hidden_size=4096,
-        initializer_range=0.02,
-        intermediate_size=11008,
-        max_position_embeddings=4096,
-        mlp_bias=False,
-        model_type="llama",
-        num_attention_heads=32,
-        num_hidden_layers=1,
-        num_key_value_heads=32,
-        pretraining_tp=1,
-        rms_norm_eps=1e-06,
-        rope_scaling=None,
-        rope_theta=10000.0,
-        tie_word_embeddings=True,
-        torch_dtype=dtype,
-        transformers_version="4.51.3",
-        use_cache=True,
-        vocab_size=8192,
-        _attn_implementation = "sdpa"
-    )
+    cfg = llama2_config(seq_len, dtype, attn_implementation="sdpa")
     # The config carries dim, max_position_embeddings and base. Passing them
     # again as kwargs was the 4.43 spelling; transformers removed them, and the
     # config path computes the same inv_freq. head_dim below stays because the
@@ -128,7 +129,7 @@ def run_rotary_embedding_test(
 def run_decoder_layer_test(
     device,
     batch=1,
-    seq_len=32,
+    seq_len=128,
     dtype="float32",
     rtol=1e-3,
     atol=1e-3,
@@ -137,36 +138,9 @@ def run_decoder_layer_test(
     dtype_map = {"float32": torch.float32, "float16": torch.float16, "bfloat16": torch.bfloat16}
     torch_dtype = dtype_map.get(dtype, torch.float32)
 
-    cfg = LlamaConfig(
-        _name_or_path="custom-llama",
-        architectures=["LlamaForCausalLM"],
-        attention_bias=False,
-        attention_dropout=0.0,
-        bos_token_id=1,
-        eos_token_id=2,
-        hidden_act="silu",
-        hidden_size=4096,
-        initializer_range=0.02,
-        intermediate_size=11008,
-        max_position_embeddings=4096,
-        mlp_bias=False,
-        model_type="llama",
-        num_attention_heads=32,
-        num_hidden_layers=1,
-        num_key_value_heads=32,
-        pretraining_tp=1,
-        rms_norm_eps=1e-06,
-        rope_scaling=None,
-        rope_theta=10000.0,
-        tie_word_embeddings=True,
-        torch_dtype=dtype,
-        transformers_version="4.51.3",
-        use_cache=True,
-        vocab_size=8192,
-        _attn_implementation = "sdpa"
-    )
+    cfg = llama2_config(seq_len, dtype, attn_implementation="sdpa")
 
-    print("Building LlamaDecoderLayer from custom config.")
+    print("Building LlamaDecoderLayer at Llama-2-7B sizes.")
     base_layer = LlamaDecoderLayer(cfg, layer_idx=0).eval()
     cpu_layer = copy.deepcopy(base_layer).eval()
 
@@ -220,7 +194,7 @@ def run_decoder_layer_test(
 def run_custom_llama_test(
     device,
     batch=1,
-    seq_len=32,
+    seq_len=128,
     dtype="float32",
     rtol=1e-3,
     atol=1e-3,
@@ -229,35 +203,9 @@ def run_custom_llama_test(
     dtype_map = {"float32": torch.float32, "float16": torch.float16, "bfloat16": torch.bfloat16}
     torch_dtype = dtype_map.get(dtype, torch.float32)
 
-    cfg = LlamaConfig(
-        _name_or_path="custom-llama",
-        architectures=["LlamaForCausalLM"],
-        attention_bias=False,
-        attention_dropout=0.0,
-        bos_token_id=1,
-        eos_token_id=2,
-        hidden_act="silu",
-        hidden_size=1024,
-        initializer_range=0.02,
-        intermediate_size=11008,
-        max_position_embeddings=4096,
-        mlp_bias=False,
-        model_type="llama",
-        num_attention_heads=32,
-        num_hidden_layers=1,
-        num_key_value_heads=32,
-        pretraining_tp=1,
-        rms_norm_eps=1e-06,
-        rope_scaling=None,
-        rope_theta=10000.0,
-        tie_word_embeddings=True,
-        torch_dtype=dtype,
-        transformers_version="4.51.3",
-        use_cache=True,
-        vocab_size=8192,
-    )
+    cfg = llama2_config(seq_len, dtype)
 
-    print("Building LlamaForCausalLM from custom config (random init).")
+    print("Building LlamaForCausalLM at Llama-2-7B sizes (random init).")
     base_model = LlamaForCausalLM(cfg).eval()
     cpu_model  = copy.deepcopy(base_model).eval()
 
@@ -296,7 +244,7 @@ def run_custom_llama_test(
 def run_llama_model_test(
     device,
     batch=1,
-    seq_len=32,
+    seq_len=128,
     dtype="float32",
     rtol=1e-3,
     atol=1e-3,
@@ -305,20 +253,9 @@ def run_llama_model_test(
     dtype_map = {"float32": torch.float32, "float16": torch.float16, "bfloat16": torch.bfloat16}
     torch_dtype = dtype_map.get(dtype, torch.float32)
 
-    cfg = LlamaConfig(
-        vocab_size=8192,
-        hidden_size=1024,
-        num_attention_heads=32,
-        num_key_value_heads=32,
-        intermediate_size=11008 // 4,
-        num_hidden_layers=1,
-        max_position_embeddings=4096,
-        hidden_act="silu",
-        use_cache=False,
-        torch_dtype=dtype,
-    )
+    cfg = llama2_config(seq_len, dtype, use_cache=False)
 
-    print("Building LlamaModel from custom config (random init).")
+    print("Building LlamaModel at Llama-2-7B sizes, 1 layer (random init).")
     base_model = LlamaModel(cfg).eval()
     cpu_model = copy.deepcopy(base_model).eval()
 
@@ -353,7 +290,7 @@ def run_llama_model_test(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Test Custom Llama (random weights, no tokenizer)")
     parser.add_argument("--batch", type=int, default=1)
-    parser.add_argument("--seq_len", type=int, default=32)
+    parser.add_argument("--seq", type=int, default=128)
     parser.add_argument("--dtype", type=str, default="float32", choices=["float32", "float16", "bfloat16"])
     parser.add_argument("--rtol", type=float, default=1e-3)
     parser.add_argument("--atol", type=float, default=1e-3)
@@ -369,16 +306,17 @@ if __name__ == "__main__":
     run_decoder_layer_test(
         device=device,
         batch=args.batch,
-        seq_len=args.seq_len,
+        seq_len=args.seq,
         dtype=args.dtype,
         rtol=args.rtol,
         atol=args.atol,
     )
-    run_llama_model_test(device)
+    run_llama_model_test(device, batch=args.batch, seq_len=args.seq, dtype=args.dtype,
+                         rtol=args.rtol, atol=args.atol)
     #run_custom_llama_test(
     #    device=device,
     #    batch=args.batch,
-    #    seq_len=args.seq_len,
+    #    seq_len=args.seq,
     #    dtype=args.dtype,
     #    rtol=args.rtol,
     #    atol=args.atol,

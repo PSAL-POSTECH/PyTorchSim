@@ -1,3 +1,16 @@
+"""Llama 3 at Meta-Llama-3-8B's published sizes, one layer.
+
+Llama 3 is the Llama architecture with three things changed, and each one lands
+on a different part of this backend:
+
+  grouped-query attention   8 kv heads against 32 query heads, so k/v are
+                            repeated 4x on the head axis before the bmm
+  rope_theta 500000         a different inv_freq, same access pattern
+  wider SwiGLU              intermediate_size is 3.5x hidden, not 2.7x
+
+GQA is the one that is not just a number: the repeat_kv broadcast has to be
+absorbed rather than become a lane-crossing copy. Only the layer count is cut.
+"""
 import os
 import sys
 import argparse
@@ -8,60 +21,50 @@ from transformers.models.llama.modeling_llama import LlamaDecoderLayer, LlamaMod
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
 from result_check import check_result
 
-# Llama 3 is the Llama architecture with three things changed, and each one lands
-# on a different part of this backend:
-#
-#   grouped-query attention   8 kv heads against 32 query heads, so k/v are
-#                             repeated 4x on the head axis before the bmm
-#   rope_theta 500000         a different inv_freq, same access pattern
-#   wider SwiGLU              intermediate_size is 3.5x hidden, not 2.7x
-#
-# GQA is the one that is not just a number: the repeat_kv broadcast has to be
-# absorbed rather than become a lane-crossing copy. Sizes are scaled down from
-# 8B so a layer fits a test, but the head ratio is 8B's.
-HEADS, KV_HEADS = 32, 8
-HIDDEN = 1024
-INTERMEDIATE = 3584
+# meta-llama/Meta-Llama-3-8B, as published.
+LLAMA3_8B = dict(
+    vocab_size=128256,
+    hidden_size=4096,
+    num_attention_heads=32,
+    num_key_value_heads=8,
+    intermediate_size=14336,
+    max_position_embeddings=8192,
+    rope_theta=500000.0,
+    rms_norm_eps=1e-5,
+    hidden_act="silu",
+    attention_bias=False,
+    mlp_bias=False,
+    tie_word_embeddings=False,
+    bos_token_id=128000,
+    eos_token_id=128001,
+)
+HEADS, KV_HEADS = LLAMA3_8B["num_attention_heads"], LLAMA3_8B["num_key_value_heads"]
 
 
-def llama3_config(vocab_size=8192, layers=1):
-    return LlamaConfig(
-        vocab_size=vocab_size,
-        hidden_size=HIDDEN,
-        num_attention_heads=HEADS,
-        num_key_value_heads=KV_HEADS,
-        intermediate_size=INTERMEDIATE,
-        num_hidden_layers=layers,
-        max_position_embeddings=8192,
-        rope_theta=500000.0,
-        rms_norm_eps=1e-5,
-        hidden_act="silu",
-        attention_bias=False,
-        mlp_bias=False,
-        use_cache=False,
-        # NAMED, NOT LEFT TO THE DEFAULT. transformers 4.57 looks the
-        # implementation up in ALL_ATTENTION_FUNCTIONS by this string and a
-        # config that never set it carries None, which is not a key:
-        #
-        #     KeyError: None   (modeling_llama.py, in forward)
-        #
-        # 4.51 filled it in for itself. Eager is what the rest of this suite
-        # asks for anyway -- it keeps the sdpa dispatch out of the graph, so a
-        # failure is about the model and not about which kernel was picked --
-        # and test_llama3x.py has said so on this line all along.
-        attn_implementation="eager",
-    )
+def llama3_config(seq_len, layers=1):
+    """Meta-Llama-3-8B with `layers` blocks.
+
+    attn_implementation is named, not left to the default: transformers looks the implementation up by
+    this string and None is not a key (KeyError in modeling_llama's forward). Eager keeps the sdpa
+    dispatch out of the graph, so a failure is about the model and not about which kernel was picked.
+    Raises if `seq_len` exceeds the model's 8192 positions.
+    """
+    if seq_len > LLAMA3_8B["max_position_embeddings"]:
+        raise ValueError(f"seq {seq_len} exceeds Llama-3-8B's "
+                         f"{LLAMA3_8B['max_position_embeddings']} positions")
+    return LlamaConfig(**LLAMA3_8B, num_hidden_layers=layers, use_cache=False,
+                       attn_implementation="eager")
 
 
 @torch.no_grad()
-def run_decoder_layer_test(device, batch=1, seq_len=32, dtype="float32",
+def run_decoder_layer_test(device, batch=1, seq_len=128, dtype="float32",
                            rtol=1e-3, atol=1e-3):
     print("\n[Running Llama3 DecoderLayer Test]")
     dtype_map = {"float32": torch.float32, "float16": torch.float16,
                  "bfloat16": torch.bfloat16}
     torch_dtype = dtype_map.get(dtype, torch.float32)
 
-    cfg = llama3_config()
+    cfg = llama3_config(seq_len)
     print(f"Building Llama3 decoder layer: {HEADS} q heads / {KV_HEADS} kv heads.")
     base_layer = LlamaDecoderLayer(cfg, layer_idx=0).eval()
     cpu_layer = copy.deepcopy(base_layer).eval()
@@ -109,15 +112,15 @@ def run_decoder_layer_test(device, batch=1, seq_len=32, dtype="float32",
 
 
 @torch.no_grad()
-def run_model_test(device, batch=1, seq_len=32, dtype="float32",
+def run_model_test(device, batch=1, seq_len=128, dtype="float32",
                    rtol=1e-3, atol=1e-3):
     print("\n[Running Llama3 Model Test]")
     dtype_map = {"float32": torch.float32, "float16": torch.float16,
                  "bfloat16": torch.bfloat16}
     torch_dtype = dtype_map.get(dtype, torch.float32)
 
-    cfg = llama3_config()
-    print("Building Llama3 model from custom config (random init).")
+    cfg = llama3_config(seq_len)
+    print("Building Llama3 model at Llama-3-8B sizes, 1 layer (random init).")
     base_model = LlamaModel(cfg).eval()
     cpu_model = copy.deepcopy(base_model).eval()
 
@@ -154,7 +157,7 @@ def run_model_test(device, batch=1, seq_len=32, dtype="float32",
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Test Llama 3 (random weights, no tokenizer)")
     parser.add_argument("--batch", type=int, default=1)
-    parser.add_argument("--seq_len", type=int, default=32)
+    parser.add_argument("--seq", type=int, default=128)
     parser.add_argument("--dtype", type=str, default="float32",
                         choices=["float32", "float16", "bfloat16"])
     parser.add_argument("--rtol", type=float, default=1e-3)
@@ -164,7 +167,7 @@ if __name__ == "__main__":
     sys.path.append(os.environ.get("PYTORCHSIM_ROOT_PATH", "/workspace/PyTorchSim"))
     device = torch.device("npu:0")
     torch.compiler.is_compiling = lambda: True  # FIXME. Same as test_llama.py.
-    run_decoder_layer_test(device=device, batch=args.batch, seq_len=args.seq_len,
+    run_decoder_layer_test(device=device, batch=args.batch, seq_len=args.seq,
                            dtype=args.dtype, rtol=args.rtol, atol=args.atol)
-    run_model_test(device=device, batch=args.batch, seq_len=args.seq_len,
+    run_model_test(device=device, batch=args.batch, seq_len=args.seq,
                    dtype=args.dtype, rtol=args.rtol, atol=args.atol)

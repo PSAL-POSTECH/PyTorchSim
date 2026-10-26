@@ -214,35 +214,49 @@ def test_cross_attn_up_block2d(
     print("Max diff >", torch.max(torch.abs(dev_out.cpu() - cpu_out)).item())
     print("CrossAttnUpBlock2D simulation done.")
 
+# stable-diffusion-v1-5/stable-diffusion-v1-5 (was runwayml/stable-diffusion-v1-5), unet/config.json.
+_SD15_UNET = dict(
+    sample_size=64,
+    in_channels=4,
+    out_channels=4,
+    down_block_types=("CrossAttnDownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D", "DownBlock2D"),
+    up_block_types=("UpBlock2D", "CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "CrossAttnUpBlock2D"),
+    block_out_channels=(320, 640, 1280, 1280),
+    layers_per_block=2,
+    cross_attention_dim=768,
+    attention_head_dim=8,
+    norm_num_groups=32,
+    norm_eps=1e-5,
+    act_fn="silu",
+    flip_sin_to_cos=True,
+    freq_shift=0,
+    center_input_sample=False,
+    downsample_padding=1,
+    mid_block_scale_factor=1,
+)
+
+
+def build_sd15_unet():
+    """The full SD-1.5 UNet at its published config, random weights, no checkpoint."""
+    return UNet2DConditionModel(**_SD15_UNET).to("cpu").eval()
+
+
 def test_unet2d_condition_model(
     device,
     batch=1,
-    in_channels=4,
-    out_channels=4,
-    sample_size=32,
-    cross_attention_dim=[768, 768],
     seq_len=77,
-    block_out_channels=(64, 64),
-    layers_per_block=[1, 1],
-    attention_head_dim=(8, 8),
     rtol=1e-4,
     atol=1e-4,
     stride=None,
 ):
-    down_block_types = ("CrossAttnDownBlock2D", "DownBlock2D")
-    up_block_types   = ("UpBlock2D", "CrossAttnUpBlock2D")
+    """The whole SD-1.5 UNet on a B x 4 x 64 x 64 latent and a 77-token CLIP text state.
 
-    unet_cpu = UNet2DConditionModel(
-        sample_size=sample_size,
-        in_channels=in_channels,
-        out_channels=out_channels,
-        down_block_types=down_block_types,
-        up_block_types=up_block_types,
-        block_out_channels=block_out_channels,
-        layers_per_block=layers_per_block,
-        cross_attention_dim=cross_attention_dim,
-        attention_head_dim=attention_head_dim,
-    ).to("cpu").eval()
+    `seq_len` is the CLIP text length the cross-attention reads, not an LLM sequence.
+    """
+    unet_cpu = build_sd15_unet()
+    in_channels = unet_cpu.config.in_channels
+    sample_size = unet_cpu.config.sample_size
+    cross_attention_dim = unet_cpu.config.cross_attention_dim
 
     g = torch.Generator().manual_seed(0)
 
@@ -252,17 +266,15 @@ def test_unet2d_condition_model(
         x_cpu = torch.randn(batch, in_channels, sample_size, sample_size, generator=g)
 
     t_cpu = torch.randint(low=0, high=1000, size=(batch,), generator=g, dtype=torch.long)
-    encoder_hidden_states_cpu = torch.randn(batch, seq_len, cross_attention_dim[0], generator=g)
+    encoder_hidden_states_cpu = torch.randn(batch, seq_len, cross_attention_dim, generator=g)
 
-    # CPU result
     with torch.no_grad():
         y_cpu = unet_cpu(
             sample=x_cpu,
             timestep=t_cpu,
             encoder_hidden_states=encoder_hidden_states_cpu,
-        ).sample  # UNet2DConditionOutput.sample (Tensor)
+        ).sample
 
-    # Device + torch.compile
     unet_dev = unet_cpu.to(device).eval()
     unet_dev = torch.compile(unet_dev, dynamic=False)
 

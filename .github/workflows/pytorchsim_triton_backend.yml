@@ -46,6 +46,10 @@ on:
         description: "Tests the sweep runs at once (empty: the sweep's default, 8 on a 16-CPU runner)"
         required: false
         default: ''
+      bundle_suites:
+        description: "Suites the bundle job builds, space separated (empty: all); one suite fits the runner's wall time"
+        required: false
+        default: ''
 
 concurrency:
   group: triton-route-${{ github.ref }}
@@ -274,11 +278,14 @@ jobs:
       # tables, RoPE's, a gather's) is timed only on the records its Spike run leaves.
       # The record, with this run's picks folded in, and the workloads' keys are uploaded beside the bundle
       # (bundle/record, bundle/keys) for the next run; PTS_INPUTS are the git ids the keys hash.
+      # A dispatch may name the suites (bundle_suites): each group then builds only the named ones, or is skipped.
       - name: Build the bundle
+        env:
+          BUNDLE_SUITES: ${{ inputs.bundle_suites }}
         run: |
           mkdir -p bundle && chmod 777 bundle
           PTS_INPUTS="$(git rev-parse HEAD:pytorchsim HEAD:device HEAD:scripts/ci/bundle.py | tr '\n' ' ')"
-          docker run --rm -e PTS_COMMIT="$SOURCE_SHA" -e PTS_INPUTS="$PTS_INPUTS" -e BASE_IMAGE -e TORCHSIM_FUNCTIONAL_MODE=0 \
+          docker run --rm -e PTS_COMMIT="$SOURCE_SHA" -e PTS_INPUTS="$PTS_INPUTS" -e BASE_IMAGE -e BUNDLE_SUITES -e TORCHSIM_FUNCTIONAL_MODE=0 \
             -v "$PWD:/src:ro" -v "$PWD/picks:/picks:ro" -v "$PWD/prev:/prev:ro" -v "$PWD/bundle:/bundle" "${BASE_IMAGE}" bash -lc '
               set -euo pipefail
               mkdir -p "$TORCHSIM_DIR"
@@ -286,14 +293,26 @@ jobs:
               (cd "$TORCHSIM_DIR/device" && python -m pip install -q --no-build-isolation -e .)
               cd "$TORCHSIM_DIR"
               mkdir -p pytorchsim/selection && cp /picks/*.json pytorchsim/selection/ 2>/dev/null || true
-              TORCHSIM_TIMING_MODE=1 TORCHSIM_DUMP_PATH=/tmp/gemm python3 scripts/ci/bundle.py /bundle/out gemm --jobs 4 --reuse /prev \
-                > /bundle/gemm.log 2>&1 & gemm=$!
-              TORCHSIM_FUNCTIONAL_MODE=1 TORCHSIM_TIMING_MODE=1 TORCHSIM_DUMP_PATH=/tmp/layer python3 scripts/ci/bundle.py /bundle/out layer qwen3_8b --jobs 4 --reuse /prev \
-                > /bundle/layer.log 2>&1 & layer=$!
-              TORCHSIM_DUMP_PATH=/tmp/rest python3 scripts/ci/bundle.py /bundle/out vector attention --reuse /prev \
-                > /bundle/rest.log 2>&1 & rest=$!
-              rc=0; wait $gemm || rc=1; wait $layer || rc=1; wait $rest || rc=1
-              grep "^\[bundle\]" /bundle/gemm.log /bundle/layer.log /bundle/rest.log || true
+              pick() { local s out=""; for s in "$@"; do
+                         if [ -z "$BUNDLE_SUITES" ] || [[ " $BUNDLE_SUITES " == *" $s "* ]]; then out="$out $s"; fi
+                       done; echo $out; }
+              for s in $BUNDLE_SUITES; do case "$s" in gemm|layer|qwen3_8b|vector|attention) ;;
+                *) echo "bundle_suites names an unknown suite: $s"; exit 1 ;; esac; done
+              g=$(pick gemm); l=$(pick layer qwen3_8b); r=$(pick vector attention); pids=""
+              if [ -n "$g" ]; then
+                TORCHSIM_TIMING_MODE=1 TORCHSIM_DUMP_PATH=/tmp/gemm python3 scripts/ci/bundle.py /bundle/out $g --jobs 4 --reuse /prev \
+                  > /bundle/gemm.log 2>&1 & pids="$pids $!"
+              fi
+              if [ -n "$l" ]; then
+                TORCHSIM_FUNCTIONAL_MODE=1 TORCHSIM_TIMING_MODE=1 TORCHSIM_DUMP_PATH=/tmp/layer python3 scripts/ci/bundle.py /bundle/out $l --jobs 4 --reuse /prev \
+                  > /bundle/layer.log 2>&1 & pids="$pids $!"
+              fi
+              if [ -n "$r" ]; then
+                TORCHSIM_DUMP_PATH=/tmp/rest python3 scripts/ci/bundle.py /bundle/out $r --reuse /prev \
+                  > /bundle/rest.log 2>&1 & pids="$pids $!"
+              fi
+              rc=0; for p in $pids; do wait $p || rc=1; done
+              grep "^\[bundle\]" /bundle/*.log || true
               picks=""; for f in /tmp/gemm/selection.jsonl /tmp/layer/selection.jsonl; do if [ -s "$f" ]; then picks="$picks $f"; fi; done
               if [ -n "$picks" ]; then
                 python3 scripts/selection_merge.py $picks

@@ -2,7 +2,7 @@
 # CI's base image: the compiler's own published runtime image at the pinned commit, plus PyTorch and
 # what the tests import. The runtime image (PSAL-POSTECH/PyTorchSim-Triton-Backend, workflow images.yml,
 # <commit>-runtime: the compiler image less what only builds it, and less its torch) already carries
-# Ubuntu 22.04 with python3.11, the vcix-accelerator environment (RISC-V toolchain, pk, Spike, gem5),
+# Ubuntu 22.04 with python3.11, the Coprocessor environment (RISC-V toolchain, pk, Spike, gem5),
 # LLVM's llc, opt, mlir-translate and MLIR bindings, Triton built with the torchsim backend, the accelerator
 # model, the compiler, its dialect and extension, and the TOGSim it pins, built. Nothing of
 # that is built here. Rebuilt when scripts/ci/third_party_base_pin.sh changes, i.e. when this file,
@@ -19,7 +19,7 @@ RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1
 RUN python3.11 -m pip install --no-cache-dir \
     torch==2.14.0 torchvision==0.29.0 --index-url https://download.pytorch.org/whl/cpu
 
-# Triton is the image's source build (/workspace/triton-src, on PYTHONPATH below), with the
+# Triton is the image's source build (/opt/pytorchsim/triton-src, on PYTHONPATH below), with the
 # torchsim backend linked in; a pip triton would shadow nothing but confuse `import triton`.
 RUN python3.11 -m pip install --no-cache-dir \
     numpy==2.4.6 matplotlib scikit-learn \
@@ -30,12 +30,12 @@ RUN python3.11 -m pip install --no-cache-dir \
     psutil pyyaml requests tqdm py-cpuinfo
 
 # The compiler route's environment, as the compiler's setup/env.sh spells it for a local install
-# (TORCHSIM_PREFIX=/workspace in the image). VCIX_ENV_ROOT comes from the environment image.
-ENV TORCHSIM_PREFIX=/workspace \
+# (PYTORCHSIM_PREFIX=/opt/pytorchsim in the image). VCIX_ENV_ROOT comes from the environment image.
+ENV PYTORCHSIM_PREFIX=/opt/pytorchsim \
     TORCHSIM_COMPILE_DIR=/workspace/pytorchsim-triton-compiler \
     TRITON_BACKENDS_IN_TREE=1 \
-    TRITON_PLUGIN_PATHS=/workspace/torchsim-triton-ext-build/libtorchsim_triton_ext.so \
-    PYTHONPATH=/workspace/triton-src/python \
+    TRITON_PLUGIN_PATHS=/opt/pytorchsim/pytorchsim-triton-ext-build/libpytorchsim_triton_ext.so \
+    PYTHONPATH=/opt/pytorchsim/triton-src/python \
     GEM5_PATH=${VCIX_ENV_ROOT}/gem5/build/RISCV/gem5.opt \
     PATH=/workspace/pytorchsim-triton-compiler:${VCIX_ENV_ROOT}/riscv/bin:/root/.local/bin:${PATH} \
     LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/usr/lib/aarch64-linux-gnu:${LD_LIBRARY_PATH} \

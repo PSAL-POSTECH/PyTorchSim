@@ -167,7 +167,7 @@ jobs:
       # The harness's own kernels, end to end through Spike. This is the gate on
       # the toolchain itself: if these regress, nothing downstream is meaningful.
       #
-      # tests/torchsim-compile and NOT pytorchsim-triton-compiler: the compiler driver stops at
+      # tests/pytorchsim-compile and NOT pytorchsim-triton-compiler: the compiler driver stops at
       # the kernel object, so it would compile these and never run one. The
       # suite's driver registers the stages that run Spike and check the
       # numbers, which is the whole point of a smoke test.
@@ -175,9 +175,9 @@ jobs:
         run: |
           docker run --rm "${BASE_IMAGE}" bash -lc '
               cd /workspace/pytorchsim-triton-compiler &&
-              python3 tests/torchsim-compile doctor &&
+              python3 tests/pytorchsim-compile doctor &&
               for k in add mul relu gemm bmm; do
-                echo "=== $k ===" && python3 tests/torchsim-compile tests/cases/smoke/$k.py || exit 1
+                echo "=== $k ===" && python3 tests/pytorchsim-compile tests/cases/smoke/$k.py || exit 1
               done'
 
       # Only orders the sweep (longest test first), so a miss costs time and nothing

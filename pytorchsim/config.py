@@ -4,7 +4,7 @@ import yaml
 import logging
 
 CONFIG_TORCHSIM_DIR = os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim')
-#: The vcix-accelerator environment: the RISC-V toolchain, pk, Spike and gem5.
+#: The Coprocessor environment: the RISC-V toolchain, pk, Spike and gem5.
 CONFIG_VCIX_ENV_ROOT = os.environ.get("VCIX_ENV_ROOT", "/opt/vcix-env")
 CONFIG_GEM5_PATH = os.environ.get('GEM5_PATH', default=os.path.join(
     CONFIG_VCIX_ENV_ROOT, "gem5", "build", "RISCV", "gem5.opt"))
@@ -18,7 +18,8 @@ CONFIG_SPIKE_JOBS = os.environ.get("TORCHSIM_SPIKE_JOBS", os.environ.get("TORCHS
 CONFIG_TORCHSIM_COMPILE_DIR = os.environ.get(
     "TORCHSIM_COMPILE_DIR", default=os.path.join(CONFIG_TORCHSIM_DIR, "pytorchsim-triton-compiler"))
 #: Where the accelerator models are built; a kernel object's accelerator names the one it runs on.
-CONFIG_VCIX_BUILD = os.path.join(os.environ.get("TORCHSIM_PREFIX", "/workspace"), "vcix-build")
+CONFIG_VCIX_BUILD = os.environ.get("PYTORCHSIM_VCIX_BUILD") or os.path.join(
+    os.environ.get("PYTORCHSIM_PREFIX", "/opt/pytorchsim"), "vcix-build")
 #: The interpreter the compiler's own process runs under.
 CONFIG_TORCHSIM_COMPILE_PYTHON = os.environ.get("TORCHSIM_COMPILE_PYTHON", default=sys.executable)
 

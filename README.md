@@ -104,7 +104,7 @@ To download the latest Docker image and set up the environment, use the followin
 docker run -it --ipc=host --name torchsim -w /workspace/PyTorchSim ghcr.io/psal-postech/torchsim-ci:v1.1.0 bash
 ```
 ### Manual Setting (Optional)
-This script builds PyTorchSim-Triton-Backend -- the compiler, its LLVM and Triton, the vcix-accelerator environment (RISC-V toolchain, pk, Spike, gem5) and the TOGSim it carries (which needs `conan` 1.56 and `cmake` on `PATH`) -- from source for advanced users.
+This script builds PyTorchSim-Triton-Backend -- the compiler, its LLVM and Triton, the Coprocessor environment (RISC-V toolchain, pk, Spike, gem5) and the TOGSim it carries (which needs `conan` 1.56 and `cmake` on `PATH`) -- from source for advanced users.
 ```bash
 bash scripts/build_from_source.sh
 ```

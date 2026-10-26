@@ -58,9 +58,10 @@ def mm_config_heuristics():
 
 
 def mm_resident_config_heuristic():
-    """The resident mm's heuristic class: its one config from the compiler's copy_node.plan
-    (mm_resident.configs); registration.py registers it for npu."""
+    """(mm, addmm) heuristic classes of the resident mm: its one config from the compiler's copy_node.plan
+    (mm_resident.configs), the addmm form with the bias epilogue; registration.py registers them for npu."""
     from torch._inductor.heuristics.template.base import TemplateConfigHeuristics
+    from torch._inductor.heuristics.template.triton_addmm import AddMMConfigMixin
 
     from pytorchsim.frontend.inductor.autotune import mm_resident
 
@@ -68,7 +69,10 @@ def mm_resident_config_heuristic():
         def _get_template_configs_impl(self, kernel_inputs, op_name):
             yield from mm_resident.configs(kernel_inputs)
 
-    return NPUResidentMMConfigHeuristic
+    class NPUResidentAddmmConfigHeuristic(AddMMConfigMixin, NPUResidentMMConfigHeuristic):
+        pass
+
+    return NPUResidentMMConfigHeuristic, NPUResidentAddmmConfigHeuristic
 
 
 def conv_config_heuristic():

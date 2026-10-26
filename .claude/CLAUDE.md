@@ -130,7 +130,7 @@ Read in `pytorchsim/config.py`:
 | `TORCHSIM_CODEGEN_AUTOTUNE_TEMPLATE_TOPK` | `4` | GEMM tiles offered to the selection |
 | `VCIX_ENV_ROOT` | `/opt/vcix-env` | the Coprocessor environment the tools below default into |
 | `GEM5_PATH` | `$VCIX_ENV_ROOT/gem5/build/RISCV/gem5.opt` | gem5 binary (Coprocessor environment) |
-| `TORCHSIM_SPIKE`, `TORCHSIM_PK` | `$VCIX_ENV_ROOT/spike/bin/spike`, `$VCIX_ENV_ROOT/pk/riscv64-unknown-elf/bin/pk` | Spike and pk (`TORCHSIM_COMPILE_SPIKE`/`_PK` are read next) |
+| `TORCHSIM_SPIKE`, `TORCHSIM_PK` | `$VCIX_ENV_ROOT/spike/bin/spike`, `$VCIX_ENV_ROOT/pk/riscv64-unknown-elf/bin/pk` | Spike and pk (`PYTORCHSIM_COMPILE_SPIKE`/`_PK` are read next) |
 | `TORCHSIM_SPIKE_JOBS` | unset | Spike processes a launch's grid is split across (unset: the launcher chooses) |
 | `TORCHSIM_LOG_PATH` | `$TORCHSIM_DIR/togsim_results` | where TOGSim logs go |
 | `TORCHSIM_DUMP_PATH` | `$TORCHSIM_DIR` | misc dumps |

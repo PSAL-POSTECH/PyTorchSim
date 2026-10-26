@@ -175,8 +175,8 @@ def npu_choices_class():
             return f"pytorchsim-npu-choices-4-{template_record.graph_digest()}"
 
         def get_template_configs(self, kernel_inputs, templates, op_name, kwarg_overrides=None):
-            """Inductor's choices of `templates`, an npu mm offered the resident mm alone where it
-            holds (mm_resident.templates_for), its config marked as planned."""
+            """Inductor's choices of `templates`, an npu mm or addmm offered the resident mm alone where
+            it holds (mm_resident.templates_for), its config marked as planned."""
             from pytorchsim.backend import template_record
             from pytorchsim.frontend.inductor.autotune import mm_resident
             got = super().get_template_configs(
@@ -243,7 +243,7 @@ def npu_choices_class():
 # Inductor's template heuristics (torch._inductor.heuristics.template.registry)
 
 def _register_template_heuristics():
-    """Register the mm/bmm heuristic and its addmm/baddbmm form, and the resident mm's, for npu."""
+    """Register the mm/bmm heuristic and its addmm/baddbmm form, and the resident mm's two, for npu."""
     from torch._inductor.kernel.bmm import bmm_template
     from torch._inductor.kernel.mm import mm_template
     from torch._inductor.heuristics.template.registry import register_template_heuristic
@@ -257,5 +257,6 @@ def _register_template_heuristics():
     register_template_heuristic(bmm_template.uid, "npu")(mm)
     register_template_heuristic(mm_template.uid, "npu", op_name="addmm")(addmm)
     register_template_heuristic(bmm_template.uid, "npu", op_name="baddbmm")(addmm)
-    register_template_heuristic(mm_resident.mm_resident_template.uid, "npu", op_name="mm")(
-        mm_resident_config_heuristic())
+    resident, resident_addmm = mm_resident_config_heuristic()
+    register_template_heuristic(mm_resident.mm_resident_template.uid, "npu", op_name="mm")(resident)
+    register_template_heuristic(mm_resident.mm_resident_template.uid, "npu", op_name="addmm")(resident_addmm)

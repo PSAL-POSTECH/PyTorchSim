@@ -19,7 +19,7 @@ SRC = "def kernel(): pass\n"
 
 def _meta(xblock):
     return {"kernel_name": "k", "numels": {"xnumel": 4096}, "fixed_config": {"XBLOCK": xblock},
-            "signature": {"XBLOCK": "constexpr"}, "args": []}
+            "signature": {"XBLOCK": "constexpr"}, "args": [], "graph_prefetch": []}
 
 
 def test_a_hit_launches_the_tuned_tile():

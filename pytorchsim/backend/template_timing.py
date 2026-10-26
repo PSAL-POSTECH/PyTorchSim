@@ -4,9 +4,11 @@ timed pick leaves for next time is template_record.py."""
 
 import concurrent.futures
 import os
+import subprocess
 import time
 
 from pytorchsim import config, contract
+from pytorchsim.frontend.inductor.autotune import graph_prefetch
 from pytorchsim.frontend.inductor.codegen import kernel_metadata
 from pytorchsim.backend import retile, compiler_bridge, compiler_input, template_record
 from pytorchsim.simulator import timing
@@ -15,9 +17,9 @@ logger = config.setup_logger()
 
 
 def _time_tile(src_code, meta, kernel_name, workdir, cut=None):
-    """TOGSim cycles of one kernel, simulated alone; inf if it does not compile or run, or `cut`
-    stops its simulation. TOGSim refuses a tile over the spad at load, and that refusal and a cut
-    reach here as RuntimeError."""
+    """TOGSim cycles of one kernel, simulated alone; inf if it does not compile in the bridge's timeout
+    or run, or `cut` stops its simulation. TOGSim's refusal of a tile over the spad and a cut reach here
+    as RuntimeError."""
     from pytorchsim.simulator.timing.togsim import Cut
     os.makedirs(workdir, exist_ok=True)
     spec_path = os.path.join(workdir, f"{kernel_name}_spec.py")
@@ -26,13 +28,16 @@ def _time_tile(src_code, meta, kernel_name, workdir, cut=None):
     compiler_input.store_meta(workdir, meta)
     compiler_input.write(src_code, meta, spec_path)
     try:
-        compiler_bridge.run_pipeline(spec_path, workdir, to_stage="torchsim-compile", tog=True)
+        compiler_bridge.run_pipeline(spec_path, workdir, to_stage="pytorchsim-compile", tog=True)
         timing.write_cycle_tables(workdir, meta)
         mine = contract.link_shared(workdir, timing.SHARED)
         timing.write_shape(workdir, meta)
         timing.write_tensors(workdir)
         return timing.simulate_standalone(workdir, mine, os.path.join(mine, "attribute"),
                                           autotune_mode=True, cut=cut)["total_cycles"]
+    except subprocess.TimeoutExpired as exc:
+        logger.info("[select] %s %s: not compiled in %.0f s", kernel_name, workdir, exc.timeout)
+        return float("inf")
     except (compiler_bridge.CompilerError, RuntimeError, FileNotFoundError) as exc:
         why = retile.too_big(exc) or (f"cut, {exc}" if isinstance(exc, Cut) else type(exc).__name__)
         logger.info("[select] %s %s: %s", kernel_name, workdir, why)
@@ -60,6 +65,8 @@ def time_choices(choices):
     out = {c: float("inf") for c in choices}
     timed = [c for c in choices if template_record.is_timed(c)]
     jobs = [(c, *kernel_metadata.benchmark_request_meta(c.bmreq)) for c in timed]
+    for c, _, meta in jobs:
+        meta["graph_prefetch"] = graph_prefetch.choice_statement(c.annotations["ktc"], meta["args"])
     t0, first = time.monotonic(), []
 
     def cut():

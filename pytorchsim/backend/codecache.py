@@ -19,10 +19,10 @@ LOCK_TIMEOUT = 600
 
 def _write_path(src_code, meta):
     """The kernel's workdir, keyed by everything its ELF is built from: the source, and the
-    constexprs, grid and arguments the spec bakes in. A user-defined Triton kernel's source is
-    the same for every launch; its constexprs and grid are not."""
+    constexprs, grid, arguments and graph_prefetch the spec bakes in (a held and a streamed
+    build of one source differ only there)."""
     baked = (meta.get("signature"), meta.get("constants"), meta.get("fixed_config"),
-             meta.get("template_grid"),
+             meta.get("template_grid"), meta["graph_prefetch"],
              [(a["name"], a["role"], a["dtype"], a["numel"]) for a in meta.get("args", ())])
     return os.path.join(config.get_dump_path(),
                         "triton_" + get_hash(src_code.strip() + repr(baked))[1:12])
@@ -64,7 +64,8 @@ class TritonNPULauncher:
 
 def torchsim_compile(src_code, meta, kernel_name):
     """Compile one Inductor-generated Triton kernel through the compiler, synchronously, when the
-    generated wrapper is imported."""
+    generated wrapper is imported, holding what meta's graph_prefetch states; the compiler's
+    refusal to hold it is an error: the lowering's election and the compiler disagree."""
     write_path = _write_path(src_code, meta)
     os.makedirs(write_path, exist_ok=True)
 
@@ -92,6 +93,7 @@ def torchsim_compile(src_code, meta, kernel_name):
                     wallclock.ingest_compile(write_path, kernel_name)
                     break
                 except compiler_bridge.CompilerError as exc:
+                    _refuse_held(exc, meta)
                     why = retile.too_big(exc)
                     if why is None:
                         raise
@@ -111,3 +113,14 @@ def torchsim_compile(src_code, meta, kernel_name):
             compiler_input.load_tuned_blocks(write_path, meta)
         logger.info("[torchsim-compile] %s -> %s", kernel_name, write_path)
         return TritonNPULauncher(kernel_name, write_path, meta)
+
+
+def _refuse_held(exc, meta):
+    """Raise, naming the kernel and the held args, when the compiler refused to hold what meta's
+    graph_prefetch states (contract/failure): a scratchpad overflow or no prefetch candidate."""
+    got = getattr(exc, "failure", None) or {}
+    kinds = compiler_bridge.compiler_contract("failure")
+    if meta["graph_prefetch"] and got.get("kind") in (kinds.SPAD_OVERFLOW, kinds.NOT_A_PREFETCH_CANDIDATE):
+        raise compiler_bridge.CompilerError(
+            f"{meta['kernel_name']}: the compiler refuses to hold {meta['graph_prefetch']} "
+            f"({got['kind']}: {got.get('message')}), which the lowering elected", exc.cmd, got) from exc

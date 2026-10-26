@@ -87,7 +87,7 @@ def torchsim_compile(src_code, meta, kernel_name):
                 try:
                     with wallclock.span(wallclock.TORCHSIM_COMPILE, kernel_name):
                         compiler_bridge.run_pipeline(
-                            spec_path, write_path, to_stage="torchsim-compile",
+                            spec_path, write_path, to_stage="pytorchsim-compile",
                             tog=bool(config.pytorchsim_timing_mode))
                     wallclock.ingest_compile(write_path, kernel_name)
                     break

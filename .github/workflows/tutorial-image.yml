@@ -99,8 +99,8 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: The vcix-accelerator environment image the tutorial pins
-        run: echo "VCIX_ENV_IMAGE=$(jq -r '.vcix_accelerator.env_image' third_party/tutorial.json)" >> "$GITHUB_ENV"
+      - name: The Coprocessor environment image the tutorial pins
+        run: echo "VCIX_ENV_IMAGE=$(jq -r '.coprocessor.env_image' third_party/tutorial.json)" >> "$GITHUB_ENV"
 
       - name: Build and push the tutorial image
         uses: docker/build-push-action@v6

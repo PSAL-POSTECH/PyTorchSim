@@ -1,15 +1,11 @@
 {
-  "description": "The MICRO 2026 tutorial's code beside PyTorchSim: vcix-accelerator's tutorial branches, the start (three steps left to write) and its answer, and the vcix-accelerator environment image whose RISC-V toolchain (clang among it) their tests assemble with. docker/Dockerfile.tutorial checks both branches out in /workspace/vcix-accelerator at these commits.",
-  "vcix_accelerator": {
-    "repository": "https://github.com/PSAL-POSTECH/vcix-accelerator.git",
+  "description": "The MICRO 2026 tutorial's code beside PyTorchSim: Coprocessor's tutorial branch, the hands-on's start with its answer in examples/xlane_reduce/answer/, and the Coprocessor environment image whose RISC-V toolchain (clang among it) its tests assemble with. docker/Dockerfile.tutorial checks the branch out in /workspace/Coprocessor at this commit and builds it; the image's PYTORCHSIM_VCIX_BUILD is that build, so the models Spike and the compiler load are the attendee's.",
+  "coprocessor": {
+    "repository": "https://github.com/PSAL-POSTECH/Coprocessor.git",
     "start": {
       "branch": "tutorial/xlane-reduce",
-      "commit": "b8c42dae3c7a83a81383bfb8b6f22921fe9630b2"
+      "commit": "ea26aa3a0a9ccb20a3a5882f77d1300c85e7de8b"
     },
-    "solution": {
-      "branch": "tutorial/xlane-reduce-solution",
-      "commit": "db93c713435698ddf1c46b832f4ebc31612a37c8"
-    },
-    "env_image": "ghcr.io/psal-postech/vcix-accelerator:env-31c9ccaaec97"
+    "env_image": "ghcr.io/psal-postech/coprocessor:env-37b23aec49fd"
   }
 }

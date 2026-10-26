@@ -1,14 +1,17 @@
-# The MICRO 2026 tutorial image: PyTorchSim as docker/Dockerfile builds it, plus vcix-accelerator's tutorial branches
-# (third_party/tutorial.json) built in /workspace/vcix-accelerator, its environment's RISC-V toolchain and an editor.
-ARG VCIX_ENV_IMAGE=ghcr.io/psal-postech/vcix-accelerator:env-31c9ccaaec97
+# The MICRO 2026 tutorial image: PyTorchSim as docker/Dockerfile builds it, plus Coprocessor's tutorial branch
+# (third_party/tutorial.json) built in /workspace/Coprocessor, whose build/ is the models the route loads
+# (PYTORCHSIM_VCIX_BUILD), its environment's RISC-V toolchain, an editor and JupyterLab for docker/tutorial/jupyterhub/.
+ARG VCIX_ENV_IMAGE=ghcr.io/psal-postech/coprocessor:env-37b23aec49fd
 ARG BASE_IMAGE=ghcr.io/psal-postech/torchsim_base:latest
 FROM ${VCIX_ENV_IMAGE} AS vcix_env
 FROM ${BASE_IMAGE}
 RUN apt-get update && apt-get install -y --no-install-recommends vim nano && rm -rf /var/lib/apt/lists/*
+RUN python3 -m pip install --no-cache-dir jupyterhub==5.3.0 jupyterlab==4.4.5
 COPY --from=vcix_env /opt/vcix-env/riscv /opt/vcix-env/riscv
 COPY . /workspace/PyTorchSim
 RUN cd PyTorchSim/device && \
     python -m pip install --no-build-isolation -e .
-ENV PATH=/opt/vcix-env/riscv/bin:${PATH}
+ENV PATH=/opt/vcix-env/riscv/bin:${PATH} \
+    PYTORCHSIM_VCIX_BUILD=/workspace/Coprocessor/build
 RUN bash /workspace/PyTorchSim/docker/tutorial/setup.sh
 WORKDIR /workspace

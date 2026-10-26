@@ -81,12 +81,44 @@ SPEC = KernelSpec(
     ],
     grid={grid!r},
     parallel_axes={parallel_axes!r},
+    graph_prefetch={graph_prefetch!r},
     reference=reference,
     make_inputs=make_inputs,
     extra={{"scalar_args": {scalar_decls!r},
            "scalar_values": {scalar_values!r}}},
 )
 '''
+
+
+def spec_signature(meta):
+    """(signature, constexprs) of the kernel file: Inductor's, each pinned block a constexpr."""
+    signature = dict(meta["signature"])
+    constexprs = dict(meta["constants"])
+    for k, v in (meta.get("fixed_config") or {}).items():
+        if k not in signature:
+            continue
+        if v is None:
+            raise SpecIncomplete(
+                f"{meta['kernel_name']}: block size {k} is unset "
+                f"(fixed_config_for leaves reduction blocks unset on purpose)")
+        constexprs[k] = v
+        signature[k] = "constexpr"
+    return signature, constexprs
+
+
+def parameter_names(meta):
+    """The kernel's tensor argument names by index, spec.args[k] (kernel_object.parameters' ("tensor", k)):
+    the index space of the spec's graph_prefetch and the manifest's copy_nodes."""
+    return [a["name"] for a in meta["args"]]
+
+
+def graph_prefetch(meta):
+    """The spec's graph_prefetch: the tensor indices of the arguments meta's graph_prefetch names."""
+    names = parameter_names(meta)
+    unknown = sorted(set(meta["graph_prefetch"]) - set(names))
+    if unknown:
+        raise SpecIncomplete(f"{meta['kernel_name']}: graph_prefetch names {unknown}, no parameter of it")
+    return tuple(sorted(names.index(n) for n in meta["graph_prefetch"]))
 
 
 def recorded_file(kernel_name):
@@ -104,17 +136,7 @@ def write(src_code, meta, path, recorded=None, scalars=None):
             f"{meta['kernel_name']}: no dtype/numel for {missing} -- "
             f"collect_meta could not resolve them from V.graph")
 
-    signature = dict(meta["signature"])
-    constexprs = dict(meta["constants"])
-    for k, v in (meta.get("fixed_config") or {}).items():
-        if k not in signature:
-            continue
-        if v is None:
-            raise SpecIncomplete(
-                f"{meta['kernel_name']}: block size {k} is unset "
-                f"(fixed_config_for leaves reduction blocks unset on purpose)")
-        constexprs[k] = v
-        signature[k] = "constexpr"
+    signature, constexprs = spec_signature(meta)
 
     args_body = "\n".join(
         f"        Arg({a['name']!r}, {a['role']!r}, {a['dtype']!r}, ({a['numel']},)),"
@@ -151,6 +173,7 @@ def write(src_code, meta, path, recorded=None, scalars=None):
         make_inputs_body=make_inputs_body,
         grid=contract.grid_xyz(meta),
         parallel_axes=tuple(contract.launch_axes(meta)),
+        graph_prefetch=graph_prefetch(meta),
         scalar_decls=[(n, c) for n, c, _ in scalars],
         scalar_values={n: v if v is not None else given[n] for n, _, v in scalars if v is not None or n in given},
     )

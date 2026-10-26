@@ -1,5 +1,6 @@
 """What the compile step needs from an Inductor kernel, read while `V.graph` is live: collect_meta
-gathers the arguments with their roles, dtypes and storage spans, the numels, the pinned blocks and the grid."""
+gathers the arguments with their roles, dtypes and storage spans, the numels, the pinned blocks and the grid;
+define_kernel adds what it holds (graph_prefetch), none until then."""
 
 from torch._inductor.codegen.common import InplacedBuffer, is_buffer_removed
 from torch._inductor.virtualized import V
@@ -156,6 +157,7 @@ def collect_meta(kernel, kernel_name):
         "inside_reduction": bool(getattr(kernel, "inside_reduction", False)),
         "fixed_config": _held_blocks(kernel) or _blocks_without_pin(kernel, numels, args),
         "template_grid": template_grid(kernel),
+        "graph_prefetch": [],
     }
 
 
@@ -190,6 +192,7 @@ def benchmark_request_meta(req):
         "inside_reduction": False,
         "fixed_config": tiling.fixed_config_for(None, numels, args),
         "template_grid": [int(g) for g in req.extra_args],
+        "graph_prefetch": [],
     }
 
 

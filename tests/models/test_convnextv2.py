@@ -25,18 +25,28 @@ def _init_weights(m):
             torch.nn.init.zeros_(m.bias)
 
 
-def test_convnextv2(device, batch=2, image_size=64, patch_size=4):
-    """ConvNeXt V2 with batch > 1. Two things used to break here (GitHub issue #255):
-    the channels-first LayerNorm reduces the contiguous axis, which the GEMM template's
-    2-D reduction-epilogue frame cannot express, and the depthwise 7x7 conv lowers to
-    gather kernels whose index-expression scratch buffer exhausted the SPAD budget."""
+# facebook/convnextv2-tiny-1k-224 as published; only depths are cut, [3, 3, 9, 3] -> [1, 1, 1, 1].
+_CONVNEXTV2_TINY = dict(
+    num_channels=3,
+    num_stages=4,
+    hidden_sizes=[96, 192, 384, 768],
+    hidden_act="gelu",
+    layer_norm_eps=1e-12,
+    drop_path_rate=0.0,
+    image_size=224,
+    patch_size=4,
+)
+
+
+def test_convnextv2(device, batch=2, depths=(1, 1, 1, 1)):
+    """ConvNeXt V2 tiny at its published per-stage widths, with batch > 1. Two things
+    used to break here (GitHub issue #255): the channels-first LayerNorm reduces the
+    contiguous axis, which the GEMM template's 2-D reduction-epilogue frame cannot
+    express, and the depthwise 7x7 conv lowers to gather kernels whose index-expression
+    scratch buffer exhausted the SPAD budget."""
     torch.manual_seed(0)
-    cfg = ConvNextV2Config(
-        depths=[1, 1, 1, 1],
-        hidden_sizes=[96, 192, 384, 768],
-        image_size=image_size,
-        patch_size=patch_size,
-    )
+    cfg = ConvNextV2Config(**_CONVNEXTV2_TINY, depths=list(depths))
+    image_size = cfg.image_size
     with torch.no_grad():
         model = ConvNextV2Model(cfg).eval()
         model.apply(_init_weights)
@@ -56,12 +66,8 @@ def test_convnextv2(device, batch=2, image_size=64, patch_size=4):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run ConvNeXt V2 test")
     parser.add_argument("--batch", type=int, default=2)
-    parser.add_argument("--image_size", type=int, default=64)
-    parser.add_argument("--patch_size", type=int, default=4)
     args = parser.parse_args()
     test_convnextv2(
         torch.device("npu:0"),
         batch=args.batch,
-        image_size=args.image_size,
-        patch_size=args.patch_size,
     )

@@ -88,6 +88,7 @@ jobs:
           - tests/system/test_attribute_sources.py
           - tests/system/test_breakdown_viewer.py
           - tests/system/test_bundle_reuse.py
+          - tests/system/test_bundle_where.py
           - tests/system/test_compiler_failure.py
           - tests/system/test_device_interface.py
           - tests/system/test_eager.py

@@ -102,7 +102,7 @@ def storage_span(size, stride, offset=0):
 KERNEL_MANIFEST = "kernel.json"
 
 
-KERNEL_FORMAT = 9
+KERNEL_FORMAT = 10
 
 
 def kernel_object(workdir):

@@ -1,0 +1,123 @@
+name: MICRO 2026 tutorial image
+
+# Every push to micro2026 (or by hand): the base image on the compiler's pinned image, as docker-image.yml builds it;
+# docker/Dockerfile.tutorial on it, pushed as ghcr.io/psal-postech/tutorial-micro2026:<sha>; docker/tutorial/check.sh run in
+# that image; and only when it passes, the same image tagged :latest, the one the slides tell attendees to pull.
+on:
+  push:
+    branches: [micro2026]
+  workflow_dispatch:
+
+concurrency:
+  group: tutorial-image-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BASE_IMAGE_REPO: ghcr.io/psal-postech/torchsim_base
+  PTB_IMAGE_REPO: ghcr.io/psal-postech/pytorchsim-triton-backend
+  IMAGE_REPO: ghcr.io/psal-postech/tutorial-micro2026
+  SOURCE_SHA: ${{ github.sha }}
+
+jobs:
+  ensure-base:
+    name: Base image on the compiler's
+    # The compiler image is ~10 GB: a GitHub-hosted runner's disk is not the place to layer on it.
+    runs-on: [self-hosted, slurm, big, x86_64]
+    outputs:
+      base_image: ${{ steps.pin.outputs.base_image }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          persist-credentials: false
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pins
+        id: pin
+        run: |
+          PTB_REF=$(jq -r '.pytorchsim_triton_backend.ref' third_party/pytorchsim-triton-backend.json)
+          PIN="$(bash scripts/ci/third_party_base_pin.sh)"
+          echo "PTB_IMAGE=${PTB_IMAGE_REPO}:${PTB_REF}-runtime" >> "$GITHUB_ENV"
+          echo "BASE_IMAGE=${BASE_IMAGE_REPO}:third_party-${PIN}" >> "$GITHUB_ENV"
+          echo "base_image=${BASE_IMAGE_REPO}:third_party-${PIN}" >> "$GITHUB_OUTPUT"
+
+      - name: The compiler has published an image for the pin
+        run: |
+          if ! docker buildx imagetools inspect "${PTB_IMAGE}" > /dev/null 2> inspect.err; then
+            echo "docker buildx imagetools inspect: $(cat inspect.err)"
+            echo "::error::${PTB_IMAGE} is not in the registry. PSAL-POSTECH/PyTorchSim-Triton-Backend's images workflow pushes one tag per commit on its main and develop; a pin on any other branch has no image. If the tag does exist, this repository has lost read access to the package (its settings: Manage Actions access)."
+            exit 1
+          fi
+
+      - name: Check base image exists
+        id: exists
+        run: |
+          if docker buildx imagetools inspect "${BASE_IMAGE}" > /dev/null 2>&1; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build and push base image (missing pin)
+        if: steps.exists.outputs.ok != 'true'
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: ./docker/Dockerfile.base
+          push: true
+          build-args: |
+            PTB_IMAGE=${{ env.PTB_IMAGE }}
+          tags: ${{ env.BASE_IMAGE }}
+
+  image:
+    needs: ensure-base
+    runs-on: [self-hosted, slurm, big, x86_64]
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          persist-credentials: false
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: The vcix-accelerator environment image the tutorial pins
+        run: echo "VCIX_ENV_IMAGE=$(jq -r '.vcix_accelerator.env_image' third_party/tutorial.json)" >> "$GITHUB_ENV"
+
+      - name: Build and push the tutorial image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./docker/Dockerfile.tutorial
+          push: true
+          no-cache: true
+          build-args: |
+            BASE_IMAGE=${{ needs.ensure-base.outputs.base_image }}
+            VCIX_ENV_IMAGE=${{ env.VCIX_ENV_IMAGE }}
+          tags: ${{ env.IMAGE_REPO }}:${{ env.SOURCE_SHA }}
+
+      - name: What the slides run, in the image
+        run: |
+          docker pull "${IMAGE_REPO}:${SOURCE_SHA}"
+          docker run --rm --ipc=host "${IMAGE_REPO}:${SOURCE_SHA}" bash /workspace/PyTorchSim/docker/tutorial/check.sh
+
+      - name: Tag it latest
+        run: docker buildx imagetools create -t "${IMAGE_REPO}:latest" "${IMAGE_REPO}:${SOURCE_SHA}"

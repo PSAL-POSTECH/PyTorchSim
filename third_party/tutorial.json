@@ -1,0 +1,15 @@
+{
+  "description": "The MICRO 2026 tutorial's code beside PyTorchSim: vcix-accelerator's tutorial branches, the start (three steps left to write) and its answer, and the vcix-accelerator environment image whose RISC-V toolchain (clang among it) their tests assemble with. docker/Dockerfile.tutorial checks both branches out in /workspace/vcix-accelerator at these commits.",
+  "vcix_accelerator": {
+    "repository": "https://github.com/PSAL-POSTECH/vcix-accelerator.git",
+    "start": {
+      "branch": "tutorial/xlane-reduce",
+      "commit": "b8c42dae3c7a83a81383bfb8b6f22921fe9630b2"
+    },
+    "solution": {
+      "branch": "tutorial/xlane-reduce-solution",
+      "commit": "db93c713435698ddf1c46b832f4ebc31612a37c8"
+    },
+    "env_image": "ghcr.io/psal-postech/vcix-accelerator:env-31c9ccaaec97"
+  }
+}

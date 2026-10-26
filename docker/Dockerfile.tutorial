@@ -1,0 +1,14 @@
+# The MICRO 2026 tutorial image: PyTorchSim as docker/Dockerfile builds it, plus vcix-accelerator's tutorial branches
+# (third_party/tutorial.json) built in /workspace/vcix-accelerator, its environment's RISC-V toolchain and an editor.
+ARG VCIX_ENV_IMAGE=ghcr.io/psal-postech/vcix-accelerator:env-31c9ccaaec97
+ARG BASE_IMAGE=ghcr.io/psal-postech/torchsim_base:latest
+FROM ${VCIX_ENV_IMAGE} AS vcix_env
+FROM ${BASE_IMAGE}
+RUN apt-get update && apt-get install -y --no-install-recommends vim nano && rm -rf /var/lib/apt/lists/*
+COPY --from=vcix_env /opt/vcix-env/riscv /opt/vcix-env/riscv
+COPY . /workspace/PyTorchSim
+RUN cd PyTorchSim/device && \
+    python -m pip install --no-build-isolation -e .
+ENV PATH=/opt/vcix-env/riscv/bin:${PATH}
+RUN bash /workspace/PyTorchSim/docker/tutorial/setup.sh
+WORKDIR /workspace

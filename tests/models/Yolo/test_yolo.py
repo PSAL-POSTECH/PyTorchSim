@@ -63,19 +63,16 @@ it a preset can pass while proving nothing: every YAML in this list produces a
 model that runs, so "yolo12 passes" is worth nothing if the parser quietly gave
 back a stack of plain convolutions.
 
-SCALE.  Every preset runs the smallest published scale (``n``, or ``-tiny`` for
-v3) at 64x64 input and ``nc=4``.  Width is the axis that stays honest -- the
-nano scales are shipped shapes, not invented ones -- and the two scaled axes are
-input resolution and class count, which change the size of the tensors and not
-which kernels run.  64 is the smallest input the head accepts: stride 32 has to
-leave a feature map with a nonzero extent, and 64 gives 8x8 / 4x4 / 2x2.
+SCALE.  Every preset runs the smallest published scale (``n``, ``t`` for v9, or
+``-tiny`` for v3) at the real 640x640 input and the real COCO head, ``nc=80``.
+Only the weights are not the shipped ones.
 
     source /workspace/torchsim-env.sh
     python tests/models/Yolo/test_yolo.py --version v8
 
-MEASURED 2026-08-13, one cleared dump path each, nine runs sharing the machine
-so the wall clocks are upper bounds.  "kern" is unique compiled kernels; "max
-rel" is the worst max|npu-cpu| / max|cpu| over all of a version's outputs.
+MEASURED 2026-08-13 at the former 64x64 input and nc=4, one cleared dump path
+each, nine runs sharing the machine so the wall clocks are upper bounds.  "kern"
+is unique compiled kernels; "max rel" is the worst max|npu-cpu| / max|cpu| over all of a version's outputs.
 
     version  yaml            params      kern   time   max rel     verdict
     v3       yolov3-tiny  12,134,184      50    385s   2.93e-06    PASS ***
@@ -106,7 +103,7 @@ rel" is the worst max|npu-cpu| / max|cpu| over all of a version's outputs.
 
 SO ALL NINE PASS.  The file still gates only v5 and v8, and that is the rule
 working rather than an oversight: the other seven pass against triton_shared
-commits this repo does not pin yet.  See the gate's own note.
+commits this repo does not pin yet.
 
 THE POOLING BUG, which is where two of the four came from.  A 2x2 stride-2
 pool reads four addresses -- base, base+1, base+64, base+65 -- and
@@ -191,8 +188,9 @@ them were the same stop:
 
   * v10 / 11 / 12 / 26 all carry attention (PSA, C2PSA, A2C2f) and all four hit
     TWO defects in a row, in the SAME kernel -- the PSA block's depthwise 3x3
-    positional-encoding conv on the 2x2 feature map.  The second only became
-    visible once the first was fixed, which is the ordinary shape of this work.
+    positional-encoding conv on the 2x2 feature map of a 64x64 input.  The
+    second only became visible once the first was fixed, which is the ordinary
+    shape of this work.
 
     THE SECOND ONE, and the one that made them wrong rather than dead.  That
     kernel's epilogue loads four per-channel BatchNorm parameters, and all 128
@@ -278,15 +276,15 @@ from result_check import check_result
 # YAML name is what selects the scale: parse_model reads it back out of the
 # stem (yolov8n -> scale "n"), which is the same path a user takes.
 _PRESETS = {
-    "v3": dict(yaml="yolov3-tiny.yaml", imgsz=64, nc=4),
-    "v5": dict(yaml="yolov5n.yaml", imgsz=64, nc=4),
-    "v6": dict(yaml="yolov6n.yaml", imgsz=64, nc=4),
-    "v8": dict(yaml="yolov8n.yaml", imgsz=64, nc=4),
-    "v9": dict(yaml="yolov9t.yaml", imgsz=64, nc=4),
-    "v10": dict(yaml="yolov10n.yaml", imgsz=64, nc=4),
-    "11": dict(yaml="yolo11n.yaml", imgsz=64, nc=4),
-    "12": dict(yaml="yolo12n.yaml", imgsz=64, nc=4),
-    "26": dict(yaml="yolo26n.yaml", imgsz=64, nc=4),
+    "v3": dict(yaml="yolov3-tiny.yaml", imgsz=640, nc=80),
+    "v5": dict(yaml="yolov5n.yaml", imgsz=640, nc=80),
+    "v6": dict(yaml="yolov6n.yaml", imgsz=640, nc=80),
+    "v8": dict(yaml="yolov8n.yaml", imgsz=640, nc=80),
+    "v9": dict(yaml="yolov9t.yaml", imgsz=640, nc=80),
+    "v10": dict(yaml="yolov10n.yaml", imgsz=640, nc=80),
+    "11": dict(yaml="yolo11n.yaml", imgsz=640, nc=80),
+    "12": dict(yaml="yolo12n.yaml", imgsz=640, nc=80),
+    "26": dict(yaml="yolo26n.yaml", imgsz=640, nc=80),
 }
 
 # What the parser MUST have instantiated for the preset to mean what it claims,
@@ -528,38 +526,8 @@ def run_yolo(device, version="v8", batch=1, imgsz=None, compile_model=True, rtol
     print("Yolo Simulation Done")
 
 
-# THE GATE: what the sweep runs when it runs this file with no arguments.
-#
-# The two versions that pass, and they are not redundant: v5 is C3 + SPPF with
-# the anchor-era backbone, v8 is C2f, and between them they cover both CSP
-# shapes plus the DFL head every later version inherits.  MEASURED AS THE SWEEP
-# RUNS IT -- one process, no arguments, 1128s -- inside the sweep's 1800s.  The
-# two runs share codegen rather than colliding in it: 1453s if run separately,
-# and each version's max rel is identical either way (1.85e-05 and 1.15e-05).
-# THAT NUMBER IS LOAD-SENSITIVE and the margin is not large: the same gate run
-# took 1578s on a machine also building a toolchain and running eight other
-# models.  Same two diffs, to every digit, on the moved pin -- and again on the
-# transposed-conv rewrite (1206s, sharing the machine with two other models).
-#
-# SEVEN VERSIONS PASS AND ARE STILL NOT HERE, which is the rule doing its job.
-# v3 and v9 need triton_shared b6c3e60; v10, 11, 12 and 26 need 99dc6bc on top
-# of it. `TRITON_SHARED_SHA` in triton-npu's setup/versions.env still points at
-# 9017bd4e, and moving it needs a matching TRITON_SHARED_PREBUILT_SHA release,
-# so CI would run a binary with neither fix. They join the gate when the pin
-# moves, not when the fix is written -- a version is added here when it passes
-# on the PINNED toolchain.
-#
-# V6 IS OUT FOR A DIFFERENT REASON, and it is runtime, not doubt.  Its blocker
-# was removed in THIS repo, and it was measured on a triton_shared build
-# carrying NEITHER b6c3e60 nor 99dc6bc -- so it is the one version here that
-# owes the pin nothing.  What keeps it out is 498s: the gate would go from
-# 1128s to about 1600s against an 1800s budget already seen to swell to 1578s
-# under load.  Adding it would buy transposed-conv coverage at the price of a
-# gate that times out on a busy runner.  It goes in when the budget does, or
-# when the sweep learns to run the two halves separately.
-#
-# The rest are one --version each; each has a measured stopping point in the
-# module docstring.
+# The gate the sweep runs with no arguments: v5 (C3 + SPPF) and v8 (C2f), both CSP shapes plus the DFL
+# head every later version inherits.  The rest are one --version each; see the module docstring.
 _GATE = ("v5", "v8")
 
 

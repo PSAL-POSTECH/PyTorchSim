@@ -126,14 +126,14 @@ def compiler_env():
     """The environment for a compiler subprocess: this machine and this TOGSim. TOGSIM_DIR is the
     checkout whose header this process digests and whose Simulator it starts."""
     env = _bare_env()
-    env["TORCHSIM_COMPILE_TARGET"] = target().file
+    env["PYTORCHSIM_COMPILE_TARGET"] = target().file
     env["TOGSIM_DIR"] = config.CONFIG_TOGSIM_DIR
     return env
 
 
-def run_pipeline(spec_path, workdir, to_stage="torchsim-compile", tog=False, timeout=1800):
+def run_pipeline(spec_path, workdir, to_stage="pytorchsim-compile", tog=False, timeout=1800):
     """Drive the compiler's stages over `spec_path`, writing artifacts into `workdir`, up to
-    `to_stage` (by default `torchsim-compile`, the ELF)."""
+    `to_stage` (by default `pytorchsim-compile`, the ELF)."""
     cmd = [config.CONFIG_TORCHSIM_COMPILE_PYTHON,
            os.path.join(compiler_dir(), "pytorchsim-triton-compiler"), spec_path,
            "--from", "triton-compile", "--to", to_stage, "--workdir", workdir] + (["--tog"] if tog else [])

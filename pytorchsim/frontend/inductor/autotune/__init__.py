@@ -3,6 +3,7 @@
     template_kernel_configs.py    the configs a template kernel (mm, bmm, addmm, baddbmm, conv) is offered
     template_kernel_selection.py  which offered config a template kernel takes
     generated_kernel_blocks.py    any other kernel's blocks, pinned from the machine; its reductions' persistence, split
+    graph_prefetch.py             which graph input the graph holds resident, and which kernel states it
 """
 
 

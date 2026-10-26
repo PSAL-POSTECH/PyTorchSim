@@ -8,6 +8,7 @@ from torch._inductor.utils import Placeholder, get_fused_kernel_name
 from torch._inductor.virtualized import V
 
 from pytorchsim import config
+from pytorchsim.frontend.inductor.autotune import graph_prefetch
 from pytorchsim.frontend.inductor.codegen import kernel_metadata
 
 _logger = config.setup_logger()
@@ -74,7 +75,7 @@ class TritonNPUScheduling(TritonScheduling):
         return template_timing.time_module(*got, mod.__file__), mod.__file__
 
     def define_kernel(self, src_code, node_schedule, kernel):
-        """Name the kernel by its source, capture its metadata, and emit our compile call.
+        """Name the kernel by its source, capture its metadata and what it holds, and emit our compile call.
 
         The name is resolved into the source here, because the compiler side parses it.
         """
@@ -92,6 +93,7 @@ class TritonNPUScheduling(TritonScheduling):
         src_code = src_code.replace(str(Placeholder.KERNEL_NAME), kernel_name)
 
         meta = kernel_metadata.collect_meta(kernel, kernel_name)
+        meta["graph_prefetch"] = graph_prefetch.statement(kernel, meta["args"])
         kernel_metadata.record_roles(kernel_name, meta)
         source = _tile_source(node_schedule)
         if source is not None:

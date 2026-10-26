@@ -18,6 +18,7 @@ from pytorchsim.backend import compiler_bridge, compiler_input  # noqa: E402
 
 META = {"kernel_name": "k", "signature": {"ids_ptr": "*i32", "x_ptr": "*bf16", "o_ptr": "*bf16", "B": "constexpr"},
         "constants": {"B": 4}, "numels": {}, "template_grid": [1, 1, 1], "user_defined": True,
+        "graph_prefetch": [],
         "args": [{"name": "ids_ptr", "role": "in", "dtype": "int32", "numel": 4},
                  {"name": "x_ptr", "role": "in", "dtype": "bfloat16", "numel": 8},
                  {"name": "o_ptr", "role": "out", "dtype": "bfloat16", "numel": 8}]}

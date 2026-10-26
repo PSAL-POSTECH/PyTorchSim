@@ -8,6 +8,7 @@ from torch._inductor.codegen.common import IndentedBuffer
 from torch._inductor.virtualized import V
 
 from pytorchsim import config
+from pytorchsim.frontend.inductor.autotune import graph_prefetch
 from pytorchsim.frontend.inductor.codegen import kernel_metadata
 
 _logger = config.setup_logger()
@@ -33,11 +34,9 @@ def user_kernel_compile(kernel, meta):
 
 
 def _extra_imports(kernel):
-    """An import of each Triton module the kernel or a jit helper it calls reads as a global, under
-    that name (`torchsim` for triton.language.extra.torchsim's vcix and lane_layout). Inductor's
-    closure imports what such a global names by its __module__ (`from <module> import <name>`), which
-    a module has none of, so a module other than the triton and tl the source imports is imported
-    here, by the same rule: the kernel's unqualified loads, triton's own."""
+    """An import of each Triton module other than triton and tl that the kernel or a jit helper it calls
+    reads as a global, under that name (`pytorchsim` for triton.language.extra.pytorchsim), found as
+    triton finds the kernel's unqualified loads; Inductor's closure imports a module global by __module__."""
     from triton.runtime.jit import JITFunction
 
     lines, seen, todo = [], set(), [kernel]
@@ -92,6 +91,7 @@ def user_kernel_meta(kernel, kwargs, triton_meta, grid):
         "inside_reduction": False, "fixed_config": {},
         "template_grid": ([int(hint(g)) for g in grid] + [1, 1, 1])[:3],
         "user_defined": True, "user_kernel": user_kernel_id(kernel),
+        "graph_prefetch": graph_prefetch.statement(kernel, args),
     }
 
 

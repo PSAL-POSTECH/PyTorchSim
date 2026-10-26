@@ -25,20 +25,28 @@ def _init_weights(m):
             torch.nn.init.zeros_(m.bias)
 
 
-def test_clip(device, batch=2, image_size=224, patch_size=32, num_layers=2):
-    """CLIP vision backbone with batch > 1. The patch-embedding conv (kernel = stride =
-    patch_size) routes to the multi-tile conv mapping, whose full-kernel tile overflows
-    SPAD at batch > 1 -- that used to raise "Cannot find a valid mapping" (GitHub issue
-    #252)."""
+# openai/clip-vit-base-patch32, vision_config as published; only num_hidden_layers is cut.
+_CLIP_VIT_B32 = dict(
+    hidden_size=768,
+    intermediate_size=3072,
+    projection_dim=512,
+    num_attention_heads=12,
+    num_channels=3,
+    image_size=224,
+    patch_size=32,
+    hidden_act="quick_gelu",
+    layer_norm_eps=1e-5,
+)
+
+
+def test_clip(device, batch=2, num_layers=2):
+    """CLIP ViT-B/32 vision backbone at its published per-layer size, with batch > 1.
+    The patch-embedding conv (kernel = stride = patch_size) routes to the multi-tile
+    conv mapping, whose full-kernel tile overflows SPAD at batch > 1 -- that used to
+    raise "Cannot find a valid mapping" (GitHub issue #252)."""
     torch.manual_seed(0)
-    cfg = CLIPVisionConfig(
-        hidden_size=768,
-        intermediate_size=3072,
-        num_hidden_layers=num_layers,
-        num_attention_heads=12,
-        image_size=image_size,
-        patch_size=patch_size,
-    )
+    cfg = CLIPVisionConfig(**_CLIP_VIT_B32, num_hidden_layers=num_layers)
+    image_size = cfg.image_size
     with torch.no_grad():
         model = CLIPVisionModel(cfg).eval()
         model.apply(_init_weights)
@@ -58,14 +66,10 @@ def test_clip(device, batch=2, image_size=224, patch_size=32, num_layers=2):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run CLIP vision test")
     parser.add_argument("--batch", type=int, default=2)
-    parser.add_argument("--image_size", type=int, default=224)
-    parser.add_argument("--patch_size", type=int, default=32)
     parser.add_argument("--num_layers", type=int, default=2)
     args = parser.parse_args()
     test_clip(
         torch.device("npu:0"),
         batch=args.batch,
-        image_size=args.image_size,
-        patch_size=args.patch_size,
         num_layers=args.num_layers,
     )

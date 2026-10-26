@@ -46,6 +46,26 @@ def _buffer_numel(name):
     return storage_span(size, stride, offset)
 
 
+def _buffer_sizes(name):
+    """The logical shape of an Inductor buffer, or None when it is not static: the dimensions a power
+    model counting an operator's MACs needs, which the storage span loses."""
+    buf = V.graph.get_buffer(name)
+    if buf is None:
+        return None
+    try:
+        return [int(V.graph.sizevars.optimization_hint(s)) for s in buf.get_layout().size]
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def aten_ops(node_schedule):
+    """The ATen ops the kernel's nodes came from, e.g. ["aten.mm.default"]: what Inductor's
+    `Original ATen` comment names, as data."""
+    return sorted({str(getattr(o, "target", o)) for n in node_schedule
+                   for o in getattr(getattr(n, "node", None), "origins", ()) or ()
+                   if getattr(o, "op", None) == "call_function"})
+
+
 def _writes(kernel):
     """names -> whether `kernel` stores to any of them: the stores Inductor renders."""
     stored = set()
@@ -138,6 +158,7 @@ def collect_meta(kernel, kernel_name):
             "buffer": buf,
             "dtype": TOKEN_DTYPE.get(signature.get(name, ""), None),
             "numel": _buffer_numel(buf) if buf else None,
+            "sizes": _buffer_sizes(buf) if buf else None,
         })
 
     numels = {}
@@ -176,7 +197,8 @@ def benchmark_request_meta(req):
     roles = ["in"] * len(req.input_tensor_meta) + ["out"]
     ptrs = [n for n, t in signature.items() if t.startswith("*")]
     args = [{"name": n, "role": r, "buffer": t.name, "dtype": TOKEN_DTYPE.get(signature[n]),
-             "numel": storage_span(list(t.sizes), list(t.strides), t.offset)}
+             "numel": storage_span(list(t.sizes), list(t.strides), t.offset),
+             "sizes": [int(s) for s in t.sizes]}
             for n, r, t in zip(ptrs, roles, tensors)]
     xnumel = 1
     for s in req.output_tensor_meta.sizes:

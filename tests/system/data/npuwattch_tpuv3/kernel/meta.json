@@ -1,0 +1,66 @@
+{
+  "kernel_name": "pytorchsim_triton_compiler_fused_mm_cd3jcbco",
+  "signature": {
+    "arg_A": "*bf16",
+    "arg_B": "*bf16",
+    "out_ptr0": "*bf16"
+  },
+  "constants": {},
+  "args": [
+    {
+      "name": "arg_A",
+      "role": "in",
+      "buffer": "arg0_1",
+      "dtype": "bfloat16",
+      "numel": 65536,
+      "sizes": [
+        256,
+        256
+      ]
+    },
+    {
+      "name": "arg_B",
+      "role": "in",
+      "buffer": "arg1_1",
+      "dtype": "bfloat16",
+      "numel": 65536,
+      "sizes": [
+        256,
+        256
+      ]
+    },
+    {
+      "name": "out_ptr0",
+      "role": "out",
+      "buffer": "buf0",
+      "dtype": "bfloat16",
+      "numel": 65536,
+      "sizes": [
+        256,
+        256
+      ]
+    }
+  ],
+  "call_params": [
+    "arg_A",
+    "arg_B",
+    "out_ptr0"
+  ],
+  "numels": {
+    "xnumel": 65536,
+    "r0_numel": 1
+  },
+  "inside_reduction": false,
+  "fixed_config": {
+    "XBLOCK": 65536
+  },
+  "template_grid": [
+    1,
+    1,
+    1
+  ],
+  "aten_ops": [
+    "aten.mm.default"
+  ],
+  "tile_source": "planned"
+}

@@ -72,12 +72,15 @@ def run_togsim(workdir, meta, args=()):
 def simulate_standalone(workdir, mine, attribute, **kw):
     """read_result of the launch in `mine`, run alone: the kernel object's copy nodes, then its TOG.
     total_cycles is the launch's sum; kernel_cycles and copy_node_cycles are the parts."""
+    from pytorchsim.simulator.timing import npuwattch
     from pytorchsim.simulator.timing.togsim import TOGSimProcess
 
-    copies = [TOGSimProcess.read_result(TOGSimProcess.run_standalone(h, "", **kw))["total_cycles"]
-              for h in copy_node_handles(workdir)]
-    result = TOGSimProcess.read_result(
-        TOGSimProcess.run_standalone(os.path.join(mine, "tile_graph.onnx"), attribute, **kw))
+    copy_paths = [TOGSimProcess.run_standalone(h, "", **kw) for h in copy_node_handles(workdir)]
+    copies = [TOGSimProcess.read_result(p)["total_cycles"] for p in copy_paths]
+    result_path = TOGSimProcess.run_standalone(os.path.join(mine, "tile_graph.onnx"), attribute, **kw)
+    result = TOGSimProcess.read_result(result_path)
+    if not kw.get("autotune_mode"):
+        npuwattch.record(workdir, mine, str(result_path), [str(p) for p in copy_paths])
     if copies:
         result = dict(result, kernel_cycles=result["total_cycles"], copy_node_cycles=copies,
                       total_cycles=result["total_cycles"] + sum(copies))

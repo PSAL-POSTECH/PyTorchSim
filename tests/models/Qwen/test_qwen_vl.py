@@ -35,17 +35,11 @@ tower that quietly contributed nothing would pass.
     source /workspace/torchsim-env.sh
     python tests/models/Qwen/test_qwen_vl.py
 
-MEASURED 2026-08-13.  The `tiny` rows are triton-npu develop 3434608; the `2b`
-row also needs the triton-npu fix below (fix/p13-replicate-one-lane).  Both need
-triton_shared with the i64 fix:
+Each version is its published checkpoint's config at one text layer and one vision layer:
+Qwen2-VL-2B-Instruct and Qwen2.5-VL-3B-Instruct, real vocab, widths, heads, M-RoPE and tower.
+The image is a 1x4x4 patch grid (4 visual tokens) inside ``--seq`` tokens of text, batch 1, prefill.
 
-    preset  version     text hidden  vision  patches  params        max diff
-    tiny    Qwen2-VL      256         128      16      1,825,536    1.2517e-06
-    tiny    Qwen2.5-VL    256         128      16      1,792,384    1.0729e-06
-    2b      Qwen2-VL     1536        1280      64  114,652,928    4.2021e-06
-    2b      Qwen2.5-VL   1536        1280      64  114,676,408    4.3809e-06
-
-WHAT THE SIZED PRESETS NEEDED, since none of it is in this file.  Three
+WHAT THE 1280-WIDE TOWER NEEDED, since none of it is in this file.  Three
 toolchain changes, in the order they were hit:
 
   triton_shared   `tts.get_structured_state` accepted i32 offset tensors while
@@ -63,7 +57,7 @@ toolchain changes, in the order they were hit:
                   correspondence was in the operand's map; it reads it there
                   now.  Qwen2-Audio's audio-token count is the same shape.
 
-  PyTorchSim      at the sized presets Inductor lowered the splice's cumsum as
+  PyTorchSim      at the real tower width Inductor lowered the splice's cumsum as
                   a DECOUPLED-LOOKBACK split scan, where one block spins on
                   another's published state.  This route compiles one ELF and
                   walks the grid in its own wrapper, so there is no such
@@ -80,10 +74,6 @@ THERE USED TO BE AN --eager-splice FLAG HERE and it is gone.  It declined
 MASKED_SCATTER_WITH_INDEX so the splice fell back to aten -- right values, no
 kernel, and nothing simulated.  A CPU fallback is a defect (see CLAUDE.md), and
 keeping an escape hatch to one is keeping the defect.
-
-`tiny` is the default because it is the smaller claim, not the easier one: its
-scan is one block either way, and it exercises every structural claim above.
-`7b` is the same shapes at the 7B text width and is not measured here.
 """
 
 import argparse
@@ -98,29 +88,34 @@ sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspa
 from result_check import check_result
 
 
-# Depth is one layer on BOTH sides, for the reason the text presets give: the
-# tower is the same block 32 times.  Width is what stays honest -- the vision
-# tower's real 1280 embed and patch 14 on the sized presets, and the text side
-# at the width the shipped model pairs with it.
-_PRESETS = {
-    # Smoke: small enough to tell a broken test file from a broken backend.
-    "tiny": dict(hidden=256, heads=8, kv_heads=2, intermediate=512, vocab=1024,
-                 vis_hidden=128, vis_heads=2, vis_interm=256,
-                 grid=(1, 4, 4), mrope=(8, 4, 4)),
-
-    # Qwen2-VL-2B / Qwen2.5-VL-3B character: the real vision tower width (1280,
-    # 16 heads, patch 14) against the 1536-wide text block.
-    "2b": dict(hidden=1536, heads=12, kv_heads=2, intermediate=8960, vocab=4096,
-               vis_hidden=1280, vis_heads=16, vis_interm=3420,
-               grid=(1, 8, 8), mrope=(16, 24, 24)),
-
-    # Qwen2-VL-7B / Qwen2.5-VL-7B: the real 7B text width under the same tower.
-    "7b": dict(hidden=3584, heads=28, kv_heads=4, intermediate=18944, vocab=8192,
-               vis_hidden=1280, vis_heads=16, vis_interm=3420,
-               grid=(1, 8, 8), mrope=(16, 24, 24)),
+#: Published config per version: per-layer sizes as shipped, depth cut to `_LAYERS` on both sides.
+_MODELS = {
+    # Qwen/Qwen2-VL-2B-Instruct
+    "2": dict(
+        text=dict(vocab_size=151936, hidden_size=1536, num_attention_heads=12, num_key_value_heads=2,
+                  intermediate_size=8960, hidden_act="silu", max_position_embeddings=32768,
+                  rms_norm_eps=1e-6, use_sliding_window=False, attention_dropout=0.0),
+        rope=dict(rope_theta=1000000.0, mrope_section=[16, 24, 24]),
+        vision=dict(embed_dim=1280, hidden_size=1536, mlp_ratio=4, num_heads=16, hidden_act="quick_gelu",
+                    in_chans=3, patch_size=14, spatial_merge_size=2, temporal_patch_size=2),
+        tie_word_embeddings=True),
+    # Qwen/Qwen2.5-VL-3B-Instruct
+    "2.5": dict(
+        text=dict(vocab_size=151936, hidden_size=2048, num_attention_heads=16, num_key_value_heads=2,
+                  intermediate_size=11008, hidden_act="silu", max_position_embeddings=128000,
+                  rms_norm_eps=1e-6, use_sliding_window=False, attention_dropout=0.0),
+        rope=dict(rope_theta=1000000.0, mrope_section=[16, 24, 24]),
+        vision=dict(hidden_size=1280, intermediate_size=3420, num_heads=16, hidden_act="silu",
+                    in_chans=3, patch_size=14, spatial_merge_size=2, temporal_patch_size=2,
+                    out_hidden_size=2048, window_size=112, fullatt_block_indexes=[7, 15, 23, 31],
+                    tokens_per_second=2),
+        tie_word_embeddings=True),
 }
 
-_IMAGE_TOKEN, _VIDEO_TOKEN, _VISION_START = 1001, 1002, 1003
+_LAYERS = 1
+_GRID = (1, 4, 4)
+
+_IMAGE_TOKEN, _VIDEO_TOKEN, _VISION_START, _VISION_END = 151655, 151656, 151652, 151653
 
 
 def _dtype_from_str(name):
@@ -130,14 +125,13 @@ def _dtype_from_str(name):
 
 
 
-#: Which model class a preset builds, so `_inputs` can ask what its forward
-#: takes without building it twice.  Set by `_build`; the two are always used
-#: together and a preset's class does not depend on anything else.
+#: Which model class a version builds, so `_inputs` can ask what its forward
+#: takes without building it twice.  Set by `_build`; the two are always used together.
 _FORWARD = {}
 
 
-def _forward_of(preset):
-    return _FORWARD.get(preset, lambda **_: None)
+def _forward_of(version):
+    return _FORWARD.get(version, lambda **_: None)
 
 
 def _text_of(cfg):
@@ -160,107 +154,103 @@ def _rope_of(cfg):
     return {}
 
 
-def _build(version, preset, dtype):
-    p = _PRESETS[preset]
+def _build(version, dtype):
+    """The version's published config at `_LAYERS` text and vision layers, with random weights.
+
+    2.5 windows the tower's attention on all but fullatt_block_indexes [7, 15, 23, 31], so the one
+    kept vision layer (index 0) is a windowed block, as in the shipped model.
+
+    THE TEXT HALF IS SPELLED THREE WAYS, AND THEY MOVED ONE AT A TIME.  4.51 keeps the text fields
+    on the VL config with a `rope_scaling` dict; 4.57 splits out `text_config` but the dict is still
+    `rope_scaling`; 5.x renames it `rope_parameters`.  Each question is asked of the signature that
+    answers it -- does the VL config take a text_config, and which name does the TEXT config take --
+    which covers the middle spelling a single version test does not: 4.57 built with rope_parameters
+    read `self.rope_scaling["mrope_section"]` off a None.
+
+    THE INNER KEY MOVED WITH THE OUTER ONE.  4.x spells the kind `type` and its validator
+    normalises "mrope" to "default" while keeping the sections; 5.x spells it `rope_type`, has an
+    mrope entry of its own, and REJECTS the 4.x spelling.  Measured on 4.57.6: `rope_type="mrope"`
+    raises `KeyError: 'mrope'` out of ROPE_INIT_FUNCTIONS, `type="mrope"` is taken.
+    """
+    m = _MODELS[version]
     if version == "2":
         from transformers.models.qwen2_vl.configuration_qwen2_vl import (
             Qwen2VLConfig as Config, Qwen2VLVisionConfig as VisionConfig)
         from transformers.models.qwen2_vl.modeling_qwen2_vl import (
             Qwen2VLForConditionalGeneration as Model)
-        vision = VisionConfig(depth=1, embed_dim=p["vis_hidden"], num_heads=p["vis_heads"],
-                              in_chans=3, patch_size=14, spatial_merge_size=2,
-                              temporal_patch_size=2, hidden_size=p["hidden"])
     else:
         from transformers.models.qwen2_5_vl.configuration_qwen2_5_vl import (
             Qwen2_5_VLConfig as Config, Qwen2_5_VLVisionConfig as VisionConfig)
         from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (
             Qwen2_5_VLForConditionalGeneration as Model)
-        # 2.5 replaces the tower's uniform full attention with windowed
-        # attention on all but fullatt_block_indexes.  With one layer, index 0
-        # is that full-attention block -- windowed attention over a single
-        # window would be the same thing computed the long way round.
-        vision = VisionConfig(depth=1, hidden_size=p["vis_hidden"], num_heads=p["vis_heads"],
-                              in_chans=3, patch_size=14, spatial_merge_size=2,
-                              temporal_patch_size=2, out_hidden_size=p["hidden"],
-                              intermediate_size=p["vis_interm"], fullatt_block_indexes=[0])
+    vision = VisionConfig(depth=_LAYERS, **m["vision"])
 
-    # THE TEXT HALF IS SPELLED TWO WAYS AND THIS FILE HAS TO BUILD BOTH.  Up to
-    # transformers 4.x a VL config carries the text fields at the top level and
-    # a `rope_scaling` dict; from 5.x they live in a `text_config` of their own
-    # and the dict is `rope_parameters`.  Same model, same numbers -- so the
-    # values below are written once and placed by which spelling the installed
-    # version takes, rather than by a version number, which would go stale.
-    text = dict(vocab_size=p["vocab"], hidden_size=p["hidden"],
-                num_attention_heads=p["heads"], num_key_value_heads=p["kv_heads"],
-                intermediate_size=p["intermediate"], num_hidden_layers=1,
-                use_cache=False)
-    # THREE SPELLINGS, NOT TWO, AND THEY MOVED ONE AT A TIME. 4.51 keeps the
-    # text fields on the VL config with a `rope_scaling` dict; 4.57 splits out
-    # `text_config` but the dict is still `rope_scaling`; 5.x renames it
-    # `rope_parameters`. Asking each question of the signature that answers it
-    # -- does the VL config take a text_config, and which name does the TEXT
-    # config take -- covers the middle spelling, which a single version test
-    # does not: 4.57 was built with rope_parameters and its attention then read
-    # `self.rope_scaling["mrope_section"]` off a None.
-    # THE INNER KEY MOVED WITH THE OUTER ONE. 4.x spells the kind `type` and its
-    # validator normalises "mrope" to "default" while keeping the sections;
-    # 5.x spells it `rope_type` and has an mrope entry of its own, and REJECTS
-    # the 4.x spelling. Measured on 4.57.6: `rope_type="mrope"` raises
-    # `KeyError: 'mrope'` out of ROPE_INIT_FUNCTIONS, `type="mrope"` is taken.
-    mrope = list(p["mrope"])
+    text = dict(m["text"], num_hidden_layers=_LAYERS, use_cache=False)
+    theta, mrope = m["rope"]["rope_theta"], list(m["rope"]["mrope_section"])
+    tokens = dict(image_token_id=_IMAGE_TOKEN, video_token_id=_VIDEO_TOKEN,
+                  vision_start_token_id=_VISION_START, vision_end_token_id=_VISION_END)
     if "text_config" in inspect.signature(Config.__init__).parameters:
         TextConfig = type(Config().text_config)
         names = inspect.signature(TextConfig.__init__).parameters
         if "rope_parameters" in names:
             text["rope_parameters"] = {"rope_type": "mrope", "mrope_section": mrope,
-                                       "rope_theta": 1000000.0}
+                                       "rope_theta": theta}
         else:
             text["rope_scaling"] = {"type": "mrope", "mrope_section": mrope}
+            text["rope_theta"] = theta
         cfg = Config(text_config=text, vision_config=vision.to_dict(),
-                     attn_implementation="eager",
-                     image_token_id=_IMAGE_TOKEN, video_token_id=_VIDEO_TOKEN,
-                     vision_start_token_id=_VISION_START)
+                     attn_implementation="eager", tie_word_embeddings=m["tie_word_embeddings"],
+                     **tokens)
     else:
         cfg = Config(
             vision_config=vision.to_dict(), attn_implementation="eager",
-            rope_scaling={"type": "mrope", "mrope_section": mrope},
-            image_token_id=_IMAGE_TOKEN, video_token_id=_VIDEO_TOKEN,
-            vision_start_token_id=_VISION_START, **text)
+            rope_scaling={"type": "mrope", "mrope_section": mrope}, rope_theta=theta,
+            tie_word_embeddings=m["tie_word_embeddings"], **tokens, **text)
     torch.manual_seed(0)
-    _FORWARD[preset] = Model.forward
+    _FORWARD[version] = Model.forward
     return cfg, Model(cfg).to(dtype=_dtype_from_str(dtype)).eval()
 
 
-def _inputs(preset, dtype, seed=0):
-    """Tokens and patches, shaped the way the processor would hand them over."""
-    p = _PRESETS[preset]
-    t, h, w = p["grid"]
+def _inputs(version, seq, dtype, seed=0):
+    """Tokens and patches, shaped the way the processor would hand them over.
+
+    `seq` tokens in all: vision start, the image tokens (each 2x2 patch block of the grid merges
+    into one), vision end, then text.  transformers 5.x asks the caller which tokens are image
+    (`mm_token_type_ids`: text 0, image 1, video 2) and refuses M-RoPE without it; 4.x derives it
+    and takes no such argument, so it is passed only where the signature has it.
+    """
+    m = _MODELS[version]
+    vis = m["vision"]
+    t, h, w = _GRID
     n_patches = t * h * w
-    # spatial_merge_size 2 merges each 2x2 patch block into one visual token.
-    n_tokens = n_patches // 4
+    n_tokens = n_patches // vis["spatial_merge_size"] ** 2
+    if seq < n_tokens + 3:
+        raise ValueError(f"--seq {seq} is too short for {n_tokens} image tokens plus vision start/end "
+                         "and one text token")
+    if seq > m["text"]["max_position_embeddings"]:
+        raise ValueError(f"--seq {seq} exceeds max_position_embeddings "
+                         f"{m['text']['max_position_embeddings']}")
     g = torch.Generator().manual_seed(seed)
-    pixel = torch.randn(n_patches, 3 * 2 * 14 * 14, generator=g,
-                        dtype=_dtype_from_str(dtype))
-    ids = torch.tensor([[5, 6, _VISION_START] + [_IMAGE_TOKEN] * n_tokens + [7]])
+    patch = vis["in_chans"] * vis["temporal_patch_size"] * vis["patch_size"] ** 2
+    pixel = torch.randn(n_patches, patch, generator=g, dtype=_dtype_from_str(dtype))
+    text_ids = torch.randint(0, _VISION_START, (seq - n_tokens - 2,),
+                             generator=torch.Generator().manual_seed(0))
+    ids = torch.cat([torch.tensor([_VISION_START] + [_IMAGE_TOKEN] * n_tokens + [_VISION_END]),
+                     text_ids]).unsqueeze(0)
     got = dict(input_ids=ids, pixel_values=pixel,
                image_grid_thw=torch.tensor([[t, h, w]]))
-    # WHICH TOKENS ARE IMAGE, SPELLED OUT.  transformers 5.x asks the caller for
-    # it -- text 0, image 1, video 2 -- rather than recovering it from
-    # `input_ids == image_token_id`, and refuses M-RoPE without it; 4.x derives
-    # it and takes no such argument.  Passed only where the signature has it, so
-    # this file builds the same model on both.
-    if "mm_token_type_ids" in inspect.signature(_forward_of(preset)).parameters:
+    if "mm_token_type_ids" in inspect.signature(_forward_of(version)).parameters:
         got["mm_token_type_ids"] = (ids == _IMAGE_TOKEN).to(torch.int32)
     return got
 
 
-def _assert_character(version, cfg, model, preset):
-    """Fail if this is not actually the VL model the preset claims."""
-    p = _PRESETS[preset]
+def _assert_character(version, cfg, model):
+    """Fail if this is not actually the VL model the version claims."""
+    m = _MODELS[version]
     vision = cfg.vision_config
 
     tower = model.visual if hasattr(model, "visual") else model.model.visual
-    assert tower is not None, "a VL preset without a vision tower is a text model"
+    assert tower is not None, "a VL model without a vision tower is a text model"
     assert vision.spatial_merge_size == 2, "the 2x2 spatial merge is part of the shape"
     assert getattr(vision, "temporal_patch_size", None) == 2, \
         "patches are 3D (temporal_patch_size 2); a 2D patchifier is a different model"
@@ -273,14 +263,11 @@ def _assert_character(version, cfg, model, preset):
         (f"the M-RoPE bands must cover head_dim/2 = {head_dim // 2}, got {sum(sections)} "
          "-- a mismatch here silently changes which positions rope sees")
 
-    if preset in ("2b", "7b"):
-        assert vision.hidden_size if version != "2" else vision.embed_dim
-        width = vision.embed_dim if version == "2" else vision.hidden_size
-        assert width == 1280, f"the sized presets run the real tower width, got {width}"
-        assert vision.patch_size == 14, "the real tower is patch 14"
-    if preset == "7b":
-        assert text.hidden_size == 3584 and text.intermediate_size == 18944, \
-            "7b preset must run at the real 7B text width"
+    for name, want in m["text"].items():
+        assert getattr(text, name) == want, f"text {name}: {getattr(text, name)} != published {want}"
+    width = vision.embed_dim if version == "2" else vision.hidden_size
+    assert width == 1280, f"the tower runs the real 1280 width, got {width}"
+    assert vision.patch_size == 14, "the real tower is patch 14"
 
 
 def _logits(out):
@@ -288,29 +275,28 @@ def _logits(out):
 
 
 @torch.no_grad()
-def run_qwen_vl(device, version="2", preset="2b", dtype="float32",
+def run_qwen_vl(device, version="2", seq=128, dtype="float32",
                 compile_model=True, rtol=1e-2, atol=1e-2):
-    cfg, model_cpu = _build(version, preset, dtype)
-    kwargs = _inputs(preset, dtype)
+    cfg, model_cpu = _build(version, dtype)
+    kwargs = _inputs(version, seq, dtype)
 
-    p = _PRESETS[preset]
     text = _text_of(cfg)
     vis_width = cfg.vision_config.embed_dim if version == "2" else cfg.vision_config.hidden_size
-    print(f"version=Qwen{'2' if version == '2' else '2.5'}-VL preset={preset} "
+    print(f"version=Qwen{'2' if version == '2' else '2.5'}-VL seq={seq} "
           f"text_hidden={text.hidden_size} heads={text.num_attention_heads}/{text.num_key_value_heads} "
           f"interm={text.intermediate_size} vision={vis_width}x{cfg.vision_config.num_heads}heads "
-          f"patches={kwargs['pixel_values'].shape[0]} grid={p['grid']} "
-          f"mrope={p['mrope']} vocab={text.vocab_size} dtype={dtype}")
+          f"patches={kwargs['pixel_values'].shape[0]} grid={_GRID} "
+          f"mrope={_rope_of(cfg)['mrope_section']} vocab={text.vocab_size} dtype={dtype}")
     print("model params:", sum(x.numel() for x in model_cpu.parameters()))
 
-    _assert_character(version, cfg, model_cpu, preset)
+    _assert_character(version, cfg, model_cpu)
 
     cpu_out = _logits(model_cpu(**kwargs))
 
     # THE IMAGE MUST REACH THE OUTPUT. A tower whose result never lands in the
     # text sequence would agree with the NPU perfectly and prove nothing, and
     # the splice is exactly the part this file is here for.
-    other = _inputs(preset, dtype, seed=1)
+    other = _inputs(version, seq, dtype, seed=1)
     delta = (cpu_out - _logits(model_cpu(**other))).abs().max().item()
     assert delta > 1e-4, \
         (f"changing the pixels moved the logits by {delta:.3e} -- the image is not "
@@ -323,7 +309,7 @@ def run_qwen_vl(device, version="2", preset="2b", dtype="float32",
     npu_kwargs = {k: (v.to(device) if torch.is_tensor(v) else v) for k, v in kwargs.items()}
     npu_out = _logits(model_npu(**npu_kwargs))
 
-    check_result(f"Qwen{'2' if version == '2' else '2.5'}-VL ({preset})",
+    check_result(f"Qwen{'2' if version == '2' else '2.5'}-VL (seq {seq})",
                 npu_out, cpu_out, rtol=rtol, atol=atol)
     print("Max diff > ", torch.max(torch.abs(npu_out.cpu() - cpu_out)))
     print("Qwen-VL Simulation Done")
@@ -331,14 +317,10 @@ def run_qwen_vl(device, version="2", preset="2b", dtype="float32",
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Qwen2-VL / Qwen2.5-VL on the Triton route")
-    # The default runs BOTH versions at `2b`. They differ in the tower -- 2.5
-    # windows its attention and carries its own MLP width -- and the text side
-    # they feed is the same, so running one and claiming the other would be the
-    # kind of vacuous pass _assert_character exists to prevent.
-    parser.add_argument("--version", type=str, default=None, choices=["2", "2.5"])
-    # tiny, not 2b: the default is the cheaper claim, not the only passing one.
-    # 2b runs the real 1280 vision width and takes about six times as long.
-    parser.add_argument("--preset", type=str, default="tiny", choices=sorted(_PRESETS))
+    # The default runs BOTH versions: their towers differ (2.5 windows its attention and carries
+    # its own MLP width), so running one and claiming the other would be a vacuous pass.
+    parser.add_argument("--version", type=str, default=None, choices=sorted(_MODELS))
+    parser.add_argument("--seq", type=int, default=128)
     parser.add_argument("--dtype", type=str, default="float32",
                         choices=["float32", "float16", "bfloat16"])
     parser.add_argument("--no-compile", dest="compile", action="store_false", default=True)
@@ -353,7 +335,7 @@ if __name__ == "__main__":
         run_qwen_vl(
             torch.device("npu:0"),
             version=version,
-            preset=args.preset,
+            seq=args.seq,
             dtype=args.dtype,
             compile_model=args.compile,
             rtol=args.rtol,

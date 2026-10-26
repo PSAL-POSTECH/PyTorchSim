@@ -8,11 +8,15 @@ the additive extended attention mask that is broadcast from (B, S) to
 (erf, not the tanh approximation GPT-2 uses), and the pooler's tanh on a single
 sliced row.
 
+The encoder is BERT base at its published size (google-bert/bert-base-uncased),
+cut to 2 of its 12 layers: 768 wide, 12 heads, FFN 3072 and the full 30522-row
+vocab. The input is one pass of ``--seq`` tokens, batch 1, at most 512 positions.
+
 Judgement is spike's, against the same model on CPU. Run it with the Triton
 route on and timing off (rule 13a):
 
     source .envrc
-    python tests/models/BERT/test_bert.py --preset small
+    python tests/models/BERT/test_bert.py --seq 128
 """
 
 import argparse
@@ -26,16 +30,10 @@ sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspa
 from result_check import check_result
 
 
-# Presets shrink the model, not the shapes' character: the head dim, the 4x
-# intermediate ratio and the vocab gather all survive. "small" is the one to
-# reach for -- 2 layers of the real 768-wide block is every kernel BERT has.
-_PRESETS = {
-    #          n_layer  hidden  n_head  intermediate  vocab  seq
-    "tiny":   (1,       128,    2,      512,          256,   16),
-    "small":  (2,       768,    12,     3072,         1024,  32),
-    "medium": (4,       768,    12,     3072,         4096,  32),
-    "full":   (12,      768,    12,     3072,         30522, 128),
-}
+# google-bert/bert-base-uncased, published config; only num_hidden_layers is cut (12 -> 2).
+_BERT = dict(vocab_size=30522, hidden_size=768, num_hidden_layers=2, num_attention_heads=12,
+             intermediate_size=3072, hidden_act="gelu", max_position_embeddings=512,
+             type_vocab_size=2, layer_norm_eps=1e-12)
 
 
 def _dtype_from_str(name):
@@ -46,28 +44,24 @@ def _dtype_from_str(name):
     }.get(name, torch.float32)
 
 
-def _build_config(preset, seq_len, attn_impl):
+def _build_config(seq_len, attn_impl):
+    """BERT base with dropout at 0, so the graph is free of RNG ops; dropout is identity under eval().
+
+    eager, not sdpa, by default: sdpa would hand the whole attention to one fused kernel and hide the
+    seams this test exists to reach.
+    """
     from transformers.models.bert.configuration_bert import BertConfig
 
-    n_layer, hidden, n_head, intermediate, vocab, preset_seq = _PRESETS[preset]
-    seq_len = seq_len if seq_len is not None else preset_seq
-
+    if seq_len > _BERT["max_position_embeddings"]:
+        raise ValueError(f"seq {seq_len} exceeds BERT's max_position_embeddings "
+                         f"{_BERT['max_position_embeddings']}")
     return BertConfig(
-        vocab_size=vocab,
-        hidden_size=hidden,
-        num_hidden_layers=n_layer,
-        num_attention_heads=n_head,
-        intermediate_size=intermediate,
-        max_position_embeddings=max(seq_len, 64),
-        # Dropout is identity under eval(), but leaving it at 0 keeps the graph
-        # free of the RNG ops so a failure is about the model, not about seeds.
+        **_BERT,
         hidden_dropout_prob=0.0,
         attention_probs_dropout_prob=0.0,
         use_cache=False,
-        # eager, not sdpa: sdpa would hand the whole attention to one fused
-        # kernel and hide the seams this test exists to reach.
         attn_implementation=attn_impl,
-    ), seq_len
+    )
 
 
 def _tensor(output):
@@ -84,10 +78,9 @@ def _tensor(output):
 @torch.no_grad()
 def run_bert(
     device,
-    preset="small",
     part="body",
     batch=1,
-    seq_len=None,
+    seq_len=128,
     dtype="float32",
     attn_impl="eager",
     compile_model=True,
@@ -97,7 +90,7 @@ def run_bert(
     from transformers.models.bert.modeling_bert import BertModel, BertForMaskedLM
 
     torch_dtype = _dtype_from_str(dtype)
-    config, seq_len = _build_config(preset, seq_len, attn_impl)
+    config = _build_config(seq_len, attn_impl)
 
     # Seed before construction: config-random weights otherwise differ per run,
     # so the worst element wanders across the threshold and the test is flaky.
@@ -111,7 +104,7 @@ def run_bert(
         model_cpu = BertModel(config, add_pooling_layer=(part == "pooled"))
     model_cpu = model_cpu.to(dtype=torch_dtype).eval()
 
-    print(f"preset={preset} part={part} n_layer={config.num_hidden_layers} "
+    print(f"part={part} n_layer={config.num_hidden_layers} "
           f"hidden={config.hidden_size} n_head={config.num_attention_heads} "
           f"vocab={config.vocab_size} seq={seq_len} dtype={dtype} attn={attn_impl}")
     print("model params:", sum(p.numel() for p in model_cpu.parameters()))
@@ -134,19 +127,18 @@ def run_bert(
                                 attention_mask=attention_mask.to(device),
                                 token_type_ids=token_type_ids.to(device)))
 
-    check_result(f"BERT {part} ({preset})", npu_out, cpu_out, rtol=rtol, atol=atol)
+    check_result(f"BERT {part}", npu_out, cpu_out, rtol=rtol, atol=atol)
     print("Max diff > ", torch.max(torch.abs(npu_out.cpu() - cpu_out)))
     print("BERT Simulation Done")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="BERT end to end on the Triton route")
-    parser.add_argument("--preset", type=str, default="small", choices=sorted(_PRESETS))
     parser.add_argument("--part", type=str, default="body", choices=["body", "pooled", "mlm"],
                         help="body = BertModel encoder only; pooled = + the pooler; "
                              "mlm = BertForMaskedLM (adds the vocab projection)")
     parser.add_argument("--batch", type=int, default=1)
-    parser.add_argument("--seq-len", type=int, default=None)
+    parser.add_argument("--seq", type=int, default=128)
     parser.add_argument("--dtype", type=str, default="float32",
                         choices=["float32", "float16", "bfloat16"])
     parser.add_argument("--attn-impl", type=str, default="eager", choices=["eager", "sdpa"])
@@ -157,10 +149,9 @@ if __name__ == "__main__":
 
     run_bert(
         torch.device("npu:0"),
-        preset=args.preset,
         part=args.part,
         batch=args.batch,
-        seq_len=args.seq_len,
+        seq_len=args.seq,
         dtype=args.dtype,
         attn_impl=args.attn_impl,
         compile_model=args.compile,

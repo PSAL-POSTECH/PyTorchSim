@@ -24,47 +24,33 @@ in the family since 3, and every one of these is absent from test_llama3x:
                         attend, which is a second mask shape beside the causal
                         one.
 
-The presets keep all four. Experts are scaled DOWN -- 4 rather than Scout's 16 --
-on the same argument tests/models/Qwen/test_qwen.py makes for its MoE presets:
-what is unproven is the routing and the combine, and those do not change with
-the expert count. Layers stay at 4 because that is the shortest run that
-contains a NoPE layer; `scout` names its own no_rope_layers to get one in two.
+The text part is one config: Scout's published text_config with the layer count
+cut from 48 to 4, the shortest run that contains a NoPE layer. Every per-layer size
+is Scout's -- 5120 hidden, 40/8 heads, head_dim 128, 16 experts top-1 plus the shared
+expert, vocab 202048, rope 500000 with llama3 scaling. attention_chunk_size is the
+real 8192, so at --seq <= 8192 no token crosses a chunk boundary and the chunked
+mask equals the causal one; the chunked layers are still built and traced. The
+vision part is Scout's vision tower, two of its 34 layers.
 
     source /workspace/torchsim-env.sh
-    python tests/models/Llama/test_llama4.py --preset small
+    python tests/models/Llama/test_llama4.py --seq 128
 
-MEASURED 2026-08-14 on transformers 5.15.0, tnpu 983eee4, --preset small:
-147,874,816 parameters, 31 kernels, 4.7684e-06, 8m00s. All four guards green --
-4/4 MoE layers, no_rope_layers [1,1,1,0], experts=4 top-1, qk_norm, chunk=32.
-
-Fifteen ops run eager: 11 `fill_` and 4 `topk`. The complex arithmetic used to
-be the bulk of that list -- 7 `view_as_complex`, 7 `mul.out`, 6 `view_as_real`,
-twenty calls leaving the simulator -- and the npu post-grad pass (84ad277)
-now keeps all of it in the graph. That pass was written and measured against
-DeepSeek-V2's rope, and it covers this one unchanged: Llama 4's complex path
-uses no op outside the set it already knew. The kernel count went 30 -> 31 as
-the complex work became a kernel rather than a fallback.
-
-SCOPE, AND IT IS A REAL LIMIT rather than a shrug. The gate runs `small`, 1024
-hidden. `--preset scout` builds Scout's real width (5120 hidden, 40/8 heads,
-1,394,672,640 parameters), passes all four guards, compiles 30 kernels, and
-then DIES IN SPIKE at kernel 19:
+SCOPE, AND IT IS AN OPEN LIMIT. A 2-layer, 4-expert build at this width compiled
+30 kernels and then DIED IN SPIKE at kernel 19:
 
     Kernel store segfault @ 0x0000000000000000        a0 0000000000000000
                                                       s4 0000000050000000
 
-That is not this model's arithmetic. s4 is 0x50000000 = 1,342,177,280, exactly
-the byte size of the MoE expert stack (4 x 5120 x 8192 x 2 f32), and a0 is the
-null it was told to store through. tnpu's wrapper.py sizes every buffer
+s4 is 0x50000000 = 1,342,177,280, exactly the byte size of that MoE expert stack
+(4 x 5120 x 8192 x 2 f32), and a0 is the null it was told to store through.
+tnpu's wrapper.py sizes every buffer
 
     padded = ((nbytes + 63) // 64) * 64 * 2
 
 -- doubled, to keep a DMA tail write off the heap -- so the 1.25 GiB argument is
-requested as 2.5 GiB, `calloc` returns NULL, and nothing checks it. The DMA tail
-is bounded by a tile, not by the tensor, so the factor is the thing to look at
-first; the missing NULL check is why this reads as a segfault instead of "1.25
-GiB allocation failed". Until that moves, Llama 4's claim here is a shape claim,
-not a width claim -- unlike test_llama3x.py, which gates the real 8B block.
+requested as 2.5 GiB, `calloc` returns NULL, and nothing checks it. The real
+16-expert stack is four times that (5 GiB, 10 GiB once doubled), so this default
+meets the same wrapper limit until the factor or the missing NULL check moves.
 
 THREE WALLS, IN THE ORDER THEY FELL, because none of them was visible until the
 one before it moved.
@@ -117,39 +103,18 @@ sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspa
 from result_check import check_result
 
 
-# Experts scaled down, everything that decides the SHAPE of the routing kept.
-# `layers` is 4 so no_rope_layers' period lands a NoPE layer inside the run.
-_PRESETS = {
-    "tiny": dict(layers=4, hidden=256, heads=8, kv_heads=2, intermediate=512,
-                 experts=4, vocab=256, seq=16, chunk=32),
-
-    "small": dict(layers=4, hidden=1024, heads=16, kv_heads=4, intermediate=2048,
-                  experts=4, vocab=1024, seq=32, chunk=32),
-
-    # Scout's real width and head ratio, two layers so one of them is NoPE, and
-    # four experts rather than sixteen.
-    "scout": dict(layers=2, hidden=5120, heads=40, kv_heads=8, intermediate=8192,
-                  experts=4, vocab=2048, seq=32, chunk=32,
-                  no_rope=[1, 0]),
-
-    # MAVERICK IS SCOUT'S MIRROR IMAGE HERE: its real EXPERT COUNT at a reduced
-    # width, where `scout` is the real width at a reduced expert count. Between
-    # them the two axes are covered once each.
-    #
-    # Maverick differs from Scout in exactly one config field that reaches the
-    # graph -- num_local_experts, 128 against 16. Measured on three builds:
-    # raising the count moves only the leading dim of the expert weight
-    # (4, 256, 1024) -> (16, 256, 1024) and nothing about the routing or the
-    # combine, and `intermediate_size_mlp` moves NOTHING at all (identical
-    # parameter count, identical expert tensor) because it sizes a dense MLP and
-    # interleave_moe_layer_step = 1 leaves no dense layer to size.
-    #
-    # So the width is what has to give. At Maverick's real 5120 the expert stack
-    # is 128 x 5120 x 8192 x 2 f32 = 40 GiB, which is not a simulator question.
-    "maverick": dict(layers=2, hidden=512, heads=8, kv_heads=2, intermediate=1024,
-                     experts=128, vocab=1024, seq=32, chunk=32,
-                     no_rope=[1, 0]),
-}
+# meta-llama/Llama-4-Scout-17B-16E text_config; only num_hidden_layers is cut (48 -> 4, one NoPE period).
+SCOUT_TEXT = dict(
+    vocab_size=202048, hidden_size=5120, num_attention_heads=40, num_key_value_heads=8, head_dim=128,
+    intermediate_size=8192, intermediate_size_mlp=16384, num_hidden_layers=4,
+    num_local_experts=16, num_experts_per_tok=1, interleave_moe_layer_step=1,
+    max_position_embeddings=10485760, rms_norm_eps=1e-5,
+    rope_parameters=dict(rope_type="llama3", rope_theta=500000.0, factor=16.0, low_freq_factor=1.0,
+                         high_freq_factor=1.0, original_max_position_embeddings=8192),
+    no_rope_layer_interval=4, attention_chunk_size=8192, use_qk_norm=True,
+    attn_temperature_tuning=True, floor_scale=8192, attn_scale=0.1, attention_bias=False,
+    pad_token_id=200018, bos_token_id=200000, eos_token_id=[200001, 200007, 200008],
+)
 
 
 def _dtype_from_str(name):
@@ -157,26 +122,14 @@ def _dtype_from_str(name):
             "bfloat16": torch.bfloat16}.get(name, torch.float32)
 
 
-def _build_config(preset, seq_len):
+def _build_config(seq_len):
+    """Scout's text config; raises if seq_len exceeds its max positions."""
     from transformers.models.llama4.configuration_llama4 import Llama4TextConfig
 
-    p = _PRESETS[preset]
-    seq_len = seq_len if seq_len is not None else p["seq"]
-    kw = dict(
-        vocab_size=p["vocab"], hidden_size=p["hidden"],
-        num_attention_heads=p["heads"], num_key_value_heads=p["kv_heads"],
-        intermediate_size=p["intermediate"], intermediate_size_mlp=p["intermediate"],
-        num_hidden_layers=p["layers"],
-        num_local_experts=p["experts"], num_experts_per_tok=1,
-        interleave_moe_layer_step=1,
-        max_position_embeddings=max(seq_len, 512), rope_theta=500000.0,
-        use_qk_norm=True, attention_chunk_size=p["chunk"],
-        pad_token_id=0, bos_token_id=1, eos_token_id=2,
-        use_cache=False, attn_implementation="eager",
-    )
-    if "no_rope" in p:
-        kw["no_rope_layers"] = p["no_rope"]
-    return Llama4TextConfig(**kw), seq_len
+    if seq_len > SCOUT_TEXT["max_position_embeddings"]:
+        raise ValueError(f"seq {seq_len} exceeds max_position_embeddings "
+                         f"{SCOUT_TEXT['max_position_embeddings']}")
+    return Llama4TextConfig(use_cache=False, attn_implementation="eager", **SCOUT_TEXT)
 
 
 def _assert_character(cfg, model):
@@ -190,9 +143,9 @@ def _assert_character(cfg, model):
 
     # A run with no NoPE layer is a Llama 3 decoder with extra steps.
     assert 0 in list(cfg.no_rope_layers), \
-        f"preset must contain a NoPE layer; no_rope_layers={list(cfg.no_rope_layers)}"
+        f"the run must contain a NoPE layer; no_rope_layers={list(cfg.no_rope_layers)}"
 
-    assert cfg.use_qk_norm, "preset must keep the q/k norm"
+    assert cfg.use_qk_norm, "Scout keeps the q/k norm"
     assert cfg.num_experts_per_tok < cfg.num_local_experts, \
         "top-k must be smaller than the expert count or the routing is dense"
     print(f"guards ok: {n_moe}/{len(model.layers)} MoE layers, "
@@ -202,17 +155,17 @@ def _assert_character(cfg, model):
 
 
 @torch.no_grad()
-def run_llama4(device, preset="small", batch=1, seq_len=None, dtype="float32",
+def run_llama4(device, batch=1, seq_len=128, dtype="float32",
                compile_model=True, rtol=1e-2, atol=1e-2):
     from transformers.models.llama4.modeling_llama4 import Llama4TextModel
 
     torch_dtype = _dtype_from_str(dtype)
-    cfg, seq_len = _build_config(preset, seq_len)
+    cfg = _build_config(seq_len)
 
     torch.manual_seed(0)
     model_cpu = Llama4TextModel(cfg).to(dtype=torch_dtype).eval()
 
-    print(f"preset={preset} layers={cfg.num_hidden_layers} hidden={cfg.hidden_size} "
+    print(f"layers={cfg.num_hidden_layers} hidden={cfg.hidden_size} "
           f"heads={cfg.num_attention_heads}/{cfg.num_key_value_heads} "
           f"interm={cfg.intermediate_size} vocab={cfg.vocab_size} seq={seq_len}")
     print("model params:", sum(p.numel() for p in model_cpu.parameters()))
@@ -229,32 +182,18 @@ def run_llama4(device, preset="small", batch=1, seq_len=None, dtype="float32",
         model_npu = torch.compile(model_npu, dynamic=False)
     npu_out = model_npu(input_ids=input_ids.to(device)).last_hidden_state
 
-    check_result(f"Llama 4 text ({preset})", npu_out, cpu_out, rtol=rtol, atol=atol)
+    check_result("Llama 4 text (scout)", npu_out, cpu_out, rtol=rtol, atol=atol)
     print("Max diff > ", torch.max(torch.abs(npu_out.cpu() - cpu_out)))
     print("Llama 4 Simulation Done")
 
 
-# `intermediate` IS NOT FREE: Llama4VisionMLP2's fc1 is
-# Linear(intermediate_size, projector_input_dim) and its input is the
-# pixel-shuffled tower output, whose channel count is hidden / ratio**2. At the
-# shipped ratio of 0.5 that is hidden * 4, so intermediate MUST be hidden * 4 or
-# the projector cannot be applied at all:
-#
-#     RuntimeError: mat1 and mat2 shapes cannot be multiplied
-#                   (256x3072 and 5632x4096)
-#
-# Llama4VisionConfig's own defaults do not satisfy it -- hidden_size 768 against
-# intermediate_size 5632 -- because 5632 is Scout's, and Scout's vision hidden is
-# 1408. Anything built from the class defaults is a tower that cannot run.
-_VISION_PRESETS = {
-    "tiny": dict(hidden=256, heads=8, layers=2, intermediate=1024,
-                 image=112, patch=14, projector=1024),
-
-    # Scout's real vision width and patch grid: 336/14 = 24, so 576 patches and
-    # a 12x12 grid after the shuffle.
-    "real": dict(hidden=1408, heads=16, layers=2, intermediate=5632,
-                 image=336, patch=14, projector=4096),
-}
+# meta-llama/Llama-4-Scout-17B-16E vision_config; only num_hidden_layers is cut (34 -> 2).
+SCOUT_VISION = dict(
+    hidden_size=1408, num_hidden_layers=2, num_attention_heads=16, intermediate_size=5632,
+    image_size=336, patch_size=14, num_channels=3, norm_eps=1e-5, pixel_shuffle_ratio=0.5,
+    projector_input_dim=4096, projector_output_dim=4096, vision_output_dim=4096,
+    multi_modal_projector_bias=False, rope_parameters=dict(rope_type="default", rope_theta=10000.0),
+)
 
 
 def _assert_vision_character(cfg, model):
@@ -279,20 +218,13 @@ def _assert_vision_character(cfg, model):
 
 
 @torch.no_grad()
-def run_llama4_vision(device, preset="tiny", batch=1, dtype="float32",
+def run_llama4_vision(device, batch=1, dtype="float32",
                       compile_model=True, rtol=1e-2, atol=1e-2):
     from transformers.models.llama4.configuration_llama4 import Llama4VisionConfig
     from transformers.models.llama4.modeling_llama4 import Llama4VisionModel
 
-    p = _VISION_PRESETS[preset]
     torch_dtype = _dtype_from_str(dtype)
-    cfg = Llama4VisionConfig(
-        hidden_size=p["hidden"], num_hidden_layers=p["layers"],
-        num_attention_heads=p["heads"], intermediate_size=p["intermediate"],
-        image_size=p["image"], patch_size=p["patch"],
-        projector_input_dim=p["projector"], projector_output_dim=p["projector"],
-        vision_output_dim=p["projector"],
-    )
+    cfg = Llama4VisionConfig(**SCOUT_VISION)
 
     torch.manual_seed(0)
     # NOT `.to(dtype=...)`. Module.to casts complex tensors too, and this
@@ -310,7 +242,7 @@ def run_llama4_vision(device, preset="tiny", batch=1, dtype="float32",
                 if t is not None and t.is_floating_point():
                     setattr(mod, name, t.to(torch_dtype))
 
-    print(f"vision preset={preset} layers={cfg.num_hidden_layers} "
+    print(f"vision layers={cfg.num_hidden_layers} "
           f"hidden={cfg.hidden_size} heads={cfg.num_attention_heads} "
           f"image={cfg.image_size} patch={cfg.patch_size}")
     print("model params:", sum(p.numel() for p in model_cpu.parameters()))
@@ -327,7 +259,7 @@ def run_llama4_vision(device, preset="tiny", batch=1, dtype="float32",
         model_npu = torch.compile(model_npu, dynamic=False)
     npu_out = model_npu(px.to(device)).last_hidden_state
 
-    check_result(f"Llama 4 vision ({preset})", npu_out, cpu_out, rtol=rtol, atol=atol)
+    check_result("Llama 4 vision (scout)", npu_out, cpu_out, rtol=rtol, atol=atol)
     print("Max diff > ", torch.max(torch.abs(npu_out.cpu() - cpu_out)))
     print("Llama 4 Vision Simulation Done")
 
@@ -336,9 +268,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Llama 4 on the Triton route")
     parser.add_argument("--part", type=str, default="text",
                         choices=["text", "vision"])
-    parser.add_argument("--preset", type=str, default=None)
     parser.add_argument("--batch", type=int, default=1)
-    parser.add_argument("--seq-len", type=int, default=None)
+    parser.add_argument("--seq", type=int, default=128)
     parser.add_argument("--dtype", type=str, default="float32",
                         choices=["float32", "float16", "bfloat16"])
     parser.add_argument("--no-compile", dest="compile", action="store_false", default=True)
@@ -350,11 +281,10 @@ if __name__ == "__main__":
     torch.compiler.is_compiling = lambda: True  # FIXME. Same as test_llama.py.
 
     if args.part == "vision":
-        run_llama4_vision(torch.device("npu:0"),
-                          preset=args.preset or "tiny", batch=args.batch,
+        run_llama4_vision(torch.device("npu:0"), batch=args.batch,
                           dtype=args.dtype, compile_model=args.compile,
                           rtol=args.rtol, atol=args.atol)
     else:
-        run_llama4(torch.device("npu:0"), preset=args.preset or "small",
-                   batch=args.batch, seq_len=args.seq_len, dtype=args.dtype,
+        run_llama4(torch.device("npu:0"),
+                   batch=args.batch, seq_len=args.seq, dtype=args.dtype,
                    compile_model=args.compile, rtol=args.rtol, atol=args.atol)

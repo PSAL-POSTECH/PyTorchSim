@@ -2,7 +2,8 @@
 against a float32 CPU reference, group by group.
 
   routed     uneven groups (empty ones, one past BM rows) run as the grouped kernel, no call left to aten
-  few_rows   fewer rows than groups: every block holds rows, the grid stops at the row count
+  one_program_per_group  the grid is one program per group, so a group's weight is read once
+  few_rows   fewer rows than groups: a program per group with rows, none for a group without rows
   eager      outside torch.compile the call runs group by group (no Triton launch outside a compiled graph),
              counted as the fallback
   grad       inputs that require grad run group by group (no kernel launch), and their gradients match the CPU's
@@ -73,9 +74,44 @@ def case_routed():
     return err < TOL and launched == 1 and not externs, f"err {err:.3g}, launches {launched}, externs {externs}"
 
 
+def _grids(sizes):
+    """(relative error, grouped-kernel launches, the grids it launched with) of one compiled call."""
+    from torch._inductor import config as inductor_config
+    from pytorchsim.frontend.dispatcher import grouped_mm
+    grids, real = [], grouped_mm.wrap_triton
+
+    class _Recorded:
+        def __init__(self, kernel):
+            self.wrapped = real(kernel)
+
+        def __getitem__(self, grid):
+            grids.append(tuple(grid))
+            return self.wrapped[grid]
+
+    grouped_mm.wrap_triton = _Recorded
+    try:
+        with inductor_config.patch(fx_graph_cache=False):
+            err, launched, _ = _run_compiled(sizes, 256, 256)
+    finally:
+        grouped_mm.wrap_triton = real
+    return err, launched, grids
+
+
+def case_one_program_per_group():
+    """Breaks if a program takes one BM-row block of a group again: the group's weight is then read per block,
+    not once per group as v6e reads it (one group here holds 130 rows, two blocks)."""
+    sizes = [0, 130, 7, 0, 64, 1, 0, 30]
+    err, launched, grids = _grids(sizes)
+    ok = err < TOL and launched == 1 and grids and all(g[0] == len(sizes) for g in grids)
+    return ok, f"err {err:.3g}, grids {grids}"
+
+
 def case_few_rows():
-    err, launched, externs = _run_compiled([1, 0, 1, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0], 256, 256)
-    return err < TOL and launched == 1 and not externs, f"err {err:.3g}, launches {launched}, externs {externs}"
+    """Breaks if a group without rows gets a program again: a decode step's 8 rows would then pay for every
+    expert, as v6e does not (4 rows over 16 groups here: 4 programs)."""
+    err, launched, grids = _grids([1, 0, 1, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0])
+    ok = err < TOL and launched == 1 and grids and all(g[0] == 4 for g in grids)
+    return ok, f"err {err:.3g}, launches {launched}, grids {grids}"
 
 
 def case_eager():
@@ -129,7 +165,8 @@ def case_bias():
     return False, "a bias was taken"
 
 
-CASES = {"routed": case_routed, "few_rows": case_few_rows, "eager": case_eager, "grad": case_grad,
+CASES = {"routed": case_routed, "one_program_per_group": case_one_program_per_group,
+         "few_rows": case_few_rows, "eager": case_eager, "grad": case_grad,
          "fallback": case_fallback, "tail": case_tail, "bias": case_bias}
 
 

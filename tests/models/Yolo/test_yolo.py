@@ -287,6 +287,10 @@ _PRESETS = {
     "26": dict(yaml="yolo26n.yaml", imgsz=640, nc=80),
 }
 
+# (rtol, atol floor) per dtype; the bf16 rtol is 3x the worst bf16 eager-vs-Inductor CPU diff / max|ref|.
+_TOL = {"bfloat16": (0.5, 1e-6), "float32": (1e-4, 1e-6)}
+_DTYPES = {"float32": torch.float32, "bfloat16": torch.bfloat16}
+
 # What the parser MUST have instantiated for the preset to mean what it claims,
 # and what it must NOT have -- the second half is what keeps a preset from
 # silently becoming a copy of its neighbour.
@@ -467,7 +471,12 @@ def _tensors(obj, out=None):
 
 
 @torch.no_grad()
-def run_yolo(device, version="v8", batch=1, imgsz=None, compile_model=True, rtol=1e-4, atol=1e-6):
+def run_yolo(device, version="v8", batch=1, imgsz=None, compile_model=True, rtol=None, atol=None,
+             dtype="bfloat16"):
+    """The version at `imgsz`, BatchNorms calibrated in float32 and the model then cast to `dtype` with its
+    input, CPU against `device`; each output at `rtol` of its own scale (`_TOL` unless given)."""
+    tol = _TOL[dtype]
+    rtol, atol = tol[0] if rtol is None else rtol, tol[1] if atol is None else atol
     _quiet_ultralytics()
     p = _PRESETS[version]
     imgsz = imgsz if imgsz is not None else p["imgsz"]
@@ -482,9 +491,10 @@ def run_yolo(device, version="v8", batch=1, imgsz=None, compile_model=True, rtol
     print(f"  blocks: {', '.join(sorted(set(top)))}")
 
     _assert_character(version, model_cpu, cfg, imgsz)
+    model_cpu.to(_DTYPES[dtype])
 
     g = torch.Generator().manual_seed(0)
-    x = torch.randn(batch, 3, imgsz, imgsz, generator=g)
+    x = torch.randn(batch, 3, imgsz, imgsz, generator=g).to(_DTYPES[dtype])
 
     cpu_out = _tensors(model_cpu(x))
 
@@ -511,7 +521,7 @@ def run_yolo(device, version="v8", batch=1, imgsz=None, compile_model=True, rtol
     for i, (a, b) in enumerate(zip(npu_out, cpu_out)):
         scale = torch.max(torch.abs(b)).item()
         scaled_atol = max(atol, rtol * scale)
-        diff = torch.max(torch.abs(a.cpu() - b)).item()
+        diff = torch.max(torch.abs(a.cpu().float() - b.float())).item()
         rel = diff / scale if scale else 0.0
         verdict = "ok" if diff <= scaled_atol + rtol * scale else "DIVERGED"
         print(f"  output[{i}] {str(tuple(b.shape)):>20}  max|d|={diff:.4e}  "
@@ -538,10 +548,11 @@ if __name__ == "__main__":
     parser.add_argument("--batch", type=int, default=1)
     parser.add_argument("--imgsz", type=int, default=None)
     parser.add_argument("--no-compile", dest="compile", action="store_false", default=True)
-    parser.add_argument("--rtol", type=float, default=1e-4,
-                        help="relative criterion; also scales each output's atol")
-    parser.add_argument("--atol", type=float, default=1e-6,
-                        help="absolute floor, for an output whose reference is all zero")
+    parser.add_argument("--dtype", type=str, default="bfloat16", choices=sorted(_DTYPES))
+    parser.add_argument("--rtol", type=float, default=None,
+                        help="relative criterion; also scales each output's atol (default: _TOL of --dtype)")
+    parser.add_argument("--atol", type=float, default=None,
+                        help="absolute floor, for an output whose reference is all zero (default: _TOL)")
     args = parser.parse_args()
 
     sys.path.append(os.environ.get("PYTORCHSIM_ROOT_PATH", "/workspace/PyTorchSim"))
@@ -556,4 +567,5 @@ if __name__ == "__main__":
             compile_model=args.compile,
             rtol=args.rtol,
             atol=args.atol,
+            dtype=args.dtype,
         )

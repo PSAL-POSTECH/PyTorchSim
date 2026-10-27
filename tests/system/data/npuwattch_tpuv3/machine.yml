@@ -1,9 +1,9 @@
-# One TPU v3 TensorCore. The array unit TPUV3_MXU.rows and the ISA's pytorchsim_tpuv3 name Coprocessor libtpuv3.so.
+# One TPU v3 TensorCore. The array unit TPUV3_MXU and the ISA's pytorchsim_tpuv3 name Coprocessor libtpuv3.so.
 num_cores: 1
 core_freq_mhz: 940
 core_stats_print_period_cycles: 10000
 num_systolic_array_per_core: 2
-systolic_array_unit: TPUV3_MXU.rows
+systolic_array_unit: TPUV3_MXU
 # tpuv6e's DMA keys, measured on a v6e.
 dma_load_latency_cycles: 27
 dma_load_ready_cycles: 842

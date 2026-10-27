@@ -1,5 +1,5 @@
 """Spike: the compiler's launcher (its runtime/spike.py) run over a launch's whole grid, under the
-options the kernel object was compiled for, with this environment's spike and pk."""
+options the kernel object was compiled for, with the compiler's Spike and pk."""
 
 from pytorchsim import config
 from pytorchsim.backend import compiler_bridge
@@ -14,9 +14,9 @@ def launch(obj_dir, manifest, runtime, raw_paths, log, scalar_values=None):
         run = compiler_bridge.run_options(obj_dir, manifest, ko.SPIKE_OPTIONS)
     except (ko.ObjectError, compiler_bridge.NoTarget) as e:
         raise launcher().SpikeError(str(e)) from None
-    return launcher().launch(elf, manifest, runtime, raw_paths, run, spike=config.CONFIG_SPIKE_PATH,
-                             pk=config.CONFIG_PK_PATH, log=log, want_jobs=config.CONFIG_SPIKE_JOBS,
-                             scalar_values=scalar_values)
+    tools = compiler_bridge.toolchain()
+    return launcher().launch(elf, manifest, runtime, raw_paths, run, spike=tools.SPIKE, pk=tools.PK, log=log,
+                             want_jobs=config.CONFIG_SPIKE_JOBS,                             scalar_values=scalar_values)
 
 
 def launcher():

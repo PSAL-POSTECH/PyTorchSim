@@ -30,14 +30,13 @@ RUN python3.11 -m pip install --no-cache-dir \
     psutil pyyaml requests tqdm py-cpuinfo
 
 # The compiler route's environment, as the compiler's setup/env.sh spells it for a local install
-# (PYTORCHSIM_PREFIX=/opt/pytorchsim in the image). VCIX_ENV_ROOT comes from the environment image.
+# (PYTORCHSIM_PREFIX=/opt/pytorchsim in the image). COPROCESSOR_ENV_ROOT comes from the environment image.
 ENV PYTORCHSIM_PREFIX=/opt/pytorchsim \
     TORCHSIM_COMPILE_DIR=/workspace/pytorchsim-triton-compiler \
     TRITON_BACKENDS_IN_TREE=1 \
     TRITON_PLUGIN_PATHS=/opt/pytorchsim/pytorchsim-triton-ext-build/libpytorchsim_triton_ext.so \
     PYTHONPATH=/opt/pytorchsim/triton-src/python \
-    GEM5_PATH=${VCIX_ENV_ROOT}/gem5/build/RISCV/gem5.opt \
-    PATH=/workspace/pytorchsim-triton-compiler:${VCIX_ENV_ROOT}/riscv/bin:/root/.local/bin:${PATH} \
+    PATH=/workspace/pytorchsim-triton-compiler:${COPROCESSOR_ENV_ROOT}/riscv/bin:/root/.local/bin:${PATH} \
     LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/usr/lib/aarch64-linux-gnu:${LD_LIBRARY_PATH} \
     TORCHSIM_DIR=/workspace/PyTorchSim
 

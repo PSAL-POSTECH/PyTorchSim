@@ -21,13 +21,13 @@ For example:
 ```
 python3 tests/ops/elementwise/test_add.py
 ...
-[Spike] $ /opt/vcix-env/spike/bin/spike --isa rv64gcv_zfh_xcoprocessor \
-  --extlib=/opt/pytorchsim/vcix-build/libtpu.so \
+[Spike] $ /opt/coprocessor-env/spike/bin/spike --isa rv64gcv_zfh_xcoprocessor \
+  --extlib=/opt/pytorchsim/coprocessor-build/libtpu.so \
   -m0x80000000:0x1900000000,0x2000000000:0x1000000 \
   --machine-config=/tmp/torchinductor/tmp/g3smoqaa2r5/runtime_0000/machine.yml \
   --kernel-addr=10404:10506 \
   --base-path=/tmp/torchinductor/tmp/g3smoqaa2r5/runtime_0000 \
-  /opt/vcix-env/pk/riscv64-unknown-elf/bin/pk \
+  /opt/coprocessor-env/pk/riscv64-unknown-elf/bin/pk \
   /tmp/torchinductor/tmp/g3smoqaa2r5/validation_binary \
   /tmp/torchinductor/tmp/g3smoqaa2r5/runtime_0000/arg0_1/0.raw \
   /tmp/torchinductor/tmp/g3smoqaa2r5/runtime_0000/arg1_1/0.raw \

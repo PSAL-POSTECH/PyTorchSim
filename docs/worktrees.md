@@ -112,13 +112,6 @@ Worktree-scoped (auto-set by `.envrc`):
 | `TORCHSIM_TARGET` | `tpuv6e` (the machine file `tpuv6e.yml` in the TOGSim checkout's `configs/`) |
 | `PYTHONPATH` | `$PWD/device:$PWD:$PYTHONPATH` |
 
-Shared (container-dedicated, set the same in every `.envrc`):
-
-| Var | Value |
-|---|---|
-| `GEM5_PATH` | `/workspace/vcix-env/gem5/build/RISCV/gem5.opt` |
-| `RISCV` | `/workspace/vcix-env/riscv` |
-
 ## Cleanup
 
 ```bash

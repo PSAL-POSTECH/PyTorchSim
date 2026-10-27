@@ -14,8 +14,9 @@ bash PyTorchSim/docker/tutorial/jupyterhub/setting.sh
 ```
 
 `setting.sh` creates the `jupyterhub-network` network, pulls the tutorial image and starts the hub
-(`docker compose up -d --build`). Attendees open `http://<host>:8888`, click Sign up, choose a name and
-a password, then log in.
+(`docker compose up -d --build`). Sign up as `root` first: it is the admin and can log in at once.
+Attendees open `http://<host>:8888`, click Sign up and choose a name and a password; they can log in
+once root authorizes them at `http://<host>:8888/hub/authorize`.
 
 | Setting | Default | Where |
 |---|---|---|

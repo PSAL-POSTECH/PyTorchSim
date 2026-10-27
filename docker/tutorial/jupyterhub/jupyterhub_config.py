@@ -1,4 +1,5 @@
-# Each attendee signs up at the hub, and gets a container of the tutorial image with JupyterLab in /workspace:
+# root signs up first and is the admin; every other sign-up waits until root authorizes it at /hub/authorize.
+# Each attendee then gets a container of the tutorial image with JupyterLab in /workspace:
 # a terminal for the slides' commands and an editor for the hands-on's files. The container is kept when it stops.
 import os
 
@@ -23,6 +24,6 @@ c.JupyterHub.hub_ip = "jupyterhub"
 c.JupyterHub.hub_port = 8081
 
 c.JupyterHub.authenticator_class = "nativeauthenticator.NativeAuthenticator"
-c.Authenticator.admin_users = {"admin"}
-c.NativeAuthenticator.open_signup = True
+c.Authenticator.admin_users = {"root"}
+c.NativeAuthenticator.open_signup = False
 c.Authenticator.allow_all = True

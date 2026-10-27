@@ -199,7 +199,7 @@ if __name__ == "__main__":
     json.dump(meta, open(meta_path, "w"), indent=1)
     CORE_MHZ = int(cfg["core_freq_mhz"])
     unit = cfg.get("systolic_array_unit")
-    SA = re.compile(rf"Core \[\d+\] : {re.escape(unit)} utilization\(%\): ([\d.]+)") if unit else None
+    SA = re.compile(rf"Core \[\d+\] : {re.escape(unit + '.rows')} utilization\(%\): ([\d.]+)") if unit else None
 
     keep, drop = parse_filters(a.keep), parse_filters(a.drop)
     shapes = sorted({tuple(int(r[k]) for k in KEYS) for r in csv.DictReader(open(table))},

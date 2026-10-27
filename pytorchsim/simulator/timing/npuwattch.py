@@ -434,7 +434,7 @@ def kernel_entry(workdir, launch_dir, machine, cfg, result_path, copy_result_pat
     y = machine["yaml"]
     lanes, dim = cfg["vpu_num_lanes"], cfg["systolic_array"]["width"]
     arrays = cfg["systolic_array"]["per_core"]
-    mxu_unit = y.get("systolic_array_unit")
+    mxu_unit = f"{y['systolic_array_unit']}.rows" if y.get("systolic_array_unit") else None
     main = _launch_counters(result_path)
     copies = [_launch_counters(p) for p in copy_result_paths]
     launches = [main] + copies

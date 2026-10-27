@@ -56,7 +56,7 @@ def test_standalone_reads_the_result_file():
         got = TOGSimProcess.read_result(path)
         units = got["units"]["Core [0]"]
         assert got["total_cycles"] == got["core_cycles"]["0"] > 0
-        assert {config.CONFIG_MACHINE.togsim_unit, "Vpu"} <= set(units)
+        assert {f"{config.CONFIG_MACHINE.togsim_unit}.rows", "Vpu"} <= set(units)
         assert len(got["dram"]["channels"]) == 32 and got["dram"]["combined"]["reads"] > 0
 
 

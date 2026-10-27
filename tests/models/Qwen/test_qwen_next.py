@@ -43,6 +43,13 @@ WHAT IS NOT COVERED, and it is a large half:
     transformers' defaults for it are not that checkpoint.
   * DEPTH.  One layer, as everywhere in this suite.
 
+Weights and inputs are bfloat16 by default (``--dtype float32`` for the old
+run).  ``--part layer`` runs the text model's first decoder layer alone
+(tests/one_layer.py), on ``--seq S`` or on one ``--decode S`` step after a KV
+cache; the linear-attention families build one full_attention_interval period
+for it, since this transformers' cache cannot hold linear layers alone, and run
+only its first, linear, layer.
+
 THE AUDIO PATH IS NOT GATED YET, and the reason is a pin rather than a result.
 Its `..._eq_masked_scatter_unsqueeze_22` needs triton-npu's
 `fix/p14-cross-loop-registers` -- the pass there sized a loop from its own body
@@ -64,7 +71,14 @@ import sys
 import torch
 
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from result_check import check_result
+from result_check import check_result, check_routed_rows
+import one_layer
+
+# (rtol, atol) per dtype; the bf16 atol is 3x the worst bf16 eager-vs-Inductor CPU diff at S = 128.
+_TOL = {"bfloat16": (5e-2, 0.5), "float32": (1e-2, 1e-4)}
+_DTYPES = {"float32": torch.float32, "float16": torch.float16, "bfloat16": torch.bfloat16}
+# Share of token rows a bf16 router near-tie may send to other experts (check_routed_rows); fp32 none.
+_ROUTED = {"bfloat16": 0.05, "float32": 0.0}
 
 FAMILIES = ("qwen3_vl", "qwen3_vl_moe", "qwen3_5", "qwen3_5_moe", "qwen3_next", "qwen2_audio")
 
@@ -136,26 +150,26 @@ _CONFIGS = {
 }
 
 
-def _config_for(family):
-    """This family's published config with each stack cut to one layer, the audio encoder's included.
+def _config_for(family, layers=1):
+    """This family's published config with each text stack cut to `layers` and the audio encoder to one.
 
-    Linear-attention families keep their published `full_attention_interval`, so the one layer left is the
-    first one, which is a linear-attention layer.
+    Linear-attention families keep their published `full_attention_interval`, so the first layer is a
+    linear-attention one.
     """
     from transformers.models.auto.configuration_auto import CONFIG_MAPPING
     model_type, published = _CONFIGS[family]
     if family in AUDIO:
         return CONFIG_MAPPING[model_type](
             **{k: v for k, v in published.items() if k not in ("text_config", "audio_config")},
-            text_config=dict(published["text_config"], num_hidden_layers=1),
+            text_config=dict(published["text_config"], num_hidden_layers=layers),
             audio_config=dict(published["audio_config"], encoder_layers=1))
-    return CONFIG_MAPPING[model_type](**published, num_hidden_layers=1)
+    return CONFIG_MAPPING[model_type](**published, num_hidden_layers=layers)
 
 
-def build(family):
+def build(family, layers=1):
     """The model, and which Auto class accepted it."""
     from transformers import AutoModel, AutoModelForCausalLM
-    cfg = _config_for(family)
+    cfg = _config_for(family, layers)
     for maker in (AutoModelForCausalLM, AutoModel):
         try:
             return cfg, maker.from_config(cfg), maker.__name__
@@ -164,19 +178,31 @@ def build(family):
     raise RuntimeError(f"no Auto class accepted {family}")
 
 
-def run_family(family, seq_len=128, rtol=1e-2, atol=1e-4, compile_it=True):
-    """One layer of the family's text model on `seq_len` random tokens; refuses a seq past its positions."""
+def run_family(family, seq_len=128, dtype="bfloat16", rtol=None, atol=None, compile_it=True, part="model",
+               decode=False, device="npu"):
+    """One layer of the family's text model on `seq_len` random tokens, or with part "layer" that layer
+    alone, on that prefill or with `decode` one step at position seq_len - 1 after a KV cache."""
+    tol = _TOL.get(dtype, _TOL["float32"])
+    rtol, atol = tol[0] if rtol is None else rtol, tol[1] if atol is None else atol
     text = getattr(_config_for(family), "text_config", None) or _config_for(family)
     if seq_len > text.max_position_embeddings:
         raise ValueError(f"seq {seq_len} exceeds {family}'s {text.max_position_embeddings} positions")
     torch.manual_seed(0)
-    cfg, model, how = build(family)
-    model.eval()
+    layers = _CONFIGS[family][1].get("full_attention_interval", 1) if part == "layer" else 1
+    cfg, model, how = build(family, layers)
+    model.to(_DTYPES[dtype]).eval()
     n = sum(p.numel() for p in model.parameters())
     print(f"family={family} {type(model).__name__} via {how} "
           f"params={n/1e6:.2f}M seq={seq_len}")
 
     ids = torch.randint(0, 64, (1, seq_len))
+    if part == "layer":
+        body = model.model if hasattr(model, "model") else model
+        cpu_out, npu_out = one_layer.run(body, body.layers[0], cfg, ids, torch.device(device),
+                                         decode=decode, compile_model=compile_it)
+        row_share = _ROUTED.get(dtype, 0.0) if getattr(text, "num_experts", 0) else 0.0
+        check_routed_rows(f"Qwen {family} layer", npu_out.cpu(), cpu_out, rtol, atol, row_share)
+        return
     sig = set(inspect.signature(model.forward).parameters)
     kw = {"input_ids": ids}
     if "attention_mask" in sig:
@@ -192,8 +218,8 @@ def run_family(family, seq_len=128, rtol=1e-2, atol=1e-4, compile_it=True):
     with torch.no_grad():
         cpu_out = first(model(**kw)).clone()
 
-    model_npu = model.to("npu")
-    kw_npu = {k: (v.to("npu") if torch.is_tensor(v) else v) for k, v in kw.items()}
+    model_npu = model.to(device)
+    kw_npu = {k: (v.to(device) if torch.is_tensor(v) else v) for k, v in kw.items()}
     runner = torch.compile(model_npu, dynamic=False) if compile_it else model_npu
     with torch.no_grad():
         npu_out = first(runner(**kw_npu)).cpu()
@@ -201,7 +227,7 @@ def run_family(family, seq_len=128, rtol=1e-2, atol=1e-4, compile_it=True):
     check_result(f"Qwen {family}", npu_out, cpu_out, rtol=rtol, atol=atol)
 
 
-def run_audio(family, rtol=1e-2, atol=1e-4, compile_it=True):
+def run_audio(family, dtype="bfloat16", rtol=None, atol=None, compile_it=True):
     """The AUDIO tower: a mel spectrogram in, spliced into the text sequence.
 
     TWO THINGS ARE NOT FREE HERE, and each one cost a run:
@@ -214,13 +240,15 @@ def run_audio(family, rtol=1e-2, atol=1e-4, compile_it=True):
         a method; ask it rather than guess -- a guess put 50 tokens against 13
         features.
     """
+    tol = _TOL.get(dtype, _TOL["float32"])
+    rtol, atol = tol[0] if rtol is None else rtol, tol[1] if atol is None else atol
     torch.manual_seed(0)
     cfg, model, _ = build(family)
-    model.eval()
+    model.to(_DTYPES[dtype]).eval()
     tower = model.audio_tower
     ac = cfg.audio_config
     frames = ac.max_source_positions * 2
-    feats = torch.randn(1, ac.num_mel_bins, frames)
+    feats = torch.randn(1, ac.num_mel_bins, frames).to(_DTYPES[dtype])
     _, got = tower._get_feat_extract_output_lengths(torch.tensor([frames]))
     n_audio = int(got.flatten()[0])
 
@@ -255,20 +283,25 @@ if __name__ == "__main__":
         description="The Qwen families transformers 5.x added, on the Triton route")
     parser.add_argument("--family", type=str, default=None, choices=sorted(FAMILIES),
                         help=f"default: the gate, {' and '.join(_GATE)}")
-    parser.add_argument("--seq", type=int, default=128)
-    parser.add_argument("--rtol", type=float, default=1e-2)
-    parser.add_argument("--atol", type=float, default=1e-4)
+    parser.add_argument("--part", type=str, default="model", choices=["model", "layer"],
+                        help="model = the one-layer text model; layer = its decoder layer alone")
+    one_layer.add_grid_args(parser)
+    parser.add_argument("--dtype", type=str, default="bfloat16", choices=sorted(_DTYPES))
+    parser.add_argument("--rtol", type=float, default=None, help="default: _TOL of --dtype")
+    parser.add_argument("--atol", type=float, default=None, help="default: _TOL of --dtype")
     parser.add_argument("--no-compile", dest="compile", action="store_false", default=True)
     parser.add_argument("--audio", action="store_true",
                         help=f"run the audio tower, for {' and '.join(AUDIO)}")
     args = parser.parse_args()
+    if args.decode is not None and args.part != "layer":
+        parser.error("--decode runs with --part layer")
 
     if args.audio:
         for fam in ([args.family] if args.family else AUDIO):
             if fam not in AUDIO:
                 raise SystemExit(f"{fam} has no audio tower")
-            run_audio(fam, rtol=args.rtol, atol=args.atol, compile_it=args.compile)
+            run_audio(fam, dtype=args.dtype, rtol=args.rtol, atol=args.atol, compile_it=args.compile)
     else:
         for fam in ([args.family] if args.family else _GATE):
-            run_family(fam, seq_len=args.seq, rtol=args.rtol, atol=args.atol,
-                       compile_it=args.compile)
+            run_family(fam, seq_len=args.decode or args.seq, dtype=args.dtype, rtol=args.rtol, atol=args.atol,
+                       compile_it=args.compile, part=args.part, decode=args.decode is not None)

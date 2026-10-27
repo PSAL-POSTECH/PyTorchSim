@@ -528,11 +528,14 @@ def reuse(prev, out, keys, suite, name, dims, csv_name):
     return name, kernels, [], unfused, old["externs"]
 
 
-def largest_first(suites):
-    """(suite, workload name) of `suites`, each suite's ordered by the compiler's rank where it has one."""
+def largest_first(suites, conditions=None):
+    """(suite, workload name) of `suites`, each suite's ordered by the compiler's rank where it has one; with
+    `conditions` (COL=VALUE) only the workloads the compiler's --where keeps."""
     names = []
     for suite in dict.fromkeys(s[0] for s in SUITES if not suites or s[0] in suites):
-        mine = [(w[0], w[2]) for w in workloads({suite})]
+        keys = next(s[2] for s in SUITES if s[0] == suite)
+        keep = compiler_suite("gemm").where(conditions, keys)
+        mine = [(w[0], w[2]) for w in workloads({suite}) if keep is None or keep(w[2])]
         rank = _rank(suite)
         names += [(suite, n) for n, d in (sorted(mine, key=lambda w: -rank(w[1])) if rank else mine)]
     return names
@@ -547,13 +550,13 @@ def _rank(suite):
     return (lambda d: mod.cost(d, keys)) if hasattr(mod, "cost") else None
 
 
-def main(out, suites=None, jobs=1, keys=None, prev=None):
-    """Write `suites`' workloads (default all) into `out`, replacing each one's directory there, in
-    `jobs` processes; each one whose key `prev` holds is copied from it instead of built."""
+def main(out, suites=None, jobs=1, keys=None, prev=None, conditions=None):
+    """Write `suites`' workloads (default all, or those `conditions` keep) into `out`, replacing each one's
+    directory there, in `jobs` processes; each one whose key `prev` holds is copied from it instead of built."""
     os.makedirs(out, exist_ok=True)
     keys = keys or os.path.join(os.path.dirname(out), "keys")
     unpicked, unfused = [], []
-    names, reused = largest_first(suites), []
+    names, reused = largest_first(suites, conditions), []
     if prev:
         rows = {(w[1], w[0]): (w[2], w[5]) for w in workloads(suites)}
         reused = [r for r in (reuse(prev, out, keys, s, n, *rows[s, n]) for s, n in names) if r]
@@ -594,6 +597,8 @@ if __name__ == "__main__":
     ap.add_argument("--jobs", type=int, default=1, help="processes building workloads at once")
     ap.add_argument("--keys", help="where the workloads' keys are written (default: OUT/../keys)")
     ap.add_argument("--reuse", metavar="PREV", help="a previous bundle (PREV/out, PREV/keys) to copy matches from")
+    ap.add_argument("--where", nargs="+", metavar="COL=VALUE",
+                    help="only the workloads the compiler's simulate_shapes.py --where keeps")
     a = ap.parse_args()
     main(os.path.abspath(a.out), set(a.suites), a.jobs, a.keys and os.path.abspath(a.keys),
-         a.reuse and os.path.abspath(a.reuse))
+         a.reuse and os.path.abspath(a.reuse), a.where)

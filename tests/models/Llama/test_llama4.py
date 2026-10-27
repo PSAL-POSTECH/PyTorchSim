@@ -30,10 +30,13 @@ is Scout's -- 5120 hidden, 40/8 heads, head_dim 128, 16 experts top-1 plus the s
 expert, vocab 202048, rope 500000 with llama3 scaling. attention_chunk_size is the
 real 8192, so at --seq <= 8192 no token crosses a chunk boundary and the chunked
 mask equals the causal one; the chunked layers are still built and traced. The
-vision part is Scout's vision tower, two of its 34 layers.
+vision part is Scout's vision tower, two of its 34 layers. Weights and inputs are bfloat16 by default
+(--dtype float32 for the old run). --part layer runs the text model's first decoder layer alone
+(tests/one_layer.py), on --seq S or on one --decode S step after a KV cache.
 
     source /workspace/torchsim-env.sh
     python tests/models/Llama/test_llama4.py --seq 128
+    python tests/models/Llama/test_llama4.py --part layer --decode 1024
 
 SCOPE, AND IT IS AN OPEN LIMIT. A 2-layer, 4-expert build at this width compiled
 30 kernels and then DIED IN SPIKE at kernel 19:
@@ -100,7 +103,8 @@ import sys
 import torch
 
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from result_check import check_result
+from result_check import check_result, check_routed_rows
+import one_layer
 
 
 # meta-llama/Llama-4-Scout-17B-16E text_config; only num_hidden_layers is cut (48 -> 4, one NoPE period).
@@ -115,6 +119,12 @@ SCOUT_TEXT = dict(
     attn_temperature_tuning=True, floor_scale=8192, attn_scale=0.1, attention_bias=False,
     pad_token_id=200018, bos_token_id=200000, eos_token_id=[200001, 200007, 200008],
 )
+
+
+# (rtol, atol) per dtype; bf16 takes test_llama3x's measured bound (bf16 CPU bmm too slow to measure here).
+_TOL = {"bfloat16": (5e-2, 0.6), "float32": (1e-2, 1e-2)}
+# Share of token rows a bf16 router near-tie may send to other experts (check_routed_rows); fp32 none.
+_ROUTED = {"bfloat16": 0.05, "float32": 0.0}
 
 
 def _dtype_from_str(name):
@@ -155,8 +165,12 @@ def _assert_character(cfg, model):
 
 
 @torch.no_grad()
-def run_llama4(device, batch=1, seq_len=128, dtype="float32",
-               compile_model=True, rtol=1e-2, atol=1e-2):
+def run_llama4(device, batch=1, seq_len=128, dtype="bfloat16",
+               compile_model=True, rtol=None, atol=None, layer=False, decode=False):
+    """Scout's text model on a prefill of `seq_len` tokens, or with `layer` its first decoder layer alone, on
+    that prefill or with `decode` one step at position seq_len - 1 after a KV cache; CPU against `device`."""
+    tol = _TOL.get(dtype, _TOL["float32"])
+    rtol, atol = tol[0] if rtol is None else rtol, tol[1] if atol is None else atol
     from transformers.models.llama4.modeling_llama4 import Llama4TextModel
 
     torch_dtype = _dtype_from_str(dtype)
@@ -175,14 +189,19 @@ def run_llama4(device, batch=1, seq_len=128, dtype="float32",
     input_ids = torch.randint(3, cfg.vocab_size, (batch, seq_len), generator=g,
                               dtype=torch.long)
 
-    cpu_out = model_cpu(input_ids=input_ids).last_hidden_state
+    if layer:
+        cpu_out, npu_out = one_layer.run(model_cpu, model_cpu.layers[0], cfg, input_ids, device,
+                                         decode=decode, compile_model=compile_model)
+    else:
+        cpu_out = model_cpu(input_ids=input_ids).last_hidden_state
 
-    model_npu = copy.deepcopy(model_cpu).to(device).eval()
-    if compile_model:
-        model_npu = torch.compile(model_npu, dynamic=False)
-    npu_out = model_npu(input_ids=input_ids.to(device)).last_hidden_state
+        model_npu = copy.deepcopy(model_cpu).to(device).eval()
+        if compile_model:
+            model_npu = torch.compile(model_npu, dynamic=False)
+        npu_out = model_npu(input_ids=input_ids.to(device)).last_hidden_state
 
-    check_result("Llama 4 text (scout)", npu_out, cpu_out, rtol=rtol, atol=atol)
+    check_routed_rows(f"Llama 4 text{' layer' if layer else ''} (scout)", npu_out, cpu_out, rtol, atol,
+                      _ROUTED.get(dtype, 0.0))
     print("Max diff > ", torch.max(torch.abs(npu_out.cpu() - cpu_out)))
     print("Llama 4 Simulation Done")
 
@@ -218,8 +237,11 @@ def _assert_vision_character(cfg, model):
 
 
 @torch.no_grad()
-def run_llama4_vision(device, batch=1, dtype="float32",
-                      compile_model=True, rtol=1e-2, atol=1e-2):
+def run_llama4_vision(device, batch=1, dtype="bfloat16",
+                      compile_model=True, rtol=None, atol=None):
+    """Scout's vision tower, two layers, CPU against `device`, at `dtype`'s `_TOL` unless given."""
+    tol = _TOL.get(dtype, _TOL["float32"])
+    rtol, atol = tol[0] if rtol is None else rtol, tol[1] if atol is None else atol
     from transformers.models.llama4.configuration_llama4 import Llama4VisionConfig
     from transformers.models.llama4.modeling_llama4 import Llama4VisionModel
 
@@ -267,15 +289,22 @@ def run_llama4_vision(device, batch=1, dtype="float32",
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Llama 4 on the Triton route")
     parser.add_argument("--part", type=str, default="text",
-                        choices=["text", "vision"])
+                        choices=["text", "vision", "layer"],
+                        help="text = Llama4TextModel; vision = the tower; "
+                             "layer = the text model's first layer alone")
     parser.add_argument("--batch", type=int, default=1)
-    parser.add_argument("--seq", type=int, default=128)
-    parser.add_argument("--dtype", type=str, default="float32",
+    one_layer.add_grid_args(parser)
+    parser.add_argument("--dtype", type=str, default="bfloat16",
                         choices=["float32", "float16", "bfloat16"])
     parser.add_argument("--no-compile", dest="compile", action="store_false", default=True)
-    parser.add_argument("--rtol", type=float, default=1e-2)
-    parser.add_argument("--atol", type=float, default=1e-2)
+    parser.add_argument("--rtol", type=float, default=None, help="default: _TOL of --dtype")
+    parser.add_argument("--atol", type=float, default=None, help="default: _TOL of --dtype")
     args = parser.parse_args()
+    if args.decode is not None and args.part != "layer":
+        parser.error("--decode runs with --part layer")
+    tol = _TOL.get(args.dtype, _TOL["float32"])
+    args.rtol = tol[0] if args.rtol is None else args.rtol
+    args.atol = tol[1] if args.atol is None else args.atol
 
     sys.path.append(os.environ.get("PYTORCHSIM_ROOT_PATH", "/workspace/PyTorchSim"))
     torch.compiler.is_compiling = lambda: True  # FIXME. Same as test_llama.py.
@@ -286,5 +315,6 @@ if __name__ == "__main__":
                           rtol=args.rtol, atol=args.atol)
     else:
         run_llama4(torch.device("npu:0"),
-                   batch=args.batch, seq_len=args.seq, dtype=args.dtype,
-                   compile_model=args.compile, rtol=args.rtol, atol=args.atol)
+                   batch=args.batch, seq_len=args.decode or args.seq, dtype=args.dtype,
+                   compile_model=args.compile, rtol=args.rtol, atol=args.atol,
+                   layer=args.part == "layer", decode=args.decode is not None)

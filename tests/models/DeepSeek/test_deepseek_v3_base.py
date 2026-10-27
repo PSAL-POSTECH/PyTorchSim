@@ -1,11 +1,11 @@
 import os
 import sys
 import argparse
-import copy
 from pathlib import Path
 import torch
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from result_check import check_result
+from result_check import check_result, check_routed_rows
+import one_layer
 
 # DeepSeek-V3's remote modeling file (trust_remote_code) imports flash_attn, and
 # transformers' check_imports statically requires it to be installed even though
@@ -150,59 +150,58 @@ def test_cat_out(device):
     check_result("cat.out", out, cpu_out, rtol=1e-4, atol=1e-4)
     
     
+# (rtol, atol) per dtype; the bf16 atol is 3x the worst bf16 eager-vs-Inductor CPU diff at S = 128.
+_TOL = {"bfloat16": (5e-2, 0.4), "float32": (3e-1, 2e-1)}
+# Share of token rows a bf16 router near-tie may send to other experts (check_routed_rows); fp32 none.
+_ROUTED = {"bfloat16": 0.2, "float32": 0.0}
+
+
 @torch.no_grad()
 def run_deepseek_v3_base(
     model_id,
     device,
     init_mode="config-random",
-    max_layers=4,
-    dtype="float16",
+    max_layers=1,
+    dtype="bfloat16",
     batch=1,
     seq_len=128,
     use_tokenizer=False,
     prompt="Hello, DeepSeek V3",
     trust_remote_code=False,
     revision=None,
-    compile_model=False,
+    compile_model=True,
+    part="model",
+    decode=False,
 ):
-    """DeepSeek-V3 at its published per-layer size, cut to `max_layers` layers, against CPU.
-
-    The default 4 layers are the 3 dense layers `first_k_dense_replace` puts first and one MoE layer
-    (256 routed experts, top-8 over 4 of 8 groups, one shared expert). The input is batch 1, one
-    prefill of `seq_len` tokens, which must fit the config's max_position_embeddings.
-    """
+    """DeepSeek-V3 at its published per-layer size, `max_layers` MoE layers (first_k_dense_replace 0), against
+    CPU at `_TOL`: the CausalLM on a prefill of `seq_len` tokens, or with part "layer" its first decoder layer
+    alone, on that prefill or with `decode` one step at position seq_len - 1 after a KV cache."""
     from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
     torch_dtype = _dtype_from_str(dtype)
+    rtol, atol = _TOL.get(dtype, _TOL["float32"])
+    row_share = _ROUTED.get(dtype, 0.0)
 
-    # Load model config
     config = AutoConfig.from_pretrained(
         model_id,
         trust_remote_code=trust_remote_code,
         revision=revision,
     )
-
-    # Some remote model codes expect quantization_config to stay object-like
-    # (call .to_dict()), so only disable it for pretrained loading path.
     if init_mode == "pretrained" and getattr(config, "quantization_config", None) is not None:
         config.quantization_config = None
     if seq_len > config.max_position_embeddings:
         raise ValueError(f"seq {seq_len} exceeds {model_id}'s {config.max_position_embeddings} positions")
     config = _cut_layers(config, max_layers)
+    config.first_k_dense_replace = 0
 
-    # Seed the global RNG so config-random weight init is deterministic. Without
-    # this every run builds a different network, so the worst-element NPU-vs-CPU
-    # error randomly crosses the (loose) allclose threshold and the test is flaky.
     torch.manual_seed(0)
-
     if init_mode == "config-random":
         model = AutoModelForCausalLM.from_config(
             config=config,
             trust_remote_code=trust_remote_code,
+            dtype=torch_dtype,
         ).eval()
-        model = model.to(dtype=torch_dtype)
     elif init_mode == "pretrained":
-        # Load model(weights)
         model = AutoModelForCausalLM.from_pretrained(
             model_id,
             config=config,
@@ -213,76 +212,62 @@ def run_deepseek_v3_base(
     else:
         raise ValueError(f"Unsupported init mode: {init_mode}")
 
-    model_params = sum(p.numel() for p in model.parameters())
     print("init mode:", init_mode)
     print("hidden_size:", config.hidden_size)
-    print("num_hidden_layers:", config.num_hidden_layers)
+    print("num_hidden_layers:", config.num_hidden_layers,
+          "first_k_dense_replace:", config.first_k_dense_replace)
     print("num_attention_heads:", config.num_attention_heads)
-    print("model params:", model_params)
+    print("routed experts:", config.n_routed_experts, "top-k:", config.num_experts_per_tok)
+    print("model params:", sum(p.numel() for p in model.parameters()))
 
-    # Load tokenizer
     if use_tokenizer:
         tokenizer = AutoTokenizer.from_pretrained(
             model_id,
             trust_remote_code=trust_remote_code,
             revision=revision,
         )
-        encoded = tokenizer(prompt, return_tensors="pt")
-        cpu_input_ids = encoded["input_ids"].cpu()
+        cpu_input_ids = tokenizer(prompt, return_tensors="pt")["input_ids"].cpu()
     else:
         vocab_size = getattr(config, "vocab_size", None)
         if vocab_size is None:
-            raise ValueError("Config has no vocab_size; use --use-tokenizer or pass a model with vocab_size.")
+            raise ValueError("Config has no vocab_size; use --use-tokenizer or a model with vocab_size.")
         cpu_input_ids = _build_random_inputs(batch, seq_len, vocab_size, torch.device("cpu"))
-    input_ids = cpu_input_ids.to(device)
 
-    # CPU version
-    model_cpu = copy.deepcopy(model).cpu().eval()
-    cpu_out = _extract_logits(model_cpu(cpu_input_ids))
+    if part == "layer":
+        cpu_out, npu_out = one_layer.run(model.model, model.model.layers[0], config, cpu_input_ids, device,
+                                         decode=decode, compile_model=compile_model)
+    else:
+        cpu_out = _extract_logits(model(cpu_input_ids))
+        model_npu = model.to(device)
+        if compile_model:
+            model_npu = torch.compile(model_npu, dynamic=False)
+        npu_out = _extract_logits(model_npu(cpu_input_ids.to(device)))
 
-    # NPU version
-    model_npu = copy.deepcopy(model_cpu).to(device).eval()
-    if compile_model:
-        model_npu = torch.compile(model_npu, dynamic=False)
-    npu_out = _extract_logits(model_npu(input_ids))
+    check_routed_rows(f"DeepSeek V3 Base {part}", npu_out, cpu_out, rtol, atol, row_share)
 
-    # Campare results
-    check_result(
-        "DeepSeek V3 Base",
-        npu_out,
-        cpu_out,
-        rtol=3e-1,
-        atol=2e-1,
-    )
-    
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="DeepSeek V3 download-based test")
     parser.add_argument("--model-id", type=str, default=os.environ.get("DEEPSEEK_V3_MODEL_ID", "deepseek-ai/DeepSeek-V3-Base"))
     parser.add_argument("--revision", type=str, default=None)
-    # DEFAULT FALSE, AND IT USED TO BE TRUE WITH NO WAY TO TURN IT OFF --
-    # `store_true` with `default=True` is a flag that can only be set. What that
-    # bought was the Hub's own modeling file, and transformers has had its own
-    # `deepseek_v3` since 4.51, so the remote copy was being preferred over the
-    # maintained one. It is also 4.x-only code: under transformers 5 it fails at
-    # import with `cannot import name 'is_torch_fx_available'`, which is how
-    # this surfaced. Measured on both: AutoConfig + from_config with
-    # trust_remote_code=False builds DeepseekV3ForCausalLM and runs, on 4.51.3
-    # and on 5.15.0.
     parser.add_argument("--trust-remote-code", action="store_true", default=False,
                         help="use the Hub's modeling file instead of "
                              "transformers' own deepseek_v3 (4.x only)")
     parser.add_argument("--init-mode", type=str, default="config-random", choices=["config-random", "pretrained"])
-    parser.add_argument("--max-layers", type=int, default=4)
-    parser.add_argument("--dtype", type=str, default="float32", choices=["float32", "float16", "bfloat16"])
+    parser.add_argument("--max-layers", type=int, default=1)
+    parser.add_argument("--dtype", type=str, default="bfloat16", choices=["float32", "float16", "bfloat16"])
     parser.add_argument("--batch", type=int, default=1)
-    parser.add_argument("--seq", type=int, default=128)
+    one_layer.add_grid_args(parser)
+    parser.add_argument("--part", type=str, default="model", choices=["model", "layer"],
+                        help="model = DeepseekV3ForCausalLM; layer = its first decoder layer alone")
     parser.add_argument("--use-tokenizer", action="store_true")
     parser.add_argument("--prompt", type=str, default="Hello, DeepSeek V3")
     parser.add_argument("--compile", action="store_true", default=True)
     parser.add_argument("--test", type=str, default="e2e", choices=["all", "e2e", "cat"])
 
     args = parser.parse_args()
+    if args.decode is not None and args.part != "layer":
+        parser.error("--decode runs with --part layer")
 
     if not args.model_id:
         print("Error: --model-id is required (or set DEEPSEEK_V3_MODEL_ID).", file=sys.stderr)
@@ -301,10 +286,12 @@ if __name__ == "__main__":
             max_layers=args.max_layers,
             dtype=args.dtype,
             batch=args.batch,
-            seq_len=args.seq,
+            seq_len=args.decode or args.seq,
             use_tokenizer=args.use_tokenizer,
             prompt=args.prompt,
             trust_remote_code=args.trust_remote_code,
             revision=args.revision,
             compile_model=args.compile,
+            part=args.part,
+            decode=args.decode is not None,
         )

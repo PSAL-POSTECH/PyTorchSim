@@ -115,6 +115,9 @@ _MODELS = {
 _LAYERS = 1
 _GRID = (1, 4, 4)
 
+# (rtol, atol) per dtype; the bf16 atol is 3x the worst bf16 eager-vs-Inductor CPU diff at S = 128.
+_TOL = {"bfloat16": (5e-2, 0.2), "float32": (1e-2, 1e-2)}
+
 _IMAGE_TOKEN, _VIDEO_TOKEN, _VISION_START, _VISION_END = 151655, 151656, 151652, 151653
 
 
@@ -275,8 +278,12 @@ def _logits(out):
 
 
 @torch.no_grad()
-def run_qwen_vl(device, version="2", seq=128, dtype="float32",
-                compile_model=True, rtol=1e-2, atol=1e-2):
+def run_qwen_vl(device, version="2", seq=128, dtype="bfloat16",
+                compile_model=True, rtol=None, atol=None):
+    """One forward of the version on `_GRID`'s image and `seq` tokens, CPU against `device`, at `_TOL`
+    unless given; weights and inputs in `dtype`."""
+    tol = _TOL.get(dtype, _TOL["float32"])
+    rtol, atol = tol[0] if rtol is None else rtol, tol[1] if atol is None else atol
     cfg, model_cpu = _build(version, dtype)
     kwargs = _inputs(version, seq, dtype)
 
@@ -321,11 +328,11 @@ if __name__ == "__main__":
     # its own MLP width), so running one and claiming the other would be a vacuous pass.
     parser.add_argument("--version", type=str, default=None, choices=sorted(_MODELS))
     parser.add_argument("--seq", type=int, default=128)
-    parser.add_argument("--dtype", type=str, default="float32",
+    parser.add_argument("--dtype", type=str, default="bfloat16",
                         choices=["float32", "float16", "bfloat16"])
     parser.add_argument("--no-compile", dest="compile", action="store_false", default=True)
-    parser.add_argument("--rtol", type=float, default=1e-2)
-    parser.add_argument("--atol", type=float, default=1e-2)
+    parser.add_argument("--rtol", type=float, default=None, help="default: _TOL of --dtype")
+    parser.add_argument("--atol", type=float, default=None, help="default: _TOL of --dtype")
     args = parser.parse_args()
 
     sys.path.append(os.environ.get("PYTORCHSIM_ROOT_PATH", "/workspace/PyTorchSim"))

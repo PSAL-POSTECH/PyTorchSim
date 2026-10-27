@@ -26,14 +26,15 @@ The vision tower adds tiles and a local/global layer split on top of a ViT.
 Both towers are meta-llama/Llama-3.2-11B-Vision's published configs with only
 the layer counts cut: vision 2 local + 1 global layers (of 32 + 8), text 4
 layers (of 40) with 2 cross-attention layers. The input is one image of 4 tiles
-at 560 px (1601 patches a tile) and --seq text tokens. The vision tower keeps
+at 560 px (1601 patches a tile) and --seq text tokens (32, the TPU v6e table's),
+in bfloat16 by default (--dtype float32 for the old run). The vision tower keeps
 the real five intermediate taps, each clamped to the kept depth, so its output
 stays vision_output_dim = 7680 wide. The text tower's cross layers sit at 1 and
 3, where the real model has every fifth layer from 3.
 
     source /workspace/torchsim-env.sh
     python tests/models/Llama/test_mllama.py --part vision
-    python tests/models/Llama/test_mllama.py --part text --seq 128
+    python tests/models/Llama/test_mllama.py --part text --seq 32
 
 WHAT THE TEXT TOWER NEEDED, and it was this suite's kind of defect rather than
 anything about Mllama. The cross-attention layer leaves a unit middle axis --
@@ -102,6 +103,10 @@ TEXT = dict(
 )
 
 
+# (rtol, atol) per dtype; the bf16 atol is 3x the worst bf16 eager-vs-Inductor CPU diff at S = 128.
+_TOL = {"bfloat16": (5e-2, 0.3), "float32": (1e-2, 1e-2)}
+
+
 def _dtype_from_str(name):
     return {
         "float32": torch.float32,
@@ -121,8 +126,11 @@ def _text_config():
 
 
 @torch.no_grad()
-def run_vision(device, batch=1, dtype="float32", compile_model=True,
-               rtol=1e-2, atol=1e-2):
+def run_vision(device, batch=1, dtype="bfloat16", compile_model=True,
+               rtol=None, atol=None):
+    """The vision tower on one image of 4 tiles, CPU against `device`, at `dtype`'s `_TOL` unless given."""
+    tol = _TOL.get(dtype, _TOL["float32"])
+    rtol, atol = tol[0] if rtol is None else rtol, tol[1] if atol is None else atol
     from transformers.models.mllama.modeling_mllama import MllamaVisionModel
 
     torch_dtype = _dtype_from_str(dtype)
@@ -162,9 +170,11 @@ def run_vision(device, batch=1, dtype="float32", compile_model=True,
 
 
 @torch.no_grad()
-def run_text(device, batch=1, seq_len=128, dtype="float32", compile_model=True,
-             rtol=1e-2, atol=1e-2):
+def run_text(device, batch=1, seq_len=32, dtype="bfloat16", compile_model=True,
+             rtol=None, atol=None):
     """Run the cross-attention text tower; random states stand in for the vision tower's output."""
+    tol = _TOL.get(dtype, _TOL["float32"])
+    rtol, atol = tol[0] if rtol is None else rtol, tol[1] if atol is None else atol
     from transformers.models.mllama.modeling_mllama import (
         MllamaTextModel, MllamaCrossAttentionDecoderLayer, _prepare_cross_attention_mask,
     )
@@ -225,13 +235,16 @@ if __name__ == "__main__":
                         choices=["vision", "text", "all"],
                         help="vision = the tower; text = the cross-attention decoder")
     parser.add_argument("--batch", type=int, default=1)
-    parser.add_argument("--seq", type=int, default=128)
-    parser.add_argument("--dtype", type=str, default="float32",
+    parser.add_argument("--seq", type=int, default=32)
+    parser.add_argument("--dtype", type=str, default="bfloat16",
                         choices=["float32", "float16", "bfloat16"])
     parser.add_argument("--no-compile", dest="compile", action="store_false", default=True)
-    parser.add_argument("--rtol", type=float, default=1e-2)
-    parser.add_argument("--atol", type=float, default=1e-2)
+    parser.add_argument("--rtol", type=float, default=None, help="default: _TOL of --dtype")
+    parser.add_argument("--atol", type=float, default=None, help="default: _TOL of --dtype")
     args = parser.parse_args()
+    tol = _TOL.get(args.dtype, _TOL["float32"])
+    args.rtol = tol[0] if args.rtol is None else args.rtol
+    args.atol = tol[1] if args.atol is None else args.atol
 
     sys.path.append(os.environ.get("PYTORCHSIM_ROOT_PATH", "/workspace/PyTorchSim"))
     device = torch.device("npu:0")

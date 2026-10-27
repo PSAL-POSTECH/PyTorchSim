@@ -1,7 +1,9 @@
-"""Mixtral-8x7B on the Triton route: one decoder layer of the published config, random weights.
+"""Mixtral-8x7B on the Triton route: one decoder layer of the published config, random weights, bfloat16 by
+default (``--dtype float32`` for the old run).
 
 ``--part decode`` (default) runs ``MixtralForCausalLM`` on a ``--seq`` token prompt plus 3 decode steps;
-the other parts run one piece of the block. Each is judged against the same module on CPU.
+``--part layer`` runs its decoder layer alone (tests/one_layer.py) on ``--seq S`` or one ``--decode S`` step
+after a KV cache; the other parts run one piece of the block. Each is judged against the same module on CPU.
 """
 
 import argparse
@@ -20,7 +22,8 @@ from transformers.models.mixtral.modeling_mixtral import (
 )
 
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from result_check import check_result
+from result_check import check_result, check_routed_rows
+import one_layer
 
 # mistralai/Mixtral-8x7B-v0.1 config.json, published values.
 _MIXTRAL_8X7B = dict(
@@ -46,6 +49,13 @@ _MIXTRAL_8X7B = dict(
 )
 
 
+# (rtol, atol) per dtype; the bf16 atol is 3x the worst bf16 eager-vs-Inductor CPU diff at S = 128.
+_TOL = {"bfloat16": (5e-2, 0.4), "float32": (1e-4, 1e-4)}
+_DTYPES = {"float32": torch.float32, "bfloat16": torch.bfloat16}
+# Share of token rows a bf16 router near-tie may send to other experts (check_routed_rows); fp32 none.
+_ROUTED = {"bfloat16": 0.05, "float32": 0.0}
+
+
 def build_config(layers=1):
     """The published Mixtral-8x7B config with only ``num_hidden_layers`` cut to ``layers``."""
     return MixtralConfig(**{**_MIXTRAL_8X7B, "num_hidden_layers": layers}, attn_implementation="sdpa")
@@ -56,13 +66,27 @@ def _check_seq(config, seq):
         raise ValueError(f"seq {seq} exceeds max_position_embeddings {config.max_position_embeddings}")
 
 
-def _causal_mask(seq):
+def _causal_mask(seq, dtype):
     """Additive (1, 1, seq, seq) causal mask for a module called without the model's mask builder."""
-    return torch.full((seq, seq), float("-inf")).triu(1)[None, None]
+    return torch.full((seq, seq), float("-inf"), dtype=dtype).triu(1)[None, None]
 
 
 @torch.no_grad()
-def test_decode(device, prompt_length, nr_tokens):
+def test_layer(device, seq, dtype="bfloat16", decode=False):
+    """The decoder layer alone (tests/one_layer.py): a prefill of ``seq`` tokens, or with ``decode`` one step
+    at position seq - 1 after a KV cache of the tokens before it."""
+    config = build_config()
+    _check_seq(config, seq)
+    torch.manual_seed(0)
+    model = MixtralForCausalLM(config).to(_DTYPES[dtype]).eval()
+    ids = torch.randint(0, config.vocab_size, (1, seq), generator=torch.Generator().manual_seed(0))
+    cpu_res, res = one_layer.run(model.model, model.model.layers[0], config, ids, device, decode=decode)
+    name = f"Mixtral layer ({'decode' if decode else 'prefill'} {seq})"
+    check_routed_rows(name, res, cpu_res, *_TOL[dtype], _ROUTED[dtype])
+
+
+@torch.no_grad()
+def test_decode(device, prompt_length, nr_tokens, dtype="bfloat16"):
     """Prompt of ``prompt_length`` tokens, then ``nr_tokens - 1`` decode steps on a DynamicCache per side.
 
     Each step feeds both sides the CPU logits' argmax and compares the logits.
@@ -70,7 +94,7 @@ def test_decode(device, prompt_length, nr_tokens):
     config = build_config()
     _check_seq(config, prompt_length + nr_tokens)
     torch.manual_seed(0)
-    cpu_model = MixtralForCausalLM(config).eval()
+    cpu_model = MixtralForCausalLM(config).to(_DTYPES[dtype]).eval()
     model = copy.deepcopy(cpu_model).to(device=device)
     opt_fn = torch.compile(dynamic=False)(model)
 
@@ -83,47 +107,48 @@ def test_decode(device, prompt_length, nr_tokens):
         cpu_res = cpu_model(input_ids=cpu_ids, past_key_values=cpu_cache, use_cache=True).logits
         cpu_ids = cpu_res[:, -1:].argmax(dim=-1)
         print(cpu_ids)
-        check_result("Mistral", res, cpu_res)
+        check_routed_rows("Mistral", res, cpu_res, *_TOL[dtype], _ROUTED[dtype])
 
 
 @torch.no_grad()
-def test_attention(device, seq):
+def test_attention(device, seq, dtype="bfloat16"):
     """``MixtralAttention`` with the real rotary embedding and a causal mask."""
     config = build_config()
     _check_seq(config, seq)
-    model = MixtralAttention(config, layer_idx=0).eval()
+    model = MixtralAttention(config, layer_idx=0).to(_DTYPES[dtype]).eval()
     rope = MixtralRotaryEmbedding(config)
 
-    prompt = torch.randn([1, seq, config.hidden_size], dtype=torch.float32)
+    prompt = torch.randn([1, seq, config.hidden_size], dtype=_DTYPES[dtype])
     position_ids = torch.arange(seq)[None]
     cos, sin = rope(prompt, position_ids)
-    mask = _causal_mask(seq)
+    mask = _causal_mask(seq, _DTYPES[dtype])
 
     cpu_model = copy.deepcopy(model)
     opt_fn = torch.compile(dynamic=False)(model.to(device=device))
     res, _ = opt_fn(prompt.to(device), (cos.to(device), sin.to(device)), mask.to(device))
     cpu_res, _ = cpu_model(prompt, (cos, sin), mask)
-    check_result("Attention", res, cpu_res)
+    check_result("Attention", res, cpu_res, *_TOL[dtype])
 
 
 @torch.no_grad()
-def test_ffn(device, seq):
+def test_ffn(device, seq, dtype="bfloat16"):
     """The sparse MoE FFN: router, top-2 of 8 experts, weighted combine."""
     config = build_config()
     torch.manual_seed(0)
     model = MixtralSparseMoeBlock(config).eval()
     for p in model.parameters():
         torch.nn.init.normal_(p, std=0.02)
+    model.to(_DTYPES[dtype])
 
-    prompt = torch.randn([1, seq, config.hidden_size], dtype=torch.float32)
+    prompt = torch.randn([1, seq, config.hidden_size], dtype=_DTYPES[dtype])
     cpu_model = copy.deepcopy(model)
     opt_fn = torch.compile(dynamic=False)(model.to(device=device))
     res = opt_fn(prompt.to(device))
     cpu_res = cpu_model(prompt)
-    check_result("FFN", res, cpu_res)
+    check_routed_rows("FFN", res, cpu_res, *_TOL[dtype], _ROUTED[dtype])
 
 
-def test_concat(device, seq):
+def test_concat(device, seq, dtype="bfloat16"):
     """The KV cache append: (1, 8, seq, 128) with one more position along dim 2."""
     config = build_config()
     size1 = (1, config.num_key_value_heads, seq, config.head_dim)
@@ -132,8 +157,8 @@ def test_concat(device, seq):
     def concat_tensors(a, b):
         return torch.cat((a, b), dim=2)
 
-    x = torch.randn(size1)
-    y = torch.randn(size2)
+    x = torch.randn(size1, dtype=_DTYPES[dtype])
+    y = torch.randn(size2, dtype=_DTYPES[dtype])
     opt_fn = torch.compile(dynamic=False)(concat_tensors)
     res = opt_fn(x.to(device=device), y.to(device=device))
     out = concat_tensors(x, y)
@@ -141,28 +166,33 @@ def test_concat(device, seq):
 
 
 @torch.no_grad()
-def test_rmsnorm(device, seq):
+def test_rmsnorm(device, seq, dtype="bfloat16"):
     """``MixtralRMSNorm`` over the 4096 hidden at the published eps."""
     config = build_config()
-    rmsnorm = MixtralRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+    rmsnorm = MixtralRMSNorm(config.hidden_size, eps=config.rms_norm_eps).to(_DTYPES[dtype])
 
-    x = torch.randn([1, seq, config.hidden_size], dtype=torch.float32)
+    x = torch.randn([1, seq, config.hidden_size], dtype=_DTYPES[dtype])
     cpu_model = copy.deepcopy(rmsnorm)
     opt_fn = torch.compile(dynamic=False)(rmsnorm.to(device=device))
     res = opt_fn(x.to(device))
     cpu_res = cpu_model(x)
-    check_result("RMSNorm", res, cpu_res)
+    check_result("RMSNorm", res, cpu_res, *_TOL[dtype])
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Mixtral-8x7B decoder layer on the Triton route")
     parser.add_argument("--part", default="decode",
-                        choices=["decode", "attention", "ffn", "concat", "rmsnorm"])
-    parser.add_argument("--seq", type=int, default=128, help="prompt length (decode) or tokens (the rest)")
+                        choices=["decode", "layer", "attention", "ffn", "concat", "rmsnorm"])
+    one_layer.add_grid_args(parser)
+    parser.add_argument("--dtype", default="bfloat16", choices=sorted(_DTYPES))
     args = parser.parse_args()
+    if args.decode is not None and args.part != "layer":
+        parser.error("--decode runs with --part layer; --part decode takes --seq as its prompt length")
 
     device = torch.device("npu:0")
     if args.part == "decode":
-        test_decode(device, args.seq, 3)
+        test_decode(device, args.seq, 3, args.dtype)
+    elif args.part == "layer":
+        test_layer(device, args.decode or args.seq, args.dtype, decode=args.decode is not None)
     else:
-        globals()[f"test_{args.part}"](device, args.seq)
+        globals()[f"test_{args.part}"](device, args.seq, args.dtype)

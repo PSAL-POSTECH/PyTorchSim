@@ -37,10 +37,14 @@ _CONVNEXTV2_TINY = dict(
     patch_size=4,
 )
 
+# (rtol, atol) per dtype; the bf16 atol is 3x the worst bf16 eager-vs-Inductor CPU diff at S = 128.
+_TOL = {"bfloat16": (5e-2, 0.1), "float32": (1e-4, 1e-4)}
+_DTYPES = {"float32": torch.float32, "bfloat16": torch.bfloat16}
 
-def test_convnextv2(device, batch=2, depths=(1, 1, 1, 1)):
-    """ConvNeXt V2 tiny at its published per-stage widths, with batch > 1. Two things
-    used to break here (GitHub issue #255): the channels-first LayerNorm reduces the
+
+def test_convnextv2(device, batch=2, depths=(1, 1, 1, 1), dtype="bfloat16"):
+    """ConvNeXt V2 tiny at its published per-stage widths, with batch > 1, in `dtype` at its
+    `_TOL`. Two things used to break here (GitHub issue #255): the channels-first LayerNorm reduces the
     contiguous axis, which the GEMM template's 2-D reduction-epilogue frame cannot
     express, and the depthwise 7x7 conv lowers to gather kernels whose index-expression
     scratch buffer exhausted the SPAD budget."""
@@ -50,15 +54,16 @@ def test_convnextv2(device, batch=2, depths=(1, 1, 1, 1)):
     with torch.no_grad():
         model = ConvNextV2Model(cfg).eval()
         model.apply(_init_weights)
+        model.to(_DTYPES[dtype])
 
-        x = torch.randn(batch, 3, image_size, image_size)
+        x = torch.randn(batch, 3, image_size, image_size).to(_DTYPES[dtype])
         out_cpu = model(pixel_values=x.cpu()).last_hidden_state
 
         model.to(device)
         opt_model = torch.compile(dynamic=False)(model)
         out_device = opt_model(pixel_values=x.to(device)).last_hidden_state
 
-    check_result(f"ConvNeXt V2 (batch={batch})", out_device, out_cpu)
+    check_result(f"ConvNeXt V2 (batch={batch})", out_device, out_cpu, *_TOL[dtype])
     print("Max diff >", torch.max(torch.abs(out_device.cpu() - out_cpu)))
     print("ConvNeXt V2 Simulation Done")
 
@@ -66,8 +71,10 @@ def test_convnextv2(device, batch=2, depths=(1, 1, 1, 1)):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run ConvNeXt V2 test")
     parser.add_argument("--batch", type=int, default=2)
+    parser.add_argument("--dtype", type=str, default="bfloat16", choices=sorted(_DTYPES))
     args = parser.parse_args()
     test_convnextv2(
         torch.device("npu:0"),
         batch=args.batch,
+        dtype=args.dtype,
     )

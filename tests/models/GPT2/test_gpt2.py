@@ -13,7 +13,7 @@ prefill of ``--seq`` tokens, batch 1, at most n_positions 1024. ``--part layer``
 runs the first block alone (tests/one_layer.py), on ``--seq S`` or on one
 ``--decode S`` step after a KV cache.
 
-Judgement is spike's, against the same model on CPU. Run it with the Triton
+Judgement is spike's, against the same model's float32 copy on the CPU. Run it with the Triton
 route on and timing off (rule 13a):
 
     source .envrc
@@ -29,7 +29,7 @@ import sys
 import torch
 
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from result_check import check_result
+from result_check import check_result, f32_reference
 import one_layer
 
 
@@ -113,7 +113,7 @@ def run_gpt2(
         cpu_out, npu_out = one_layer.run(model_cpu, model_cpu.h[0], config, input_ids, device,
                                          decode=decode, compile_model=compile_model)
     else:
-        cpu_out = _logits(model_cpu(input_ids))
+        cpu_out = _logits(f32_reference(model_cpu)(input_ids))
 
         model_npu = copy.deepcopy(model_cpu).to(device).eval()
         if compile_model:

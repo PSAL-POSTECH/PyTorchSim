@@ -269,7 +269,7 @@ import warnings
 import torch
 
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from result_check import check_result
+from result_check import check_result, f32_reference
 
 
 # One preset per parser version directory under ultralytics/cfg/models.  The
@@ -496,7 +496,7 @@ def run_yolo(device, version="v8", batch=1, imgsz=None, compile_model=True, rtol
     g = torch.Generator().manual_seed(0)
     x = torch.randn(batch, 3, imgsz, imgsz, generator=g).to(_DTYPES[dtype])
 
-    cpu_out = _tensors(model_cpu(x))
+    cpu_out = _tensors(f32_reference(model_cpu)(x.float()))
 
     model_npu = copy.deepcopy(model_cpu).to(device).eval()
     if compile_model:

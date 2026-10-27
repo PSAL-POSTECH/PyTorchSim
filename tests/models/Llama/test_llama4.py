@@ -103,7 +103,7 @@ import sys
 import torch
 
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from result_check import check_result, check_routed_rows
+from result_check import check_result, check_routed_rows, f32_reference
 import one_layer
 
 
@@ -193,7 +193,7 @@ def run_llama4(device, batch=1, seq_len=128, dtype="bfloat16",
         cpu_out, npu_out = one_layer.run(model_cpu, model_cpu.layers[0], cfg, input_ids, device,
                                          decode=decode, compile_model=compile_model)
     else:
-        cpu_out = model_cpu(input_ids=input_ids).last_hidden_state
+        cpu_out = f32_reference(model_cpu)(input_ids=input_ids).last_hidden_state
 
         model_npu = copy.deepcopy(model_cpu).to(device).eval()
         if compile_model:
@@ -274,7 +274,7 @@ def run_llama4_vision(device, batch=1, dtype="bfloat16",
     px = torch.randn(batch, cfg.num_channels, cfg.image_size, cfg.image_size,
                      generator=g).to(dtype=torch_dtype)
 
-    cpu_out = model_cpu(px).last_hidden_state
+    cpu_out = f32_reference(model_cpu)(px.float()).last_hidden_state
 
     model_npu = copy.deepcopy(model_cpu).to(device).eval()
     if compile_model:

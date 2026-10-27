@@ -3,7 +3,8 @@ default (``--dtype float32`` for the old run).
 
 ``--part decode`` (default) runs ``MixtralForCausalLM`` on a ``--seq`` token prompt plus 3 decode steps;
 ``--part layer`` runs its decoder layer alone (tests/one_layer.py) on ``--seq S`` or one ``--decode S`` step
-after a KV cache; the other parts run one piece of the block. Each is judged against the same module on CPU.
+after a KV cache; the other parts run one piece of the block. Each is judged against the same module's
+float32 copy on the CPU (result_check.f32_reference).
 """
 
 import argparse
@@ -22,7 +23,7 @@ from transformers.models.mixtral.modeling_mixtral import (
 )
 
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from result_check import check_result, check_routed_rows
+from result_check import check_result, check_routed_rows, f32, f32_reference
 import one_layer
 
 # mistralai/Mixtral-8x7B-v0.1 config.json, published values.
@@ -87,15 +88,14 @@ def test_layer(device, seq, dtype="bfloat16", decode=False):
 
 @torch.no_grad()
 def test_decode(device, prompt_length, nr_tokens, dtype="bfloat16"):
-    """Prompt of ``prompt_length`` tokens, then ``nr_tokens - 1`` decode steps on a DynamicCache per side.
-
-    Each step feeds both sides the CPU logits' argmax and compares the logits.
-    """
+    """Prompt of ``prompt_length`` tokens, then ``nr_tokens - 1`` decode steps on a DynamicCache per side,
+    the CPU side the float32 reference filling its own; each step feeds both the reference logits' argmax."""
     config = build_config()
     _check_seq(config, prompt_length + nr_tokens)
     torch.manual_seed(0)
     cpu_model = MixtralForCausalLM(config).to(_DTYPES[dtype]).eval()
     model = copy.deepcopy(cpu_model).to(device=device)
+    cpu_model = f32_reference(cpu_model)
     opt_fn = torch.compile(dynamic=False)(model)
 
     g = torch.Generator().manual_seed(0)
@@ -123,10 +123,10 @@ def test_attention(device, seq, dtype="bfloat16"):
     cos, sin = rope(prompt, position_ids)
     mask = _causal_mask(seq, _DTYPES[dtype])
 
-    cpu_model = copy.deepcopy(model)
+    cpu_model = f32_reference(model)
     opt_fn = torch.compile(dynamic=False)(model.to(device=device))
     res, _ = opt_fn(prompt.to(device), (cos.to(device), sin.to(device)), mask.to(device))
-    cpu_res, _ = cpu_model(prompt, (cos, sin), mask)
+    cpu_res, _ = cpu_model(*f32((prompt, (cos, sin), mask)))
     check_result("Attention", res, cpu_res, *_TOL[dtype])
 
 
@@ -141,10 +141,10 @@ def test_ffn(device, seq, dtype="bfloat16"):
     model.to(_DTYPES[dtype])
 
     prompt = torch.randn([1, seq, config.hidden_size], dtype=_DTYPES[dtype])
-    cpu_model = copy.deepcopy(model)
+    cpu_model = f32_reference(model)
     opt_fn = torch.compile(dynamic=False)(model.to(device=device))
     res = opt_fn(prompt.to(device))
-    cpu_res = cpu_model(prompt)
+    cpu_res = cpu_model(prompt.float())
     check_routed_rows("FFN", res, cpu_res, *_TOL[dtype], _ROUTED[dtype])
 
 
@@ -172,10 +172,10 @@ def test_rmsnorm(device, seq, dtype="bfloat16"):
     rmsnorm = MixtralRMSNorm(config.hidden_size, eps=config.rms_norm_eps).to(_DTYPES[dtype])
 
     x = torch.randn([1, seq, config.hidden_size], dtype=_DTYPES[dtype])
-    cpu_model = copy.deepcopy(rmsnorm)
+    cpu_model = f32_reference(rmsnorm)
     opt_fn = torch.compile(dynamic=False)(rmsnorm.to(device=device))
     res = opt_fn(x.to(device))
-    cpu_res = cpu_model(x)
+    cpu_res = cpu_model(x.float())
     check_result("RMSNorm", res, cpu_res, *_TOL[dtype])
 
 

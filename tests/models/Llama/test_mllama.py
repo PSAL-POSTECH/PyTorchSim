@@ -65,7 +65,7 @@ import sys
 import torch
 
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from result_check import check_result
+from result_check import check_result, f32_reference
 
 
 # meta-llama/Llama-3.2-11B-Vision vision_config; layers cut 32 + 8 -> 2 + 1, taps clamped to the kept depth.
@@ -154,9 +154,9 @@ def run_vision(device, batch=1, dtype="bfloat16", compile_model=True,
     aspect_ratio_ids = torch.tensor([[1]] * batch, dtype=torch.long)
     aspect_ratio_mask = torch.ones(batch, 1, tiles, dtype=torch.long)
 
-    cpu_out = model_cpu(pixel_values=pixel_values,
-                        aspect_ratio_ids=aspect_ratio_ids,
-                        aspect_ratio_mask=aspect_ratio_mask).last_hidden_state
+    cpu_out = f32_reference(model_cpu)(pixel_values=pixel_values.float(),
+                                       aspect_ratio_ids=aspect_ratio_ids,
+                                       aspect_ratio_mask=aspect_ratio_mask).last_hidden_state
 
     model_npu = copy.deepcopy(model_cpu).to(device).eval()
     if compile_model:
@@ -211,18 +211,18 @@ def run_text(device, batch=1, seq_len=32, dtype="bfloat16", compile_model=True,
     print(f"cross_attention_mask={tuple(cross_mask.shape)} "
           f"full_text_row_masked_out_mask={tuple(full_row_mask.shape)}")
 
-    def call(m, dev):
+    def call(m, dev, dtype):
         return m(input_ids=input_ids.to(dev),
-                 cross_attention_states=cross_states.to(dev),
-                 cross_attention_mask=cross_mask.to(dev),
-                 full_text_row_masked_out_mask=full_row_mask.to(dev)).last_hidden_state
+                 cross_attention_states=cross_states.to(dev, dtype),
+                 cross_attention_mask=cross_mask.to(dev, dtype),
+                 full_text_row_masked_out_mask=full_row_mask.to(dev, dtype)).last_hidden_state
 
-    cpu_out = call(model_cpu, "cpu")
+    cpu_out = call(f32_reference(model_cpu), "cpu", torch.float32)
 
     model_npu = copy.deepcopy(model_cpu).to(device).eval()
     if compile_model:
         model_npu = torch.compile(model_npu, dynamic=False)
-    npu_out = call(model_npu, device)
+    npu_out = call(model_npu, device, torch_dtype)
 
     check_result("Mllama text tower (cross-attention)", npu_out, cpu_out,
                 rtol=rtol, atol=atol)

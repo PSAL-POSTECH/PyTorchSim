@@ -14,7 +14,7 @@ import os
 import sys
 import shutil
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from result_check import check_result
+from result_check import check_result, f32_reference
 
 _IMGSZ = 640
 
@@ -49,7 +49,7 @@ def run_yolo(batch, dtype="bfloat16"):
     # CPU version
     model_cpu = copy.deepcopy(model).cpu().eval()
     x_cpu = copy.deepcopy(x).cpu()
-    y_cpu = model_cpu(x_cpu)
+    y_cpu = f32_reference(model_cpu)(x_cpu.float())
 
     # NPU version
     model_npu = model_cpu.to(device).eval()

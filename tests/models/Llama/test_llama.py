@@ -7,6 +7,7 @@ from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.models.llama.modeling_llama import LlamaForCausalLM, LlamaDecoderLayer, LlamaRMSNorm, LlamaRotaryEmbedding, LlamaModel
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
 from result_check import check_result
+import one_layer
 
 # meta-llama/Llama-2-7b-hf, as published; only num_hidden_layers is cut.
 _LLAMA2_7B = dict(
@@ -28,6 +29,9 @@ _LLAMA2_7B = dict(
     eos_token_id=2,
     initializer_range=0.02,
 )
+
+# (rtol, atol) per dtype; the bf16 atol is 3x the worst bf16 eager-vs-Inductor CPU diff at S = 128.
+_TOL = {"bfloat16": (5e-2, 0.4), "float32": (1e-3, 1e-3)}
 
 
 def llama2_config(seq_len, dtype="float32", layers=1, **overrides):
@@ -287,37 +291,51 @@ def run_llama_model_test(
     diff = (last_hidden_state_dev.detach().cpu() - last_hidden_state_cpu.detach().cpu()).abs().max().item()
     print(f"Max diff > {diff}")
 
+@torch.no_grad()
+def run_one_layer_test(device, batch=1, seq_len=128, dtype="bfloat16", rtol=None, atol=None, decode=False):
+    """LlamaModel's first decoder layer alone (tests/one_layer.py): a prefill of `seq_len` tokens, or with
+    `decode` one step at position seq_len - 1 after a KV cache of the tokens before it."""
+    print("\n[Running Llama-2-7B one-layer Test]")
+    tol = _TOL.get(dtype, _TOL["float32"])
+    rtol, atol = tol[0] if rtol is None else rtol, tol[1] if atol is None else atol
+    cfg = llama2_config(seq_len, dtype, attn_implementation="sdpa")
+    torch.manual_seed(0)
+    torch_dtype = {"float32": torch.float32, "float16": torch.float16, "bfloat16": torch.bfloat16}[dtype]
+    model = LlamaModel(cfg).to(dtype=torch_dtype).eval()
+    g = torch.Generator().manual_seed(0)
+    input_ids = torch.randint(0, cfg.vocab_size, (batch, seq_len), generator=g, dtype=torch.long)
+    out_cpu, out_dev = one_layer.run(model, model.layers[0], cfg, input_ids, device, decode=decode)
+    check_result(f"Llama-2-7B layer ({'decode' if decode else 'prefill'} {seq_len})", out_dev, out_cpu,
+                 rtol=rtol, atol=atol)
+    print("Max diff >", (out_dev.detach().cpu() - out_cpu.detach().cpu()).abs().max().item())
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Test Custom Llama (random weights, no tokenizer)")
+    parser.add_argument("--part", type=str, default="all", choices=["all", "layer"],
+                        help="all = the decoder layer and LlamaModel tests; "
+                             "layer = LlamaModel's first layer alone")
     parser.add_argument("--batch", type=int, default=1)
-    parser.add_argument("--seq", type=int, default=128)
-    parser.add_argument("--dtype", type=str, default="float32", choices=["float32", "float16", "bfloat16"])
-    parser.add_argument("--rtol", type=float, default=1e-3)
-    parser.add_argument("--atol", type=float, default=1e-3)
+    one_layer.add_grid_args(parser)
+    parser.add_argument("--dtype", type=str, default="bfloat16", choices=["float32", "float16", "bfloat16"])
+    parser.add_argument("--rtol", type=float, default=None, help="default: _TOL of --dtype")
+    parser.add_argument("--atol", type=float, default=None, help="default: _TOL of --dtype")
     parser.add_argument("--max_new_tokens", type=int, default=16)
     args = parser.parse_args()
+    if args.decode is not None and args.part != "layer":
+        parser.error("--decode runs with --part layer")
+    tol = _TOL.get(args.dtype, _TOL["float32"])
+    args.rtol = tol[0] if args.rtol is None else args.rtol
+    args.atol = tol[1] if args.atol is None else args.atol
 
     sys.path.append(os.environ.get("PYTORCHSIM_ROOT_PATH", "/workspace/PyTorchSim"))
     device = torch.device("npu:0")
-    #test_triu(device, size=(32, 128), diagonal=1)
     torch.compiler.is_compiling = lambda: True # FIXME. How to fix this?
-    #run_rmsnorm_test(device)
-    #run_rotary_embedding_test(device)
-    run_decoder_layer_test(
-        device=device,
-        batch=args.batch,
-        seq_len=args.seq,
-        dtype=args.dtype,
-        rtol=args.rtol,
-        atol=args.atol,
-    )
-    run_llama_model_test(device, batch=args.batch, seq_len=args.seq, dtype=args.dtype,
-                         rtol=args.rtol, atol=args.atol)
-    #run_custom_llama_test(
-    #    device=device,
-    #    batch=args.batch,
-    #    seq_len=args.seq,
-    #    dtype=args.dtype,
-    #    rtol=args.rtol,
-    #    atol=args.atol,
-    #)
+    if args.part == "layer":
+        run_one_layer_test(device, batch=args.batch, seq_len=args.decode or args.seq, dtype=args.dtype,
+                           rtol=args.rtol, atol=args.atol, decode=args.decode is not None)
+    else:
+        run_decoder_layer_test(device, batch=args.batch, seq_len=args.seq, dtype=args.dtype,
+                               rtol=args.rtol, atol=args.atol)
+        run_llama_model_test(device, batch=args.batch, seq_len=args.seq, dtype=args.dtype,
+                             rtol=args.rtol, atol=args.atol)

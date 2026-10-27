@@ -1,5 +1,5 @@
 {
-  "kernel_name": "pytorchsim_triton_compiler_fused_mm_cd3jcbco",
+  "kernel_name": "pytorchsim_triton_compiler_fused_mm_au7umwrt",
   "signature": {
     "arg_A": "*bf16",
     "arg_B": "*bf16",
@@ -58,6 +58,9 @@
     1,
     1,
     1
+  ],
+  "graph_prefetch": [
+    "arg_A"
   ],
   "aten_ops": [
     "aten.mm.default"

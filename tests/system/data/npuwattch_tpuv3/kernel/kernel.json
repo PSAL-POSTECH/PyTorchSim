@@ -1,6 +1,6 @@
 {
   "format": 10,
-  "name": "pytorchsim_triton_compiler_fused_mm_cd3jcbco",
+  "name": "pytorchsim_triton_compiler_fused_mm_au7umwrt",
   "spad_bytes_per_lane": 5120,
   "grid": [
     1,
@@ -41,7 +41,7 @@
       "dram_base": 2147483648,
       "dram_size": 17179869184
     },
-    "systolic_array_unit": "TPUV3_MXU",
+    "systolic_array_unit": "TPUV3_MXU.rows",
     "dma_load_latency_cycles": 27,
     "name": "machine",
     "file": "/workspace/PyTorchSim/tests/system/data/npuwattch_tpuv3/machine.yml"
@@ -85,7 +85,7 @@
     ]
   },
   "artifacts": {
-    "elf": "11-pytorchsim_triton_compiler_fused_mm_cd3jcbco.elf",
+    "elf": "11-pytorchsim_triton_compiler_fused_mm_au7umwrt.elf",
     "post_vcix_ir": "09-custom.mlir",
     "llvm_ir": "11-kernel.ll",
     "asm": "11-kernel.s",
@@ -97,6 +97,9 @@
     "tile_types": "tile_types.json",
     "cycle_elf": "cycle_bin"
   },
+  "graph_prefetch": [
+    0
+  ],
   "widths": {
     "dot_lmul": {},
     "lmul": 8,
@@ -104,11 +107,11 @@
   },
   "copy_nodes": [
     {
-      "arg": 1,
+      "arg": 0,
       "bytes": 131072,
       "spad_bytes_per_lane": 1024,
-      "held_buffer": 1,
-      "tog_so": "copy_node_1/tog.so"
+      "held_buffer": 2,
+      "tog_so": "copy_node_0/tog.so"
     }
   ]
 }

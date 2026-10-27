@@ -7,9 +7,10 @@ static const togsim::Buf BUF3 = {.id = 3};
 static const togsim::Buf BUF4 = {.id = 4};
 static const togsim::Buf BUF5 = {.id = 5};
 static const int64_t SPAD = 5120;
-static const togsim::Node NODE0 = {.id = 0, .count = 3};
-static const togsim::Node NODE1 = {.id = 1, .count = 3};
-static const togsim::Node NODE2 = {.id = 2, .count = 3};
+static const togsim::Node NODE0 = {.id = 0, .count = 4};
+static const togsim::Node NODE1 = {.id = 1, .count = 4};
+static const togsim::Node NODE2 = {.id = 2, .count = 4};
+static const togsim::Node NODE3 = {.id = 3, .count = 4};
 class WorkItemArgs {
  public:
   int64_t pid_z;
@@ -19,26 +20,30 @@ class WorkItemArgs {
 static void tog_work_item(togsim::Item& v1, WorkItemArgs v2) {
   size_t v3 = 128;
   size_t v4 = 0;
-  WorkItemArgs v5;
-  v5 = v2;
-  togsim::compute(v1, {.node = NODE0, .variant = 1, .reads = {BUF0}, .writes = {BUF0}});
-  togsim::Dims v6 = togsim::Dims(256, 256);
-  togsim::Dims v7 = togsim::Dims(1, 256);
-  togsim::Desc v8 = togsim::Desc(0, togsim::bf16, v4, v6, v7);
-  togsim::Load v9 = togsim::Load(v8, BUF2, {}, {BUF5});
-  togsim::load(v1, v9);
-  togsim::compute(v1, {.node = NODE1, .variant = 1, .reads = {BUF0, BUF1, BUF2, BUF3, BUF4}, .writes = {BUF0, BUF3, BUF4, BUF5}});
-  togsim::Dims v10 = togsim::Dims(128, 256);
-  togsim::Dims v11 = togsim::Dims(1, 256);
-  togsim::Desc v12 = togsim::Desc(2, togsim::bf16, v4, v10, v11);
-  togsim::Store v13 = togsim::Store(BUF4, v12);
-  togsim::store(v1, v13);
-  togsim::compute(v1, {.node = NODE2, .variant = 1, .reads = {BUF0, BUF1, BUF2, BUF3, BUF4}, .writes = {BUF0, BUF3, BUF4, BUF5}});
-  togsim::Dims v14 = togsim::Dims(128, 256);
-  togsim::Dims v15 = togsim::Dims(1, 256);
-  togsim::Desc v16 = togsim::Desc(2, togsim::bf16, v3, v14, v15);
-  togsim::Store v17 = togsim::Store(BUF4, v16);
-  togsim::store(v1, v17);
+  togsim::Semaphore v5 = togsim::semaphore(v1);
+  WorkItemArgs v6;
+  v6 = v2;
+  togsim::Dims v7 = togsim::Dims(256, 256);
+  togsim::Dims v8 = togsim::Dims(1, 256);
+  togsim::Desc v9 = togsim::Desc(1, togsim::bf16, v4, v7, v8);
+  togsim::Load v10 = togsim::Load(v9, BUF0, v5, {BUF5});
+  togsim::load(v1, v10);
+  togsim::Wait v11 = togsim::Wait(v5);
+  togsim::wait(v1, v11);
+  togsim::compute(v1, {.node = NODE0, .variant = 1, .reads = {BUF0, BUF1}, .writes = {BUF1, BUF5}});
+  togsim::compute(v1, {.node = NODE1, .variant = 1, .reads = {BUF0, BUF1, BUF2, BUF3, BUF4}, .writes = {BUF1, BUF3, BUF4, BUF5}});
+  togsim::Dims v12 = togsim::Dims(128, 256);
+  togsim::Dims v13 = togsim::Dims(1, 256);
+  togsim::Desc v14 = togsim::Desc(2, togsim::bf16, v4, v12, v13);
+  togsim::Store v15 = togsim::Store(BUF4, v14);
+  togsim::store(v1, v15);
+  togsim::compute(v1, {.node = NODE2, .variant = 1, .reads = {BUF0, BUF1, BUF2, BUF3}, .writes = {BUF1, BUF3, BUF5}});
+  togsim::compute(v1, {.node = NODE3, .variant = 1, .reads = {BUF1, BUF3, BUF4}, .writes = {BUF1, BUF4}});
+  togsim::Dims v16 = togsim::Dims(128, 256);
+  togsim::Dims v17 = togsim::Dims(1, 256);
+  togsim::Desc v18 = togsim::Desc(2, togsim::bf16, v3, v16, v17);
+  togsim::Store v19 = togsim::Store(BUF4, v18);
+  togsim::store(v1, v19);
   return;
 }
 static void tog_entry(togsim::Kernel& v1) {
@@ -49,7 +54,7 @@ static void tog_entry(togsim::Kernel& v1) {
   int64_t v6 = 0;
   size_t v7 = 1;
   size_t v8 = 0;
-  std::array<int64_t, 3> v9 = togsim::shape<3>(v1, {.kernel = "pytorchsim_triton_compiler_fused_mm_cd3jcbco", .names = "z y x", .example = {1, 1, 1}});
+  std::array<int64_t, 3> v9 = togsim::shape<3>(v1, {.kernel = "pytorchsim_triton_compiler_fused_mm_au7umwrt", .names = "z y x", .example = {1, 1, 1}});
   int64_t v10 = v9[v6];
   ptrdiff_t v11 = (ptrdiff_t) v10;
   size_t v12 = (size_t) v11;

@@ -44,6 +44,11 @@ def compiler_contract(name):
     return compiler_module(f"contract.{name}")
 
 
+def toolchain():
+    """The compiler's toolchain module: Spike, pk, gem5 and the Coprocessor models, where it put them."""
+    return compiler_module("toolchain")
+
+
 def compiler_module(name):
     """The compiler's module `name` (dotted, under its package), from the checkout
     TORCHSIM_COMPILE_DIR names."""
@@ -99,13 +104,11 @@ def runtime_attribute_dir(workdir):
 def run_options(obj_dir, manifest, keys=None):
     """Spike's --isa and -m, the model library, its --machine-config and the gem5 script (or only
     `keys` of them) for the kernel object in `obj_dir`: the compiler's kernel_object.run_options() of
-    the machine it was compiled for. TORCHSIM_GEM5_SCRIPT, when set, is taken for the script."""
+    the machine it was compiled for."""
     ko, v = compiler_contract("kernel_object"), compiler_contract("vcix_model")
     machine = compiled_for(manifest)
-    script = {} if keys is not None and "gem5_script" not in keys else {
-        "gem5_script": os.environ.get("TORCHSIM_GEM5_SCRIPT")}
     try:
-        return ko.run_options(machine, obj_dir, config.CONFIG_VCIX_BUILD, manifest, keys, **script)
+        return ko.run_options(machine, obj_dir, toolchain().COPROCESSOR_BUILD, manifest, keys)
     except v.ModelError as e:
         raise NoTarget(f"{e}: {manifest['name']} was compiled for {machine.name}") from None
     except ko.ObjectError as e:

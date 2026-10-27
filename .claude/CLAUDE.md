@@ -128,9 +128,7 @@ Read in `pytorchsim/config.py`:
 | `TORCHSIM_FUNCTIONAL_MODE` | `1` | `0` skips Spike (outputs are not computed) |
 | `TORCHSIM_FUNCTIONAL_VERIFY_PER_KERNEL` | `0` | `1` checks each kernel against a CPU golden (needs functional mode) |
 | `TORCHSIM_CODEGEN_AUTOTUNE_TEMPLATE_TOPK` | `4` | GEMM tiles offered to the selection |
-| `VCIX_ENV_ROOT` | `/opt/vcix-env` | the Coprocessor environment the tools below default into |
-| `GEM5_PATH` | `$VCIX_ENV_ROOT/gem5/build/RISCV/gem5.opt` | gem5 binary (Coprocessor environment) |
-| `TORCHSIM_SPIKE`, `TORCHSIM_PK` | `$VCIX_ENV_ROOT/spike/bin/spike`, `$VCIX_ENV_ROOT/pk/riscv64-unknown-elf/bin/pk` | Spike and pk (`PYTORCHSIM_COMPILE_SPIKE`/`_PK` are read next) |
+| `COPROCESSOR_ENV_ROOT` | `/opt/coprocessor-env` | the Coprocessor environment: the RISC-V toolchain, pk, Spike and gem5, which the compiler's `toolchain` finds there |
 | `TORCHSIM_SPIKE_JOBS` | unset | Spike processes a launch's grid is split across (unset: the launcher chooses) |
 | `TORCHSIM_LOG_PATH` | `$TORCHSIM_DIR/togsim_results` | where TOGSim logs go |
 | `TORCHSIM_DUMP_PATH` | `$TORCHSIM_DIR` | misc dumps |
@@ -170,7 +168,7 @@ with torch.npu.TOGSimulator(config_path=...):
 - **Docker (recommended):** `docker run -it --ipc=host --name torchsim -w /workspace/PyTorchSim ghcr.io/psal-postech/torchsim-ci:v1.0.1 bash`
 - **TOGSim from source:** the compiler's `setup/toolchain.sh togsim` builds the one it carries (`third_party/TOGSim/build/bin/Simulator`); `scripts/build_from_source.sh` runs it. For another checkout, build it there as its README says and set `TOGSIM_DIR`.
 - **device (Python package):** `cd device && python -m pip install --no-build-isolation -e .`
-- **Compiler + Spike / gem5 / TOGSim from source:** `bash scripts/build_from_source.sh` (checks out PyTorchSim-Triton-Backend at the commit pinned in `third_party/pytorchsim-triton-backend.json`, the same pin as the CI docker image, and runs its `setup/toolchain.sh`; Spike, pk and gem5 land in `$VCIX_ENV_ROOT`, and the TOGSim it carries is built in its `third_party/TOGSim/build`, which needs conan 1.56 and cmake on PATH).
+- **Compiler + Spike / gem5 / TOGSim from source:** `bash scripts/build_from_source.sh` (checks out PyTorchSim-Triton-Backend at the commit pinned in `third_party/pytorchsim-triton-backend.json`, the same pin as the CI docker image, and runs its `setup/toolchain.sh`; Spike, pk and gem5 land in `$COPROCESSOR_ENV_ROOT`, and the TOGSim it carries is built in its `third_party/TOGSim/build`, which needs conan 1.56 and cmake on PATH).
 
 ## Where to look for X
 
@@ -186,7 +184,7 @@ with torch.npu.TOGSimulator(config_path=...):
 ## Gotchas / things I've already learned
 
 - The repo expects `python` to be a Python 3.10+ binary with `torch==2.14.0` (torchvision `0.29.0`, triton `3.8.0`). The frontend extends the PyTorch 2 Inductor stack — pin to this version: 2.14's Inductor targets triton 3.8, the version PyTorchSim-Triton-Backend is built against. The device extension builds as C++20, which 2.14's headers require. The pins live in `docker/Dockerfile.base`, and editing that file changes the base-image tag automatically (the tag is `thirdparty-<sha256 of third_party/github-releases.json + docker/Dockerfile.base>`, see `scripts/ci/third_party_base_pin.sh`).
-- gem5 and Spike are the Coprocessor environment's, found through `VCIX_ENV_ROOT`; both load the accelerator model the kernel names from `$PYTORCHSIM_VCIX_BUILD`, else `$PYTORCHSIM_PREFIX/vcix-build/` (`config.CONFIG_VCIX_BUILD`). Override with `GEM5_PATH` / `TORCHSIM_SPIKE` if you build elsewhere.
+- gem5, Spike and pk are the compiler's `toolchain` (`compiler_bridge.toolchain()`): the Coprocessor environment's, under `COPROCESSOR_ENV_ROOT`. Both load the accelerator model the kernel names from `$PYTORCHSIM_COPROCESSOR_BUILD`, else `$PYTORCHSIM_PREFIX/coprocessor-build/`. To run another build, point `COPROCESSOR_ENV_ROOT` at its environment.
 - `_C.cpython-311-*.so` and `torch_openreg/lib/` are build artifacts — already in `.gitignore`, don't commit.
 - **Parallel runs sharing a `TORCHSIM_DUMP_PATH`** share every per-kernel workdir, and that is deliberate: the workdir holds what compiling produced, which is a function of the source and the machine. A **launch** is not, so each process gets `<workdir>/launch-<pid>/` (`pytorchsim/contract.py`) holding its own `runtime/*.raw`, its own `tog_shape.txt` and symlinks to the shared TOG — TOGSim resolves the cycle table and the shape from the directory of the TOG it is handed, so linking is enough. What is left locked is only *building* the shared thing, once: `.compile.lock` (compile) and `.timing.lock` (the gem5 cycle and unit tables of `tog.so`). Launches take no lock. Measured on a warm cache, two `test_add.py` in parallel: 40s when launches were locked, **31s** now, against 30s for one run alone.
 - TOGSim creates a per-PID FIFO under `/tmp/togsim_fifo_<pid>` for command/event comm; if a previous run crashed and left stale FIFOs, they get cleaned up on the next start, but watch for orphaned processes if you Ctrl-C mid-run.

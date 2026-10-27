@@ -34,7 +34,7 @@ def _simulate(target_binary, obj_dir, manifest, silent_mode=False):
     dir_path = os.path.join(os.path.dirname(target_binary), "m5out")
     machine = compiler_bridge.compiled_for(manifest)
     run = compiler_bridge.run_options(obj_dir, manifest)
-    gem5_cmd = [config.CONFIG_GEM5_PATH, "-r", "--stdout-file=sto.log", "-d", dir_path,
+    gem5_cmd = [compiler_bridge.toolchain().GEM5, "-r", "--stdout-file=sto.log", "-d", dir_path,
                 run["gem5_script"], "-c", target_binary,
                 "--model", run["model"],
                 "--machine-config", run["machine_config"],

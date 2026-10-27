@@ -2,7 +2,7 @@
 # Create a sibling git worktree for parallel work and wire up per-worktree env.
 #
 # Container-dedicated: assumes the ghcr.io/psal-postech/torchsim-test (or torchsim_base)
-# layout. Shared binaries (Spike, gem5 and the riscv toolchain under VCIX_ENV_ROOT; LLVM,
+# layout. Shared binaries (Spike, gem5 and the riscv toolchain under COPROCESSOR_ENV_ROOT; LLVM,
 # and TOGSim in the compiler checkout) live where the image puts them and are NOT duplicated.
 #
 # Usage:
@@ -77,10 +77,6 @@ export TORCHSIM_TARGET=tpuv6e
 # Make `import torch_openreg` resolve to THIS worktree's .so first,
 # overriding the conda-wide editable install that points at the main worktree.
 export PYTHONPATH="$_self/device:$_self:${PYTHONPATH:-}"
-
-# The image's shared binaries: VCIX_ENV_ROOT is set by the image (/opt/vcix-env).
-export GEM5_PATH="${VCIX_ENV_ROOT:-/opt/vcix-env}/gem5/build/RISCV/gem5.opt"
-export RISCV="${VCIX_ENV_ROOT:-/opt/vcix-env}/riscv"
 
 # Prompt hint so you do not lose track of which worktree this shell is on.
 export PS1="[torchsim:$(basename "$_self")] ${PS1:-\\w\\$ }"

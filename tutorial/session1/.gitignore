@@ -1,0 +1,7 @@
+# Running the notebooks writes logs, dumps and matmul.py here; only the sources are tracked.
+*
+!.gitignore
+!*.ipynb
+!togsim_configs/
+!togsim_configs/*.yml
+!tutorial_external_mapping.json

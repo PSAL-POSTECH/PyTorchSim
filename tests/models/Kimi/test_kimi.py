@@ -31,7 +31,9 @@ remote rungs, the modeling file. Every rung runs at its published per-layer size
 count is cut, by `--layers` (default 2). Two layers is the minimum that means anything on this
 ladder: `first_k_dense_replace` makes layer 0 a plain MLP, so the MoE block only exists from layer
 1 on. Moonlight's config is the cached -Instruct snapshot, whose architecture fields are the base
-Moonlight-16B-A3B's. The input is batch 1, one prefill of `--seq` tokens (default 128).
+Moonlight-16B-A3B's. The input is batch 1, one prefill of `--seq` tokens (default 128), in bfloat16 by
+default (`--dtype float32` for the old run). `--part layer` runs the text tower's first MoE decoder layer
+alone (tests/one_layer.py) on `--seq S` or on one `--decode S` step after a KV cache; the text rungs only.
 
 The vision rungs cut MoonViT to the same `--layers` and feed one 224 px image: a 16x16 grid of
 14 px patches, which the 2x2 patch merger folds into 64 image tokens inside the prompt.
@@ -41,9 +43,10 @@ route on and timing off:
 
     source /workspace/kimi-env.sh
     python tests/models/Kimi/test_kimi.py --rung moonlight
+    python tests/models/Kimi/test_kimi.py --rung moonlight --part layer --decode 1024
 
-The tolerance here is 1e-3. It is deliberately NOT the 3e-1 the DeepSeek test carries: that number
-was picked for fp16 and it would hide two orders of magnitude of drift on this fp32 path.
+The tolerance is `_TOL`'s for the dtype: 1e-3 for fp32, not the 3e-1 the DeepSeek test once carried, which
+would hide two orders of magnitude of drift on the fp32 path.
 
 What the moonlight rung crosses, and what therefore needs no separate claim: MLA's
 asymmetric head (q is nope+rope wide, v is not), the kv_lora down-projections,
@@ -62,7 +65,8 @@ import types
 import torch
 
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from result_check import check_result
+from result_check import check_routed_rows
+import one_layer
 
 
 #: Rung -> (model id, kind, remote). Release order; climb it in this order.
@@ -130,6 +134,11 @@ def _load_config(model_id, source):
     for key in ("auto_map", "architectures", "model_type", "_name_or_path"):
         raw.pop(key, None)
     return CONFIG_MAPPING[source](**raw)
+
+# (rtol, atol) per dtype; the bf16 atol is 3x the worst bf16 eager-vs-Inductor CPU diff at S = 128.
+_TOL = {"bfloat16": (5e-2, 0.1), "float32": (1e-3, 1e-3)}
+# Share of token rows a bf16 router near-tie may send to other experts (check_routed_rows); fp32 none.
+_ROUTED = {"bfloat16": 0.05, "float32": 0.0}
 
 #: One 224 px image as MoonViT sees it: a 16x16 grid of 14 px patches, 64 tokens after the 2x2 merger.
 _IMAGE_GRID = (16, 16)
@@ -256,18 +265,23 @@ def _logits(output):
 
 
 @torch.no_grad()
-def run_rung(rung, device, dtype="float32", batch=1, seq_len=128, layers=2,
-             compile_model=True, rtol=1e-3, atol=1e-3):
-    """Build one rung at its published per-layer size, `layers` deep, and compare it with CPU.
+def run_rung(rung, device, dtype="bfloat16", batch=1, seq_len=128, layers=2,
+             compile_model=True, part="model", decode=False):
+    """Build one rung at its published per-layer size, `layers` deep, and compare it with CPU at `_TOL`.
 
     The text tower and, for the vision rungs, MoonViT are both cut to `layers`. Kimi-K2.5's
     tower is MoonViT maintained inside transformers (kimi_k25), so it takes the same image with
     the grid spelt thw rather than hw. MoonViT offers eager/sdpa/flash_attention_2 and this image
     has no flash_attn, so the Kimi-VL rung asks for eager rather than let the default pick.
+    part "layer" runs the first MoE decoder layer alone (layer first_k_dense_replace, the dense ones before it
+    on CPU), on a prefill or with `decode` one decode step.
     """
     from transformers import AutoModelForCausalLM
 
     model_id, kind, source = _RUNGS[rung]
+    if part == "layer" and kind != "causal-lm":
+        raise ValueError(f"--part layer runs the text rungs; {rung} is {kind}")
+    rtol, atol = _TOL.get(dtype, _TOL["float32"])
 
     grid = None
     config = _load_config(model_id, source)
@@ -309,6 +323,17 @@ def run_rung(rung, device, dtype="float32", batch=1, seq_len=128, layers=2,
     print("  params:", sum(p.numel() for p in model.parameters()))
 
     cpu_ids = _build_inputs(batch, seq_len, vocab, torch.device("cpu"))
+    if part == "layer":
+        if text_config.num_hidden_layers <= text_config.first_k_dense_replace:
+            raise ValueError(f"--layers {layers} keeps no MoE layer; the first one is layer "
+                             f"{text_config.first_k_dense_replace}")
+        layer = model.model.layers[text_config.first_k_dense_replace]
+        cpu_out, npu_out = one_layer.run(model.model, layer, text_config, cpu_ids, device,
+                                         decode=decode, compile_model=compile_model)
+        print(f"  max abs diff: {(npu_out.cpu() - cpu_out).abs().max().item():.6g}")
+        check_routed_rows(f"Kimi {rung} layer", npu_out, cpu_out, rtol, atol, _ROUTED.get(dtype, 0.0))
+        return
+
     extra = {}
     if grid is not None and kind == "image-text":
         cpu_ids, extra = _vision_inputs_thw(config, cpu_ids, *grid)
@@ -332,25 +357,31 @@ def run_rung(rung, device, dtype="float32", batch=1, seq_len=128, layers=2,
                                 **{k: v.to(device) for k, v in extra.items()}))
 
     print(f"  max abs diff: {(npu_out.cpu() - cpu_out).abs().max().item():.6g}")
-    check_result(f"Kimi {rung}", npu_out, cpu_out, rtol=rtol, atol=atol)
+    check_routed_rows(f"Kimi {rung}", npu_out, cpu_out, rtol, atol, _ROUTED.get(dtype, 0.0))
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="The Kimi ladder on the Triton route")
     parser.add_argument("--rung", default="moonlight", choices=list(_RUNGS))
-    parser.add_argument("--dtype", default="float32", choices=["float32", "float16", "bfloat16"])
+    parser.add_argument("--part", default="model", choices=["model", "layer"],
+                        help="model = the rung's model; layer = its first text decoder layer alone")
+    parser.add_argument("--dtype", default="bfloat16", choices=["float32", "float16", "bfloat16"])
     parser.add_argument("--batch", type=int, default=1)
-    parser.add_argument("--seq", type=int, default=128)
+    one_layer.add_grid_args(parser)
     parser.add_argument("--layers", type=int, default=2)
     parser.add_argument("--no-compile", action="store_true")
     args = parser.parse_args()
+    if args.decode is not None and args.part != "layer":
+        parser.error("--decode runs with --part layer")
 
     run_rung(
         args.rung,
         torch.device("npu:0"),
         dtype=args.dtype,
         batch=args.batch,
-        seq_len=args.seq,
+        seq_len=args.decode or args.seq,
         layers=args.layers,
         compile_model=not args.no_compile,
+        part=args.part,
+        decode=args.decode is not None,
     )

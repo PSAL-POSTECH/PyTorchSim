@@ -54,10 +54,10 @@ NODE_DEF = re.compile(r"togsim::Node (\w+) = \{\.id = (\d+), \.count = (\d+)\}")
 COMPUTE = re.compile(r"togsim::compute\(\w+, \{\.node = (\w+)(?:, \.variant = (\d+))?")
 WORK_ITEM = re.compile(r"^static void tog_work_item\(.*?^}", re.M | re.S)
 VCIX_IV = re.compile(r'"vcix\.iv"\(%\w+,\s*(%\w+)\)\s*<\{imm = (-?\d+) : i64, opcode = (\d+) : i64[^}]*\}>'
-                     r"\s*\{torchsim\.tile_id = (\d+) : i64\}")
+                     r"\s*\{pytorchsim\.tile_id = (\d+) : i64\}")
 VL_CONST = re.compile(r"^%c(\d+)_i64$")
 MAP_DEF = re.compile(r"^(#\w+)\s*=\s*affine_map<\(([^)]*)\)\s*->\s*\(([^)]*)\)>", re.M)
-DOT = re.compile(r'"torchsim\.dot"\([^)]*\)\s*<\{indexing_maps\s*=\s*\[([^\]]*)\]\}>\s*:\s*\('
+DOT = re.compile(r'"pytorchsim\.dot"\([^)]*\)\s*<\{indexing_maps\s*=\s*\[([^\]]*)\]\}>\s*:\s*\('
                  r"(memref<[^>]*>)\s*,\s*(memref<[^>]*>)\s*,\s*(memref<[^>]*>)\)")
 MATH_VECTOR = re.compile(r"math\.(?:exp2?|erf|tanh|sin|cos|log|atan)\b[^\n:]*:\s*vector<(\d+)x")
 
@@ -144,10 +144,10 @@ def producers(result_path):
         pin = None
     gem5 = None
     try:
-        out = subprocess.run([config.CONFIG_GEM5_PATH], capture_output=True, text=True, timeout=30)
+        out = subprocess.run([compiler_bridge.toolchain().GEM5], capture_output=True, text=True, timeout=30)
         found = re.search(r"gem5 version (\S+)", out.stdout + out.stderr)
         gem5 = found.group(1) if found else None
-    except (OSError, subprocess.SubprocessError, AttributeError):
+    except (OSError, subprocess.SubprocessError, AttributeError, compiler_bridge.CompilerError):
         pass
     return {"togsim": togsim, "gem5": gem5, "booksim2": f"compiler pin {pin}" if pin else None,
             "ramulator2": f"compiler pin {pin}" if pin else None}
@@ -316,7 +316,7 @@ def _memref(text):
 
 
 def _dots(path):
-    """[(in_free, w_free, k, operand type, accumulator type)] of the torchsim.dot ops in the MLIR."""
+    """[(in_free, w_free, k, operand type, accumulator type)] of the pytorchsim.dot ops in the MLIR."""
     if not os.path.isfile(path):
         return []
     text = open(path, errors="ignore").read()

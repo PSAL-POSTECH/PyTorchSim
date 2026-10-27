@@ -10,13 +10,16 @@ sliced row.
 
 The encoder is BERT base at its published size (google-bert/bert-base-uncased),
 cut to 2 of its 12 layers: 768 wide, 12 heads, FFN 3072 and the full 30522-row
-vocab. The input is one pass of ``--seq`` tokens, batch 1, at most 512 positions.
+vocab, in bfloat16 by default (``--dtype float32`` for the old run). The input is
+one pass of ``--seq`` tokens, batch 1, at most 512 positions. ``--part layer``
+runs the first encoder layer alone (tests/one_layer.py); an encoder has no decode.
 
 Judgement is spike's, against the same model on CPU. Run it with the Triton
 route on and timing off (rule 13a):
 
     source .envrc
     python tests/models/BERT/test_bert.py --seq 128
+    python tests/models/BERT/test_bert.py --part layer --seq 512
 """
 
 import argparse
@@ -28,12 +31,16 @@ import torch
 
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
 from result_check import check_result
+import one_layer
 
 
 # google-bert/bert-base-uncased, published config; only num_hidden_layers is cut (12 -> 2).
 _BERT = dict(vocab_size=30522, hidden_size=768, num_hidden_layers=2, num_attention_heads=12,
              intermediate_size=3072, hidden_act="gelu", max_position_embeddings=512,
              type_vocab_size=2, layer_norm_eps=1e-12)
+
+# (rtol, atol) per dtype; the bf16 atol is 3x the worst bf16 eager-vs-Inductor CPU diff at S = 128.
+_TOL = {"bfloat16": (5e-2, 0.2), "float32": (1e-2, 1e-2)}
 
 
 def _dtype_from_str(name):
@@ -81,15 +88,18 @@ def run_bert(
     part="body",
     batch=1,
     seq_len=128,
-    dtype="float32",
+    dtype="bfloat16",
     attn_impl="eager",
     compile_model=True,
-    rtol=1e-2,
-    atol=1e-2,
+    rtol=None,
+    atol=None,
 ):
+    """BERT `part` on one pass of `seq_len` tokens, CPU against `device`, at `dtype`'s `_TOL` unless given."""
     from transformers.models.bert.modeling_bert import BertModel, BertForMaskedLM
 
     torch_dtype = _dtype_from_str(dtype)
+    tol = _TOL.get(dtype, _TOL["float32"])
+    rtol, atol = tol[0] if rtol is None else rtol, tol[1] if atol is None else atol
     config = _build_config(seq_len, attn_impl)
 
     # Seed before construction: config-random weights otherwise differ per run,
@@ -97,6 +107,8 @@ def run_bert(
     torch.manual_seed(0)
     if part == "mlm":
         model_cpu = BertForMaskedLM(config)
+    elif part == "layer":
+        model_cpu = BertModel(config, add_pooling_layer=False)
     else:
         # add_pooling_layer=False for "body": the pooler reads row 0 only, so it
         # adds a slice-and-tanh kernel without adding encoder coverage. "pooled"
@@ -116,16 +128,21 @@ def run_bert(
     attention_mask = torch.ones((batch, seq_len), dtype=torch.int64)
     token_type_ids = torch.zeros((batch, seq_len), dtype=torch.int64)
 
-    cpu_out = _tensor(model_cpu(input_ids=input_ids,
-                                attention_mask=attention_mask,
-                                token_type_ids=token_type_ids))
+    if part == "layer":
+        cpu_out, npu_out = one_layer.run(model_cpu, model_cpu.encoder.layer[0], config, input_ids, device,
+                                         compile_model=compile_model, attention_mask=attention_mask,
+                                         token_type_ids=token_type_ids)
+    else:
+        cpu_out = _tensor(model_cpu(input_ids=input_ids,
+                                    attention_mask=attention_mask,
+                                    token_type_ids=token_type_ids))
 
-    model_npu = copy.deepcopy(model_cpu).to(device).eval()
-    if compile_model:
-        model_npu = torch.compile(model_npu, dynamic=False)
-    npu_out = _tensor(model_npu(input_ids=input_ids.to(device),
-                                attention_mask=attention_mask.to(device),
-                                token_type_ids=token_type_ids.to(device)))
+        model_npu = copy.deepcopy(model_cpu).to(device).eval()
+        if compile_model:
+            model_npu = torch.compile(model_npu, dynamic=False)
+        npu_out = _tensor(model_npu(input_ids=input_ids.to(device),
+                                    attention_mask=attention_mask.to(device),
+                                    token_type_ids=token_type_ids.to(device)))
 
     check_result(f"BERT {part}", npu_out, cpu_out, rtol=rtol, atol=atol)
     print("Max diff > ", torch.max(torch.abs(npu_out.cpu() - cpu_out)))
@@ -134,17 +151,17 @@ def run_bert(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="BERT end to end on the Triton route")
-    parser.add_argument("--part", type=str, default="body", choices=["body", "pooled", "mlm"],
+    parser.add_argument("--part", type=str, default="body", choices=["body", "pooled", "mlm", "layer"],
                         help="body = BertModel encoder only; pooled = + the pooler; "
-                             "mlm = BertForMaskedLM (adds the vocab projection)")
+                             "mlm = BertForMaskedLM (adds the vocab projection); "
+                             "layer = the first encoder layer alone")
     parser.add_argument("--batch", type=int, default=1)
-    parser.add_argument("--seq", type=int, default=128)
-    parser.add_argument("--dtype", type=str, default="float32",
-                        choices=["float32", "float16", "bfloat16"])
+    one_layer.add_grid_args(parser, decode=False)
+    parser.add_argument("--dtype", type=str, default="bfloat16", choices=["float32", "float16", "bfloat16"])
     parser.add_argument("--attn-impl", type=str, default="eager", choices=["eager", "sdpa"])
     parser.add_argument("--no-compile", dest="compile", action="store_false", default=True)
-    parser.add_argument("--rtol", type=float, default=1e-2)
-    parser.add_argument("--atol", type=float, default=1e-2)
+    parser.add_argument("--rtol", type=float, default=None, help="default: _TOL of --dtype")
+    parser.add_argument("--atol", type=float, default=None, help="default: _TOL of --dtype")
     args = parser.parse_args()
 
     run_bert(

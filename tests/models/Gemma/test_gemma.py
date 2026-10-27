@@ -83,10 +83,16 @@ WHY 2B AND 7B ARE BOTH HERE.  They are not the same block at two widths:
 
 Dropping either one drops a claim.  ``_assert_character`` cashes every claim
 above against the built model, so a preset cannot pass while proving nothing.
-Input is batch 1, one prefill of ``--seq`` tokens (default 128).
+Input is batch 1, one prefill of ``--seq`` tokens (default 128), in bfloat16 by
+default (``--dtype float32`` for the old run).  ``--part layer`` runs the
+preset's first decoder layer alone (tests/one_layer.py) on ``--seq S`` or on one
+``--decode S`` step after a KV cache, with the masks the model builds for that
+layer's type -- the sliding band included, which the explicit causal mask of the
+other parts leaves out.
 
     source /workspace/torchsim-env.sh
     python tests/models/Gemma/test_gemma.py --preset 7b
+    python tests/models/Gemma/test_gemma.py --preset 7b --part layer --decode 1024
 """
 
 import argparse
@@ -98,6 +104,7 @@ import torch
 
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
 from result_check import check_result
+import one_layer
 
 
 # Each preset is the published config of the checkpoint named over it; only `layers` is cut.
@@ -139,6 +146,9 @@ _PRESETS = {
                  window=1024, rope_local=10000.0, rope_global=1000000.0,
                  rope_scaling=dict(rope_type="linear", factor=8.0), pattern=6, qpas=256),
 }
+
+# (rtol, atol) per dtype; the bf16 atol is 3x the worst bf16 eager-vs-Inductor CPU diff at S = 128.
+_TOL = {"bfloat16": (5e-2, 0.4), "float32": (1e-2, 1e-2)}
 
 _FAMILIES = {
     "gemma": ("transformers.models.gemma.configuration_gemma", "GemmaConfig",
@@ -449,22 +459,22 @@ def run_gemma(
     part="lm",
     batch=1,
     seq_len=128,
-    dtype="float32",
+    dtype="bfloat16",
     compile_model=True,
-    rtol=1e-2,
-    atol=1e-2,
+    rtol=None,
+    atol=None,
+    decode=False,
 ):
-    """One prefill of `seq_len` tokens through the preset, CPU against `device`.
-
-    Weights are seeded before construction, or the worst element wanders across the threshold
-    from run to run.  The explicit 4D causal mask is test_llama3x.py's, so a failure here is
-    comparable to that file's rather than to whatever _update_causal_mask decided to build.
-    """
+    """The preset's `part` on one prefill of `seq_len` tokens, or with `decode` (--part layer) one step at
+    position seq_len - 1 after a KV cache; CPU against `device`, at `dtype`'s `_TOL` unless given.
+    lm and body take test_llama3x.py's explicit 4D causal mask, layer the masks the model builds."""
     p = _PRESETS[preset]
     _, _, mod_mod, body_name, lm_name = _FAMILIES[p["family"]]
-    cls = _import(mod_mod, lm_name if part == "lm" else body_name)
+    cls = _import(mod_mod, body_name if part == "body" else lm_name)
 
     torch_dtype = _dtype_from_str(dtype)
+    tol = _TOL.get(dtype, _TOL["float32"])
+    rtol, atol = tol[0] if rtol is None else rtol, tol[1] if atol is None else atol
     cfg = _build_config(preset)
     if seq_len > cfg.max_position_embeddings:
         raise ValueError(f"--seq {seq_len} is past {preset}'s {cfg.max_position_embeddings} positions")
@@ -501,19 +511,24 @@ def run_gemma(
     g = torch.Generator().manual_seed(0)
     input_ids = torch.randint(0, cfg.vocab_size, (batch, seq_len),
                               generator=g, dtype=torch.int64)
-    min_dtype = torch.finfo(torch_dtype).min
-    causal_mask = torch.full((seq_len, seq_len), fill_value=min_dtype, dtype=torch_dtype)
-    if seq_len > 1:
-        causal_mask = torch.triu(causal_mask, diagonal=1)
-    attn_mask = causal_mask[None, None, :, :].expand(batch, 1, -1, -1)
-    cpu_inputs = {"input_ids": input_ids, "attention_mask": attn_mask}
+    if part == "layer":
+        body = _text_body(model_cpu)
+        cpu_out, npu_out = one_layer.run(body, body.layers[0], cfg, input_ids, device,
+                                         decode=decode, compile_model=compile_model)
+    else:
+        min_dtype = torch.finfo(torch_dtype).min
+        causal_mask = torch.full((seq_len, seq_len), fill_value=min_dtype, dtype=torch_dtype)
+        if seq_len > 1:
+            causal_mask = torch.triu(causal_mask, diagonal=1)
+        attn_mask = causal_mask[None, None, :, :].expand(batch, 1, -1, -1)
+        cpu_inputs = {"input_ids": input_ids, "attention_mask": attn_mask}
 
-    cpu_out = _out(model_cpu(**cpu_inputs))
+        cpu_out = _out(model_cpu(**cpu_inputs))
 
-    model_npu = copy.deepcopy(model_cpu).to(device).eval()
-    if compile_model:
-        model_npu = torch.compile(model_npu, dynamic=False)
-    npu_out = _out(model_npu(**{k: v.to(device) for k, v in cpu_inputs.items()}))
+        model_npu = copy.deepcopy(model_cpu).to(device).eval()
+        if compile_model:
+            model_npu = torch.compile(model_npu, dynamic=False)
+        npu_out = _out(model_npu(**{k: v.to(device) for k, v in cpu_inputs.items()}))
 
     check_result(f"Gemma {part} ({preset})", npu_out, cpu_out, rtol=rtol, atol=atol)
     print("Max diff > ", torch.max(torch.abs(npu_out.cpu() - cpu_out)))
@@ -530,16 +545,18 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Gemma 1/2/3 end to end on the Triton route")
     parser.add_argument("--preset", type=str, default=None, choices=sorted(_PRESETS),
                         help=f"one preset; the default runs the gate ({', '.join(_GATE)})")
-    parser.add_argument("--part", type=str, default="lm", choices=["lm", "body"],
-                        help="lm = ...ForCausalLM (adds the vocab projection); body = ...Model")
+    parser.add_argument("--part", type=str, default="lm", choices=["lm", "body", "layer"],
+                        help="lm = ...ForCausalLM (adds the vocab projection); body = ...Model; "
+                             "layer = the first decoder layer alone")
     parser.add_argument("--batch", type=int, default=1)
-    parser.add_argument("--seq", type=int, default=128, help="prefill tokens")
-    parser.add_argument("--dtype", type=str, default="float32",
-                        choices=["float32", "float16", "bfloat16"])
+    one_layer.add_grid_args(parser)
+    parser.add_argument("--dtype", type=str, default="bfloat16", choices=["float32", "float16", "bfloat16"])
     parser.add_argument("--no-compile", dest="compile", action="store_false", default=True)
-    parser.add_argument("--rtol", type=float, default=1e-2)
-    parser.add_argument("--atol", type=float, default=1e-2)
+    parser.add_argument("--rtol", type=float, default=None, help="default: _TOL of --dtype")
+    parser.add_argument("--atol", type=float, default=None, help="default: _TOL of --dtype")
     args = parser.parse_args()
+    if args.decode is not None and args.part != "layer":
+        parser.error("--decode runs with --part layer")
 
     sys.path.append(os.environ.get("PYTORCHSIM_ROOT_PATH", "/workspace/PyTorchSim"))
     torch.compiler.is_compiling = lambda: True  # FIXME. Same as test_llama.py.
@@ -550,7 +567,8 @@ if __name__ == "__main__":
             preset=preset,
             part=args.part,
             batch=args.batch,
-            seq_len=args.seq,
+            seq_len=args.decode or args.seq,
+            decode=args.decode is not None,
             dtype=args.dtype,
             compile_model=args.compile,
             rtol=args.rtol,

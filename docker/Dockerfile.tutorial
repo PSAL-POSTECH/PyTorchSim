@@ -1,0 +1,16 @@
+# The MICRO 2026 tutorial image: PyTorchSim as docker/Dockerfile builds it, plus Coprocessor's tutorial branch
+# (third_party/tutorial.json) built in /workspace/Coprocessor, whose build/ is the models the route loads
+# (PYTORCHSIM_COPROCESSOR_BUILD), its environment's RISC-V toolchain, an editor and JupyterLab for docker/tutorial/jupyterhub/.
+ARG COPROCESSOR_ENV_IMAGE=ghcr.io/psal-postech/coprocessor:env-e012fc13e61b
+ARG BASE_IMAGE=ghcr.io/psal-postech/torchsim_base:latest
+FROM ${COPROCESSOR_ENV_IMAGE} AS coprocessor_env
+FROM ${BASE_IMAGE}
+RUN apt-get update && apt-get install -y --no-install-recommends vim nano && rm -rf /var/lib/apt/lists/*
+RUN python3 -m pip install --no-cache-dir jupyterhub==5.3.0 jupyterlab==4.4.5
+COPY --from=coprocessor_env /opt/coprocessor-env/riscv /opt/coprocessor-env/riscv
+COPY . /workspace/PyTorchSim
+RUN cd PyTorchSim/device && \
+    python -m pip install --no-build-isolation -e .
+ENV PYTORCHSIM_COPROCESSOR_BUILD=/workspace/Coprocessor/build
+RUN bash /workspace/PyTorchSim/docker/tutorial/setup.sh
+WORKDIR /workspace

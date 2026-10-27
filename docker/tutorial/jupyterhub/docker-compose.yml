@@ -1,0 +1,19 @@
+services:
+  jupyterhub:
+    build: .
+    image: tutorial-micro2026-hub
+    container_name: jupyterhub
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./jupyterhub_config.py:/srv/jupyterhub/jupyterhub_config.py:ro
+    environment:
+      DOCKER_NETWORK_NAME: jupyterhub-network
+      TUTORIAL_IMAGE: ${TUTORIAL_IMAGE:-ghcr.io/psal-postech/tutorial-micro2026:latest}
+    ports:
+      - "${HUB_PORT:-8888}:8000"
+    networks:
+      - jupyterhub-network
+
+networks:
+  jupyterhub-network:
+    external: true

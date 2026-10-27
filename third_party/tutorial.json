@@ -1,0 +1,11 @@
+{
+  "description": "The MICRO 2026 tutorial's code beside PyTorchSim: Coprocessor's tutorial branch, the hands-on's start with its answer in examples/xlane_reduce/answer/, and the Coprocessor environment image whose RISC-V toolchain (clang among it) its tests assemble with. docker/Dockerfile.tutorial checks the branch out in /workspace/Coprocessor at this commit and builds it; the image's PYTORCHSIM_COPROCESSOR_BUILD is that build, so the models Spike and the compiler load are the attendee's.",
+  "coprocessor": {
+    "repository": "https://github.com/PSAL-POSTECH/Coprocessor.git",
+    "start": {
+      "branch": "tutorial/xlane-reduce",
+      "commit": "2dc628d0956bfd0220d2fd63925d788cd5e8b2d5"
+    },
+    "env_image": "ghcr.io/psal-postech/coprocessor:env-e012fc13e61b"
+  }
+}

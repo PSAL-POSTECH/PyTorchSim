@@ -1,6 +1,7 @@
 {
-  "format": 9,
+  "format": 10,
   "name": "pytorchsim_triton_compiler_fused_mm_cd3jcbco",
+  "spad_bytes_per_lane": 5120,
   "grid": [
     1,
     1,
@@ -42,8 +43,8 @@
     },
     "systolic_array_unit": "TPUV3_MXU",
     "dma_load_latency_cycles": 27,
-    "name": "tpuv3_booksim_fixed",
-    "file": "/workspace/PyTorchSim/.npuw_probe/tpuv3_booksim_fixed.yml"
+    "name": "machine",
+    "file": "/workspace/PyTorchSim/tests/system/data/npuwattch_tpuv3/machine.yml"
   },
   "args": [
     {
@@ -105,6 +106,7 @@
     {
       "arg": 1,
       "bytes": 131072,
+      "spad_bytes_per_lane": 1024,
       "held_buffer": 1,
       "tog_so": "copy_node_1/tog.so"
     }

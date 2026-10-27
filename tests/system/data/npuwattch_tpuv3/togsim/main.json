@@ -1,42 +1,42 @@
 {
   "version": "1.0.0",
-  "total_cycles": 2943,
+  "total_cycles": 2942,
   "wall_clock_s": null,
   "core_cycles": {
-    "0": 2943
+    "0": 2942
   },
   "units": {
     "Core [0]": {
-      "Issue": {"utilization_pct": 1.3308415449088231, "active_cycles": 39, "idle_cycles": 2904},
-      "TPUV3_MISC": {"utilization_pct": 0.13591573224600748, "active_cycles": 4, "idle_cycles": 2939},
-      "TPUV3_MXU": {"utilization_pct": 17.227319062181447, "active_cycles": 507, "idle_cycles": 2436},
-      "TPUV3_SFU": {"utilization_pct": 0, "active_cycles": 0, "idle_cycles": 2943},
-      "TPUV3_XLU": {"utilization_pct": 0, "active_cycles": 0, "idle_cycles": 2943},
-      "Vpu": {"utilization_pct": 1.9028202514441046, "active_cycles": 56, "idle_cycles": 2887}
+      "Issue": {"utilization_pct": 1.331293904373442, "active_cycles": 39, "idle_cycles": 2903},
+      "TPUV3_MISC": {"utilization_pct": 0.13596193065941536, "active_cycles": 4, "idle_cycles": 2938},
+      "TPUV3_MXU": {"utilization_pct": 17.2331747110809, "active_cycles": 507, "idle_cycles": 2435},
+      "TPUV3_SFU": {"utilization_pct": 0, "active_cycles": 0, "idle_cycles": 2942},
+      "TPUV3_XLU": {"utilization_pct": 0, "active_cycles": 0, "idle_cycles": 2942},
+      "Vpu": {"utilization_pct": 5.302515295717199, "active_cycles": 156, "idle_cycles": 2786}
     }
   },
   "dma": {
-    "0": {"active_cycles": 512, "idle_cycles": 2431, "dram_bw_gbps": 83, "responses": 8192}
+    "0": {"active_cycles": 512, "idle_cycles": 2430, "dram_bw_gbps": 83, "responses": 8192}
   },
   "dram": {"channels": {
-      "0": {"bandwidth_gbps": 5.233081889228679, "utilization_pct": 17.39721377161469, "reads": 256, "writes": 256},
-      "1": {"bandwidth_gbps": 5.233081889228679, "utilization_pct": 17.39721377161469, "reads": 256, "writes": 256},
-      "2": {"bandwidth_gbps": 5.233081889228679, "utilization_pct": 17.39721377161469, "reads": 256, "writes": 256},
-      "3": {"bandwidth_gbps": 5.233081889228679, "utilization_pct": 17.39721377161469, "reads": 256, "writes": 256},
-      "4": {"bandwidth_gbps": 5.233081889228679, "utilization_pct": 17.39721377161469, "reads": 256, "writes": 256},
-      "5": {"bandwidth_gbps": 5.233081889228679, "utilization_pct": 17.39721377161469, "reads": 256, "writes": 256},
-      "6": {"bandwidth_gbps": 5.233081889228679, "utilization_pct": 17.39721377161469, "reads": 256, "writes": 256},
-      "7": {"bandwidth_gbps": 5.233081889228679, "utilization_pct": 17.39721377161469, "reads": 256, "writes": 256},
-      "8": {"bandwidth_gbps": 5.233081889228679, "utilization_pct": 17.39721377161469, "reads": 256, "writes": 256},
-      "9": {"bandwidth_gbps": 5.233081889228679, "utilization_pct": 17.39721377161469, "reads": 256, "writes": 256},
-      "10": {"bandwidth_gbps": 5.233081889228679, "utilization_pct": 17.39721377161469, "reads": 256, "writes": 256},
-      "11": {"bandwidth_gbps": 5.233081889228679, "utilization_pct": 17.39721377161469, "reads": 256, "writes": 256},
-      "12": {"bandwidth_gbps": 5.233081889228679, "utilization_pct": 17.39721377161469, "reads": 256, "writes": 256},
-      "13": {"bandwidth_gbps": 5.233081889228679, "utilization_pct": 17.39721377161469, "reads": 256, "writes": 256},
-      "14": {"bandwidth_gbps": 5.233081889228679, "utilization_pct": 17.39721377161469, "reads": 256, "writes": 256},
-      "15": {"bandwidth_gbps": 5.233081889228679, "utilization_pct": 17.39721377161469, "reads": 256, "writes": 256}
-    }, "combined": {"bandwidth_gbps": 83.72931022765886, "utilization_pct": 17.39721377161469, "reads": 4096, "writes": 4096}},
+      "0": {"bandwidth_gbps": 5.234860639021074, "utilization_pct": 17.403127168545897, "reads": 256, "writes": 256},
+      "1": {"bandwidth_gbps": 5.234860639021074, "utilization_pct": 17.403127168545897, "reads": 256, "writes": 256},
+      "2": {"bandwidth_gbps": 5.234860639021074, "utilization_pct": 17.403127168545897, "reads": 256, "writes": 256},
+      "3": {"bandwidth_gbps": 5.234860639021074, "utilization_pct": 17.403127168545897, "reads": 256, "writes": 256},
+      "4": {"bandwidth_gbps": 5.234860639021074, "utilization_pct": 17.403127168545897, "reads": 256, "writes": 256},
+      "5": {"bandwidth_gbps": 5.234860639021074, "utilization_pct": 17.403127168545897, "reads": 256, "writes": 256},
+      "6": {"bandwidth_gbps": 5.234860639021074, "utilization_pct": 17.403127168545897, "reads": 256, "writes": 256},
+      "7": {"bandwidth_gbps": 5.234860639021074, "utilization_pct": 17.403127168545897, "reads": 256, "writes": 256},
+      "8": {"bandwidth_gbps": 5.234860639021074, "utilization_pct": 17.403127168545897, "reads": 256, "writes": 256},
+      "9": {"bandwidth_gbps": 5.234860639021074, "utilization_pct": 17.403127168545897, "reads": 256, "writes": 256},
+      "10": {"bandwidth_gbps": 5.234860639021074, "utilization_pct": 17.403127168545897, "reads": 256, "writes": 256},
+      "11": {"bandwidth_gbps": 5.234860639021074, "utilization_pct": 17.403127168545897, "reads": 256, "writes": 256},
+      "12": {"bandwidth_gbps": 5.234860639021074, "utilization_pct": 17.403127168545897, "reads": 256, "writes": 256},
+      "13": {"bandwidth_gbps": 5.234860639021074, "utilization_pct": 17.403127168545897, "reads": 256, "writes": 256},
+      "14": {"bandwidth_gbps": 5.234860639021074, "utilization_pct": 17.403127168545897, "reads": 256, "writes": 256},
+      "15": {"bandwidth_gbps": 5.234860639021074, "utilization_pct": 17.403127168545897, "reads": 256, "writes": 256}
+    }, "combined": {"bandwidth_gbps": 83.75777022433718, "utilization_pct": 17.403127168545897, "reads": 4096, "writes": 4096}},
   "kernels": [
-    {"scheduler": 0, "kernel_id": 0, "started": 1, "finished": 2248}
+    {"scheduler": 0, "kernel_id": 0, "started": 1, "finished": 2247}
   ]
 }

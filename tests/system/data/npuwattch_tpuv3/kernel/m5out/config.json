@@ -221,6 +221,10 @@
                         "name": "funcUnits00",
                         "path": "system.cpu.executeFuncUnits.funcUnits00",
                         "cantForwardFromFUIndices": [],
+                        "coprocessorConfigKeys": [],
+                        "coprocessorConfigValues": [],
+                        "coprocessorMaxInFlight": 8192,
+                        "coprocessorModel": "",
                         "eventq_index": 0,
                         "issueLat": 1,
                         "opClasses": {
@@ -307,10 +311,6 @@
                         "opLat": 1,
                         "timings": [],
                         "unit": "",
-                        "vcixConfigKeys": [],
-                        "vcixConfigValues": [],
-                        "vcixMaxInFlight": 8192,
-                        "vcixModel": "",
                         "vcixReadyWarnCycles": 1000000
                     },
                     {
@@ -319,6 +319,10 @@
                         "name": "funcUnits01",
                         "path": "system.cpu.executeFuncUnits.funcUnits01",
                         "cantForwardFromFUIndices": [],
+                        "coprocessorConfigKeys": [],
+                        "coprocessorConfigValues": [],
+                        "coprocessorMaxInFlight": 8192,
+                        "coprocessorModel": "",
                         "eventq_index": 0,
                         "issueLat": 1,
                         "opClasses": {
@@ -367,10 +371,6 @@
                             }
                         ],
                         "unit": "",
-                        "vcixConfigKeys": [],
-                        "vcixConfigValues": [],
-                        "vcixMaxInFlight": 8192,
-                        "vcixModel": "",
                         "vcixReadyWarnCycles": 1000000
                     },
                     {
@@ -379,6 +379,10 @@
                         "name": "funcUnits02",
                         "path": "system.cpu.executeFuncUnits.funcUnits02",
                         "cantForwardFromFUIndices": [],
+                        "coprocessorConfigKeys": [],
+                        "coprocessorConfigValues": [],
+                        "coprocessorMaxInFlight": 8192,
+                        "coprocessorModel": "",
                         "eventq_index": 0,
                         "issueLat": 1,
                         "opClasses": {
@@ -427,10 +431,6 @@
                             }
                         ],
                         "unit": "",
-                        "vcixConfigKeys": [],
-                        "vcixConfigValues": [],
-                        "vcixMaxInFlight": 8192,
-                        "vcixModel": "",
                         "vcixReadyWarnCycles": 1000000
                     },
                     {
@@ -439,6 +439,10 @@
                         "name": "funcUnits03",
                         "path": "system.cpu.executeFuncUnits.funcUnits03",
                         "cantForwardFromFUIndices": [],
+                        "coprocessorConfigKeys": [],
+                        "coprocessorConfigValues": [],
+                        "coprocessorMaxInFlight": 8192,
+                        "coprocessorModel": "",
                         "eventq_index": 0,
                         "issueLat": 1,
                         "opClasses": {
@@ -487,10 +491,6 @@
                             }
                         ],
                         "unit": "",
-                        "vcixConfigKeys": [],
-                        "vcixConfigValues": [],
-                        "vcixMaxInFlight": 8192,
-                        "vcixModel": "",
                         "vcixReadyWarnCycles": 1000000
                     },
                     {
@@ -499,6 +499,10 @@
                         "name": "funcUnits04",
                         "path": "system.cpu.executeFuncUnits.funcUnits04",
                         "cantForwardFromFUIndices": [],
+                        "coprocessorConfigKeys": [],
+                        "coprocessorConfigValues": [],
+                        "coprocessorMaxInFlight": 8192,
+                        "coprocessorModel": "",
                         "eventq_index": 0,
                         "issueLat": 9,
                         "opClasses": {
@@ -521,10 +525,6 @@
                         "opLat": 1,
                         "timings": [],
                         "unit": "",
-                        "vcixConfigKeys": [],
-                        "vcixConfigValues": [],
-                        "vcixMaxInFlight": 8192,
-                        "vcixModel": "",
                         "vcixReadyWarnCycles": 1000000
                     },
                     {
@@ -533,6 +533,10 @@
                         "name": "funcUnits05",
                         "path": "system.cpu.executeFuncUnits.funcUnits05",
                         "cantForwardFromFUIndices": [],
+                        "coprocessorConfigKeys": [],
+                        "coprocessorConfigValues": [],
+                        "coprocessorMaxInFlight": 8192,
+                        "coprocessorModel": "",
                         "eventq_index": 0,
                         "issueLat": 1,
                         "opClasses": {
@@ -581,10 +585,6 @@
                             }
                         ],
                         "unit": "",
-                        "vcixConfigKeys": [],
-                        "vcixConfigValues": [],
-                        "vcixMaxInFlight": 8192,
-                        "vcixModel": "",
                         "vcixReadyWarnCycles": 1000000
                     },
                     {
@@ -593,6 +593,10 @@
                         "name": "funcUnits06",
                         "path": "system.cpu.executeFuncUnits.funcUnits06",
                         "cantForwardFromFUIndices": [],
+                        "coprocessorConfigKeys": [],
+                        "coprocessorConfigValues": [],
+                        "coprocessorMaxInFlight": 8192,
+                        "coprocessorModel": "",
                         "eventq_index": 0,
                         "issueLat": 1,
                         "opClasses": {
@@ -753,10 +757,6 @@
                             }
                         ],
                         "unit": "",
-                        "vcixConfigKeys": [],
-                        "vcixConfigValues": [],
-                        "vcixMaxInFlight": 8192,
-                        "vcixModel": "",
                         "vcixReadyWarnCycles": 1000000
                     },
                     {
@@ -765,6 +765,10 @@
                         "name": "funcUnits07",
                         "path": "system.cpu.executeFuncUnits.funcUnits07",
                         "cantForwardFromFUIndices": [],
+                        "coprocessorConfigKeys": [],
+                        "coprocessorConfigValues": [],
+                        "coprocessorMaxInFlight": 8192,
+                        "coprocessorModel": "",
                         "eventq_index": 0,
                         "issueLat": 1,
                         "opClasses": {
@@ -795,10 +799,6 @@
                         "opLat": 1,
                         "timings": [],
                         "unit": "",
-                        "vcixConfigKeys": [],
-                        "vcixConfigValues": [],
-                        "vcixMaxInFlight": 8192,
-                        "vcixModel": "",
                         "vcixReadyWarnCycles": 1000000
                     },
                     {
@@ -807,6 +807,10 @@
                         "name": "funcUnits08",
                         "path": "system.cpu.executeFuncUnits.funcUnits08",
                         "cantForwardFromFUIndices": [],
+                        "coprocessorConfigKeys": [],
+                        "coprocessorConfigValues": [],
+                        "coprocessorMaxInFlight": 8192,
+                        "coprocessorModel": "",
                         "eventq_index": 0,
                         "issueLat": 1,
                         "opClasses": {
@@ -893,10 +897,6 @@
                         "opLat": 1,
                         "timings": [],
                         "unit": "",
-                        "vcixConfigKeys": [],
-                        "vcixConfigValues": [],
-                        "vcixMaxInFlight": 8192,
-                        "vcixModel": "",
                         "vcixReadyWarnCycles": 1000000
                     },
                     {
@@ -905,6 +905,10 @@
                         "name": "funcUnits09",
                         "path": "system.cpu.executeFuncUnits.funcUnits09",
                         "cantForwardFromFUIndices": [],
+                        "coprocessorConfigKeys": [],
+                        "coprocessorConfigValues": [],
+                        "coprocessorMaxInFlight": 8192,
+                        "coprocessorModel": "",
                         "eventq_index": 0,
                         "issueLat": 1,
                         "opClasses": {
@@ -953,10 +957,6 @@
                             }
                         ],
                         "unit": "",
-                        "vcixConfigKeys": [],
-                        "vcixConfigValues": [],
-                        "vcixMaxInFlight": 8192,
-                        "vcixModel": "",
                         "vcixReadyWarnCycles": 1000000
                     },
                     {
@@ -965,6 +965,10 @@
                         "name": "funcUnits10",
                         "path": "system.cpu.executeFuncUnits.funcUnits10",
                         "cantForwardFromFUIndices": [],
+                        "coprocessorConfigKeys": [],
+                        "coprocessorConfigValues": [],
+                        "coprocessorMaxInFlight": 8192,
+                        "coprocessorModel": "",
                         "eventq_index": 0,
                         "issueLat": 1,
                         "opClasses": {
@@ -1013,10 +1017,6 @@
                             }
                         ],
                         "unit": "",
-                        "vcixConfigKeys": [],
-                        "vcixConfigValues": [],
-                        "vcixMaxInFlight": 8192,
-                        "vcixModel": "",
                         "vcixReadyWarnCycles": 1000000
                     },
                     {
@@ -1025,6 +1025,10 @@
                         "name": "funcUnits11",
                         "path": "system.cpu.executeFuncUnits.funcUnits11",
                         "cantForwardFromFUIndices": [],
+                        "coprocessorConfigKeys": [],
+                        "coprocessorConfigValues": [],
+                        "coprocessorMaxInFlight": 8192,
+                        "coprocessorModel": "",
                         "eventq_index": 0,
                         "issueLat": 1,
                         "opClasses": {
@@ -1073,10 +1077,6 @@
                             }
                         ],
                         "unit": "",
-                        "vcixConfigKeys": [],
-                        "vcixConfigValues": [],
-                        "vcixMaxInFlight": 8192,
-                        "vcixModel": "",
                         "vcixReadyWarnCycles": 1000000
                     },
                     {
@@ -1085,6 +1085,10 @@
                         "name": "funcUnits12",
                         "path": "system.cpu.executeFuncUnits.funcUnits12",
                         "cantForwardFromFUIndices": [],
+                        "coprocessorConfigKeys": [],
+                        "coprocessorConfigValues": [],
+                        "coprocessorMaxInFlight": 8192,
+                        "coprocessorModel": "",
                         "eventq_index": 0,
                         "issueLat": 9,
                         "opClasses": {
@@ -1107,10 +1111,6 @@
                         "opLat": 1,
                         "timings": [],
                         "unit": "",
-                        "vcixConfigKeys": [],
-                        "vcixConfigValues": [],
-                        "vcixMaxInFlight": 8192,
-                        "vcixModel": "",
                         "vcixReadyWarnCycles": 1000000
                     },
                     {
@@ -1119,6 +1119,10 @@
                         "name": "funcUnits13",
                         "path": "system.cpu.executeFuncUnits.funcUnits13",
                         "cantForwardFromFUIndices": [],
+                        "coprocessorConfigKeys": [],
+                        "coprocessorConfigValues": [],
+                        "coprocessorMaxInFlight": 8192,
+                        "coprocessorModel": "",
                         "eventq_index": 0,
                         "issueLat": 1,
                         "opClasses": {
@@ -1167,10 +1171,6 @@
                             }
                         ],
                         "unit": "",
-                        "vcixConfigKeys": [],
-                        "vcixConfigValues": [],
-                        "vcixMaxInFlight": 8192,
-                        "vcixModel": "",
                         "vcixReadyWarnCycles": 1000000
                     },
                     {
@@ -1179,6 +1179,10 @@
                         "name": "funcUnits14",
                         "path": "system.cpu.executeFuncUnits.funcUnits14",
                         "cantForwardFromFUIndices": [],
+                        "coprocessorConfigKeys": [],
+                        "coprocessorConfigValues": [],
+                        "coprocessorMaxInFlight": 8192,
+                        "coprocessorModel": "",
                         "eventq_index": 0,
                         "issueLat": 1,
                         "opClasses": {
@@ -1339,10 +1343,6 @@
                             }
                         ],
                         "unit": "",
-                        "vcixConfigKeys": [],
-                        "vcixConfigValues": [],
-                        "vcixMaxInFlight": 8192,
-                        "vcixModel": "",
                         "vcixReadyWarnCycles": 1000000
                     },
                     {
@@ -1351,6 +1351,10 @@
                         "name": "funcUnits15",
                         "path": "system.cpu.executeFuncUnits.funcUnits15",
                         "cantForwardFromFUIndices": [],
+                        "coprocessorConfigKeys": [],
+                        "coprocessorConfigValues": [],
+                        "coprocessorMaxInFlight": 8192,
+                        "coprocessorModel": "",
                         "eventq_index": 0,
                         "issueLat": 1,
                         "opClasses": {
@@ -1381,10 +1385,6 @@
                         "opLat": 1,
                         "timings": [],
                         "unit": "",
-                        "vcixConfigKeys": [],
-                        "vcixConfigValues": [],
-                        "vcixMaxInFlight": 8192,
-                        "vcixModel": "",
                         "vcixReadyWarnCycles": 1000000
                     },
                     {
@@ -1393,29 +1393,7 @@
                         "name": "funcUnits16",
                         "path": "system.cpu.executeFuncUnits.funcUnits16",
                         "cantForwardFromFUIndices": [],
-                        "eventq_index": 0,
-                        "issueLat": 1,
-                        "opClasses": {
-                            "type": "MinorOpClassSet",
-                            "cxx_class": "gem5::MinorOpClassSet",
-                            "name": "opClasses",
-                            "path": "system.cpu.executeFuncUnits.funcUnits16.opClasses",
-                            "eventq_index": 0,
-                            "opClasses": [
-                                {
-                                    "type": "MinorOpClass",
-                                    "cxx_class": "gem5::MinorOpClass",
-                                    "name": "opClasses",
-                                    "path": "system.cpu.executeFuncUnits.funcUnits16.opClasses.opClasses",
-                                    "eventq_index": 0,
-                                    "opClass": "VcixAccel"
-                                }
-                            ]
-                        },
-                        "opLat": 1,
-                        "timings": [],
-                        "unit": "",
-                        "vcixConfigKeys": [
+                        "coprocessorConfigKeys": [
                             "vpu_num_lanes",
                             "vpu_spad_size_kb_per_lane",
                             "vpu_spad_base_vaddr",
@@ -1432,7 +1410,7 @@
                             "tpu_sfu_latency_cycles",
                             "tpu_sfu_queue_registers"
                         ],
-                        "vcixConfigValues": [
+                        "coprocessorConfigValues": [
                             "128",
                             "128",
                             "0x40000000",
@@ -1449,8 +1427,30 @@
                             "10",
                             "16"
                         ],
-                        "vcixMaxInFlight": 8192,
-                        "vcixModel": "/workspace/vcix-build/libtpuv3.so",
+                        "coprocessorMaxInFlight": 8192,
+                        "coprocessorModel": "/opt/pytorchsim/coprocessor-build/libtpuv3.so",
+                        "eventq_index": 0,
+                        "issueLat": 1,
+                        "opClasses": {
+                            "type": "MinorOpClassSet",
+                            "cxx_class": "gem5::MinorOpClassSet",
+                            "name": "opClasses",
+                            "path": "system.cpu.executeFuncUnits.funcUnits16.opClasses",
+                            "eventq_index": 0,
+                            "opClasses": [
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits16.opClasses.opClasses",
+                                    "eventq_index": 0,
+                                    "opClass": "Coprocessor"
+                                }
+                            ]
+                        },
+                        "opLat": 1,
+                        "timings": [],
+                        "unit": "",
                         "vcixReadyWarnCycles": 1000000
                     },
                     {
@@ -1459,6 +1459,10 @@
                         "name": "funcUnits17",
                         "path": "system.cpu.executeFuncUnits.funcUnits17",
                         "cantForwardFromFUIndices": [],
+                        "coprocessorConfigKeys": [],
+                        "coprocessorConfigValues": [],
+                        "coprocessorMaxInFlight": 8192,
+                        "coprocessorModel": "",
                         "eventq_index": 0,
                         "issueLat": 1,
                         "opClasses": {
@@ -1481,10 +1485,6 @@
                         "opLat": 1,
                         "timings": [],
                         "unit": "",
-                        "vcixConfigKeys": [],
-                        "vcixConfigValues": [],
-                        "vcixMaxInFlight": 8192,
-                        "vcixModel": "",
                         "vcixReadyWarnCycles": 1000000
                     },
                     {
@@ -1493,6 +1493,10 @@
                         "name": "funcUnits18",
                         "path": "system.cpu.executeFuncUnits.funcUnits18",
                         "cantForwardFromFUIndices": [],
+                        "coprocessorConfigKeys": [],
+                        "coprocessorConfigValues": [],
+                        "coprocessorMaxInFlight": 8192,
+                        "coprocessorModel": "",
                         "eventq_index": 0,
                         "issueLat": 1,
                         "opClasses": {
@@ -1515,10 +1519,6 @@
                         "opLat": 1,
                         "timings": [],
                         "unit": "",
-                        "vcixConfigKeys": [],
-                        "vcixConfigValues": [],
-                        "vcixMaxInFlight": 8192,
-                        "vcixModel": "",
                         "vcixReadyWarnCycles": 1000000
                     },
                     {
@@ -1527,6 +1527,10 @@
                         "name": "funcUnits19",
                         "path": "system.cpu.executeFuncUnits.funcUnits19",
                         "cantForwardFromFUIndices": [],
+                        "coprocessorConfigKeys": [],
+                        "coprocessorConfigValues": [],
+                        "coprocessorMaxInFlight": 8192,
+                        "coprocessorModel": "",
                         "eventq_index": 0,
                         "issueLat": 1,
                         "opClasses": {
@@ -1669,10 +1673,6 @@
                         "opLat": 1,
                         "timings": [],
                         "unit": "",
-                        "vcixConfigKeys": [],
-                        "vcixConfigValues": [],
-                        "vcixMaxInFlight": 8192,
-                        "vcixModel": "",
                         "vcixReadyWarnCycles": 1000000
                     },
                     {
@@ -1681,6 +1681,10 @@
                         "name": "funcUnits20",
                         "path": "system.cpu.executeFuncUnits.funcUnits20",
                         "cantForwardFromFUIndices": [],
+                        "coprocessorConfigKeys": [],
+                        "coprocessorConfigValues": [],
+                        "coprocessorMaxInFlight": 8192,
+                        "coprocessorModel": "",
                         "eventq_index": 0,
                         "issueLat": 1,
                         "opClasses": {
@@ -1823,10 +1827,6 @@
                         "opLat": 1,
                         "timings": [],
                         "unit": "",
-                        "vcixConfigKeys": [],
-                        "vcixConfigValues": [],
-                        "vcixMaxInFlight": 8192,
-                        "vcixModel": "",
                         "vcixReadyWarnCycles": 1000000
                     },
                     {
@@ -1835,6 +1835,10 @@
                         "name": "funcUnits21",
                         "path": "system.cpu.executeFuncUnits.funcUnits21",
                         "cantForwardFromFUIndices": [],
+                        "coprocessorConfigKeys": [],
+                        "coprocessorConfigValues": [],
+                        "coprocessorMaxInFlight": 8192,
+                        "coprocessorModel": "",
                         "eventq_index": 0,
                         "issueLat": 1,
                         "opClasses": {
@@ -2161,10 +2165,6 @@
                         "opLat": 1,
                         "timings": [],
                         "unit": "Vpu",
-                        "vcixConfigKeys": [],
-                        "vcixConfigValues": [],
-                        "vcixMaxInFlight": 8192,
-                        "vcixModel": "",
                         "vcixReadyWarnCycles": 1000000
                     },
                     {
@@ -2173,6 +2173,10 @@
                         "name": "funcUnits22",
                         "path": "system.cpu.executeFuncUnits.funcUnits22",
                         "cantForwardFromFUIndices": [],
+                        "coprocessorConfigKeys": [],
+                        "coprocessorConfigValues": [],
+                        "coprocessorMaxInFlight": 8192,
+                        "coprocessorModel": "",
                         "eventq_index": 0,
                         "issueLat": 1,
                         "opClasses": {
@@ -2195,10 +2199,6 @@
                         "opLat": 1,
                         "timings": [],
                         "unit": "",
-                        "vcixConfigKeys": [],
-                        "vcixConfigValues": [],
-                        "vcixMaxInFlight": 8192,
-                        "vcixModel": "",
                         "vcixReadyWarnCycles": 1000000
                     },
                     {
@@ -2207,6 +2207,10 @@
                         "name": "funcUnits23",
                         "path": "system.cpu.executeFuncUnits.funcUnits23",
                         "cantForwardFromFUIndices": [],
+                        "coprocessorConfigKeys": [],
+                        "coprocessorConfigValues": [],
+                        "coprocessorMaxInFlight": 8192,
+                        "coprocessorModel": "",
                         "eventq_index": 0,
                         "issueLat": 1,
                         "opClasses": {
@@ -2229,10 +2233,6 @@
                         "opLat": 1,
                         "timings": [],
                         "unit": "",
-                        "vcixConfigKeys": [],
-                        "vcixConfigValues": [],
-                        "vcixMaxInFlight": 8192,
-                        "vcixModel": "",
                         "vcixReadyWarnCycles": 1000000
                     },
                     {
@@ -2241,6 +2241,10 @@
                         "name": "funcUnits24",
                         "path": "system.cpu.executeFuncUnits.funcUnits24",
                         "cantForwardFromFUIndices": [],
+                        "coprocessorConfigKeys": [],
+                        "coprocessorConfigValues": [],
+                        "coprocessorMaxInFlight": 8192,
+                        "coprocessorModel": "",
                         "eventq_index": 0,
                         "issueLat": 1,
                         "opClasses": {
@@ -2383,10 +2387,6 @@
                         "opLat": 1,
                         "timings": [],
                         "unit": "",
-                        "vcixConfigKeys": [],
-                        "vcixConfigValues": [],
-                        "vcixMaxInFlight": 8192,
-                        "vcixModel": "",
                         "vcixReadyWarnCycles": 1000000
                     },
                     {
@@ -2395,6 +2395,10 @@
                         "name": "funcUnits25",
                         "path": "system.cpu.executeFuncUnits.funcUnits25",
                         "cantForwardFromFUIndices": [],
+                        "coprocessorConfigKeys": [],
+                        "coprocessorConfigValues": [],
+                        "coprocessorMaxInFlight": 8192,
+                        "coprocessorModel": "",
                         "eventq_index": 0,
                         "issueLat": 1,
                         "opClasses": {
@@ -2537,10 +2541,6 @@
                         "opLat": 1,
                         "timings": [],
                         "unit": "",
-                        "vcixConfigKeys": [],
-                        "vcixConfigValues": [],
-                        "vcixMaxInFlight": 8192,
-                        "vcixModel": "",
                         "vcixReadyWarnCycles": 1000000
                     },
                     {
@@ -2549,6 +2549,10 @@
                         "name": "funcUnits26",
                         "path": "system.cpu.executeFuncUnits.funcUnits26",
                         "cantForwardFromFUIndices": [],
+                        "coprocessorConfigKeys": [],
+                        "coprocessorConfigValues": [],
+                        "coprocessorMaxInFlight": 8192,
+                        "coprocessorModel": "",
                         "eventq_index": 0,
                         "issueLat": 1,
                         "opClasses": {
@@ -2875,10 +2879,6 @@
                         "opLat": 1,
                         "timings": [],
                         "unit": "Vpu",
-                        "vcixConfigKeys": [],
-                        "vcixConfigValues": [],
-                        "vcixMaxInFlight": 8192,
-                        "vcixModel": "",
                         "vcixReadyWarnCycles": 1000000
                     },
                     {
@@ -2887,6 +2887,10 @@
                         "name": "funcUnits27",
                         "path": "system.cpu.executeFuncUnits.funcUnits27",
                         "cantForwardFromFUIndices": [],
+                        "coprocessorConfigKeys": [],
+                        "coprocessorConfigValues": [],
+                        "coprocessorMaxInFlight": 8192,
+                        "coprocessorModel": "",
                         "eventq_index": 0,
                         "issueLat": 1,
                         "opClasses": {
@@ -2935,10 +2939,6 @@
                             }
                         ],
                         "unit": "",
-                        "vcixConfigKeys": [],
-                        "vcixConfigValues": [],
-                        "vcixMaxInFlight": 8192,
-                        "vcixModel": "",
                         "vcixReadyWarnCycles": 1000000
                     },
                     {
@@ -2947,6 +2947,10 @@
                         "name": "funcUnits28",
                         "path": "system.cpu.executeFuncUnits.funcUnits28",
                         "cantForwardFromFUIndices": [],
+                        "coprocessorConfigKeys": [],
+                        "coprocessorConfigValues": [],
+                        "coprocessorMaxInFlight": 8192,
+                        "coprocessorModel": "",
                         "eventq_index": 0,
                         "issueLat": 1,
                         "opClasses": {
@@ -2995,10 +2999,6 @@
                             }
                         ],
                         "unit": "",
-                        "vcixConfigKeys": [],
-                        "vcixConfigValues": [],
-                        "vcixMaxInFlight": 8192,
-                        "vcixModel": "",
                         "vcixReadyWarnCycles": 1000000
                     }
                 ]
@@ -3207,9 +3207,9 @@
                     "name": "workload",
                     "path": "system.cpu.workload",
                     "cmd": [
-                        "/workspace/PyTorchSim/.npuw_probe/regen10/dump/triton_3fysfbwny4y/cycle_bin"
+                        "/workspace/PyTorchSim/.npuw_probe/regen11/dump/triton_brask37fxwm/cycle_bin"
                     ],
-                    "cwd": "/workspace/PyTorchSim/.npuw_probe/regen10",
+                    "cwd": "/workspace/PyTorchSim/.npuw_probe/regen11",
                     "drivers": [],
                     "egid": 100,
                     "env": [],

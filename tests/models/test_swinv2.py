@@ -41,12 +41,17 @@ _SWINV2_TINY_W8 = dict(
     encoder_stride=32,
 )
 
+# (rtol, atol) per dtype; the bf16 atol is 3x the worst bf16 eager-vs-Inductor CPU diff at S = 128.
+_TOL = {"bfloat16": (5e-2, 0.5), "float32": (1e-4, 1e-4)}
+_DTYPES = {"float32": torch.float32, "bfloat16": torch.bfloat16}
 
-def test_swinv2(device, batch=2, depths=(2, 2, 2, 2)):
+
+def test_swinv2(device, batch=2, depths=(2, 2, 2, 2), dtype="bfloat16"):
     """SwinV2 tiny (window 8, 256 px), all four stages at their published widths, with
-    batch > 1. Two blocks per stage put a SHIFTED-window block (torch.roll composed with
-    window partition/reverse) in each of the first three stages -- the path that used to
-    fail codegen with "Unlinearized floor/mod in DMA index" (GitHub issue #251).
+    batch > 1, in `dtype` at its `_TOL`. Two blocks per stage put a SHIFTED-window block
+    (torch.roll composed with window partition/reverse) in each of the first three stages
+    -- the path that used to fail codegen with "Unlinearized floor/mod in DMA index"
+    (GitHub issue #251).
 
     The compiled call runs under `torch.device(device)`: Swinv2Layer.get_attn_mask builds
     its shifted-window mask with `torch.zeros(...)` and no `device=`, so without a default
@@ -62,8 +67,9 @@ def test_swinv2(device, batch=2, depths=(2, 2, 2, 2)):
     with torch.no_grad():
         model = Swinv2Model(cfg).eval()
         model.apply(_init_weights)
+        model.to(_DTYPES[dtype])
 
-        x = torch.randn(batch, 3, image_size, image_size)
+        x = torch.randn(batch, 3, image_size, image_size).to(_DTYPES[dtype])
         x_device = x.to(device=device)
         model.to(device)
         opt_model = torch.compile(dynamic=False)(model)
@@ -72,7 +78,7 @@ def test_swinv2(device, batch=2, depths=(2, 2, 2, 2)):
 
         out_cpu = model.cpu()(pixel_values=x.cpu()).last_hidden_state
 
-    check_result(f"SwinV2 shifted-window (batch={batch})", out_device, out_cpu)
+    check_result(f"SwinV2 shifted-window (batch={batch})", out_device, out_cpu, *_TOL[dtype])
     print("Max diff >", torch.max(torch.abs(out_device.cpu() - out_cpu)))
     print("SwinV2 Simulation Done")
 
@@ -80,8 +86,10 @@ def test_swinv2(device, batch=2, depths=(2, 2, 2, 2)):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run SwinV2 shifted-window test")
     parser.add_argument("--batch", type=int, default=2)
+    parser.add_argument("--dtype", type=str, default="bfloat16", choices=sorted(_DTYPES))
     args = parser.parse_args()
     test_swinv2(
         torch.device("npu:0"),
         batch=args.batch,
+        dtype=args.dtype,
     )

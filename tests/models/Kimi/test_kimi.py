@@ -38,7 +38,7 @@ alone (tests/one_layer.py) on `--seq S` or on one `--decode S` step after a KV c
 The vision rungs cut MoonViT to the same `--layers` and feed one 224 px image: a 16x16 grid of
 14 px patches, which the 2x2 patch merger folds into 64 image tokens inside the prompt.
 
-Judgement is spike's, against the same model on CPU. Run it with the Triton
+Judgement is spike's, against the same model's float32 copy on the CPU. Run it with the Triton
 route on and timing off:
 
     source /workspace/kimi-env.sh
@@ -65,7 +65,7 @@ import types
 import torch
 
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from result_check import check_routed_rows
+from result_check import check_routed_rows, f32, f32_reference
 import one_layer
 
 
@@ -339,6 +339,7 @@ def run_rung(rung, device, dtype="bfloat16", batch=1, seq_len=128, layers=2,
         cpu_ids, extra = _vision_inputs_thw(config, cpu_ids, *grid)
     elif grid is not None:
         cpu_ids, extra = _vision_inputs(config, cpu_ids, *grid)
+    extra = {k: v.to(_dtype_from_str(dtype)) if v.is_floating_point() else v for k, v in extra.items()}
 
     # BOTH COPIES ARE TAKEN BEFORE EITHER RUNS. MoonViT's 2D rope caches its
     # cis table in a plain attribute (`Rope2DPosEmb.freqs_cis`, not a buffer)
@@ -349,7 +350,7 @@ def run_rung(rung, device, dtype="bfloat16", batch=1, seq_len=128, layers=2,
     model_cpu = copy.deepcopy(model).cpu().eval()
     model_npu = copy.deepcopy(model).to(device).eval()
 
-    cpu_out = _logits(model_cpu(cpu_ids, **extra))
+    cpu_out = _logits(f32_reference(model_cpu)(cpu_ids, **f32(extra)))
 
     if compile_model:
         model_npu = torch.compile(model_npu, dynamic=False)

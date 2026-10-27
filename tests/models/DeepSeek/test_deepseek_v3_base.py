@@ -4,7 +4,7 @@ import argparse
 from pathlib import Path
 import torch
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from result_check import check_result, check_routed_rows
+from result_check import check_result, check_routed_rows, f32_reference
 import one_layer
 
 # DeepSeek-V3's remote modeling file (trust_remote_code) imports flash_attn, and
@@ -237,7 +237,7 @@ def run_deepseek_v3_base(
         cpu_out, npu_out = one_layer.run(model.model, model.model.layers[0], config, cpu_input_ids, device,
                                          decode=decode, compile_model=compile_model)
     else:
-        cpu_out = _extract_logits(model(cpu_input_ids))
+        cpu_out = _extract_logits(f32_reference(model)(cpu_input_ids))
         model_npu = model.to(device)
         if compile_model:
             model_npu = torch.compile(model_npu, dynamic=False)

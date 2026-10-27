@@ -22,7 +22,7 @@ import torch
 from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer, LlamaModel
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from result_check import check_result
+from result_check import check_result, f32, f32_reference
 import one_layer
 
 # meta-llama/Meta-Llama-3-8B, as published.
@@ -106,9 +106,9 @@ def run_decoder_layer_test(device, batch=1, seq_len=128, dtype="float32",
     print("Compiling Llama3 decoder layer with torch.compile(...)")
     compiled_layer = torch.compile(layer, dynamic=False)
 
-    out_cpu = cpu_layer(hidden_states=hidden_cpu, attention_mask=attn_mask_cpu,
-                        position_ids=position_ids_cpu,
-                        position_embeddings=pos_emb_cpu)[0]
+    out_cpu = f32_reference(cpu_layer)(hidden_states=hidden_cpu.float(), attention_mask=attn_mask_cpu.float(),
+                                       position_ids=position_ids_cpu,
+                                       position_embeddings=f32(pos_emb_cpu))[0]
     out_dev = compiled_layer(hidden_states=hidden_dev, attention_mask=attn_mask_dev,
                              position_ids=position_ids_dev,
                              position_embeddings=pos_emb_dev)[0]
@@ -151,7 +151,7 @@ def run_model_test(device, batch=1, seq_len=128, dtype="float32",
     print("Compiling Llama3 model with torch.compile(...)")
     compiled_model = torch.compile(model, dynamic=False)
 
-    out_cpu = cpu_model(input_ids=input_ids_cpu, attention_mask=attn_mask_cpu)
+    out_cpu = f32_reference(cpu_model)(input_ids=input_ids_cpu, attention_mask=attn_mask_cpu.float())
     out_dev = compiled_model(input_ids=input_ids_dev, attention_mask=attn_mask_dev)
 
     check_result("Llama3 Model (last_hidden_state)", out_dev.last_hidden_state,

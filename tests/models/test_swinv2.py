@@ -6,7 +6,7 @@ import torch
 from transformers import Swinv2Config, Swinv2Model
 
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from result_check import check_result
+from result_check import check_result, f32_reference
 
 
 def _init_weights(m):
@@ -76,7 +76,7 @@ def test_swinv2(device, batch=2, depths=(2, 2, 2, 2), dtype="bfloat16"):
         with torch.device(device):
             out_device = opt_model(pixel_values=x_device).last_hidden_state
 
-        out_cpu = model.cpu()(pixel_values=x.cpu()).last_hidden_state
+        out_cpu = f32_reference(model.cpu())(pixel_values=x.float()).last_hidden_state
 
     check_result(f"SwinV2 shifted-window (batch={batch})", out_device, out_cpu, *_TOL[dtype])
     print("Max diff >", torch.max(torch.abs(out_device.cpu() - out_cpu)))

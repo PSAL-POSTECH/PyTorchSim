@@ -84,7 +84,7 @@ import sys
 import torch
 
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from result_check import check_routed_rows
+from result_check import check_routed_rows, f32_reference
 import one_layer
 
 
@@ -349,7 +349,7 @@ def run_qwen(
             causal_mask = torch.triu(causal_mask, diagonal=1)
         attn_mask = causal_mask[None, None, :, :].expand(batch, 1, -1, -1)
 
-        cpu_out = _out(model_cpu(input_ids=input_ids, attention_mask=attn_mask))
+        cpu_out = _out(f32_reference(model_cpu)(input_ids=input_ids, attention_mask=attn_mask.float()))
 
         model_npu = copy.deepcopy(model_cpu).to(device).eval()
         if compile_model:

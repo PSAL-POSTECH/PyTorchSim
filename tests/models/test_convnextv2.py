@@ -6,7 +6,7 @@ import torch
 from transformers import ConvNextV2Config, ConvNextV2Model
 
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from result_check import check_result
+from result_check import check_result, f32_reference
 
 
 def _init_weights(m):
@@ -57,7 +57,7 @@ def test_convnextv2(device, batch=2, depths=(1, 1, 1, 1), dtype="bfloat16"):
         model.to(_DTYPES[dtype])
 
         x = torch.randn(batch, 3, image_size, image_size).to(_DTYPES[dtype])
-        out_cpu = model(pixel_values=x.cpu()).last_hidden_state
+        out_cpu = f32_reference(model)(pixel_values=x.float()).last_hidden_state
 
         model.to(device)
         opt_model = torch.compile(dynamic=False)(model)

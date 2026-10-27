@@ -85,7 +85,7 @@ import sys
 import torch
 
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from result_check import check_result
+from result_check import check_result, f32, f32_reference
 
 
 #: Published config per version: per-layer sizes as shipped, depth cut to `_LAYERS` on both sides.
@@ -298,13 +298,14 @@ def run_qwen_vl(device, version="2", seq=128, dtype="bfloat16",
 
     _assert_character(version, cfg, model_cpu)
 
-    cpu_out = _logits(model_cpu(**kwargs))
+    model_ref = f32_reference(model_cpu)
+    cpu_out = _logits(model_ref(**f32(kwargs)))
 
     # THE IMAGE MUST REACH THE OUTPUT. A tower whose result never lands in the
     # text sequence would agree with the NPU perfectly and prove nothing, and
     # the splice is exactly the part this file is here for.
     other = _inputs(version, seq, dtype, seed=1)
-    delta = (cpu_out - _logits(model_cpu(**other))).abs().max().item()
+    delta = (cpu_out - _logits(model_ref(**f32(other)))).abs().max().item()
     assert delta > 1e-4, \
         (f"changing the pixels moved the logits by {delta:.3e} -- the image is not "
          "reaching the output, so this run would not test the splice")

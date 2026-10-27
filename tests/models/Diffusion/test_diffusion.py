@@ -10,7 +10,7 @@ from diffusers.models.upsampling import Upsample2D
 from diffusers.models.resnet import ResnetBlock2D
 from diffusers.models.embeddings import Timesteps
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from result_check import check_result
+from result_check import check_result, f32_reference
 
 @torch.no_grad()
 def test_unet_conditional(
@@ -278,10 +278,10 @@ def test_unet2d_condition_model(
                                             dtype=_DTYPES[dtype])
 
     with torch.no_grad():
-        y_cpu = unet_cpu(
-            sample=x_cpu,
+        y_cpu = f32_reference(unet_cpu)(
+            sample=x_cpu.float(),
             timestep=t_cpu,
-            encoder_hidden_states=encoder_hidden_states_cpu,
+            encoder_hidden_states=encoder_hidden_states_cpu.float(),
         ).sample
 
     unet_dev = unet_cpu.to(device).eval()

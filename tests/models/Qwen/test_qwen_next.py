@@ -71,7 +71,7 @@ import sys
 import torch
 
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from result_check import check_result, check_routed_rows
+from result_check import check_result, check_routed_rows, f32, f32_reference
 import one_layer
 
 # (rtol, atol) per dtype; the bf16 atol is 3x the worst bf16 eager-vs-Inductor CPU diff at S = 128.
@@ -216,7 +216,7 @@ def run_family(family, seq_len=128, dtype="bfloat16", rtol=None, atol=None, comp
         return out.last_hidden_state if hasattr(out, "last_hidden_state") else out[0]
 
     with torch.no_grad():
-        cpu_out = first(model(**kw)).clone()
+        cpu_out = first(f32_reference(model)(**f32(kw)))
 
     model_npu = model.to(device)
     kw_npu = {k: (v.to(device) if torch.is_tensor(v) else v) for k, v in kw.items()}
@@ -267,7 +267,7 @@ def run_audio(family, dtype="bfloat16", rtol=None, atol=None, compile_it=True):
         return out.last_hidden_state if hasattr(out, "last_hidden_state") else out[0]
 
     with torch.no_grad():
-        cpu_out = first(model(**kw)).clone()
+        cpu_out = first(f32_reference(model)(**f32(kw)))
 
     model_npu = model.to("npu")
     kw_npu = {k: (v.to("npu") if torch.is_tensor(v) else v) for k, v in kw.items()}

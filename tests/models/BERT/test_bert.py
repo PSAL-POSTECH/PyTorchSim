@@ -14,7 +14,7 @@ vocab, in bfloat16 by default (``--dtype float32`` for the old run). The input i
 one pass of ``--seq`` tokens, batch 1, at most 512 positions. ``--part layer``
 runs the first encoder layer alone (tests/one_layer.py); an encoder has no decode.
 
-Judgement is spike's, against the same model on CPU. Run it with the Triton
+Judgement is spike's, against the same model's float32 copy on the CPU. Run it with the Triton
 route on and timing off (rule 13a):
 
     source .envrc
@@ -30,7 +30,7 @@ import sys
 import torch
 
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from result_check import check_result
+from result_check import check_result, f32_reference
 import one_layer
 
 
@@ -133,9 +133,9 @@ def run_bert(
                                          compile_model=compile_model, attention_mask=attention_mask,
                                          token_type_ids=token_type_ids)
     else:
-        cpu_out = _tensor(model_cpu(input_ids=input_ids,
-                                    attention_mask=attention_mask,
-                                    token_type_ids=token_type_ids))
+        cpu_out = _tensor(f32_reference(model_cpu)(input_ids=input_ids,
+                                                   attention_mask=attention_mask,
+                                                   token_type_ids=token_type_ids))
 
         model_npu = copy.deepcopy(model_cpu).to(device).eval()
         if compile_model:

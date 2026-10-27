@@ -1,5 +1,5 @@
 """The result check PyTorchSim test files share: check_result compares an npu result to its CPU
-reference and prints the line the CI sweep reads.
+reference and prints the line the CI sweep reads; check_routed_rows is its form for a MoE layer's output.
 
 Module name is unique (not ``tests._utils``) because ``ultralytics``
 ships a top-level ``tests`` package in site-packages that would shadow it.
@@ -43,3 +43,16 @@ def check_result(name, out, expected, rtol=1e-4, atol=1e-4):
     except Exception:
         pass
     sys.exit(1)
+
+
+def check_routed_rows(name, out, expected, rtol, atol, row_share):
+    """check_result over the token rows (last dim) of `out`, of which up to `row_share` may differ: in bf16 a
+    router near-tie flips for a few tokens, which then take other experts. More than that fails them all."""
+    out_rows = (out.cpu() if hasattr(out, "cpu") else out).reshape(-1, out.shape[-1])
+    exp_rows = (expected.cpu() if hasattr(expected, "cpu") else expected).reshape(-1, expected.shape[-1])
+    close = torch.isclose(out_rows, exp_rows, rtol=rtol, atol=atol).all(dim=-1)
+    apart, allowed = int((~close).sum()), int(row_share * close.numel())
+    print(f"{name}: {apart} of {close.numel()} token rows routed apart, {allowed} allowed")
+    if apart > allowed:
+        check_result(name, out_rows, exp_rows, rtol=rtol, atol=atol)
+    check_result(name, out_rows[close], exp_rows[close], rtol=rtol, atol=atol)

@@ -236,24 +236,31 @@ _SD15_UNET = dict(
 )
 
 
-def build_sd15_unet():
-    """The full SD-1.5 UNet at its published config, random weights, no checkpoint."""
-    return UNet2DConditionModel(**_SD15_UNET).to("cpu").eval()
+# (rtol, atol) per dtype; the bf16 atol is 3x the worst bf16 eager-vs-Inductor CPU diff at S = 128.
+_UNET_TOL = {"bfloat16": (5e-2, 0.1), "float32": (1e-4, 1e-4)}
+_DTYPES = {"float32": torch.float32, "float16": torch.float16, "bfloat16": torch.bfloat16}
+
+
+def build_sd15_unet(dtype=torch.float32):
+    """The full SD-1.5 UNet at its published config, random weights, no checkpoint, in `dtype`."""
+    return UNet2DConditionModel(**_SD15_UNET).to("cpu", dtype).eval()
 
 
 def test_unet2d_condition_model(
     device,
     batch=1,
     seq_len=77,
-    rtol=1e-4,
-    atol=1e-4,
+    rtol=None,
+    atol=None,
     stride=None,
+    dtype="bfloat16",
 ):
-    """The whole SD-1.5 UNet on a B x 4 x 64 x 64 latent and a 77-token CLIP text state.
-
-    `seq_len` is the CLIP text length the cross-attention reads, not an LLM sequence.
-    """
-    unet_cpu = build_sd15_unet()
+    """The whole SD-1.5 UNet on a B x 4 x 64 x 64 latent and a 77-token CLIP text state, weights and inputs
+    in `dtype`, checked at its `_UNET_TOL` unless given. `seq_len` is the CLIP text length the
+    cross-attention reads, not an LLM sequence."""
+    tol = _UNET_TOL.get(dtype, _UNET_TOL["float32"])
+    rtol, atol = tol[0] if rtol is None else rtol, tol[1] if atol is None else atol
+    unet_cpu = build_sd15_unet(_DTYPES[dtype])
     in_channels = unet_cpu.config.in_channels
     sample_size = unet_cpu.config.sample_size
     cross_attention_dim = unet_cpu.config.cross_attention_dim
@@ -261,12 +268,14 @@ def test_unet2d_condition_model(
     g = torch.Generator().manual_seed(0)
 
     if stride is not None:
-        x_cpu = torch.empty_strided([batch, in_channels, sample_size, sample_size], stride).normal_(generator=g)
+        x_cpu = torch.empty_strided([batch, in_channels, sample_size, sample_size], stride,
+                                    dtype=_DTYPES[dtype]).normal_(generator=g)
     else:
-        x_cpu = torch.randn(batch, in_channels, sample_size, sample_size, generator=g)
+        x_cpu = torch.randn(batch, in_channels, sample_size, sample_size, generator=g, dtype=_DTYPES[dtype])
 
     t_cpu = torch.randint(low=0, high=1000, size=(batch,), generator=g, dtype=torch.long)
-    encoder_hidden_states_cpu = torch.randn(batch, seq_len, cross_attention_dim, generator=g)
+    encoder_hidden_states_cpu = torch.randn(batch, seq_len, cross_attention_dim, generator=g,
+                                            dtype=_DTYPES[dtype])
 
     with torch.no_grad():
         y_cpu = unet_cpu(
@@ -627,9 +636,9 @@ if __name__ == "__main__":
     parser.add_argument("--model", type=str, default="runwayml/stable-diffusion-v1-5",
                         help="Diffusers model id (e.g., Qwen/Qwen-Image)")
     parser.add_argument("--batch", type=int, default=1)
-    parser.add_argument("--dtype", type=str, default="float32", choices=["float32", "float16", "bfloat16"])
-    parser.add_argument("--rtol", type=float, default=1e-4)
-    parser.add_argument("--atol", type=float, default=1e-4)
+    parser.add_argument("--dtype", type=str, default="bfloat16", choices=["float32", "float16", "bfloat16"])
+    parser.add_argument("--rtol", type=float, default=None, help="default: _UNET_TOL of --dtype")
+    parser.add_argument("--atol", type=float, default=None, help="default: _UNET_TOL of --dtype")
     parser.add_argument("--prompt", type=str, default="a cat in a hat")
     args = parser.parse_args()
 
@@ -645,7 +654,7 @@ if __name__ == "__main__":
     #test_cross_attn_up_block2d(device)
     #test_flip_sin_to_cos_embedding(device)
     #test_timesteps(device)
-    test_unet2d_condition_model(device)
+    test_unet2d_condition_model(device, batch=args.batch, rtol=args.rtol, atol=args.atol, dtype=args.dtype)
     #test_unet_conditional(
     #    device=device,
     #    model_id=args.model,

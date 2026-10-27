@@ -1,1 +1,3476 @@
-{"system": {"cpu": {"executeIssueLimit": 12}}}
+{
+    "type": "Root",
+    "cxx_class": "gem5::Root",
+    "name": null,
+    "path": "root",
+    "eventq_index": 0,
+    "full_system": false,
+    "sim_quantum": 0,
+    "time_sync_enable": false,
+    "time_sync_period": 100000000000,
+    "time_sync_spin_threshold": 100000000,
+    "system": {
+        "type": "System",
+        "cxx_class": "gem5::System",
+        "name": "system",
+        "path": "system",
+        "auto_unlink_shared_backstore": false,
+        "cache_line_size": 64,
+        "eventq_index": 0,
+        "exit_on_work_items": false,
+        "external_memory_ranges": [],
+        "init_param": 0,
+        "m5ops_base": 0,
+        "mem_mode": "timing",
+        "mem_ranges": [
+            "0:17179869184"
+        ],
+        "memories": [
+            "system.spad"
+        ],
+        "mmap_using_noreserve": false,
+        "multi_thread": false,
+        "num_work_ids": 16,
+        "readfile": "",
+        "redirect_paths": [],
+        "shadow_rom_ranges": [],
+        "shared_backstore": "",
+        "symbolfile": "",
+        "thermal_components": [],
+        "thermal_model": null,
+        "work_begin_ckpt_count": 0,
+        "work_begin_cpu_id_exit": -1,
+        "work_begin_exit_count": 0,
+        "work_cpus_ckpt_count": 0,
+        "work_end_ckpt_count": 0,
+        "work_end_exit_count": 0,
+        "work_item_id": -1,
+        "workload": {
+            "type": "RiscvEmuLinux",
+            "cxx_class": "gem5::RiscvISA::EmuLinux",
+            "name": "workload",
+            "path": "system.workload",
+            "eventq_index": 0,
+            "remote_gdb_port": "#7000",
+            "wait_for_remote_gdb": false
+        },
+        "clk_domain": {
+            "type": "SrcClockDomain",
+            "cxx_class": "gem5::SrcClockDomain",
+            "name": "clk_domain",
+            "path": "system.clk_domain",
+            "clock": [
+                1064
+            ],
+            "domain_id": -1,
+            "eventq_index": 0,
+            "init_perf_level": 0,
+            "voltage_domain": {
+                "type": "VoltageDomain",
+                "cxx_class": "gem5::VoltageDomain",
+                "name": "voltage_domain",
+                "path": "system.clk_domain.voltage_domain",
+                "eventq_index": 0,
+                "voltage": [
+                    1.0
+                ]
+            }
+        },
+        "cpu": {
+            "type": "BaseMinorCPU",
+            "cxx_class": "gem5::MinorCPU",
+            "name": "cpu",
+            "path": "system.cpu",
+            "branchPred": {
+                "type": "BranchPredictor",
+                "cxx_class": "gem5::branch_prediction::BPredUnit",
+                "name": "branchPred",
+                "path": "system.cpu.branchPred",
+                "btb": {
+                    "type": "SimpleBTB",
+                    "cxx_class": "gem5::branch_prediction::SimpleBTB",
+                    "name": "btb",
+                    "path": "system.cpu.branchPred.btb",
+                    "associativity": 1,
+                    "btbIndexingPolicy": {
+                        "type": "BTBSetAssociative",
+                        "cxx_class": "gem5::BTBSetAssociative",
+                        "name": "btbIndexingPolicy",
+                        "path": "system.cpu.branchPred.btb.btbIndexingPolicy",
+                        "assoc": 1,
+                        "eventq_index": 0,
+                        "numThreads": 1,
+                        "num_entries": 4096,
+                        "set_shift": 0,
+                        "tag_bits": 16
+                    },
+                    "btbReplPolicy": {
+                        "type": "LRURP",
+                        "cxx_class": "gem5::replacement_policy::LRU",
+                        "name": "btbReplPolicy",
+                        "path": "system.cpu.branchPred.btb.btbReplPolicy",
+                        "eventq_index": 0
+                    },
+                    "clk_domain": "system.clk_domain",
+                    "eventq_index": 0,
+                    "instShiftAmt": 0,
+                    "numEntries": 4096,
+                    "numThreads": 1,
+                    "power_model": [],
+                    "power_state": {
+                        "type": "PowerState",
+                        "cxx_class": "gem5::PowerState",
+                        "name": "power_state",
+                        "path": "system.cpu.branchPred.btb.power_state",
+                        "clk_gate_bins": 20,
+                        "clk_gate_max": 1000000000000,
+                        "clk_gate_min": 1000,
+                        "default_state": "UNDEFINED",
+                        "eventq_index": 0,
+                        "leaders": [],
+                        "possible_states": []
+                    },
+                    "tagBits": 16
+                },
+                "conditionalBranchPred": {
+                    "type": "TournamentBP",
+                    "cxx_class": "gem5::branch_prediction::TournamentBP",
+                    "name": "conditionalBranchPred",
+                    "path": "system.cpu.branchPred.conditionalBranchPred",
+                    "choiceCtrBits": 2,
+                    "choicePredictorSize": 8192,
+                    "eventq_index": 0,
+                    "globalCtrBits": 2,
+                    "globalPredictorSize": 8192,
+                    "instShiftAmt": 0,
+                    "localCtrBits": 2,
+                    "localHistoryTableSize": 2048,
+                    "localPredictorSize": 2048,
+                    "numThreads": 1,
+                    "speculativeHistUpdate": true
+                },
+                "eventq_index": 0,
+                "indirectBranchPred": {
+                    "type": "SimpleIndirectPredictor",
+                    "cxx_class": "gem5::branch_prediction::SimpleIndirectPredictor",
+                    "name": "indirectBranchPred",
+                    "path": "system.cpu.branchPred.indirectBranchPred",
+                    "eventq_index": 0,
+                    "indirectGHRBits": 13,
+                    "indirectHashGHR": true,
+                    "indirectHashTargets": true,
+                    "indirectPathLength": 3,
+                    "indirectSets": 256,
+                    "indirectTagSize": 16,
+                    "indirectWays": 2,
+                    "instShiftAmt": 0,
+                    "numThreads": 1,
+                    "speculativePathLength": 256
+                },
+                "instShiftAmt": 0,
+                "numThreads": 1,
+                "ras": {
+                    "type": "ReturnAddrStack",
+                    "cxx_class": "gem5::branch_prediction::ReturnAddrStack",
+                    "name": "ras",
+                    "path": "system.cpu.branchPred.ras",
+                    "eventq_index": 0,
+                    "numEntries": 16,
+                    "numThreads": 1
+                },
+                "requiresBTBHit": false,
+                "speculativeHistUpdate": true,
+                "takenOnlyHistory": false,
+                "updateBTBAtSquash": true
+            },
+            "checker": null,
+            "clk_domain": "system.clk_domain",
+            "cpu_id": -1,
+            "decodeCycleInput": true,
+            "decodeInputBufferSize": 8,
+            "decodeInputWidth": 8,
+            "decodeToExecuteForwardDelay": 1,
+            "decoder": [
+                {
+                    "type": "RiscvDecoder",
+                    "cxx_class": "gem5::RiscvISA::Decoder",
+                    "name": "decoder",
+                    "path": "system.cpu.decoder",
+                    "eventq_index": 0,
+                    "isa": "system.cpu.isa"
+                }
+            ],
+            "do_checkpoint_insts": true,
+            "do_statistics_insts": true,
+            "enableIdling": true,
+            "eventq_index": 0,
+            "executeAllowEarlyMemoryIssue": true,
+            "executeBranchDelay": 1,
+            "executeCommitLimit": 12,
+            "executeCycleInput": true,
+            "executeFuncUnits": {
+                "type": "MinorFUPool",
+                "cxx_class": "gem5::MinorFUPool",
+                "name": "executeFuncUnits",
+                "path": "system.cpu.executeFuncUnits",
+                "eventq_index": 0,
+                "funcUnits": [
+                    {
+                        "type": "MinorFU",
+                        "cxx_class": "gem5::MinorFU",
+                        "name": "funcUnits00",
+                        "path": "system.cpu.executeFuncUnits.funcUnits00",
+                        "cantForwardFromFUIndices": [],
+                        "eventq_index": 0,
+                        "issueLat": 1,
+                        "opClasses": {
+                            "type": "MinorOpClassSet",
+                            "cxx_class": "gem5::MinorOpClassSet",
+                            "name": "opClasses",
+                            "path": "system.cpu.executeFuncUnits.funcUnits00.opClasses",
+                            "eventq_index": 0,
+                            "opClasses": [
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses0",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits00.opClasses.opClasses0",
+                                    "eventq_index": 0,
+                                    "opClass": "FloatAdd"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses1",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits00.opClasses.opClasses1",
+                                    "eventq_index": 0,
+                                    "opClass": "FloatCmp"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses2",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits00.opClasses.opClasses2",
+                                    "eventq_index": 0,
+                                    "opClass": "FloatCvt"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses3",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits00.opClasses.opClasses3",
+                                    "eventq_index": 0,
+                                    "opClass": "FloatMult"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses4",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits00.opClasses.opClasses4",
+                                    "eventq_index": 0,
+                                    "opClass": "FloatMultAcc"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses5",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits00.opClasses.opClasses5",
+                                    "eventq_index": 0,
+                                    "opClass": "FloatDiv"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses6",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits00.opClasses.opClasses6",
+                                    "eventq_index": 0,
+                                    "opClass": "FloatMisc"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses7",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits00.opClasses.opClasses7",
+                                    "eventq_index": 0,
+                                    "opClass": "FloatSqrt"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses8",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits00.opClasses.opClasses8",
+                                    "eventq_index": 0,
+                                    "opClass": "Bf16Cvt"
+                                }
+                            ]
+                        },
+                        "opLat": 1,
+                        "timings": [],
+                        "unit": "",
+                        "vcixConfigKeys": [],
+                        "vcixConfigValues": [],
+                        "vcixMaxInFlight": 8192,
+                        "vcixModel": "",
+                        "vcixReadyWarnCycles": 1000000
+                    },
+                    {
+                        "type": "MinorFU",
+                        "cxx_class": "gem5::MinorFU",
+                        "name": "funcUnits01",
+                        "path": "system.cpu.executeFuncUnits.funcUnits01",
+                        "cantForwardFromFUIndices": [],
+                        "eventq_index": 0,
+                        "issueLat": 1,
+                        "opClasses": {
+                            "type": "MinorOpClassSet",
+                            "cxx_class": "gem5::MinorOpClassSet",
+                            "name": "opClasses",
+                            "path": "system.cpu.executeFuncUnits.funcUnits01.opClasses",
+                            "eventq_index": 0,
+                            "opClasses": [
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits01.opClasses.opClasses",
+                                    "eventq_index": 0,
+                                    "opClass": "IntAlu"
+                                }
+                            ]
+                        },
+                        "opLat": 1,
+                        "timings": [
+                            {
+                                "type": "MinorFUTiming",
+                                "cxx_class": "gem5::MinorFUTiming",
+                                "name": "timings",
+                                "path": "system.cpu.executeFuncUnits.funcUnits01.timings",
+                                "description": "Int",
+                                "eventq_index": 0,
+                                "extraAssumedLat": 0,
+                                "extraCommitLat": 0,
+                                "extraCommitLatExpr": null,
+                                "mask": 0,
+                                "match": 0,
+                                "opClasses": {
+                                    "type": "MinorOpClassSet",
+                                    "cxx_class": "gem5::MinorOpClassSet",
+                                    "name": "opClasses",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits01.timings.opClasses",
+                                    "eventq_index": 0,
+                                    "opClasses": []
+                                },
+                                "srcRegsRelativeLats": [
+                                    2
+                                ],
+                                "suppress": false
+                            }
+                        ],
+                        "unit": "",
+                        "vcixConfigKeys": [],
+                        "vcixConfigValues": [],
+                        "vcixMaxInFlight": 8192,
+                        "vcixModel": "",
+                        "vcixReadyWarnCycles": 1000000
+                    },
+                    {
+                        "type": "MinorFU",
+                        "cxx_class": "gem5::MinorFU",
+                        "name": "funcUnits02",
+                        "path": "system.cpu.executeFuncUnits.funcUnits02",
+                        "cantForwardFromFUIndices": [],
+                        "eventq_index": 0,
+                        "issueLat": 1,
+                        "opClasses": {
+                            "type": "MinorOpClassSet",
+                            "cxx_class": "gem5::MinorOpClassSet",
+                            "name": "opClasses",
+                            "path": "system.cpu.executeFuncUnits.funcUnits02.opClasses",
+                            "eventq_index": 0,
+                            "opClasses": [
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits02.opClasses.opClasses",
+                                    "eventq_index": 0,
+                                    "opClass": "IntAlu"
+                                }
+                            ]
+                        },
+                        "opLat": 1,
+                        "timings": [
+                            {
+                                "type": "MinorFUTiming",
+                                "cxx_class": "gem5::MinorFUTiming",
+                                "name": "timings",
+                                "path": "system.cpu.executeFuncUnits.funcUnits02.timings",
+                                "description": "Int",
+                                "eventq_index": 0,
+                                "extraAssumedLat": 0,
+                                "extraCommitLat": 0,
+                                "extraCommitLatExpr": null,
+                                "mask": 0,
+                                "match": 0,
+                                "opClasses": {
+                                    "type": "MinorOpClassSet",
+                                    "cxx_class": "gem5::MinorOpClassSet",
+                                    "name": "opClasses",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits02.timings.opClasses",
+                                    "eventq_index": 0,
+                                    "opClasses": []
+                                },
+                                "srcRegsRelativeLats": [
+                                    2
+                                ],
+                                "suppress": false
+                            }
+                        ],
+                        "unit": "",
+                        "vcixConfigKeys": [],
+                        "vcixConfigValues": [],
+                        "vcixMaxInFlight": 8192,
+                        "vcixModel": "",
+                        "vcixReadyWarnCycles": 1000000
+                    },
+                    {
+                        "type": "MinorFU",
+                        "cxx_class": "gem5::MinorFU",
+                        "name": "funcUnits03",
+                        "path": "system.cpu.executeFuncUnits.funcUnits03",
+                        "cantForwardFromFUIndices": [],
+                        "eventq_index": 0,
+                        "issueLat": 1,
+                        "opClasses": {
+                            "type": "MinorOpClassSet",
+                            "cxx_class": "gem5::MinorOpClassSet",
+                            "name": "opClasses",
+                            "path": "system.cpu.executeFuncUnits.funcUnits03.opClasses",
+                            "eventq_index": 0,
+                            "opClasses": [
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits03.opClasses.opClasses",
+                                    "eventq_index": 0,
+                                    "opClass": "IntMult"
+                                }
+                            ]
+                        },
+                        "opLat": 1,
+                        "timings": [
+                            {
+                                "type": "MinorFUTiming",
+                                "cxx_class": "gem5::MinorFUTiming",
+                                "name": "timings",
+                                "path": "system.cpu.executeFuncUnits.funcUnits03.timings",
+                                "description": "Mul",
+                                "eventq_index": 0,
+                                "extraAssumedLat": 0,
+                                "extraCommitLat": 0,
+                                "extraCommitLatExpr": null,
+                                "mask": 0,
+                                "match": 0,
+                                "opClasses": {
+                                    "type": "MinorOpClassSet",
+                                    "cxx_class": "gem5::MinorOpClassSet",
+                                    "name": "opClasses",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits03.timings.opClasses",
+                                    "eventq_index": 0,
+                                    "opClasses": []
+                                },
+                                "srcRegsRelativeLats": [
+                                    0
+                                ],
+                                "suppress": false
+                            }
+                        ],
+                        "unit": "",
+                        "vcixConfigKeys": [],
+                        "vcixConfigValues": [],
+                        "vcixMaxInFlight": 8192,
+                        "vcixModel": "",
+                        "vcixReadyWarnCycles": 1000000
+                    },
+                    {
+                        "type": "MinorFU",
+                        "cxx_class": "gem5::MinorFU",
+                        "name": "funcUnits04",
+                        "path": "system.cpu.executeFuncUnits.funcUnits04",
+                        "cantForwardFromFUIndices": [],
+                        "eventq_index": 0,
+                        "issueLat": 9,
+                        "opClasses": {
+                            "type": "MinorOpClassSet",
+                            "cxx_class": "gem5::MinorOpClassSet",
+                            "name": "opClasses",
+                            "path": "system.cpu.executeFuncUnits.funcUnits04.opClasses",
+                            "eventq_index": 0,
+                            "opClasses": [
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits04.opClasses.opClasses",
+                                    "eventq_index": 0,
+                                    "opClass": "IntDiv"
+                                }
+                            ]
+                        },
+                        "opLat": 1,
+                        "timings": [],
+                        "unit": "",
+                        "vcixConfigKeys": [],
+                        "vcixConfigValues": [],
+                        "vcixMaxInFlight": 8192,
+                        "vcixModel": "",
+                        "vcixReadyWarnCycles": 1000000
+                    },
+                    {
+                        "type": "MinorFU",
+                        "cxx_class": "gem5::MinorFU",
+                        "name": "funcUnits05",
+                        "path": "system.cpu.executeFuncUnits.funcUnits05",
+                        "cantForwardFromFUIndices": [],
+                        "eventq_index": 0,
+                        "issueLat": 1,
+                        "opClasses": {
+                            "type": "MinorOpClassSet",
+                            "cxx_class": "gem5::MinorOpClassSet",
+                            "name": "opClasses",
+                            "path": "system.cpu.executeFuncUnits.funcUnits05.opClasses",
+                            "eventq_index": 0,
+                            "opClasses": [
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits05.opClasses.opClasses",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdPredAlu"
+                                }
+                            ]
+                        },
+                        "opLat": 1,
+                        "timings": [
+                            {
+                                "type": "MinorFUTiming",
+                                "cxx_class": "gem5::MinorFUTiming",
+                                "name": "timings",
+                                "path": "system.cpu.executeFuncUnits.funcUnits05.timings",
+                                "description": "Pred",
+                                "eventq_index": 0,
+                                "extraAssumedLat": 0,
+                                "extraCommitLat": 0,
+                                "extraCommitLatExpr": null,
+                                "mask": 0,
+                                "match": 0,
+                                "opClasses": {
+                                    "type": "MinorOpClassSet",
+                                    "cxx_class": "gem5::MinorOpClassSet",
+                                    "name": "opClasses",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits05.timings.opClasses",
+                                    "eventq_index": 0,
+                                    "opClasses": []
+                                },
+                                "srcRegsRelativeLats": [
+                                    2
+                                ],
+                                "suppress": false
+                            }
+                        ],
+                        "unit": "",
+                        "vcixConfigKeys": [],
+                        "vcixConfigValues": [],
+                        "vcixMaxInFlight": 8192,
+                        "vcixModel": "",
+                        "vcixReadyWarnCycles": 1000000
+                    },
+                    {
+                        "type": "MinorFU",
+                        "cxx_class": "gem5::MinorFU",
+                        "name": "funcUnits06",
+                        "path": "system.cpu.executeFuncUnits.funcUnits06",
+                        "cantForwardFromFUIndices": [],
+                        "eventq_index": 0,
+                        "issueLat": 1,
+                        "opClasses": {
+                            "type": "MinorOpClassSet",
+                            "cxx_class": "gem5::MinorOpClassSet",
+                            "name": "opClasses",
+                            "path": "system.cpu.executeFuncUnits.funcUnits06.opClasses",
+                            "eventq_index": 0,
+                            "opClasses": [
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses00",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits06.opClasses.opClasses00",
+                                    "eventq_index": 0,
+                                    "opClass": "MemRead"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses01",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits06.opClasses.opClasses01",
+                                    "eventq_index": 0,
+                                    "opClass": "MemWrite"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses02",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits06.opClasses.opClasses02",
+                                    "eventq_index": 0,
+                                    "opClass": "FloatMemRead"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses03",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits06.opClasses.opClasses03",
+                                    "eventq_index": 0,
+                                    "opClass": "FloatMemWrite"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses04",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits06.opClasses.opClasses04",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdUnitStrideLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses05",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits06.opClasses.opClasses05",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdUnitStrideStore"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses06",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits06.opClasses.opClasses06",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdUnitStrideMaskLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses07",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits06.opClasses.opClasses07",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdUnitStrideMaskStore"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses08",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits06.opClasses.opClasses08",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdStridedLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses09",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits06.opClasses.opClasses09",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdStridedStore"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses10",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits06.opClasses.opClasses10",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdIndexedLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses11",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits06.opClasses.opClasses11",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdIndexedStore"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses12",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits06.opClasses.opClasses12",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdUnitStrideFaultOnlyFirstLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses13",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits06.opClasses.opClasses13",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdWholeRegisterLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses14",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits06.opClasses.opClasses14",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdWholeRegisterStore"
+                                }
+                            ]
+                        },
+                        "opLat": 1,
+                        "timings": [
+                            {
+                                "type": "MinorFUTiming",
+                                "cxx_class": "gem5::MinorFUTiming",
+                                "name": "timings",
+                                "path": "system.cpu.executeFuncUnits.funcUnits06.timings",
+                                "description": "Mem",
+                                "eventq_index": 0,
+                                "extraAssumedLat": 2,
+                                "extraCommitLat": 0,
+                                "extraCommitLatExpr": null,
+                                "mask": 0,
+                                "match": 0,
+                                "opClasses": {
+                                    "type": "MinorOpClassSet",
+                                    "cxx_class": "gem5::MinorOpClassSet",
+                                    "name": "opClasses",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits06.timings.opClasses",
+                                    "eventq_index": 0,
+                                    "opClasses": []
+                                },
+                                "srcRegsRelativeLats": [
+                                    1
+                                ],
+                                "suppress": false
+                            }
+                        ],
+                        "unit": "",
+                        "vcixConfigKeys": [],
+                        "vcixConfigValues": [],
+                        "vcixMaxInFlight": 8192,
+                        "vcixModel": "",
+                        "vcixReadyWarnCycles": 1000000
+                    },
+                    {
+                        "type": "MinorFU",
+                        "cxx_class": "gem5::MinorFU",
+                        "name": "funcUnits07",
+                        "path": "system.cpu.executeFuncUnits.funcUnits07",
+                        "cantForwardFromFUIndices": [],
+                        "eventq_index": 0,
+                        "issueLat": 1,
+                        "opClasses": {
+                            "type": "MinorOpClassSet",
+                            "cxx_class": "gem5::MinorOpClassSet",
+                            "name": "opClasses",
+                            "path": "system.cpu.executeFuncUnits.funcUnits07.opClasses",
+                            "eventq_index": 0,
+                            "opClasses": [
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses0",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits07.opClasses.opClasses0",
+                                    "eventq_index": 0,
+                                    "opClass": "InstPrefetch"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses1",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits07.opClasses.opClasses1",
+                                    "eventq_index": 0,
+                                    "opClass": "System"
+                                }
+                            ]
+                        },
+                        "opLat": 1,
+                        "timings": [],
+                        "unit": "",
+                        "vcixConfigKeys": [],
+                        "vcixConfigValues": [],
+                        "vcixMaxInFlight": 8192,
+                        "vcixModel": "",
+                        "vcixReadyWarnCycles": 1000000
+                    },
+                    {
+                        "type": "MinorFU",
+                        "cxx_class": "gem5::MinorFU",
+                        "name": "funcUnits08",
+                        "path": "system.cpu.executeFuncUnits.funcUnits08",
+                        "cantForwardFromFUIndices": [],
+                        "eventq_index": 0,
+                        "issueLat": 1,
+                        "opClasses": {
+                            "type": "MinorOpClassSet",
+                            "cxx_class": "gem5::MinorOpClassSet",
+                            "name": "opClasses",
+                            "path": "system.cpu.executeFuncUnits.funcUnits08.opClasses",
+                            "eventq_index": 0,
+                            "opClasses": [
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses0",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits08.opClasses.opClasses0",
+                                    "eventq_index": 0,
+                                    "opClass": "FloatAdd"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses1",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits08.opClasses.opClasses1",
+                                    "eventq_index": 0,
+                                    "opClass": "FloatCmp"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses2",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits08.opClasses.opClasses2",
+                                    "eventq_index": 0,
+                                    "opClass": "FloatCvt"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses3",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits08.opClasses.opClasses3",
+                                    "eventq_index": 0,
+                                    "opClass": "FloatMult"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses4",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits08.opClasses.opClasses4",
+                                    "eventq_index": 0,
+                                    "opClass": "FloatMultAcc"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses5",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits08.opClasses.opClasses5",
+                                    "eventq_index": 0,
+                                    "opClass": "FloatDiv"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses6",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits08.opClasses.opClasses6",
+                                    "eventq_index": 0,
+                                    "opClass": "FloatMisc"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses7",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits08.opClasses.opClasses7",
+                                    "eventq_index": 0,
+                                    "opClass": "FloatSqrt"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses8",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits08.opClasses.opClasses8",
+                                    "eventq_index": 0,
+                                    "opClass": "Bf16Cvt"
+                                }
+                            ]
+                        },
+                        "opLat": 1,
+                        "timings": [],
+                        "unit": "",
+                        "vcixConfigKeys": [],
+                        "vcixConfigValues": [],
+                        "vcixMaxInFlight": 8192,
+                        "vcixModel": "",
+                        "vcixReadyWarnCycles": 1000000
+                    },
+                    {
+                        "type": "MinorFU",
+                        "cxx_class": "gem5::MinorFU",
+                        "name": "funcUnits09",
+                        "path": "system.cpu.executeFuncUnits.funcUnits09",
+                        "cantForwardFromFUIndices": [],
+                        "eventq_index": 0,
+                        "issueLat": 1,
+                        "opClasses": {
+                            "type": "MinorOpClassSet",
+                            "cxx_class": "gem5::MinorOpClassSet",
+                            "name": "opClasses",
+                            "path": "system.cpu.executeFuncUnits.funcUnits09.opClasses",
+                            "eventq_index": 0,
+                            "opClasses": [
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits09.opClasses.opClasses",
+                                    "eventq_index": 0,
+                                    "opClass": "IntAlu"
+                                }
+                            ]
+                        },
+                        "opLat": 1,
+                        "timings": [
+                            {
+                                "type": "MinorFUTiming",
+                                "cxx_class": "gem5::MinorFUTiming",
+                                "name": "timings",
+                                "path": "system.cpu.executeFuncUnits.funcUnits09.timings",
+                                "description": "Int",
+                                "eventq_index": 0,
+                                "extraAssumedLat": 0,
+                                "extraCommitLat": 0,
+                                "extraCommitLatExpr": null,
+                                "mask": 0,
+                                "match": 0,
+                                "opClasses": {
+                                    "type": "MinorOpClassSet",
+                                    "cxx_class": "gem5::MinorOpClassSet",
+                                    "name": "opClasses",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits09.timings.opClasses",
+                                    "eventq_index": 0,
+                                    "opClasses": []
+                                },
+                                "srcRegsRelativeLats": [
+                                    2
+                                ],
+                                "suppress": false
+                            }
+                        ],
+                        "unit": "",
+                        "vcixConfigKeys": [],
+                        "vcixConfigValues": [],
+                        "vcixMaxInFlight": 8192,
+                        "vcixModel": "",
+                        "vcixReadyWarnCycles": 1000000
+                    },
+                    {
+                        "type": "MinorFU",
+                        "cxx_class": "gem5::MinorFU",
+                        "name": "funcUnits10",
+                        "path": "system.cpu.executeFuncUnits.funcUnits10",
+                        "cantForwardFromFUIndices": [],
+                        "eventq_index": 0,
+                        "issueLat": 1,
+                        "opClasses": {
+                            "type": "MinorOpClassSet",
+                            "cxx_class": "gem5::MinorOpClassSet",
+                            "name": "opClasses",
+                            "path": "system.cpu.executeFuncUnits.funcUnits10.opClasses",
+                            "eventq_index": 0,
+                            "opClasses": [
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits10.opClasses.opClasses",
+                                    "eventq_index": 0,
+                                    "opClass": "IntAlu"
+                                }
+                            ]
+                        },
+                        "opLat": 1,
+                        "timings": [
+                            {
+                                "type": "MinorFUTiming",
+                                "cxx_class": "gem5::MinorFUTiming",
+                                "name": "timings",
+                                "path": "system.cpu.executeFuncUnits.funcUnits10.timings",
+                                "description": "Int",
+                                "eventq_index": 0,
+                                "extraAssumedLat": 0,
+                                "extraCommitLat": 0,
+                                "extraCommitLatExpr": null,
+                                "mask": 0,
+                                "match": 0,
+                                "opClasses": {
+                                    "type": "MinorOpClassSet",
+                                    "cxx_class": "gem5::MinorOpClassSet",
+                                    "name": "opClasses",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits10.timings.opClasses",
+                                    "eventq_index": 0,
+                                    "opClasses": []
+                                },
+                                "srcRegsRelativeLats": [
+                                    2
+                                ],
+                                "suppress": false
+                            }
+                        ],
+                        "unit": "",
+                        "vcixConfigKeys": [],
+                        "vcixConfigValues": [],
+                        "vcixMaxInFlight": 8192,
+                        "vcixModel": "",
+                        "vcixReadyWarnCycles": 1000000
+                    },
+                    {
+                        "type": "MinorFU",
+                        "cxx_class": "gem5::MinorFU",
+                        "name": "funcUnits11",
+                        "path": "system.cpu.executeFuncUnits.funcUnits11",
+                        "cantForwardFromFUIndices": [],
+                        "eventq_index": 0,
+                        "issueLat": 1,
+                        "opClasses": {
+                            "type": "MinorOpClassSet",
+                            "cxx_class": "gem5::MinorOpClassSet",
+                            "name": "opClasses",
+                            "path": "system.cpu.executeFuncUnits.funcUnits11.opClasses",
+                            "eventq_index": 0,
+                            "opClasses": [
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits11.opClasses.opClasses",
+                                    "eventq_index": 0,
+                                    "opClass": "IntMult"
+                                }
+                            ]
+                        },
+                        "opLat": 1,
+                        "timings": [
+                            {
+                                "type": "MinorFUTiming",
+                                "cxx_class": "gem5::MinorFUTiming",
+                                "name": "timings",
+                                "path": "system.cpu.executeFuncUnits.funcUnits11.timings",
+                                "description": "Mul",
+                                "eventq_index": 0,
+                                "extraAssumedLat": 0,
+                                "extraCommitLat": 0,
+                                "extraCommitLatExpr": null,
+                                "mask": 0,
+                                "match": 0,
+                                "opClasses": {
+                                    "type": "MinorOpClassSet",
+                                    "cxx_class": "gem5::MinorOpClassSet",
+                                    "name": "opClasses",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits11.timings.opClasses",
+                                    "eventq_index": 0,
+                                    "opClasses": []
+                                },
+                                "srcRegsRelativeLats": [
+                                    0
+                                ],
+                                "suppress": false
+                            }
+                        ],
+                        "unit": "",
+                        "vcixConfigKeys": [],
+                        "vcixConfigValues": [],
+                        "vcixMaxInFlight": 8192,
+                        "vcixModel": "",
+                        "vcixReadyWarnCycles": 1000000
+                    },
+                    {
+                        "type": "MinorFU",
+                        "cxx_class": "gem5::MinorFU",
+                        "name": "funcUnits12",
+                        "path": "system.cpu.executeFuncUnits.funcUnits12",
+                        "cantForwardFromFUIndices": [],
+                        "eventq_index": 0,
+                        "issueLat": 9,
+                        "opClasses": {
+                            "type": "MinorOpClassSet",
+                            "cxx_class": "gem5::MinorOpClassSet",
+                            "name": "opClasses",
+                            "path": "system.cpu.executeFuncUnits.funcUnits12.opClasses",
+                            "eventq_index": 0,
+                            "opClasses": [
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits12.opClasses.opClasses",
+                                    "eventq_index": 0,
+                                    "opClass": "IntDiv"
+                                }
+                            ]
+                        },
+                        "opLat": 1,
+                        "timings": [],
+                        "unit": "",
+                        "vcixConfigKeys": [],
+                        "vcixConfigValues": [],
+                        "vcixMaxInFlight": 8192,
+                        "vcixModel": "",
+                        "vcixReadyWarnCycles": 1000000
+                    },
+                    {
+                        "type": "MinorFU",
+                        "cxx_class": "gem5::MinorFU",
+                        "name": "funcUnits13",
+                        "path": "system.cpu.executeFuncUnits.funcUnits13",
+                        "cantForwardFromFUIndices": [],
+                        "eventq_index": 0,
+                        "issueLat": 1,
+                        "opClasses": {
+                            "type": "MinorOpClassSet",
+                            "cxx_class": "gem5::MinorOpClassSet",
+                            "name": "opClasses",
+                            "path": "system.cpu.executeFuncUnits.funcUnits13.opClasses",
+                            "eventq_index": 0,
+                            "opClasses": [
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits13.opClasses.opClasses",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdPredAlu"
+                                }
+                            ]
+                        },
+                        "opLat": 1,
+                        "timings": [
+                            {
+                                "type": "MinorFUTiming",
+                                "cxx_class": "gem5::MinorFUTiming",
+                                "name": "timings",
+                                "path": "system.cpu.executeFuncUnits.funcUnits13.timings",
+                                "description": "Pred",
+                                "eventq_index": 0,
+                                "extraAssumedLat": 0,
+                                "extraCommitLat": 0,
+                                "extraCommitLatExpr": null,
+                                "mask": 0,
+                                "match": 0,
+                                "opClasses": {
+                                    "type": "MinorOpClassSet",
+                                    "cxx_class": "gem5::MinorOpClassSet",
+                                    "name": "opClasses",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits13.timings.opClasses",
+                                    "eventq_index": 0,
+                                    "opClasses": []
+                                },
+                                "srcRegsRelativeLats": [
+                                    2
+                                ],
+                                "suppress": false
+                            }
+                        ],
+                        "unit": "",
+                        "vcixConfigKeys": [],
+                        "vcixConfigValues": [],
+                        "vcixMaxInFlight": 8192,
+                        "vcixModel": "",
+                        "vcixReadyWarnCycles": 1000000
+                    },
+                    {
+                        "type": "MinorFU",
+                        "cxx_class": "gem5::MinorFU",
+                        "name": "funcUnits14",
+                        "path": "system.cpu.executeFuncUnits.funcUnits14",
+                        "cantForwardFromFUIndices": [],
+                        "eventq_index": 0,
+                        "issueLat": 1,
+                        "opClasses": {
+                            "type": "MinorOpClassSet",
+                            "cxx_class": "gem5::MinorOpClassSet",
+                            "name": "opClasses",
+                            "path": "system.cpu.executeFuncUnits.funcUnits14.opClasses",
+                            "eventq_index": 0,
+                            "opClasses": [
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses00",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits14.opClasses.opClasses00",
+                                    "eventq_index": 0,
+                                    "opClass": "MemRead"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses01",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits14.opClasses.opClasses01",
+                                    "eventq_index": 0,
+                                    "opClass": "MemWrite"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses02",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits14.opClasses.opClasses02",
+                                    "eventq_index": 0,
+                                    "opClass": "FloatMemRead"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses03",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits14.opClasses.opClasses03",
+                                    "eventq_index": 0,
+                                    "opClass": "FloatMemWrite"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses04",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits14.opClasses.opClasses04",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdUnitStrideLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses05",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits14.opClasses.opClasses05",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdUnitStrideStore"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses06",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits14.opClasses.opClasses06",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdUnitStrideMaskLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses07",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits14.opClasses.opClasses07",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdUnitStrideMaskStore"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses08",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits14.opClasses.opClasses08",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdStridedLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses09",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits14.opClasses.opClasses09",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdStridedStore"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses10",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits14.opClasses.opClasses10",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdIndexedLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses11",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits14.opClasses.opClasses11",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdIndexedStore"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses12",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits14.opClasses.opClasses12",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdUnitStrideFaultOnlyFirstLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses13",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits14.opClasses.opClasses13",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdWholeRegisterLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses14",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits14.opClasses.opClasses14",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdWholeRegisterStore"
+                                }
+                            ]
+                        },
+                        "opLat": 1,
+                        "timings": [
+                            {
+                                "type": "MinorFUTiming",
+                                "cxx_class": "gem5::MinorFUTiming",
+                                "name": "timings",
+                                "path": "system.cpu.executeFuncUnits.funcUnits14.timings",
+                                "description": "Mem",
+                                "eventq_index": 0,
+                                "extraAssumedLat": 2,
+                                "extraCommitLat": 0,
+                                "extraCommitLatExpr": null,
+                                "mask": 0,
+                                "match": 0,
+                                "opClasses": {
+                                    "type": "MinorOpClassSet",
+                                    "cxx_class": "gem5::MinorOpClassSet",
+                                    "name": "opClasses",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits14.timings.opClasses",
+                                    "eventq_index": 0,
+                                    "opClasses": []
+                                },
+                                "srcRegsRelativeLats": [
+                                    1
+                                ],
+                                "suppress": false
+                            }
+                        ],
+                        "unit": "",
+                        "vcixConfigKeys": [],
+                        "vcixConfigValues": [],
+                        "vcixMaxInFlight": 8192,
+                        "vcixModel": "",
+                        "vcixReadyWarnCycles": 1000000
+                    },
+                    {
+                        "type": "MinorFU",
+                        "cxx_class": "gem5::MinorFU",
+                        "name": "funcUnits15",
+                        "path": "system.cpu.executeFuncUnits.funcUnits15",
+                        "cantForwardFromFUIndices": [],
+                        "eventq_index": 0,
+                        "issueLat": 1,
+                        "opClasses": {
+                            "type": "MinorOpClassSet",
+                            "cxx_class": "gem5::MinorOpClassSet",
+                            "name": "opClasses",
+                            "path": "system.cpu.executeFuncUnits.funcUnits15.opClasses",
+                            "eventq_index": 0,
+                            "opClasses": [
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses0",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits15.opClasses.opClasses0",
+                                    "eventq_index": 0,
+                                    "opClass": "InstPrefetch"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses1",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits15.opClasses.opClasses1",
+                                    "eventq_index": 0,
+                                    "opClass": "System"
+                                }
+                            ]
+                        },
+                        "opLat": 1,
+                        "timings": [],
+                        "unit": "",
+                        "vcixConfigKeys": [],
+                        "vcixConfigValues": [],
+                        "vcixMaxInFlight": 8192,
+                        "vcixModel": "",
+                        "vcixReadyWarnCycles": 1000000
+                    },
+                    {
+                        "type": "MinorFU",
+                        "cxx_class": "gem5::MinorFU",
+                        "name": "funcUnits16",
+                        "path": "system.cpu.executeFuncUnits.funcUnits16",
+                        "cantForwardFromFUIndices": [],
+                        "eventq_index": 0,
+                        "issueLat": 1,
+                        "opClasses": {
+                            "type": "MinorOpClassSet",
+                            "cxx_class": "gem5::MinorOpClassSet",
+                            "name": "opClasses",
+                            "path": "system.cpu.executeFuncUnits.funcUnits16.opClasses",
+                            "eventq_index": 0,
+                            "opClasses": [
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits16.opClasses.opClasses",
+                                    "eventq_index": 0,
+                                    "opClass": "VcixAccel"
+                                }
+                            ]
+                        },
+                        "opLat": 1,
+                        "timings": [],
+                        "unit": "",
+                        "vcixConfigKeys": [
+                            "vpu_num_lanes",
+                            "vpu_spad_size_kb_per_lane",
+                            "vpu_spad_base_vaddr",
+                            "vpu_vector_length_bits",
+                            "tpu_mxu_queue_entries",
+                            "tpu_mxu_delay_cycles",
+                            "tpu_mxu_registers",
+                            "tpu_mxu_issue_slots",
+                            "tpu_mxu_word_a_cycle",
+                            "tpu_xlu_queue_entries",
+                            "tpu_xlu_latency_cycles",
+                            "tpu_xlu_elements_per_cycle",
+                            "tpu_xlu_issue_per_cycle",
+                            "tpu_sfu_latency_cycles",
+                            "tpu_sfu_queue_registers"
+                        ],
+                        "vcixConfigValues": [
+                            "128",
+                            "128",
+                            "0x40000000",
+                            "256",
+                            "512",
+                            "97",
+                            "1",
+                            "1",
+                            "0",
+                            "256",
+                            "137",
+                            "8",
+                            "1",
+                            "10",
+                            "16"
+                        ],
+                        "vcixMaxInFlight": 8192,
+                        "vcixModel": "/workspace/vcix-build/libtpuv3.so",
+                        "vcixReadyWarnCycles": 1000000
+                    },
+                    {
+                        "type": "MinorFU",
+                        "cxx_class": "gem5::MinorFU",
+                        "name": "funcUnits17",
+                        "path": "system.cpu.executeFuncUnits.funcUnits17",
+                        "cantForwardFromFUIndices": [],
+                        "eventq_index": 0,
+                        "issueLat": 1,
+                        "opClasses": {
+                            "type": "MinorOpClassSet",
+                            "cxx_class": "gem5::MinorOpClassSet",
+                            "name": "opClasses",
+                            "path": "system.cpu.executeFuncUnits.funcUnits17.opClasses",
+                            "eventq_index": 0,
+                            "opClasses": [
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits17.opClasses.opClasses",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdConfig"
+                                }
+                            ]
+                        },
+                        "opLat": 1,
+                        "timings": [],
+                        "unit": "",
+                        "vcixConfigKeys": [],
+                        "vcixConfigValues": [],
+                        "vcixMaxInFlight": 8192,
+                        "vcixModel": "",
+                        "vcixReadyWarnCycles": 1000000
+                    },
+                    {
+                        "type": "MinorFU",
+                        "cxx_class": "gem5::MinorFU",
+                        "name": "funcUnits18",
+                        "path": "system.cpu.executeFuncUnits.funcUnits18",
+                        "cantForwardFromFUIndices": [],
+                        "eventq_index": 0,
+                        "issueLat": 1,
+                        "opClasses": {
+                            "type": "MinorOpClassSet",
+                            "cxx_class": "gem5::MinorOpClassSet",
+                            "name": "opClasses",
+                            "path": "system.cpu.executeFuncUnits.funcUnits18.opClasses",
+                            "eventq_index": 0,
+                            "opClasses": [
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits18.opClasses.opClasses",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdConfig"
+                                }
+                            ]
+                        },
+                        "opLat": 1,
+                        "timings": [],
+                        "unit": "",
+                        "vcixConfigKeys": [],
+                        "vcixConfigValues": [],
+                        "vcixMaxInFlight": 8192,
+                        "vcixModel": "",
+                        "vcixReadyWarnCycles": 1000000
+                    },
+                    {
+                        "type": "MinorFU",
+                        "cxx_class": "gem5::MinorFU",
+                        "name": "funcUnits19",
+                        "path": "system.cpu.executeFuncUnits.funcUnits19",
+                        "cantForwardFromFUIndices": [],
+                        "eventq_index": 0,
+                        "issueLat": 1,
+                        "opClasses": {
+                            "type": "MinorOpClassSet",
+                            "cxx_class": "gem5::MinorOpClassSet",
+                            "name": "opClasses",
+                            "path": "system.cpu.executeFuncUnits.funcUnits19.opClasses",
+                            "eventq_index": 0,
+                            "opClasses": [
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses00",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits19.opClasses.opClasses00",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdUnitStrideLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses01",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits19.opClasses.opClasses01",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdUnitStrideStore"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses02",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits19.opClasses.opClasses02",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdUnitStrideMaskLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses03",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits19.opClasses.opClasses03",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdUnitStrideMaskStore"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses04",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits19.opClasses.opClasses04",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdStridedLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses05",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits19.opClasses.opClasses05",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdStridedStore"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses06",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits19.opClasses.opClasses06",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdIndexedLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses07",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits19.opClasses.opClasses07",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdIndexedStore"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses08",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits19.opClasses.opClasses08",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdUnitStrideFaultOnlyFirstLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses09",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits19.opClasses.opClasses09",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdWholeRegisterLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses10",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits19.opClasses.opClasses10",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdWholeRegisterStore"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses11",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits19.opClasses.opClasses11",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdUnitStrideSegmentedLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses12",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits19.opClasses.opClasses12",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdUnitStrideSegmentedStore"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses13",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits19.opClasses.opClasses13",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdUnitStrideSegmentedFaultOnlyFirstLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses14",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits19.opClasses.opClasses14",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdStrideSegmentedLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses15",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits19.opClasses.opClasses15",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdStrideSegmentedStore"
+                                }
+                            ]
+                        },
+                        "opLat": 1,
+                        "timings": [],
+                        "unit": "",
+                        "vcixConfigKeys": [],
+                        "vcixConfigValues": [],
+                        "vcixMaxInFlight": 8192,
+                        "vcixModel": "",
+                        "vcixReadyWarnCycles": 1000000
+                    },
+                    {
+                        "type": "MinorFU",
+                        "cxx_class": "gem5::MinorFU",
+                        "name": "funcUnits20",
+                        "path": "system.cpu.executeFuncUnits.funcUnits20",
+                        "cantForwardFromFUIndices": [],
+                        "eventq_index": 0,
+                        "issueLat": 1,
+                        "opClasses": {
+                            "type": "MinorOpClassSet",
+                            "cxx_class": "gem5::MinorOpClassSet",
+                            "name": "opClasses",
+                            "path": "system.cpu.executeFuncUnits.funcUnits20.opClasses",
+                            "eventq_index": 0,
+                            "opClasses": [
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses00",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits20.opClasses.opClasses00",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdUnitStrideLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses01",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits20.opClasses.opClasses01",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdUnitStrideStore"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses02",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits20.opClasses.opClasses02",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdUnitStrideMaskLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses03",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits20.opClasses.opClasses03",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdUnitStrideMaskStore"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses04",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits20.opClasses.opClasses04",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdStridedLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses05",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits20.opClasses.opClasses05",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdStridedStore"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses06",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits20.opClasses.opClasses06",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdIndexedLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses07",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits20.opClasses.opClasses07",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdIndexedStore"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses08",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits20.opClasses.opClasses08",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdUnitStrideFaultOnlyFirstLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses09",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits20.opClasses.opClasses09",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdWholeRegisterLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses10",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits20.opClasses.opClasses10",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdWholeRegisterStore"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses11",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits20.opClasses.opClasses11",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdUnitStrideSegmentedLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses12",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits20.opClasses.opClasses12",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdUnitStrideSegmentedStore"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses13",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits20.opClasses.opClasses13",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdUnitStrideSegmentedFaultOnlyFirstLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses14",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits20.opClasses.opClasses14",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdStrideSegmentedLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses15",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits20.opClasses.opClasses15",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdStrideSegmentedStore"
+                                }
+                            ]
+                        },
+                        "opLat": 1,
+                        "timings": [],
+                        "unit": "",
+                        "vcixConfigKeys": [],
+                        "vcixConfigValues": [],
+                        "vcixMaxInFlight": 8192,
+                        "vcixModel": "",
+                        "vcixReadyWarnCycles": 1000000
+                    },
+                    {
+                        "type": "MinorFU",
+                        "cxx_class": "gem5::MinorFU",
+                        "name": "funcUnits21",
+                        "path": "system.cpu.executeFuncUnits.funcUnits21",
+                        "cantForwardFromFUIndices": [],
+                        "eventq_index": 0,
+                        "issueLat": 1,
+                        "opClasses": {
+                            "type": "MinorOpClassSet",
+                            "cxx_class": "gem5::MinorOpClassSet",
+                            "name": "opClasses",
+                            "path": "system.cpu.executeFuncUnits.funcUnits21.opClasses",
+                            "eventq_index": 0,
+                            "opClasses": [
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses00",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits21.opClasses.opClasses00",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdAdd"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses01",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits21.opClasses.opClasses01",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdFloatAdd"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses02",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits21.opClasses.opClasses02",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdFloatAlu"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses03",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits21.opClasses.opClasses03",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdFloatCmp"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses04",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits21.opClasses.opClasses04",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdShift"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses05",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits21.opClasses.opClasses05",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdShiftAcc"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses06",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits21.opClasses.opClasses06",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdAddAcc"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses07",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits21.opClasses.opClasses07",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdAlu"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses08",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits21.opClasses.opClasses08",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdCmp"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses09",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits21.opClasses.opClasses09",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdBf16Add"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses10",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits21.opClasses.opClasses10",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdBf16Cmp"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses11",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits21.opClasses.opClasses11",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdMult"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses12",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits21.opClasses.opClasses12",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdFloatMult"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses13",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits21.opClasses.opClasses13",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdMultAcc"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses14",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits21.opClasses.opClasses14",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdMatMultAcc"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses15",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits21.opClasses.opClasses15",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdSqrt"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses16",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits21.opClasses.opClasses16",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdFloatMultAcc"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses17",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits21.opClasses.opClasses17",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdFloatMatMultAcc"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses18",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits21.opClasses.opClasses18",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdFloatSqrt"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses19",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits21.opClasses.opClasses19",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdDotProd"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses20",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits21.opClasses.opClasses20",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdBf16Mult"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses21",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits21.opClasses.opClasses21",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdBf16MultAcc"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses22",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits21.opClasses.opClasses22",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdBf16MatMultAcc"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses23",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits21.opClasses.opClasses23",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdBf16DotProd"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses24",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits21.opClasses.opClasses24",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdDiv"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses25",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits21.opClasses.opClasses25",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdFloatDiv"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses26",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits21.opClasses.opClasses26",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdCvt"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses27",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits21.opClasses.opClasses27",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdFloatCvt"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses28",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits21.opClasses.opClasses28",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdFloatMisc"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses29",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits21.opClasses.opClasses29",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdPredAlu"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses30",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits21.opClasses.opClasses30",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdMisc"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses31",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits21.opClasses.opClasses31",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdExt"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses32",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits21.opClasses.opClasses32",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdFloatExt"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses33",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits21.opClasses.opClasses33",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdBf16Cvt"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses34",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits21.opClasses.opClasses34",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdReduceAdd"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses35",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits21.opClasses.opClasses35",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdReduceAlu"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses36",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits21.opClasses.opClasses36",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdReduceCmp"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses37",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits21.opClasses.opClasses37",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdFloatReduceAdd"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses38",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits21.opClasses.opClasses38",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdFloatReduceCmp"
+                                }
+                            ]
+                        },
+                        "opLat": 1,
+                        "timings": [],
+                        "unit": "Vpu",
+                        "vcixConfigKeys": [],
+                        "vcixConfigValues": [],
+                        "vcixMaxInFlight": 8192,
+                        "vcixModel": "",
+                        "vcixReadyWarnCycles": 1000000
+                    },
+                    {
+                        "type": "MinorFU",
+                        "cxx_class": "gem5::MinorFU",
+                        "name": "funcUnits22",
+                        "path": "system.cpu.executeFuncUnits.funcUnits22",
+                        "cantForwardFromFUIndices": [],
+                        "eventq_index": 0,
+                        "issueLat": 1,
+                        "opClasses": {
+                            "type": "MinorOpClassSet",
+                            "cxx_class": "gem5::MinorOpClassSet",
+                            "name": "opClasses",
+                            "path": "system.cpu.executeFuncUnits.funcUnits22.opClasses",
+                            "eventq_index": 0,
+                            "opClasses": [
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits22.opClasses.opClasses",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdConfig"
+                                }
+                            ]
+                        },
+                        "opLat": 1,
+                        "timings": [],
+                        "unit": "",
+                        "vcixConfigKeys": [],
+                        "vcixConfigValues": [],
+                        "vcixMaxInFlight": 8192,
+                        "vcixModel": "",
+                        "vcixReadyWarnCycles": 1000000
+                    },
+                    {
+                        "type": "MinorFU",
+                        "cxx_class": "gem5::MinorFU",
+                        "name": "funcUnits23",
+                        "path": "system.cpu.executeFuncUnits.funcUnits23",
+                        "cantForwardFromFUIndices": [],
+                        "eventq_index": 0,
+                        "issueLat": 1,
+                        "opClasses": {
+                            "type": "MinorOpClassSet",
+                            "cxx_class": "gem5::MinorOpClassSet",
+                            "name": "opClasses",
+                            "path": "system.cpu.executeFuncUnits.funcUnits23.opClasses",
+                            "eventq_index": 0,
+                            "opClasses": [
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits23.opClasses.opClasses",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdConfig"
+                                }
+                            ]
+                        },
+                        "opLat": 1,
+                        "timings": [],
+                        "unit": "",
+                        "vcixConfigKeys": [],
+                        "vcixConfigValues": [],
+                        "vcixMaxInFlight": 8192,
+                        "vcixModel": "",
+                        "vcixReadyWarnCycles": 1000000
+                    },
+                    {
+                        "type": "MinorFU",
+                        "cxx_class": "gem5::MinorFU",
+                        "name": "funcUnits24",
+                        "path": "system.cpu.executeFuncUnits.funcUnits24",
+                        "cantForwardFromFUIndices": [],
+                        "eventq_index": 0,
+                        "issueLat": 1,
+                        "opClasses": {
+                            "type": "MinorOpClassSet",
+                            "cxx_class": "gem5::MinorOpClassSet",
+                            "name": "opClasses",
+                            "path": "system.cpu.executeFuncUnits.funcUnits24.opClasses",
+                            "eventq_index": 0,
+                            "opClasses": [
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses00",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits24.opClasses.opClasses00",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdUnitStrideLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses01",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits24.opClasses.opClasses01",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdUnitStrideStore"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses02",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits24.opClasses.opClasses02",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdUnitStrideMaskLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses03",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits24.opClasses.opClasses03",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdUnitStrideMaskStore"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses04",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits24.opClasses.opClasses04",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdStridedLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses05",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits24.opClasses.opClasses05",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdStridedStore"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses06",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits24.opClasses.opClasses06",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdIndexedLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses07",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits24.opClasses.opClasses07",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdIndexedStore"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses08",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits24.opClasses.opClasses08",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdUnitStrideFaultOnlyFirstLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses09",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits24.opClasses.opClasses09",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdWholeRegisterLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses10",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits24.opClasses.opClasses10",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdWholeRegisterStore"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses11",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits24.opClasses.opClasses11",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdUnitStrideSegmentedLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses12",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits24.opClasses.opClasses12",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdUnitStrideSegmentedStore"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses13",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits24.opClasses.opClasses13",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdUnitStrideSegmentedFaultOnlyFirstLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses14",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits24.opClasses.opClasses14",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdStrideSegmentedLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses15",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits24.opClasses.opClasses15",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdStrideSegmentedStore"
+                                }
+                            ]
+                        },
+                        "opLat": 1,
+                        "timings": [],
+                        "unit": "",
+                        "vcixConfigKeys": [],
+                        "vcixConfigValues": [],
+                        "vcixMaxInFlight": 8192,
+                        "vcixModel": "",
+                        "vcixReadyWarnCycles": 1000000
+                    },
+                    {
+                        "type": "MinorFU",
+                        "cxx_class": "gem5::MinorFU",
+                        "name": "funcUnits25",
+                        "path": "system.cpu.executeFuncUnits.funcUnits25",
+                        "cantForwardFromFUIndices": [],
+                        "eventq_index": 0,
+                        "issueLat": 1,
+                        "opClasses": {
+                            "type": "MinorOpClassSet",
+                            "cxx_class": "gem5::MinorOpClassSet",
+                            "name": "opClasses",
+                            "path": "system.cpu.executeFuncUnits.funcUnits25.opClasses",
+                            "eventq_index": 0,
+                            "opClasses": [
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses00",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits25.opClasses.opClasses00",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdUnitStrideLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses01",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits25.opClasses.opClasses01",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdUnitStrideStore"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses02",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits25.opClasses.opClasses02",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdUnitStrideMaskLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses03",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits25.opClasses.opClasses03",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdUnitStrideMaskStore"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses04",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits25.opClasses.opClasses04",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdStridedLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses05",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits25.opClasses.opClasses05",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdStridedStore"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses06",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits25.opClasses.opClasses06",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdIndexedLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses07",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits25.opClasses.opClasses07",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdIndexedStore"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses08",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits25.opClasses.opClasses08",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdUnitStrideFaultOnlyFirstLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses09",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits25.opClasses.opClasses09",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdWholeRegisterLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses10",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits25.opClasses.opClasses10",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdWholeRegisterStore"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses11",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits25.opClasses.opClasses11",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdUnitStrideSegmentedLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses12",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits25.opClasses.opClasses12",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdUnitStrideSegmentedStore"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses13",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits25.opClasses.opClasses13",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdUnitStrideSegmentedFaultOnlyFirstLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses14",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits25.opClasses.opClasses14",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdStrideSegmentedLoad"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses15",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits25.opClasses.opClasses15",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdStrideSegmentedStore"
+                                }
+                            ]
+                        },
+                        "opLat": 1,
+                        "timings": [],
+                        "unit": "",
+                        "vcixConfigKeys": [],
+                        "vcixConfigValues": [],
+                        "vcixMaxInFlight": 8192,
+                        "vcixModel": "",
+                        "vcixReadyWarnCycles": 1000000
+                    },
+                    {
+                        "type": "MinorFU",
+                        "cxx_class": "gem5::MinorFU",
+                        "name": "funcUnits26",
+                        "path": "system.cpu.executeFuncUnits.funcUnits26",
+                        "cantForwardFromFUIndices": [],
+                        "eventq_index": 0,
+                        "issueLat": 1,
+                        "opClasses": {
+                            "type": "MinorOpClassSet",
+                            "cxx_class": "gem5::MinorOpClassSet",
+                            "name": "opClasses",
+                            "path": "system.cpu.executeFuncUnits.funcUnits26.opClasses",
+                            "eventq_index": 0,
+                            "opClasses": [
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses00",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits26.opClasses.opClasses00",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdAdd"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses01",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits26.opClasses.opClasses01",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdFloatAdd"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses02",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits26.opClasses.opClasses02",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdFloatAlu"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses03",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits26.opClasses.opClasses03",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdFloatCmp"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses04",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits26.opClasses.opClasses04",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdShift"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses05",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits26.opClasses.opClasses05",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdShiftAcc"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses06",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits26.opClasses.opClasses06",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdAddAcc"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses07",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits26.opClasses.opClasses07",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdAlu"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses08",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits26.opClasses.opClasses08",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdCmp"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses09",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits26.opClasses.opClasses09",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdBf16Add"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses10",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits26.opClasses.opClasses10",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdBf16Cmp"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses11",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits26.opClasses.opClasses11",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdMult"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses12",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits26.opClasses.opClasses12",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdFloatMult"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses13",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits26.opClasses.opClasses13",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdMultAcc"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses14",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits26.opClasses.opClasses14",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdMatMultAcc"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses15",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits26.opClasses.opClasses15",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdSqrt"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses16",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits26.opClasses.opClasses16",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdFloatMultAcc"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses17",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits26.opClasses.opClasses17",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdFloatMatMultAcc"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses18",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits26.opClasses.opClasses18",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdFloatSqrt"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses19",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits26.opClasses.opClasses19",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdDotProd"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses20",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits26.opClasses.opClasses20",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdBf16Mult"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses21",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits26.opClasses.opClasses21",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdBf16MultAcc"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses22",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits26.opClasses.opClasses22",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdBf16MatMultAcc"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses23",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits26.opClasses.opClasses23",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdBf16DotProd"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses24",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits26.opClasses.opClasses24",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdDiv"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses25",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits26.opClasses.opClasses25",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdFloatDiv"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses26",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits26.opClasses.opClasses26",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdCvt"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses27",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits26.opClasses.opClasses27",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdFloatCvt"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses28",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits26.opClasses.opClasses28",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdFloatMisc"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses29",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits26.opClasses.opClasses29",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdPredAlu"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses30",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits26.opClasses.opClasses30",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdMisc"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses31",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits26.opClasses.opClasses31",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdExt"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses32",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits26.opClasses.opClasses32",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdFloatExt"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses33",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits26.opClasses.opClasses33",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdBf16Cvt"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses34",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits26.opClasses.opClasses34",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdReduceAdd"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses35",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits26.opClasses.opClasses35",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdReduceAlu"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses36",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits26.opClasses.opClasses36",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdReduceCmp"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses37",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits26.opClasses.opClasses37",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdFloatReduceAdd"
+                                },
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses38",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits26.opClasses.opClasses38",
+                                    "eventq_index": 0,
+                                    "opClass": "SimdFloatReduceCmp"
+                                }
+                            ]
+                        },
+                        "opLat": 1,
+                        "timings": [],
+                        "unit": "Vpu",
+                        "vcixConfigKeys": [],
+                        "vcixConfigValues": [],
+                        "vcixMaxInFlight": 8192,
+                        "vcixModel": "",
+                        "vcixReadyWarnCycles": 1000000
+                    },
+                    {
+                        "type": "MinorFU",
+                        "cxx_class": "gem5::MinorFU",
+                        "name": "funcUnits27",
+                        "path": "system.cpu.executeFuncUnits.funcUnits27",
+                        "cantForwardFromFUIndices": [],
+                        "eventq_index": 0,
+                        "issueLat": 1,
+                        "opClasses": {
+                            "type": "MinorOpClassSet",
+                            "cxx_class": "gem5::MinorOpClassSet",
+                            "name": "opClasses",
+                            "path": "system.cpu.executeFuncUnits.funcUnits27.opClasses",
+                            "eventq_index": 0,
+                            "opClasses": [
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits27.opClasses.opClasses",
+                                    "eventq_index": 0,
+                                    "opClass": "IntAlu"
+                                }
+                            ]
+                        },
+                        "opLat": 1,
+                        "timings": [
+                            {
+                                "type": "MinorFUTiming",
+                                "cxx_class": "gem5::MinorFUTiming",
+                                "name": "timings",
+                                "path": "system.cpu.executeFuncUnits.funcUnits27.timings",
+                                "description": "Int",
+                                "eventq_index": 0,
+                                "extraAssumedLat": 0,
+                                "extraCommitLat": 0,
+                                "extraCommitLatExpr": null,
+                                "mask": 0,
+                                "match": 0,
+                                "opClasses": {
+                                    "type": "MinorOpClassSet",
+                                    "cxx_class": "gem5::MinorOpClassSet",
+                                    "name": "opClasses",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits27.timings.opClasses",
+                                    "eventq_index": 0,
+                                    "opClasses": []
+                                },
+                                "srcRegsRelativeLats": [
+                                    2
+                                ],
+                                "suppress": false
+                            }
+                        ],
+                        "unit": "",
+                        "vcixConfigKeys": [],
+                        "vcixConfigValues": [],
+                        "vcixMaxInFlight": 8192,
+                        "vcixModel": "",
+                        "vcixReadyWarnCycles": 1000000
+                    },
+                    {
+                        "type": "MinorFU",
+                        "cxx_class": "gem5::MinorFU",
+                        "name": "funcUnits28",
+                        "path": "system.cpu.executeFuncUnits.funcUnits28",
+                        "cantForwardFromFUIndices": [],
+                        "eventq_index": 0,
+                        "issueLat": 1,
+                        "opClasses": {
+                            "type": "MinorOpClassSet",
+                            "cxx_class": "gem5::MinorOpClassSet",
+                            "name": "opClasses",
+                            "path": "system.cpu.executeFuncUnits.funcUnits28.opClasses",
+                            "eventq_index": 0,
+                            "opClasses": [
+                                {
+                                    "type": "MinorOpClass",
+                                    "cxx_class": "gem5::MinorOpClass",
+                                    "name": "opClasses",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits28.opClasses.opClasses",
+                                    "eventq_index": 0,
+                                    "opClass": "IntAlu"
+                                }
+                            ]
+                        },
+                        "opLat": 1,
+                        "timings": [
+                            {
+                                "type": "MinorFUTiming",
+                                "cxx_class": "gem5::MinorFUTiming",
+                                "name": "timings",
+                                "path": "system.cpu.executeFuncUnits.funcUnits28.timings",
+                                "description": "Int",
+                                "eventq_index": 0,
+                                "extraAssumedLat": 0,
+                                "extraCommitLat": 0,
+                                "extraCommitLatExpr": null,
+                                "mask": 0,
+                                "match": 0,
+                                "opClasses": {
+                                    "type": "MinorOpClassSet",
+                                    "cxx_class": "gem5::MinorOpClassSet",
+                                    "name": "opClasses",
+                                    "path": "system.cpu.executeFuncUnits.funcUnits28.timings.opClasses",
+                                    "eventq_index": 0,
+                                    "opClasses": []
+                                },
+                                "srcRegsRelativeLats": [
+                                    2
+                                ],
+                                "suppress": false
+                            }
+                        ],
+                        "unit": "",
+                        "vcixConfigKeys": [],
+                        "vcixConfigValues": [],
+                        "vcixMaxInFlight": 8192,
+                        "vcixModel": "",
+                        "vcixReadyWarnCycles": 1000000
+                    }
+                ]
+            },
+            "executeInputBufferSize": 128,
+            "executeInputWidth": 12,
+            "executeIssueLimit": 12,
+            "executeLSQMaxStoreBufferStoresPerCycle": 8,
+            "executeLSQRequestsQueueSize": 2,
+            "executeLSQStoreBufferSize": 8,
+            "executeLSQTransfersQueueSize": 8,
+            "executeMaxAccessesInMemory": 8,
+            "executeMemoryCommitLimit": 8,
+            "executeMemoryIssueLimit": 8,
+            "executeMemoryWidth": 0,
+            "executeSetTraceTimeOnCommit": true,
+            "executeSetTraceTimeOnIssue": false,
+            "fetch1FetchLimit": 8,
+            "fetch1LineSnapWidth": 0,
+            "fetch1LineWidth": 0,
+            "fetch1ToFetch2BackwardDelay": 0,
+            "fetch1ToFetch2ForwardDelay": 1,
+            "fetch2CycleInput": true,
+            "fetch2InputBufferSize": 8,
+            "fetch2ToDecodeForwardDelay": 1,
+            "function_trace": false,
+            "function_trace_start": 0,
+            "interrupts": [
+                {
+                    "type": "RiscvInterrupts",
+                    "cxx_class": "gem5::RiscvISA::Interrupts",
+                    "name": "interrupts",
+                    "path": "system.cpu.interrupts",
+                    "eventq_index": 0,
+                    "local_interrupt_ids": [],
+                    "nmi_cause": 0
+                }
+            ],
+            "isa": [
+                {
+                    "type": "RiscvISA",
+                    "cxx_class": "gem5::RiscvISA::ISA",
+                    "name": "isa",
+                    "path": "system.cpu.isa",
+                    "elen": 64,
+                    "enable_Smrnmi": false,
+                    "enable_Zcd": true,
+                    "enable_Zicbom_fs": true,
+                    "enable_Zicboz_fs": true,
+                    "enable_rvv": true,
+                    "eventq_index": 0,
+                    "privilege_mode_set": "MSU",
+                    "riscv_type": "RV64",
+                    "vlen": 256,
+                    "wfi_resume_on_pending": false
+                }
+            ],
+            "max_insts_all_threads": 0,
+            "max_insts_any_thread": 0,
+            "mmu": {
+                "type": "RiscvMMU",
+                "cxx_class": "gem5::RiscvISA::MMU",
+                "name": "mmu",
+                "path": "system.cpu.mmu",
+                "dtb": {
+                    "type": "RiscvTLB",
+                    "cxx_class": "gem5::RiscvISA::TLB",
+                    "name": "dtb",
+                    "path": "system.cpu.mmu.dtb",
+                    "entry_type": "data",
+                    "eventq_index": 0,
+                    "next_level": null,
+                    "pma_checker": "system.cpu.mmu.pma_checker",
+                    "pmp": "system.cpu.mmu.pmp",
+                    "size": 64,
+                    "walker": {
+                        "type": "RiscvPagetableWalker",
+                        "cxx_class": "gem5::RiscvISA::Walker",
+                        "name": "walker",
+                        "path": "system.cpu.mmu.dtb.walker",
+                        "clk_domain": "system.clk_domain",
+                        "eventq_index": 0,
+                        "num_squash_per_cycle": 4,
+                        "pma_checker": "system.cpu.mmu.pma_checker",
+                        "pmp": "system.cpu.mmu.pmp",
+                        "power_model": [],
+                        "power_state": {
+                            "type": "PowerState",
+                            "cxx_class": "gem5::PowerState",
+                            "name": "power_state",
+                            "path": "system.cpu.mmu.dtb.walker.power_state",
+                            "clk_gate_bins": 20,
+                            "clk_gate_max": 1000000000000,
+                            "clk_gate_min": 1000,
+                            "default_state": "UNDEFINED",
+                            "eventq_index": 0,
+                            "leaders": [],
+                            "possible_states": []
+                        },
+                        "system": "system"
+                    }
+                },
+                "eventq_index": 0,
+                "itb": {
+                    "type": "RiscvTLB",
+                    "cxx_class": "gem5::RiscvISA::TLB",
+                    "name": "itb",
+                    "path": "system.cpu.mmu.itb",
+                    "entry_type": "instruction",
+                    "eventq_index": 0,
+                    "next_level": null,
+                    "pma_checker": "system.cpu.mmu.pma_checker",
+                    "pmp": "system.cpu.mmu.pmp",
+                    "size": 64,
+                    "walker": {
+                        "type": "RiscvPagetableWalker",
+                        "cxx_class": "gem5::RiscvISA::Walker",
+                        "name": "walker",
+                        "path": "system.cpu.mmu.itb.walker",
+                        "clk_domain": "system.clk_domain",
+                        "eventq_index": 0,
+                        "num_squash_per_cycle": 4,
+                        "pma_checker": "system.cpu.mmu.pma_checker",
+                        "pmp": "system.cpu.mmu.pmp",
+                        "power_model": [],
+                        "power_state": {
+                            "type": "PowerState",
+                            "cxx_class": "gem5::PowerState",
+                            "name": "power_state",
+                            "path": "system.cpu.mmu.itb.walker.power_state",
+                            "clk_gate_bins": 20,
+                            "clk_gate_max": 1000000000000,
+                            "clk_gate_min": 1000,
+                            "default_state": "UNDEFINED",
+                            "eventq_index": 0,
+                            "leaders": [],
+                            "possible_states": []
+                        },
+                        "system": "system"
+                    }
+                },
+                "pma_checker": {
+                    "type": "PMAChecker",
+                    "cxx_class": "gem5::RiscvISA::PMAChecker",
+                    "name": "pma_checker",
+                    "path": "system.cpu.mmu.pma_checker",
+                    "eventq_index": 0,
+                    "misaligned": [],
+                    "uncacheable": []
+                },
+                "pmp": {
+                    "type": "PMP",
+                    "cxx_class": "gem5::RiscvISA::PMP",
+                    "name": "pmp",
+                    "path": "system.cpu.mmu.pmp",
+                    "eventq_index": 0,
+                    "pmp_entries": 16
+                }
+            },
+            "numThreads": 1,
+            "power_gating_on_idle": false,
+            "power_model": [],
+            "power_state": {
+                "type": "PowerState",
+                "cxx_class": "gem5::PowerState",
+                "name": "power_state",
+                "path": "system.cpu.power_state",
+                "clk_gate_bins": 20,
+                "clk_gate_max": 1000000000000,
+                "clk_gate_min": 1000,
+                "default_state": "UNDEFINED",
+                "eventq_index": 0,
+                "leaders": [],
+                "possible_states": [
+                    "ON",
+                    "CLK_GATED",
+                    "OFF"
+                ]
+            },
+            "progress_interval": 0,
+            "pwr_gating_latency": 300,
+            "simpoint_start_insts": [],
+            "socket_id": 0,
+            "switched_out": false,
+            "syscallRetryLatency": 10000,
+            "system": "system",
+            "threadPolicy": "RoundRobin",
+            "tracer": {
+                "type": "ExeTracer",
+                "cxx_class": "gem5::trace::ExeTracer",
+                "name": "tracer",
+                "path": "system.cpu.tracer",
+                "disassembler": {
+                    "type": "InstDisassembler",
+                    "cxx_class": "gem5::trace::InstDisassembler",
+                    "name": "disassembler",
+                    "path": "system.cpu.tracer.disassembler",
+                    "eventq_index": 0
+                },
+                "eventq_index": 0
+            },
+            "workload": [
+                {
+                    "type": "Process",
+                    "cxx_class": "gem5::Process",
+                    "name": "workload",
+                    "path": "system.cpu.workload",
+                    "cmd": [
+                        "/workspace/PyTorchSim/.npuw_probe/regen10/dump/triton_3fysfbwny4y/cycle_bin"
+                    ],
+                    "cwd": "/workspace/PyTorchSim/.npuw_probe/regen10",
+                    "drivers": [],
+                    "egid": 100,
+                    "env": [],
+                    "errout": "cerr",
+                    "euid": 100,
+                    "eventq_index": 0,
+                    "executable": "",
+                    "gid": 100,
+                    "input": "cin",
+                    "kvmInSE": false,
+                    "maxStackSize": 67108864,
+                    "output": "cout",
+                    "pgid": 100,
+                    "pid": 100,
+                    "ppid": 0,
+                    "release": "5.1.0",
+                    "simpoint": 0,
+                    "system": "system",
+                    "uid": 100,
+                    "useArchPT": false,
+                    "zeroPages": true
+                }
+            ],
+            "icache": {
+                "type": "NoncoherentCache",
+                "cxx_class": "gem5::NoncoherentCache",
+                "name": "icache",
+                "path": "system.cpu.icache",
+                "addr_ranges": [
+                    "0:18446744073709551615"
+                ],
+                "assoc": 8,
+                "clk_domain": "system.clk_domain",
+                "clusivity": "mostly_incl",
+                "compressor": null,
+                "data_latency": 0,
+                "demand_mshr_reserve": 1,
+                "eventq_index": 0,
+                "is_read_only": false,
+                "max_miss_count": 0,
+                "move_contractions": true,
+                "mshrs": 16,
+                "partitioning_manager": null,
+                "power_model": [],
+                "power_state": {
+                    "type": "PowerState",
+                    "cxx_class": "gem5::PowerState",
+                    "name": "power_state",
+                    "path": "system.cpu.icache.power_state",
+                    "clk_gate_bins": 20,
+                    "clk_gate_max": 1000000000000,
+                    "clk_gate_min": 1000,
+                    "default_state": "UNDEFINED",
+                    "eventq_index": 0,
+                    "leaders": [],
+                    "possible_states": []
+                },
+                "prefetcher": null,
+                "replace_expansions": true,
+                "replacement_policy": {
+                    "type": "LRURP",
+                    "cxx_class": "gem5::replacement_policy::LRU",
+                    "name": "replacement_policy",
+                    "path": "system.cpu.icache.replacement_policy",
+                    "eventq_index": 0
+                },
+                "response_latency": 0,
+                "sequential_access": false,
+                "size": 8388608,
+                "system": "system",
+                "tag_latency": 0,
+                "tags": {
+                    "type": "BaseSetAssoc",
+                    "cxx_class": "gem5::BaseSetAssoc",
+                    "name": "tags",
+                    "path": "system.cpu.icache.tags",
+                    "assoc": 8,
+                    "block_size": 64,
+                    "clk_domain": "system.clk_domain",
+                    "entry_size": 64,
+                    "eventq_index": 0,
+                    "indexing_policy": {
+                        "type": "TaggedSetAssociative",
+                        "cxx_class": "gem5::TaggedSetAssociative",
+                        "name": "indexing_policy",
+                        "path": "system.cpu.icache.tags.indexing_policy",
+                        "assoc": 8,
+                        "entry_size": 64,
+                        "eventq_index": 0,
+                        "size": 8388608
+                    },
+                    "partitioning_manager": null,
+                    "power_model": [],
+                    "power_state": {
+                        "type": "PowerState",
+                        "cxx_class": "gem5::PowerState",
+                        "name": "power_state",
+                        "path": "system.cpu.icache.tags.power_state",
+                        "clk_gate_bins": 20,
+                        "clk_gate_max": 1000000000000,
+                        "clk_gate_min": 1000,
+                        "default_state": "UNDEFINED",
+                        "eventq_index": 0,
+                        "leaders": [],
+                        "possible_states": []
+                    },
+                    "replacement_policy": "system.cpu.icache.replacement_policy",
+                    "sequential_access": false,
+                    "size": 8388608,
+                    "system": "system",
+                    "tag_latency": 0,
+                    "warmup_percentage": 0
+                },
+                "tgts_per_mshr": 20,
+                "warmup_percentage": 0,
+                "write_allocator": null,
+                "write_buffers": 8,
+                "writeback_clean": false,
+                "cpu_side": {
+                    "role": "GEM5 RESPONDER",
+                    "peer": "system.cpu.icache_port",
+                    "is_source": "False"
+                },
+                "mem_side": {
+                    "role": "GEM5 REQUESTOR",
+                    "peer": "system.membus.cpu_side_ports[0]",
+                    "is_source": "True"
+                }
+            },
+            "dcache_port": {
+                "role": "GEM5 REQUESTOR",
+                "peer": "system.spad.port[0]",
+                "is_source": "True"
+            },
+            "icache_port": {
+                "role": "GEM5 REQUESTOR",
+                "peer": "system.cpu.icache.cpu_side",
+                "is_source": "True"
+            }
+        },
+        "dvfs_handler": {
+            "type": "DVFSHandler",
+            "cxx_class": "gem5::DVFSHandler",
+            "name": "dvfs_handler",
+            "path": "system.dvfs_handler",
+            "domains": [],
+            "enable": false,
+            "eventq_index": 0,
+            "sys_clk_domain": "system.clk_domain",
+            "transition_latency": 100000000
+        },
+        "membus": {
+            "type": "NoncoherentXBar",
+            "cxx_class": "gem5::NoncoherentXBar",
+            "name": "membus",
+            "path": "system.membus",
+            "clk_domain": {
+                "type": "SrcClockDomain",
+                "cxx_class": "gem5::SrcClockDomain",
+                "name": "clk_domain",
+                "path": "system.membus.clk_domain",
+                "clock": [
+                    125
+                ],
+                "domain_id": -1,
+                "eventq_index": 0,
+                "init_perf_level": 0,
+                "voltage_domain": {
+                    "type": "VoltageDomain",
+                    "cxx_class": "gem5::VoltageDomain",
+                    "name": "voltage_domain",
+                    "path": "system.membus.clk_domain.voltage_domain",
+                    "eventq_index": 0,
+                    "voltage": [
+                        1.0
+                    ]
+                }
+            },
+            "eventq_index": 0,
+            "forward_latency": 0,
+            "frontend_latency": 0,
+            "header_latency": 0,
+            "power_model": [],
+            "power_state": {
+                "type": "PowerState",
+                "cxx_class": "gem5::PowerState",
+                "name": "power_state",
+                "path": "system.membus.power_state",
+                "clk_gate_bins": 20,
+                "clk_gate_max": 1000000000000,
+                "clk_gate_min": 1000,
+                "default_state": "UNDEFINED",
+                "eventq_index": 0,
+                "leaders": [],
+                "possible_states": []
+            },
+            "response_latency": 0,
+            "use_default_range": false,
+            "width": 64,
+            "cpu_side_ports": {
+                "role": "GEM5 RESPONDER",
+                "peer": [
+                    "system.cpu.icache.mem_side",
+                    "system.system_port"
+                ],
+                "is_source": "False"
+            },
+            "mem_side_ports": {
+                "role": "GEM5 REQUESTOR",
+                "peer": [
+                    "system.spad.port[1]"
+                ],
+                "is_source": "True"
+            }
+        },
+        "spad": {
+            "type": "MultiPortScratchpad",
+            "cxx_class": "gem5::memory::MultiPortScratchpad",
+            "name": "spad",
+            "path": "system.spad",
+            "access_ports": 2,
+            "clk_domain": "system.clk_domain",
+            "collect_stats": true,
+            "conf_table_reported": true,
+            "eventq_index": 0,
+            "image_file": "",
+            "in_addr_map": true,
+            "kvm_map": true,
+            "latency": 1,
+            "load_ports": 1,
+            "null": false,
+            "power_model": [],
+            "power_state": {
+                "type": "PowerState",
+                "cxx_class": "gem5::PowerState",
+                "name": "power_state",
+                "path": "system.spad.power_state",
+                "clk_gate_bins": 20,
+                "clk_gate_max": 1000000000000,
+                "clk_gate_min": 1000,
+                "default_state": "UNDEFINED",
+                "eventq_index": 0,
+                "leaders": [],
+                "possible_states": []
+            },
+            "range": "0:17179869184",
+            "store_ports": 1,
+            "writeable": true,
+            "port": {
+                "role": "GEM5 RESPONDER",
+                "peer": [
+                    "system.cpu.dcache_port",
+                    "system.membus.mem_side_ports[0]"
+                ],
+                "is_source": "False"
+            }
+        },
+        "system_port": {
+            "role": "GEM5 REQUESTOR",
+            "peer": "system.membus.cpu_side_ports[1]",
+            "is_source": "True"
+        }
+    }
+}

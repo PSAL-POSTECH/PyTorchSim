@@ -1,6 +1,6 @@
-[2026-10-26 01:48:39.171] [info] [TOGSim] Command line: /workspace/pytorchsim-triton-compiler/third_party/TOGSim/build/bin/Simulator --config /workspace/PyTorchSim/.npuw_probe/tpuv3_booksim_fixed.yml --tog_so /workspace/PyTorchSim/.npuw_probe/njb_mm_bf16_256/outputs/triton_3fysfbwny4y/launch-276367/copy_node_1/tog.so --cycle_table /workspace/PyTorchSim/.npuw_probe/njb_mm_bf16_256/outputs/triton_3fysfbwny4y/launch-276367/copy_node_1/tog_cycles.tsv --unit_table /workspace/PyTorchSim/.npuw_probe/njb_mm_bf16_256/outputs/triton_3fysfbwny4y/launch-276367/copy_node_1/tog_units.tsv --result /workspace/PyTorchSim/.npuw_probe/njb_mm_bf16_256/togsim_results/20261026_014839_d5544e74.json
-[2026-10-26 01:48:39.172] [info] [LoadConfig] Loaded configuration file "/workspace/PyTorchSim/.npuw_probe/tpuv3_booksim_fixed.yml"
-[2026-10-26 01:48:39.172] [info] PyTorchSim config:
+[2026-10-27 02:03:46.248] [info] [TOGSim] Command line: /workspace/pytorchsim-triton-compiler/third_party/TOGSim/build/bin/Simulator --config /workspace/PyTorchSim/tests/system/data/npuwattch_tpuv3/machine.yml --tog_so /workspace/PyTorchSim/.npuw_probe/regen10/dump/triton_3fysfbwny4y/launch-48226/copy_node_1/tog.so --cycle_table /workspace/PyTorchSim/.npuw_probe/regen10/dump/triton_3fysfbwny4y/launch-48226/copy_node_1/tog_cycles.tsv --unit_table /workspace/PyTorchSim/.npuw_probe/regen10/dump/triton_3fysfbwny4y/launch-48226/copy_node_1/tog_units.tsv --result /workspace/PyTorchSim/.npuw_probe/regen10/log/20261027_020346_8d9c8aaf.json
+[2026-10-27 02:03:46.248] [info] [LoadConfig] Loaded configuration file "/workspace/PyTorchSim/tests/system/data/npuwattch_tpuv3/machine.yml"
+[2026-10-27 02:03:46.248] [info] PyTorchSim config:
 num_cores: 1
 core_freq_mhz: 940
 core_stats_print_period_cycles: 10000
@@ -23,10 +23,10 @@ icnt_type: booksim2
 icnt_freq_mhz: 940
 icnt_injection_ports_per_core: 16
 booksim_config_path: /workspace/pytorchsim-triton-compiler/third_party/TOGSim/configs/booksim2_configs/fly_c16_m16.icnt
-[2026-10-26 01:48:39.172] [info] [Config/Core] core_id: 0, partition_id: 0 (no partition section)
-[2026-10-26 01:48:39.172] [info] [Config/Core] Core 0: core_freq_mhz: 940, systolic_arrays_per_core: 2
-[2026-10-26 01:48:39.172] [info] [Config/DRAM] Ramulator2 config path: /workspace/pytorchsim-triton-compiler/third_party/TOGSim/configs/ramulator2_configs/HBM2_TPUv3.yaml
-[2026-10-26 01:48:39.172] [info] [Config/DRAM] Ramulator2 configuration :
+[2026-10-27 02:03:46.250] [info] [Config/Core] core_id: 0, partition_id: 0 (no partition section)
+[2026-10-27 02:03:46.250] [info] [Config/Core] Core 0: core_freq_mhz: 940, systolic_arrays_per_core: 2
+[2026-10-27 02:03:46.250] [info] [Config/DRAM] Ramulator2 config path: /workspace/pytorchsim-triton-compiler/third_party/TOGSim/configs/ramulator2_configs/HBM2_TPUv3.yaml
+[2026-10-27 02:03:46.250] [info] [Config/DRAM] Ramulator2 configuration :
 {
   "frontend": {
     "impl": "External",
@@ -71,13 +71,13 @@ booksim_config_path: /workspace/pytorchsim-triton-compiler/third_party/TOGSim/co
     }]
   }
 }
-[2026-10-26 01:48:39.172] [info] [Config/DRAM] Total bandwidth 481.28 GB/s, 940 MHz, 16 channels, 32 bytes per request
-[2026-10-26 01:48:39.172] [info] [Config/L2Cache] No L2 cache
-[2026-10-26 01:48:39.179] [info] [Config/Interconnect] interconnect_freq_mhz: 940
-[2026-10-26 01:48:39.179] [info] [Config/Interconnect] BookSim2 interconnect selected
-[2026-10-26 01:48:39.179] [info] Initialize Booksim2
-[2026-10-26 01:48:39.179] [info] Booksim 2 config path : /workspace/pytorchsim-triton-compiler/third_party/TOGSim/configs/booksim2_configs/fly_c16_m16.icnt
-[2026-10-26 01:48:39.179] [info] Booksim2 Configuration: 
+[2026-10-27 02:03:46.250] [info] [Config/DRAM] Total bandwidth 481.28 GB/s, 940 MHz, 16 channels, 32 bytes per request
+[2026-10-27 02:03:46.250] [info] [Config/L2Cache] No L2 cache
+[2026-10-27 02:03:46.257] [info] [Config/Interconnect] interconnect_freq_mhz: 940
+[2026-10-27 02:03:46.257] [info] [Config/Interconnect] BookSim2 interconnect selected
+[2026-10-27 02:03:46.257] [info] Initialize Booksim2
+[2026-10-27 02:03:46.257] [info] Booksim 2 config path : /workspace/pytorchsim-triton-compiler/third_party/TOGSim/configs/booksim2_configs/fly_c16_m16.icnt
+[2026-10-27 02:03:46.257] [info] Booksim2 Configuration: 
 [config]
 use_map = 0
 flit_size = 32
@@ -96,11 +96,11 @@ vc_allocator = islip
 sw_allocator = islip
 alloc_iters = 1
 deadlock_warn_timeout = 10000
-[2026-10-26 01:48:39.183] [info] ======Start Simulation=====
-[2026-10-26 01:48:39.207] [info] [Scheduler 0] Kernel 0 has completed - TOG path: kernel operation: kernel finished at cycle 1368
-[2026-10-26 01:48:39.207] [info] [Scheduler 0] Kernel 0 execution summary - Started at: 1 cycles, Total compute time: 1367 cycles
-[2026-10-26 01:48:39.207] [info] [TOGSim] Total cycles: 1368
-[2026-10-26 01:48:39.207] [info] Simulation finished
+[2026-10-27 02:03:46.263] [info] ======Start Simulation=====
+[2026-10-27 02:03:46.286] [info] [Scheduler 0] Kernel 0 has completed - TOG path: kernel operation: kernel finished at cycle 1368
+[2026-10-27 02:03:46.286] [info] [Scheduler 0] Kernel 0 execution summary - Started at: 1 cycles, Total compute time: 1367 cycles
+[2026-10-27 02:03:46.286] [info] [TOGSim] Total cycles: 1368
+[2026-10-27 02:03:46.286] [info] Simulation finished
 Class 0:
 Packet latency average = 43.9017
 	minimum = 7
@@ -131,7 +131,7 @@ Accepted flit rate average= 0.187135
 Injected packet length average = 1
 Accepted packet length average = 1
 Total in-flight flits = 0 (0 measured)
-[2026-10-26 01:48:39.207] [info] === DRAM statistics ===
+[2026-10-27 02:03:46.286] [info] === DRAM statistics ===
 --- channel 0 ---
 frontend:
   impl: External
@@ -1060,32 +1060,32 @@ memory_system:
 
 
 
-[2026-10-26 01:48:39.207] [info] [DRAM] Per-channel average bandwidth
-[2026-10-26 01:48:39.207] [info] [DRAM] channel 0 | 5.63 GB/s avg., 18.71% of utilization | 256 reads, 0 writes
-[2026-10-26 01:48:39.207] [info] [DRAM] channel 1 | 5.63 GB/s avg., 18.71% of utilization | 256 reads, 0 writes
-[2026-10-26 01:48:39.207] [info] [DRAM] channel 2 | 5.63 GB/s avg., 18.71% of utilization | 256 reads, 0 writes
-[2026-10-26 01:48:39.207] [info] [DRAM] channel 3 | 5.63 GB/s avg., 18.71% of utilization | 256 reads, 0 writes
-[2026-10-26 01:48:39.207] [info] [DRAM] channel 4 | 5.63 GB/s avg., 18.71% of utilization | 256 reads, 0 writes
-[2026-10-26 01:48:39.207] [info] [DRAM] channel 5 | 5.63 GB/s avg., 18.71% of utilization | 256 reads, 0 writes
-[2026-10-26 01:48:39.207] [info] [DRAM] channel 6 | 5.63 GB/s avg., 18.71% of utilization | 256 reads, 0 writes
-[2026-10-26 01:48:39.207] [info] [DRAM] channel 7 | 5.63 GB/s avg., 18.71% of utilization | 256 reads, 0 writes
-[2026-10-26 01:48:39.207] [info] [DRAM] channel 8 | 5.63 GB/s avg., 18.71% of utilization | 256 reads, 0 writes
-[2026-10-26 01:48:39.207] [info] [DRAM] channel 9 | 5.63 GB/s avg., 18.71% of utilization | 256 reads, 0 writes
-[2026-10-26 01:48:39.207] [info] [DRAM] channel 10 | 5.63 GB/s avg., 18.71% of utilization | 256 reads, 0 writes
-[2026-10-26 01:48:39.207] [info] [DRAM] channel 11 | 5.63 GB/s avg., 18.71% of utilization | 256 reads, 0 writes
-[2026-10-26 01:48:39.207] [info] [DRAM] channel 12 | 5.63 GB/s avg., 18.71% of utilization | 256 reads, 0 writes
-[2026-10-26 01:48:39.207] [info] [DRAM] channel 13 | 5.63 GB/s avg., 18.71% of utilization | 256 reads, 0 writes
-[2026-10-26 01:48:39.207] [info] [DRAM] channel 14 | 5.63 GB/s avg., 18.71% of utilization | 256 reads, 0 writes
-[2026-10-26 01:48:39.207] [info] [DRAM] channel 15 | 5.63 GB/s avg., 18.71% of utilization | 256 reads, 0 writes
-[2026-10-26 01:48:39.207] [info] [DRAM] channels 0..15 combined | 90.06 GB/s aggregate, 18.71% of utilization (avg. per channel) | 4096 reads, 0 writes
-[2026-10-26 01:48:39.207] [info] ===== Instructions count =====
-[2026-10-26 01:48:39.207] [info] Core [0] : MOVIN    inst_count: 1
-[2026-10-26 01:48:39.207] [info] Core [0] : MOVOUT   inst_count: 0
-[2026-10-26 01:48:39.207] [info] Core [0] : COMP     inst_count: 0 (GEMM: 0, Vector: 0, XLU: 0)
-[2026-10-26 01:48:39.207] [info] Core [0] : MEMORY_BAR inst_count: 0
-[2026-10-26 01:48:39.207] [info] ========= Core stat =========
-[2026-10-26 01:48:39.207] [info] Core [0] : DMA active_cycles: 256, DMA idle_cycles: 1112, DRAM BW: 90.000 GB/s (4096 responses)
-[2026-10-26 01:48:39.207] [info] Core [0] : NUMA local memory: 4096 requests, remote memory: 0 requests
-[2026-10-26 01:48:39.207] [info] Core [0] : Total_cycles: 1368
-[2026-10-26 01:48:39.207] [info] Core [0] : computes held at least once by the core's compute in flight: 0
-[2026-10-26 01:48:39.207] [info] Total execution cycles: 1368
+[2026-10-27 02:03:46.286] [info] [DRAM] Per-channel average bandwidth
+[2026-10-27 02:03:46.286] [info] [DRAM] channel 0 | 5.63 GB/s avg., 18.71% of utilization | 256 reads, 0 writes
+[2026-10-27 02:03:46.286] [info] [DRAM] channel 1 | 5.63 GB/s avg., 18.71% of utilization | 256 reads, 0 writes
+[2026-10-27 02:03:46.286] [info] [DRAM] channel 2 | 5.63 GB/s avg., 18.71% of utilization | 256 reads, 0 writes
+[2026-10-27 02:03:46.286] [info] [DRAM] channel 3 | 5.63 GB/s avg., 18.71% of utilization | 256 reads, 0 writes
+[2026-10-27 02:03:46.286] [info] [DRAM] channel 4 | 5.63 GB/s avg., 18.71% of utilization | 256 reads, 0 writes
+[2026-10-27 02:03:46.286] [info] [DRAM] channel 5 | 5.63 GB/s avg., 18.71% of utilization | 256 reads, 0 writes
+[2026-10-27 02:03:46.286] [info] [DRAM] channel 6 | 5.63 GB/s avg., 18.71% of utilization | 256 reads, 0 writes
+[2026-10-27 02:03:46.286] [info] [DRAM] channel 7 | 5.63 GB/s avg., 18.71% of utilization | 256 reads, 0 writes
+[2026-10-27 02:03:46.286] [info] [DRAM] channel 8 | 5.63 GB/s avg., 18.71% of utilization | 256 reads, 0 writes
+[2026-10-27 02:03:46.286] [info] [DRAM] channel 9 | 5.63 GB/s avg., 18.71% of utilization | 256 reads, 0 writes
+[2026-10-27 02:03:46.286] [info] [DRAM] channel 10 | 5.63 GB/s avg., 18.71% of utilization | 256 reads, 0 writes
+[2026-10-27 02:03:46.286] [info] [DRAM] channel 11 | 5.63 GB/s avg., 18.71% of utilization | 256 reads, 0 writes
+[2026-10-27 02:03:46.286] [info] [DRAM] channel 12 | 5.63 GB/s avg., 18.71% of utilization | 256 reads, 0 writes
+[2026-10-27 02:03:46.286] [info] [DRAM] channel 13 | 5.63 GB/s avg., 18.71% of utilization | 256 reads, 0 writes
+[2026-10-27 02:03:46.286] [info] [DRAM] channel 14 | 5.63 GB/s avg., 18.71% of utilization | 256 reads, 0 writes
+[2026-10-27 02:03:46.286] [info] [DRAM] channel 15 | 5.63 GB/s avg., 18.71% of utilization | 256 reads, 0 writes
+[2026-10-27 02:03:46.286] [info] [DRAM] channels 0..15 combined | 90.06 GB/s aggregate, 18.71% of utilization (avg. per channel) | 4096 reads, 0 writes
+[2026-10-27 02:03:46.286] [info] ===== Instructions count =====
+[2026-10-27 02:03:46.286] [info] Core [0] : MOVIN    inst_count: 1
+[2026-10-27 02:03:46.286] [info] Core [0] : MOVOUT   inst_count: 0
+[2026-10-27 02:03:46.286] [info] Core [0] : COMP     inst_count: 0 (GEMM: 0, Vector: 0, XLU: 0)
+[2026-10-27 02:03:46.286] [info] Core [0] : MEMORY_BAR inst_count: 0
+[2026-10-27 02:03:46.286] [info] ========= Core stat =========
+[2026-10-27 02:03:46.286] [info] Core [0] : DMA active_cycles: 256, DMA idle_cycles: 1112, DRAM BW: 90.000 GB/s (4096 responses)
+[2026-10-27 02:03:46.286] [info] Core [0] : NUMA local memory: 4096 requests, remote memory: 0 requests
+[2026-10-27 02:03:46.286] [info] Core [0] : Total_cycles: 1368
+[2026-10-27 02:03:46.286] [info] Core [0] : computes held at least once by the core's compute in flight: 0
+[2026-10-27 02:03:46.286] [info] Total execution cycles: 1368

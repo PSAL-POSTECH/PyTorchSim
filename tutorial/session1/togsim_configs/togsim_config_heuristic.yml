@@ -1,11 +1,11 @@
 # Tutorial machine: the heuristic's tile, never timed
 # Based on $TOGSIM_DIR/configs/tpuv3.yml.
-# One TPU v3 TensorCore. The array unit TPUV3_MXU and the ISA's pytorchsim_tpuv3 name vcix-accelerator libtpuv3.so.
+# One TPU v3 TensorCore. The array unit TPUV3_MXU.rows and the ISA's pytorchsim_tpuv3 name Coprocessor libtpuv3.so.
 num_cores: 1
 core_freq_mhz: 940
 core_stats_print_period_cycles: 10000
 num_systolic_array_per_core: 2
-systolic_array_unit: TPUV3_MXU
+systolic_array_unit: TPUV3_MXU.rows
 # Each matrix unit is 128 x 128 PEs, an operand one register. TOGSim does not read it; power models do.
 systolic_array_dim: 128
 # tpuv6e's DMA keys, measured on a v6e.
@@ -24,7 +24,7 @@ isa: [m, a, f, d, c, v, zvfh, zvfbfmin, zvl256b, pytorchsim_tpuv3, spad-vector-m
 # No v3 measurement backs the other keys; each is tpuv6e.yml's: the XLU's latency is a v6e measurement (archive
 # 3aad8c9), its 8 elements and 1 instruction a cycle half the v6e's, one XLU for the v6e's two; the queues and the
 # SFU's latency are the model's defaults there (512 unsourced), not measurements.
-# The matrix unit's shape: an operand of 1 register (128 x 128), 1 issue slot, a row a cycle, as vcix-accelerator's
+# The matrix unit's shape: an operand of 1 register (128 x 128), 1 issue slot, a row a cycle, as Coprocessor's
 # tpuv3.cc Shape has it; the compiler builds the stream for it, the model reads it.
 vcix: {tpu_mxu_queue_entries: 512, tpu_mxu_delay_cycles: 97, tpu_mxu_registers: 1, tpu_mxu_issue_slots: 1, tpu_mxu_word_a_cycle: 0, tpu_xlu_queue_entries: 256, tpu_xlu_latency_cycles: 137, tpu_xlu_elements_per_cycle: 8, tpu_xlu_issue_per_cycle: 1, tpu_sfu_latency_cycles: 10, tpu_sfu_queue_registers: 16}
 address_map: {spad_vaddr: 0x40000000, dram_base: 0x80000000, dram_size: 17179869184}

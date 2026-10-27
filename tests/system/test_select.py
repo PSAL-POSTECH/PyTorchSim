@@ -167,13 +167,15 @@ def _choice(name):
 
 def test_a_refused_config_is_inf_and_none_left_is_an_error():
     a, b = _choice("a"), _choice("b")
-    with mock.patch.object(template_timing.kernel_metadata, "benchmark_request_meta",
-                           return_value=("", {})), \
+    with mock.patch.object(template_timing.graph_prefetch, "choice_statement", return_value=()), \
+         mock.patch.object(template_timing.kernel_metadata, "benchmark_request_meta",
+                           return_value=("", {"args": []})), \
          mock.patch.object(template_timing, "_time_tile",
                            side_effect=lambda src, meta, name, wd, cut: 7.0 if wd.endswith("b") else float("inf")):
         assert template_timing.time_choices([a, b]) == {a: float("inf"), b: 7.0}
-    with mock.patch.object(template_timing.kernel_metadata, "benchmark_request_meta",
-                           return_value=("", {})), \
+    with mock.patch.object(template_timing.graph_prefetch, "choice_statement", return_value=()), \
+         mock.patch.object(template_timing.kernel_metadata, "benchmark_request_meta",
+                           return_value=("", {"args": []})), \
          mock.patch.object(template_timing, "_time_tile", return_value=float("inf")):
         try:
             template_timing.time_choices([a, b])
@@ -195,7 +197,9 @@ def test_a_config_running_past_the_cut_is_inf():
             time.sleep(0.05)
         return float("inf")
     fast, slow = _choice("fast"), _choice("slow")
-    with mock.patch.object(template_timing.kernel_metadata, "benchmark_request_meta", return_value=("", {})), \
+    with mock.patch.object(template_timing.graph_prefetch, "choice_statement", return_value=()), \
+         mock.patch.object(template_timing.kernel_metadata, "benchmark_request_meta",
+                           return_value=("", {"args": []})), \
          mock.patch.object(template_timing, "_time_tile", side_effect=tile):
         t0 = time.monotonic()
         assert template_timing.time_choices([slow, fast]) == {slow: float("inf"), fast: 5.0}

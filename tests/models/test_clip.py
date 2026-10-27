@@ -38,9 +38,14 @@ _CLIP_VIT_B32 = dict(
     layer_norm_eps=1e-5,
 )
 
+# (rtol, atol) per dtype; the bf16 atol is 3x the worst bf16 eager-vs-Inductor CPU diff at S = 128.
+_TOL = {"bfloat16": (5e-2, 0.2), "float32": (1e-4, 1e-4)}
+_DTYPES = {"float32": torch.float32, "bfloat16": torch.bfloat16}
 
-def test_clip(device, batch=2, num_layers=2):
-    """CLIP ViT-B/32 vision backbone at its published per-layer size, with batch > 1.
+
+def test_clip(device, batch=2, num_layers=2, dtype="bfloat16"):
+    """CLIP ViT-B/32 vision backbone at its published per-layer size, with batch > 1, weights and input in
+    `dtype` (bfloat16 by default), checked at its `_TOL`.
     The patch-embedding conv (kernel = stride = patch_size) routes to the multi-tile
     conv mapping, whose full-kernel tile overflows SPAD at batch > 1 -- that used to
     raise "Cannot find a valid mapping" (GitHub issue #252)."""
@@ -50,15 +55,16 @@ def test_clip(device, batch=2, num_layers=2):
     with torch.no_grad():
         model = CLIPVisionModel(cfg).eval()
         model.apply(_init_weights)
+        model.to(_DTYPES[dtype])
 
-        x = torch.randn(batch, 3, image_size, image_size)
+        x = torch.randn(batch, 3, image_size, image_size).to(_DTYPES[dtype])
         out_cpu = model(pixel_values=x.cpu()).last_hidden_state
 
         model.to(device)
         opt_model = torch.compile(dynamic=False)(model)
         out_device = opt_model(pixel_values=x.to(device)).last_hidden_state
 
-    check_result(f"CLIP vision (batch={batch})", out_device, out_cpu)
+    check_result(f"CLIP vision (batch={batch})", out_device, out_cpu, *_TOL[dtype])
     print("Max diff >", torch.max(torch.abs(out_device.cpu() - out_cpu)))
     print("CLIP Simulation Done")
 
@@ -67,9 +73,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run CLIP vision test")
     parser.add_argument("--batch", type=int, default=2)
     parser.add_argument("--num_layers", type=int, default=2)
+    parser.add_argument("--dtype", type=str, default="bfloat16", choices=sorted(_DTYPES))
     args = parser.parse_args()
     test_clip(
         torch.device("npu:0"),
         batch=args.batch,
         num_layers=args.num_layers,
+        dtype=args.dtype,
     )

@@ -471,6 +471,13 @@ def _tensors(obj, out=None):
 
 
 @torch.no_grad()
+def _cache_anchors(model, x):
+    """Run `model` once on `x` on the CPU, so its detect head holds the anchors of this input shape, as it
+    does after a first step: a compiled run then reads them instead of rebuilding them from its strides."""
+    with torch.no_grad():
+        model.eval()(x)
+
+
 def run_yolo(device, version="v8", batch=1, imgsz=None, compile_model=True, rtol=None, atol=None,
              dtype="bfloat16"):
     """The version at `imgsz`, BatchNorms calibrated in float32 and the model then cast to `dtype` with its
@@ -498,6 +505,7 @@ def run_yolo(device, version="v8", batch=1, imgsz=None, compile_model=True, rtol
 
     cpu_out = _tensors(f32_reference(model_cpu)(x.float()))
 
+    _cache_anchors(model_cpu, x)
     model_npu = copy.deepcopy(model_cpu).to(device).eval()
     if compile_model:
         model_npu = torch.compile(model_npu, dynamic=False)

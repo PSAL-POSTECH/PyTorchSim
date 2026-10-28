@@ -42,6 +42,8 @@ def run(workdir, meta, args=()):
             if not emitted():
                 with wallclock.span(wallclock.TOGSIM_TABLES, kernel):
                     write_cycle_tables(workdir, meta)
+    else:
+        logger.info("[Gem5] tile cycles reused from %s", os.path.join(workdir, CYCLE_TSV))
     with wallclock.span(wallclock.TOGSIM_RUN, kernel):
         return run_togsim(workdir, meta, args)
 

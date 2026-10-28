@@ -50,15 +50,17 @@ PyTorchSim **supports**:
 | Stable-diffusion v1 | 🤗 | ✅ |  |
 | Llama 2 / 3 / 3.1 / 3.2 / 3.3 | 🤗 | ✅ | `tests/models/Llama/` — `test_llama3x.py` runs one block at the real 8B width (4096 hidden, head_dim 128, SwiGLU 14336) plus the 3.2 1B/3B shapes and 3.1's rope scaling. 3.3 is config-identical to 3.1 70B |
 | Llama 3.2 Vision (Mllama) | 🤗 | ✅ | `tests/models/Llama/test_mllama.py` — both towers. The vision tower keeps the real 4 tiles and the local/global layer split; the text tower runs `MllamaCrossAttentionDecoderLayer` with its second mask (`full_text_row_masked_out_mask`). Needed a triton-npu absorb_layout fix for the unit middle axis its cross-attention leaves behind |
-| Qwen 1.5 / 2 / 2.5 / 3 | 🤗 | ✅ | `tests/models/Qwen/` — one block per version. `3-8b` runs Qwen3 at its real 4096 width (q_norm/k_norm, head_dim 128); `2.5-7b` at the real 7B width (QKV bias, n_rep=7). Qwen 1 (remote-code `QWenLMHeadModel`) is not covered |
+| Qwen 1.5 / 2 / 2.5 / 3 | 🤗 | ✅ 🎯 | 🎯 Qwen3-8B. `tests/models/Qwen/` — one block per version. `3-8b` runs Qwen3 at its real 4096 width (q_norm/k_norm, head_dim 128); `2.5-7b` at the real 7B width (QKV bias, n_rep=7). Qwen 1 (remote-code `QWenLMHeadModel`) is not covered |
 | Qwen2-VL / Qwen2.5-VL | 🤗 | ⚠️ | `tests/models/Qwen/test_qwen_vl.py` — end to end at reduced width, and at the **real 1280 vision width** with `--preset 2b`. M-RoPE, the 3D patchifier and the image splice are all exercised, with no CPU fallback. Needs the i64 `get_structured_state` fix in triton_shared, the replicate-axes fix in triton-npu, and `NPUChoices.reduction_split_factor` pinning the split at 1 so the splice's cumsum is not lowered as a cross-block scan this route cannot express |
-| Qwen1.5-MoE / Qwen3-MoE | 🤗 | ✅ | `tests/models/Qwen/test_qwen.py --preset 2-moe / 3-moe` — 8 experts instead of the shipped 60 and 128; the shared expert and its sigmoid gate are the tested difference |
+| Qwen1.5-MoE / Qwen3-MoE | 🤗 | ✅ 🎯 | 🎯 Qwen3-30B-A3B. `tests/models/Qwen/test_qwen.py --preset 2-moe / 3-moe` — 8 experts instead of the shipped 60 and 128; the shared expert and its sigmoid gate are the tested difference |
 | DeepSeek-V3 (base) | 🤗 | ✅ | `tests/models/DeepSeek/` — several ops(e.g., gate ops) are not cycle-modeled |
 | SwinV2 | 🤗 | ✅ | `tests/models/test_swinv2.py` (shifted-window attention) |
 | CLIP (vision) | 🤗 | ✅ | `tests/models/test_clip.py` |
 | ConvNeXt V2 | 🤗 | ✅ | `tests/models/test_convnextv2.py` (channels-first LayerNorm, depthwise conv) |
 | Llama 4 | 🤗 | ✅ | `tests/models/Llama/test_llama4.py` — MoE in every layer (no dense layer to fall back on), the NoPE period, per-head qk_norm and chunked attention, all four in one run. Experts are scaled to 4; the routing and the combine are what the shapes decide, not the count. 31 kernels, 4.77e-06. The complex rotary stays on the device: `polar` becomes a view over a real pair and `extension_complex_to_real` rewrites the rest, so none of it falls back. Gated at 1024 hidden — `--preset scout` builds Scout's real 5120 width but stops in the functional simulator, where tnpu's wrapper doubles every buffer and the 1.25 GiB expert stack fails to allocate |
 | Broader model support | — | ⏳ | In development |
+
+✅ runs end to end on PyTorchSim · ⚠️ runs with the noted limits · ⏳ in development · 🎯 timing validated against TPU v6e
 <!-- ## Requirements
 
 ### OS Distribution

@@ -1,6 +1,6 @@
 """aten._grouped_mm and transformers' grouped_mm_fallback (2-D A grouped by offs, times 3-D B) as one
-Triton kernel in fused_moe form: a program is BM rows of one group, read from a table the TOG reads as
-runtime attributes. No backward, so a call needing a gradient runs group by group."""
+Triton kernel: a program is one group with rows, BM rows at a time, read from a table the TOG reads as runtime
+attributes; a B tile holding all of K is read once per group. No backward: a gradient runs group by group."""
 
 from typing import Optional
 
@@ -45,10 +45,11 @@ class GroupedMM(CustomFusedKernel):
         s, k = a.shape
         g, _, n = b.shape
         bm, bn, bk = plan["BM"], plan["BN"], plan["BK"]
-        grp, first, rows, nb = _blocks(offs, s, g, bm)
+        programs = min(g, s)
+        group, first, rows = _groups(offs, programs)
         c = a.new_empty(s, n)
-        wrap_triton(_grouped_mm_kernel)[(nb, triton.cdiv(n, bn), 1)](
-            a.contiguous(), b, grp, first, rows, c, b.stride(0), b.stride(1), b.stride(2),
+        wrap_triton(_grouped_mm_kernel)[(programs, triton.cdiv(n, bn), 1)](
+            a.contiguous(), b, group, first, rows, c, b.stride(0), b.stride(1), b.stride(2),
             k, triton.cdiv(k, bk) * bk, n, bm, bn, bk)
         return c
 
@@ -77,45 +78,61 @@ def _tiles(n, k, esize):
 
 
 @triton.jit
-def _grouped_mm_kernel(a_ptr, b_ptr, grp_ptr, start_ptr, rows_ptr, c_ptr,
+def _grouped_mm_kernel(a_ptr, b_ptr, group_ptr, start_ptr, rows_ptr, c_ptr,
                        sbg: tl.constexpr, sbk: tl.constexpr, sbn: tl.constexpr, K: tl.constexpr, KP: tl.constexpr,
                        N: tl.constexpr, BM: tl.constexpr, BN: tl.constexpr, BK: tl.constexpr):
-    pid_m = tl.program_id(0)
+    """Group g, the program_id(0)-th group with rows: its rows times B[g], BM rows at a time; a B tile of all
+    of K (BK == KP) is read once for the group, as v6e's grouped matmul reads each group's weight once. A
+    program past the last such group has the table's empty entry and reads nothing."""
+    pid = tl.program_id(0)
     pid_n = tl.program_id(1)
-    g = tl.load(grp_ptr + pid_m)
-    nr = tl.load(rows_ptr + pid_m)
+    g = tl.load(group_ptr + pid)
+    nr = tl.load(rows_ptr + g)
+    s0 = tl.load(start_ptr + g)
     rm = tl.arange(0, BM)
-    rows = tl.load(start_ptr + pid_m) + rm
-    live = rm < nr
     rn = pid_n * BN + tl.arange(0, BN)
     ncols = rn < N
     rk = tl.arange(0, BK)
-    acc = tl.zeros((BM, BN), dtype=tl.float32)
-    for k0 in range(0, tl.where(nr > 0, KP, 0), BK):
-        kk = k0 + rk
-        a = tl.load(a_ptr + rows[:, None] * K + kk[None, :], mask=live[:, None] & (kk < K)[None, :], other=0.0)
-        b = tl.load(b_ptr + g * sbg + kk[:, None] * sbk + rn[None, :] * sbn,
-                    mask=(kk < K)[:, None] & ncols[None, :], other=0.0)
-        acc += tl.dot(a, b)
-    tl.store(c_ptr + rows[:, None] * N + rn[None, :], acc.to(c_ptr.dtype.element_ty),
-             mask=live[:, None] & ncols[None, :])
+    if BK == KP:
+        if nr > 0:
+            b = tl.load(b_ptr + g * sbg + rk[:, None] * sbk + rn[None, :] * sbn,
+                        mask=(rk < K)[:, None] & ncols[None, :], other=0.0)
+            for m0 in range(0, nr, BM):
+                rows = s0 + m0 + rm
+                live = (m0 + rm) < nr
+                a = tl.load(a_ptr + rows[:, None] * K + rk[None, :], mask=live[:, None] & (rk < K)[None, :],
+                            other=0.0)
+                acc = tl.dot(a, b)
+                tl.store(c_ptr + rows[:, None] * N + rn[None, :], acc.to(c_ptr.dtype.element_ty),
+                         mask=live[:, None] & ncols[None, :])
+    else:
+        for m0 in range(0, nr, BM):
+            rows = s0 + m0 + rm
+            live = (m0 + rm) < nr
+            acc = tl.zeros((BM, BN), dtype=tl.float32)
+            for k0 in range(0, KP, BK):
+                kk = k0 + rk
+                a = tl.load(a_ptr + rows[:, None] * K + kk[None, :], mask=live[:, None] & (kk < K)[None, :],
+                            other=0.0)
+                b = tl.load(b_ptr + g * sbg + kk[:, None] * sbk + rn[None, :] * sbn,
+                            mask=(kk < K)[:, None] & ncols[None, :], other=0.0)
+                acc += tl.dot(a, b)
+            tl.store(c_ptr + rows[:, None] * N + rn[None, :], acc.to(c_ptr.dtype.element_ty),
+                     mask=live[:, None] & ncols[None, :])
 
 
-def _blocks(offs, s, g, bm):
-    """Per block of at most `bm` rows of one group: its group, first row and row count (0 past the last group's
-    rows); the block count is the most any offs over `s` rows and `g` groups needs, and no more than `s`."""
+def _groups(offs, programs):
+    """From offs (each group's end row): the group of each of `programs` programs, the i-th group with rows
+    for program i (the count of groups whose running count of groups with rows is at most i), and each
+    group's first row and row count with one empty entry after the last for the programs left over."""
     end = offs.to(torch.int64)
     start = torch.cat([end.new_zeros(1), end[:-1]])
-    size = end - start
-    bend = torch.cumsum((size + bm - 1) // bm, 0)
-    bstart = torch.cat([bend.new_zeros(1), bend[:-1]])
-    nb = min(s, (s + g * (bm - 1)) // bm)
-    b = torch.arange(nb, device=offs.device)
-    grp = (b[:, None] >= bend[None, :]).sum(1).clamp(max=g - 1)
-    j = b - bstart.index_select(0, grp)
-    first = start.index_select(0, grp) + j * bm
-    rows = (size.index_select(0, grp) - j * bm).clamp(min=0, max=bm)
-    return grp.to(torch.int32), first.to(torch.int32), rows.to(torch.int32), nb
+    rows = end - start
+    ranks = torch.cumsum((rows > 0).to(torch.int64), 0)
+    group = (ranks[None, :] <= torch.arange(programs, device=offs.device)[:, None]).sum(1)
+    zero = end.new_zeros(1)
+    return (group.to(torch.int32), torch.cat([start, zero]).to(torch.int32),
+            torch.cat([rows, zero]).to(torch.int32))
 
 
 def _math(a, b, offs, bias, out_dtype):

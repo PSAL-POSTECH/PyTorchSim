@@ -55,9 +55,11 @@ class TritonNPUScheduling(TritonScheduling):
     def generate_kernel_code_from_nodes(self, nodes, benchmark_kernel=False, hint_override=None,
                                         **kwargs):
         """The source Inductor benchmarks a fusion with, without its harness, and its metadata read as
-        define_kernel reads it, kept for benchmark_codegened_module by the path the source loads from."""
+        define_kernel reads it (the operand it holds too), kept for benchmark_codegened_module by the path
+        the source loads from."""
         src_code = super().generate_kernel_code_from_nodes(nodes, False, hint_override, **kwargs)
         meta = kernel_metadata.collect_meta(self._codegen_kernel, "triton_")
+        meta["graph_prefetch"] = graph_prefetch.statement(self._codegen_kernel, meta["args"])
         self._benchmarked[PyCodeCache.write(src_code)[1]] = (src_code, meta)
         return src_code
 

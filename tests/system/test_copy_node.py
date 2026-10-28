@@ -326,6 +326,27 @@ def test_a_timed_resident_candidate_holds_its_operand():
         [(m["kernel_name"], m["graph_prefetch"]) for m in resident]
 
 
+def test_a_timed_fusion_of_it_holds_its_operand():
+    """Breaks if the resident mm with an epilogue fused is timed as a kernel that holds nothing: it then gets
+    half the bank, and a tile that fits the whole bank is refused (timing mode only)."""
+    if not config.pytorchsim_timing_mode:
+        print("SKIP test_a_timed_fusion_of_it_holds_its_operand: TORCHSIM_TIMING_MODE is off")
+        return
+    a, b = _ab(m=256, k=640, n=768)
+    _launched(lambda x, y: torch.relu(torch.mm(x, y)), a, b)
+    select = os.path.join(config.get_dump_path(), "select")
+    fused = []
+    for d in os.listdir(select):
+        p, src = os.path.join(select, d, "meta.json"), os.path.join(select, d, "kernel.py")
+        if os.path.isfile(p) and os.path.isfile(src) and "RESIDENT : tl.constexpr" in open(src).read():
+            m = json.load(open(p))
+            if "aten.relu.default" in (m.get("aten_ops") or []) or m["kernel_name"] == "triton_":
+                if {x["name"]: x["sizes"] for x in m["args"]}.get("arg_B") == [640, 768]:
+                    fused.append(m)
+    assert fused and all(m["graph_prefetch"] == ["arg_B"] for m in fused), \
+        [(m["kernel_name"], m.get("graph_prefetch")) for m in fused]
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

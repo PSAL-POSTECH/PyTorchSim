@@ -170,11 +170,17 @@ def _label(kernel_inputs):
 
 
 def configs(kernel_inputs):
-    """The resident mm's one config for this mm: the held operand, its blocks, fp32 accumulation."""
+    """The resident mm's configs for this mm: its held operand, fp32 accumulation, and the first
+    codegen_autotune_template_topk of the compiler's copy_node.tiles, the first alone where it does not
+    autotune. Timed on TOGSim with any epilogue fused, a tile the compiler refuses is never picked."""
+    from pytorchsim.backend import template_record
     why, got = decline(kernel_inputs)
     if why is not None:
         return
     m, n, k = _mnk(kernel_inputs)
     extent = n if got.resident == 0 else m
-    yield dict(RESIDENT=got.resident, TILES=2 if extent > got.tile else 1, ACC_TYPE="tl.float32", ALLOW_TF32=False,
-               num_stages=1, num_warps=4, **blocks(m, n, k, got))
+    in_bytes, out_bytes = kernel_inputs.nodes()[0].get_dtype().itemsize, kernel_inputs.out_dtype().itemsize
+    topk = config.codegen_autotune_template_topk if template_record.autotunes() else 1
+    for tile in _copy_node().tiles(got.resident, m, n, k, in_bytes, 4, out_bytes, *_machine())[:topk]:
+        yield dict(RESIDENT=got.resident, TILES=2 if extent > tile else 1, ACC_TYPE="tl.float32",
+                   ALLOW_TF32=False, num_stages=1, num_warps=4, **blocks(m, n, k, got._replace(tile=tile)))

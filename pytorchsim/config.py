@@ -161,6 +161,7 @@ def setup_logger(name=None, level=None):
         )
         handler.setFormatter(formatter)
         logger.addHandler(handler)
+        logger.propagate = False  # its own handler prints it; a parent's would print it again
 
         if level is None:
             level = logging.DEBUG if CONFIG_DEBUG_MODE else logging.INFO

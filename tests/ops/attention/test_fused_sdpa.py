@@ -8,7 +8,7 @@ into the graph (Inductor's own kernels). So a gate that silently sends a fused c
 math case to a kernel, fails:
 
   prefill    causal GQA and non-causal, L == S
-  decode     GQA, L == 1, not causal
+  decode     GQA, L == 1, not causal; MLA's (DeepSeek-V3, Moonlight), k's D 192 = 128 + 64, v's 128
   fallback   a causal decode (SDPA's is_causal is top-left: an L == 1 query attends key 0 alone),
              a non-power-of-two S, and a call whose inputs require grad (whose gradients are checked
              against the CPU's: the overrideable op has no backward)
@@ -21,6 +21,11 @@ math case to a kernel, fails:
              a Decline)
   counts     a compiled prefill called twice counts two launches, not its traces; under
              backend="eager" the call runs math, and only the fallback is counted
+  layout     a v viewed and transposed out of a projection is read in place (one launch)
+  attention  torchsim::attention's sliding window and logit softcap (gemma3's 512 window at S 1024, and
+             at S 2048, where rows have no key of an earlier block in the window, gemma2's softcap) in the
+             prefill and decode kernels, and an MLA prefill through SDPA (k's D
+             192 = 128 + 64, v's 128), each against an explicit float32 reference
 
 On a tree without FUSED_SDPA.calls the route checks are skipped and only the values are checked,
 so the value failures a fix removes show on the tree before it.
@@ -38,11 +43,12 @@ sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspa
 
 device = torch.device("npu:0")
 
-#  name: (route, B, Hq, H, L, S, D, causal)
+#  name: (route, B, Hq, H, L, S, D, causal[, v's D])
 CASES = {
     "prefill_causal_gqa": ("_prefill_kernel", 1, 2, 1, 256, 256, 64, True),
     "prefill_noncausal": ("_prefill_kernel", 1, 2, 2, 256, 256, 64, False),
     "decode_gqa": ("_decode_kernel", 2, 8, 2, 1, 512, 64, False),
+    "decode_mla": ("_decode_kernel", 1, 16, 16, 1, 512, 192, False, 128),
     "decode_causal_top_left": ("fallback", 1, 4, 1, 1, 128, 64, True),
     "prefill_non_pow2": ("fallback", 1, 2, 2, 96, 96, 64, True),
 }
@@ -50,11 +56,11 @@ CASES = {
 TOL = 2e-2  # max |err| over max |ref|: bf16 inputs, f32 softmax state
 
 
-def _inputs(B, Hq, H, L, S, D, dtype=torch.bfloat16, seed=0):
+def _inputs(B, Hq, H, L, S, D, dtype=torch.bfloat16, seed=0, DV=None):
     g = torch.Generator().manual_seed(seed)
     return (torch.randn(B, Hq, L, D, generator=g).to(dtype),
             torch.randn(B, H, S, D, generator=g).to(dtype),
-            torch.randn(B, H, S, D, generator=g).to(dtype))
+            torch.randn(B, H, S, DV or D, generator=g).to(dtype))
 
 
 def _sdpa(q, k, v, causal):
@@ -82,8 +88,8 @@ def _clear():
 
 
 def run_case(name):
-    route, B, Hq, H, L, S, D, causal = CASES[name]
-    q, k, v = _inputs(B, Hq, H, L, S, D)
+    route, B, Hq, H, L, S, D, causal, *dv = CASES[name]
+    q, k, v = _inputs(B, Hq, H, L, S, D, DV=dv[0] if dv else None)
     ref = _sdpa(q.float(), k.float(), v.float(), causal)
     _clear()
     torch._dynamo.reset()
@@ -194,8 +200,81 @@ def run_counts(name):
     return ok
 
 
+#  name: (route, B, Hq, H, L, S, D, DV, window, softcap); D != DV goes through SDPA, the rest torchsim::attention
+ATTENTION_CASES = {
+    "window_prefill": ("_prefill_kernel", 1, 4, 1, 1024, 1024, 256, 256, 512, 0.0),
+    "window_prefill_blocks": ("_prefill_kernel", 1, 2, 1, 2048, 2048, 256, 256, 512, 0.0),
+    "window_prefill_blocks_d64": ("_prefill_kernel", 1, 1, 1, 2048, 2048, 64, 64, 512, 0.0),
+    "window_prefill_whole_blocks": ("_prefill_kernel", 1, 1, 1, 4096, 4096, 64, 64, 3000, 0.0),
+    "window_softcap_prefill": ("_prefill_kernel", 1, 2, 1, 1024, 1024, 64, 64, 384, 2.0),
+    "window_softcap_decode": ("_decode_kernel", 1, 8, 2, 1, 1024, 64, 64, 384, 2.0),
+    "mla_prefill": ("_prefill_kernel", 1, 2, 2, 256, 256, 192, 128, 0, 0.0),
+}
+
+
+def _banded(q, k, v, window, softcap):
+    """Causal attention in float32 with the L queries the last L of the S keys, a key attended when it is
+    less than `window` behind (0: any), the scores softcapped first."""
+    L, S, group = q.shape[2], k.shape[2], q.shape[1] // k.shape[1]
+    k, v = (t.float().repeat_interleave(group, dim=1) for t in (k, v))
+    s = q.float() @ k.transpose(-2, -1) / q.shape[-1] ** 0.5
+    if softcap:
+        s = torch.tanh(s / softcap) * softcap
+    behind = torch.arange(L)[:, None] + (S - L) - torch.arange(S)[None, :]
+    s = s.masked_fill((behind < 0) | ((behind >= window) if window else False), float("-inf"))
+    return torch.softmax(s, dim=-1) @ v
+
+
+def run_attention(name):
+    """One ATTENTION_CASES case compiled on the npu: the route it must take and its values."""
+    route, B, Hq, H, L, S, D, DV, window, softcap = ATTENTION_CASES[name]
+    q, k, _ = _inputs(B, Hq, H, L, S, D)
+    v = _inputs(B, Hq, H, L, S, DV, seed=1)[2]
+    ref = _banded(q, k, v, window, softcap)
+    if D != DV:
+        call = lambda q, k, v: _sdpa(q, k, v, True)
+    else:
+        scale = D ** -0.5
+        call = lambda q, k, v: torch.ops.torchsim.attention(q, k, v, scale, True, window, softcap)
+    _clear()
+    torch._dynamo.reset()
+    f = torch.compile(call, dynamic=False)
+    with torch.no_grad():
+        out = f(q.to(device), k.to(device), v.to(device)).cpu()
+    err = _err(out, ref)
+    from pytorchsim.frontend.dispatcher import attention
+    plan = attention.fused_plan(*(t.to("meta") for t in (q, k, v)), L > 1, window=window, softcap=softcap)
+    ok = err < TOL and _route_ok({route: 1})
+    print(f"{name}: route={dict(_routed() or {})} want={route} plan={plan} err={err:.3e} "
+          f"{'PASS' if ok else 'FAIL'}", flush=True)
+    return ok
+
+
+def run_layout(name):
+    """A prefill whose v is a projection's [B, S, H*D] viewed and transposed is read where it lies: one launch,
+    no copy of v."""
+    from pytorchsim.backend import launch_hooks
+    B, Hq, H, S, D = 1, 2, 2, 256, 64
+    q, k, v = _inputs(B, Hq, H, S, S, D)
+    flat = v.transpose(1, 2).reshape(B, S, H * D).contiguous()
+    ref = _banded(q, k, v, 0, 0.0)
+    call = lambda q, k, flat: torch.ops.torchsim.attention(
+        q, k, flat.view(B, S, H, D).transpose(1, 2), D ** -0.5, True, 0, 0.0)
+    launches = []
+    launch_hooks.observe_every_launch(lambda launcher: launches.append(getattr(launcher, "kernel_name", "?")))
+    _clear()
+    torch._dynamo.reset()
+    with torch.no_grad():
+        out = torch.compile(call, dynamic=False)(q.to(device), k.to(device), flat.to(device))
+    err = _err(out.cpu(), ref)
+    ok = err < TOL and len(launches) == 1
+    print(f"{name}: launches={launches} err={err:.3e} {'PASS' if ok else 'FAIL'}", flush=True)
+    return ok
+
+
 EXTRA = {"spad": run_spad, "requires_grad": run_grad, "eager": run_eager,
-         "inference_mode": run_eager, "inference_mode_compiled": run_eager, "counts": run_counts}
+         "inference_mode": run_eager, "inference_mode_compiled": run_eager, "counts": run_counts, "layout": run_layout,
+         **{n: run_attention for n in ATTENTION_CASES}}
 
 
 if __name__ == "__main__":

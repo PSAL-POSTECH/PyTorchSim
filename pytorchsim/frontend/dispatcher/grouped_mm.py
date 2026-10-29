@@ -65,15 +65,15 @@ def install():
 
 
 def _tiles(n, k, esize):
-    """(BM, BN, BK): BM the lanes, BN and BK the largest tile the machine's mm rule gives a BM-row block;
-    None when it gives none."""
+    """(BM, BN, BK): BM the lanes, BN and BK the largest tile the machine's mm rule gives a BM-row block
+    whose BN divides N (the largest of all when none does); None when it gives none."""
     from pytorchsim.frontend import tiling
     bm = int(config.CONFIG_MACHINE.vector_lanes)
     acc = 4
     tiles = tiling.gemm_tile_candidates(bm, n, k, acc + esize, esize)
     if not tiles:
         return None
-    _, tn, tk = tiles[0]
+    _, tn, tk = next((t for t in tiles if n % t[1] == 0), tiles[0])
     return bm, tn, tk
 
 
@@ -89,13 +89,14 @@ def _grouped_mm_kernel(a_ptr, b_ptr, group_ptr, start_ptr, rows_ptr, c_ptr,
     g = tl.load(group_ptr + pid)
     nr = tl.load(rows_ptr + g)
     s0 = tl.load(start_ptr + g)
+    bg = b_ptr + g.to(tl.int64) * sbg
     rm = tl.arange(0, BM)
     rn = pid_n * BN + tl.arange(0, BN)
     ncols = rn < N
     rk = tl.arange(0, BK)
     if BK == KP:
         if nr > 0:
-            b = tl.load(b_ptr + g * sbg + rk[:, None] * sbk + rn[None, :] * sbn,
+            b = tl.load(bg + rk[:, None] * sbk + rn[None, :] * sbn,
                         mask=(rk < K)[:, None] & ncols[None, :], other=0.0)
             for m0 in range(0, nr, BM):
                 rows = s0 + m0 + rm
@@ -114,7 +115,7 @@ def _grouped_mm_kernel(a_ptr, b_ptr, group_ptr, start_ptr, rows_ptr, c_ptr,
                 kk = k0 + rk
                 a = tl.load(a_ptr + rows[:, None] * K + kk[None, :], mask=live[:, None] & (kk < K)[None, :],
                             other=0.0)
-                b = tl.load(b_ptr + g * sbg + kk[:, None] * sbk + rn[None, :] * sbn,
+                b = tl.load(bg + kk[:, None] * sbk + rn[None, :] * sbn,
                             mask=(kk < K)[:, None] & ncols[None, :], other=0.0)
                 acc += tl.dot(a, b)
             tl.store(c_ptr + rows[:, None] * N + rn[None, :], acc.to(c_ptr.dtype.element_ty),

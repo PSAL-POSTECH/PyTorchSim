@@ -1,5 +1,5 @@
 """The configs a template kernel (mm, bmm, addmm, baddbmm, conv) is offered on npu: this machine's
-mm tiles, and conv tiles whose BLOCK_N is the lanes per group. The conv's groups reach the heuristic
+mm tiles, for an ungrouped conv those of one tap's GEMM. A conv's groups reach the heuristic
 through its lowering and size its grid per group, two patches Inductor has no hook for."""
 
 import threading
@@ -30,6 +30,8 @@ def mm_config_heuristics():
     from torch._inductor.heuristics.template.triton_addmm import AddMMConfigMixin
 
     class NPUMMTemplateConfigHeuristic(MMTemplateConfigMixin, BaseConfigHeuristic):
+        bias = False
+
         def _get_config_generator(self):
             """Configs for one m, n, k: the first codegen_autotune_template_topk of gemm_tiles (the
             first alone unless the strategy autotunes), or the generic set when none is a legal block."""
@@ -38,7 +40,7 @@ def mm_config_heuristics():
             def configs(m, n, k, **kwargs):
                 from torch._inductor.virtualized import V
                 mnk = [int(V.graph.sizevars.optimization_hint(s)) for s in (m, n, k)]
-                mapped = tiling.gemm_tiles(*mnk, kwargs.get("dtype_size", 4))
+                mapped = tiling.gemm_tiles(*mnk, kwargs.get("dtype_size", 4), bias=self.bias)
                 if not mapped:
                     logger.warning(
                         "[torchsim-compile] no mapped tile for %sx%sx%s is a legal "
@@ -53,7 +55,7 @@ def mm_config_heuristics():
 
     class NPUAddmmTemplateConfigHeuristic(AddMMConfigMixin,
                                           NPUMMTemplateConfigHeuristic):
-        pass
+        bias = True
 
     return NPUMMTemplateConfigHeuristic, NPUAddmmTemplateConfigHeuristic
 
@@ -76,8 +78,14 @@ def mm_resident_config_heuristic():
     return NPUResidentMMConfigHeuristic, NPUResidentAddmmConfigHeuristic
 
 
+#: The conv template's widest BLOCK_M: its X tile is a gather, whose index scratch grows with the rows.
+CONV_MAX_BLOCK_M = 2048
+
+
 def conv_config_heuristic():
-    """npu's conv tile table: BLOCK_N is the lane count, per group (conv_groups_now)."""
+    """npu's conv tiles: the largest of this machine's mm tiles (tiling.gemm_tiles) for one tap's GEMM, pixels x
+    out channels x in channels, BLOCK_M at most CONV_MAX_BLOCK_M; the lane table (BLOCK_N per group) for a
+    grouped conv, untried at mm tiles, or when no tile fits."""
     from torch._inductor.heuristics.template.triton import (
         BaseConfigHeuristic, ConvConfig)
 
@@ -93,12 +101,19 @@ def conv_config_heuristic():
             ]
 
         def get_conv_configs(self):
-            base = super().get_conv_configs()
-
             def per_group(m, n, k, **kwargs):
+                from torch._inductor.virtualized import V
                 groups = conv_groups_now()
-                return base(m, max(1, n // groups) if groups > 1 else n, k,
-                            **kwargs)
+                mnk = [int(V.graph.sizevars.optimization_hint(s)) for s in (m, n, k)]
+                tiles = [] if groups > 1 else [
+                    t for t in tiling.gemm_tiles(*mnk, kwargs.get("dtype_size", 4))
+                    if t.block_m <= CONV_MAX_BLOCK_M][:1]
+                configs = [ConvConfig(t.block_m, t.block_n, t.block_k, 1, 4) for t in tiles]
+                if groups == 1 and not configs:
+                    logger.warning("[torchsim-compile] no mapped conv tile for %sx%sx%s; the lane table", *mnk)
+                return self.preprocess_mm_configs(m, max(1, n // groups) if groups > 1 else n, k,
+                                                  configs=configs or self.conv_configs, op_name="conv",
+                                                  **kwargs)
 
             return per_group
 

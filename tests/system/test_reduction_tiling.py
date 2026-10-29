@@ -104,6 +104,18 @@ def test_few_rows_budget_the_reduced_axis_over_every_lane():
     check_result("FewRowsLaneBlocks", torch.tensor(got), torch.tensor([w for _, w in cases]))
 
 
+def test_gemm_tiles_split_m_last():
+    """An mm's tiles read each operand as few times as they can first: llama3's gate (1024 x 4096 -> 14336) offers
+    a 1024-row tile before a 512-row one that reads its weight twice; one tile_K per (tile_M, tile_N)."""
+    first = lambda m, n, k, count: [(c.block_m, c.block_n, c.block_k) for c in tiling.gemm_tiles(m, n, k, 2)][:count]
+    gate, down, q = first(1024, 14336, 4096, 4), first(1024, 4096, 14336, 1), first(2048, 4096, 4096, 1)
+    got = [(1024, 4096, 2048) in gate, all(t[0] == 1024 for t in gate), down[0], q[0],
+           len({t[:2] for t in gate}) == len(gate)]
+    check_result("GemmTilesSplitMLast", torch.tensor([bool(got[0]), bool(got[1]), got[2] == (1024, 4096, 2048),
+                                                       got[3] == (2048, 4096, 1024), bool(got[4])]),
+                 torch.tensor([True] * 5))
+
+
 def test_the_tile_budget_is_the_machine_s_spad_budget():
     """The budget is a lane's scratchpad over the machine's spad_buffers, as the compiler's spad_budget:
     four buffers halve the reduction block two give, and leave fewer GEMM tiles, each among two's."""
@@ -130,4 +142,5 @@ if __name__ == "__main__":
     test_row_reduction_rows_fill_the_tile_budget()
     test_other_reductions_keep_todays_blocks()
     test_few_rows_budget_the_reduced_axis_over_every_lane()
+    test_gemm_tiles_split_m_last()
     test_the_tile_budget_is_the_machine_s_spad_budget()

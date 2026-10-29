@@ -1,6 +1,6 @@
-"""aten::conv2d on the npu: a depthwise conv (one channel a group) as one kernel on the vector unit
-(depthwise_conv.py), its taps as aten ops where that kernel declines or a gradient needs them, any other as
-aten's own convolution. Registered through torch.library above autograd."""
+"""aten::conv2d and aten::conv1d on the npu: a depthwise conv (one channel a group) as one kernel on the
+vector unit (depthwise_conv.py), its taps as aten ops where that kernel declines or a gradient needs them,
+any other as aten's own convolution; conv1d is conv2d over a height of 1. Registered above autograd."""
 
 import torch
 
@@ -10,7 +10,8 @@ _lib = None
 
 
 def install():
-    """Register aten::conv2d's npu kernel, both overloads, above autograd and at the backend key."""
+    """Register aten::conv2d's and aten::conv1d's npu kernels, both overloads, above autograd and at the
+    backend key."""
     global _lib
     from pytorchsim.frontend.dispatcher import depthwise_conv
     depthwise_conv.install()
@@ -19,6 +20,8 @@ def install():
         for key in ("AutogradPrivateUse1", "PrivateUse1"):
             _lib.impl("conv2d", conv2d, key)
             _lib.impl("conv2d.padding", conv2d, key)
+            _lib.impl("conv1d", conv1d, key)
+            _lib.impl("conv1d.padding", conv1d, key)
 
 
 def conv2d(input, weight, bias=None, stride=1, padding=0, dilation=1, groups=1):
@@ -37,6 +40,15 @@ def conv2d(input, weight, bias=None, stride=1, padding=0, dilation=1, groups=1):
         out = aten.convolution.default(x, weight, bias, stride, padding, dilation, False, [0, 0],
                                        groups)
     return out if batched else out.squeeze(0)
+
+
+def conv1d(input, weight, bias=None, stride=1, padding=0, dilation=1, groups=1):
+    """aten's conv1d as conv2d over a height of 1 (a [C, L] input batched as one), so a depthwise one
+    reaches depthwise_conv's kernel; a string padding stays a string."""
+    one = lambda v: [1, int(v if isinstance(v, int) else v[0])]
+    pad = padding if isinstance(padding, str) else [0, int(padding if isinstance(padding, int) else padding[0])]
+    out = conv2d(input.unsqueeze(-2), weight.unsqueeze(-2), bias, one(stride), pad, one(dilation), groups)
+    return out.squeeze(-2)
 
 
 def _pair(v):

@@ -23,7 +23,8 @@ class DepthwiseConv2d(CustomFusedKernel):
         return (_depthwise_kernel,)
 
     def plan(self, x, w, bias, stride, padding, dilation):
-        """BC channels a program, the lanes, halved while a row's tiles overrun the scratchpad budget."""
+        """BC channels a program: the lanes, doubled toward the channels' cover while a row's tiles fit the
+        scratchpad budget, else halved until they do."""
         if not x.is_floating_point() or x.dtype != w.dtype:
             return Decline(f"input {x.dtype}, weight {w.dtype}")
         wo = _out_size(x.shape[3], w.shape[3], stride[1], padding[1], dilation[1])
@@ -31,6 +32,8 @@ class DepthwiseConv2d(CustomFusedKernel):
             return Decline("an empty output")
         bw = next_pow2(wo)
         bc = int(config.CONFIG_MACHINE.vector_lanes)
+        while bc < next_pow2(x.shape[1]) and fits_scratchpad(_tiles(2 * bc, bw, x.element_size())):
+            bc *= 2
         while bc > 1 and not fits_scratchpad(_tiles(bc, bw, x.element_size())):
             bc //= 2
         if not fits_scratchpad(_tiles(bc, bw, x.element_size())):

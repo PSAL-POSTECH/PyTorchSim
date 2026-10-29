@@ -1,10 +1,10 @@
-"""The convolution family: convolutions the conv template takes once rewritten. A depthwise conv2d is
+"""The convolution family: convolutions rewritten into what the conv or mm template takes. A depthwise conv2d is
 dispatcher/convolution.py, before AOTAutograd."""
 
 import torch
 from torch._inductor.pattern_matcher import Arg, CallFunction
 
-from pytorchsim.frontend.inductor.postgrad import register_rewrite
+from pytorchsim.frontend.inductor.postgrad import fake_value, register_rewrite
 
 aten = torch.ops.aten
 
@@ -82,6 +82,36 @@ def convolution_1d(node, x, weight, bias, stride, padding, dilation, transposed,
         return _conv1d_as_conv2d(x, weight, bias, stride, padding, dilation, groups)
 
     return _exact_arity(as_2d, x, weight, bias)
+
+
+# convolution_patches: a conv whose kernel is its stride (a ViT's patch embedding) as one mm
+
+def _is_patches(match):
+    """A floating 2-D conv, not transposed, of one group, no padding or dilation, kernel = stride > 1."""
+    x, weight, _, stride, padding, dilation, transposed, _, groups = match.args
+    xv, wv = fake_value(x), fake_value(weight)
+    if transposed is not False or groups != 1 or xv is None or wv is None or xv.dim() != 4:
+        return False
+    kernel = list(wv.shape[2:])
+    return (len(stride) == 2 and list(stride) == kernel and kernel != [1, 1] and xv.is_floating_point()
+            and all(p == 0 for p in padding) and all(d == 1 for d in dilation))
+
+
+@register_rewrite(CallFunction(aten.convolution.default, *(Arg() for _ in range(9))), _is_patches)
+def convolution_patches(node, x, weight, bias, stride, padding, dilation, transposed, output_padding, groups):
+    """Each kernel-sized patch as a row, [N * Ho * Wo, C * kh * kw], times the weight's [O, C * kh * kw]
+    transposed: one mm, where the conv template would loop over every tap at K = C."""
+    def patches(x, weight, bias):
+        n, c, h, w = x.shape
+        o, _, kh, kw = weight.shape
+        ho, wo = h // kh, w // kw
+        x = x[:, :, :ho * kh, :wo * kw]
+        rows = x.reshape(n, c, ho, kh, wo, kw).permute(0, 2, 4, 1, 3, 5).reshape(n * ho * wo, c * kh * kw)
+        cols = weight.reshape(o, c * kh * kw).t()
+        y = torch.mm(rows, cols) if bias is None else torch.addmm(bias, rows, cols)
+        return y.reshape(n, ho, wo, o).permute(0, 3, 1, 2)
+
+    return _exact_arity(patches, x, weight, bias)
 
 
 def _conv1d_as_conv2d(x, weight, bias, stride, padding, dilation, groups):

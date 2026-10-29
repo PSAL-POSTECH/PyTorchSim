@@ -79,9 +79,9 @@ def _num_cores():
 
 
 def _kept_axis_contiguous(features):
-    """'x' when the largest read (in bytes) over every index of a reduction runs unit-stride along a
-    kept axis, from its MemoryDep strides; else None. Inductor's OUTER hint is not used: it is left
-    DEFAULT for any kernel of at least num_sm * 64 rows, whatever its strides."""
+    """'x' when the largest read (in bytes) over every index of a reduction runs unit-stride along the
+    innermost kept axis -- the one x's index walks first -- from its MemoryDep strides; else None.
+    Inductor's OUTER hint is not used: it is DEFAULT for any kernel of num_sm * 64 rows or more."""
     from torch._inductor.dependencies import MemoryDep
     from torch._inductor.virtualized import V
     if not features.is_reduction():
@@ -98,7 +98,7 @@ def _kept_axis_contiguous(features):
                 continue
             size = dep.numbytes_hint()
             if best is None or size > best[0]:
-                best = (size, unit[0] < len(kept))
+                best = (size, len(kept) - 1 in unit)
     return "x" if best and best[1] else None
 
 
@@ -106,16 +106,24 @@ _WIDTH_NAME = {64: "float64", 32: "float32", 16: "float16", 8: "int8"}
 
 
 def _widest_dtype_args(features):
-    """The widest tensor a scheduled node makes or reads, as fixed_config_for's args; a node with no
-    dtype (no tensor) and a read that names no buffer (Inductor's KeyError) are not counted."""
+    """The widest tensor a scheduled node makes or reads, as fixed_config_for's args; a node with no dtype
+    (no tensor), a read that names no buffer (Inductor's KeyError) and a buffer of fewer elements than the
+    machine's lanes, which no block tile holds (a gather's indices, a scalar), are not counted."""
     from torch._inductor.virtualized import V
+    lanes = int(config.CONFIG_MACHINE.vector_lanes)
     dtypes = []
     for nd in features.scheduler_nodes():
         dtypes.append(nd.node.maybe_get_dtype())
         for dep in nd.read_writes.reads:
             try:
-                dtypes.append(V.graph.get_dtype(dep.name))
+                dtype, numel = V.graph.get_dtype(dep.name), V.graph.get_numel(dep.name)
             except KeyError:
+                continue
+            try:
+                if int(V.graph.sizevars.optimization_hint(numel)) < lanes:
+                    continue
+            except (TypeError, ValueError):
                 pass
+            dtypes.append(dtype)
     bits = [8 * d.itemsize for d in dtypes if d is not None]
     return [{"dtype": _WIDTH_NAME[max(bits)]}] if bits else []

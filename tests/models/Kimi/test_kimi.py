@@ -26,52 +26,29 @@ first Kimi is deliberate -- it separates "MLA + MoE on this backend" from
 "MoonViT on this backend", and the vision rung cannot be read until the text one
 does.
 
-Weights are random from the config (`--init-mode config-random`), so no
-checkpoint is downloaded -- only the config and the remote modeling file. The
-presets shrink hidden_size, layer count and expert count; they do NOT shrink the
-MLA head dims (qk_nope 128 / qk_rope 64 / v 128, kv_lora_rank 512), because
-those are the shapes the layout work is about.
+Weights are random from the config, so no checkpoint is downloaded -- only the config and, for the
+remote rungs, the modeling file. Every rung runs at its published per-layer size and only the layer
+count is cut, by `--layers` (default 2). Two layers is the minimum that means anything on this
+ladder: `first_k_dense_replace` makes layer 0 a plain MLP, so the MoE block only exists from layer
+1 on. Moonlight's config is the cached -Instruct snapshot, whose architecture fields are the base
+Moonlight-16B-A3B's. The input is batch 1, one prefill of `--seq` tokens (default 128), in bfloat16 by
+default (`--dtype float32` for the old run). `--part layer` runs the text tower's first MoE decoder layer
+alone (tests/one_layer.py) on `--seq S` or on one `--decode S` step after a KV cache; the text rungs only.
 
-Judgement is spike's, against the same model on CPU. Run it with the Triton
+The vision rungs cut MoonViT to the same `--layers` and feed one 224 px image: a 16x16 grid of
+14 px patches, which the 2x2 patch merger folds into 64 image tokens inside the prompt.
+
+Judgement is spike's, against the same model's float32 copy on the CPU. Run it with the Triton
 route on and timing off:
 
     source /workspace/kimi-env.sh
-    python tests/models/Kimi/test_kimi.py --rung moonlight --preset tiny
+    python tests/models/Kimi/test_kimi.py --rung moonlight
+    python tests/models/Kimi/test_kimi.py --rung moonlight --part layer --decode 1024
 
-WHERE THE LADDER STANDS. The environment moved mid-bringup -- transformers
-4.43.4 -> 4.51.3 and triton-npu's p01/p11/p13/p16 refactors -- so the rows say
-which side of that they were measured on. The new baseline is the one to
-extend; the old rows stay until each is re-measured, because a number whose
-compiler is gone is a number about nothing.
+The tolerance is `_TOL`'s for the dtype: 1e-3 for fp32, not the 3e-1 the DeepSeek test once carried, which
+would hide two orders of magnitude of drift on the fp32 path.
 
-  BASELINE: transformers 4.51.3, triton-npu develop-e2e-kimi at the develop
-  merge (b28808b..), PyTorchSim develop-e2e-kimi ac39991.
-
-    rung       preset  kernels  goldens  max diff      time
-    moonlight  tiny        51      430   7.1526e-07    ~5 min
-
-  BEFORE IT: transformers 4.43.4, triton-npu 3434608, PyTorchSim 204ec14.
-
-    rung       preset  kernels  goldens  max diff      time
-    moonlight  tiny        49      408   8.0466e-07    ~5 min
-    moonlight  small       58      416   1.0729e-06    ~9 min
-    moonlight  medium     157        -   2.0266e-06    ~43 min
-    kimi-vl    tiny        93      909   8.3447e-07    ~8 min
-
-The two kernels and 22 goldens tiny gained across that move are not attributed:
-both the compiler and transformers changed between the runs, and one run cannot
-tell them apart. Pin TORCHSIM_COMPILE_DIR at a pre-merge worktree to split them if it ever
-matters.
-
-`goldens` is with `pytorchsim_functional_verify_per_kernel` on, so it is every
-realized Spike buffer compared against a CPU golden at 1e-4 and not just the
-logits -- 408 of them across 17 graphs, none divergent.
-
-The tolerance here is 1e-3 against a measured 8e-07. It is deliberately NOT the
-3e-1 the DeepSeek test carries: that number was picked for fp16 and it would
-hide two orders of magnitude of drift on this fp32 path.
-
-What tiny already crosses, and what therefore needs no separate claim: MLA's
+What the moonlight rung crosses, and what therefore needs no separate claim: MLA's
 asymmetric head (q is nope+rope wide, v is not), the kv_lora down-projections,
 the RoPE apply kernel (`cat`/`index`/`neg`/`slice` -- the shape that stops
 DeepSeek-V3 in Spike), the sigmoid gate's topk, and the routed-expert loop.
@@ -88,7 +65,8 @@ import types
 import torch
 
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from result_check import check_result
+from result_check import check_routed_rows, f32, f32_reference
+import one_layer
 
 
 #: Rung -> (model id, kind, remote). Release order; climb it in this order.
@@ -157,36 +135,13 @@ def _load_config(model_id, source):
         raw.pop(key, None)
     return CONFIG_MAPPING[source](**raw)
 
-#: preset -> (scale, layers, batch, seq_len). `scale` multiplies the widths and
-#: the expert counts; layers is an absolute cap. Two layers is the minimum that
-#: means anything on this ladder: `first_k_dense_replace` makes layer 0 a plain
-#: MLP, so the MoE block only exists from layer 1 on.
-_PRESETS = {
-    "tiny":   (0.06, 2, 1, 16),
-    "small":  (0.12, 2, 1, 32),
-    "medium": (0.25, 4, 1, 32),
-    # THE REAL WIDTHS, TWO LAYERS -- the same gate BERT and GPT-2 use. Nothing
-    # is scaled here: hidden 2048, 16 heads, 64 routed experts, moe 1408. Two
-    # layers is what makes it runnable, and it is enough because layer 0 is the
-    # dense MLP and layer 1 is the MoE block, so both kinds are present. The
-    # 27-layer model is the same two blocks repeated.
-    "block":  (1.00, 2, 1, 32),
-    "full":   (1.00, None, 1, 32),
-}
+# (rtol, atol) per dtype; the bf16 atol is 3x the worst bf16 eager-vs-Inductor CPU diff at S = 128.
+_TOL = {"bfloat16": (5e-2, 0.1), "float32": (1e-3, 1e-3)}
+# Share of token rows a bf16 router near-tie may send to other experts (check_routed_rows); fp32 none.
+_ROUTED = {"bfloat16": 0.05, "float32": 0.0}
 
-#: preset -> (hidden, heads, layers, intermediate, grid_h, grid_w) for MoonViT.
-#: The vision tower is sized OUTRIGHT rather than by `scale`, because two of its
-#: numbers are not free: the 2D rope splits each head into an h half and a w
-#: half, so head_dim has to stay a multiple of 4, and the patch merger folds a
-#: 2x2 block, so the grid has to stay even. A proportional scale lands on
-#: head_dim 69 and the rope asserts. `patch_size` stays 14 -- it is the shape of
-#: the conv, and shrinking it would make the patch embed a different op.
-_VISION_PRESETS = {
-    "tiny":   (128, 4, 2, 256,  4, 4),
-    "small":  (256, 8, 2, 512,  4, 4),
-    "medium": (384, 8, 4, 768,  6, 6),
-    "full":   (1152, 16, 27, 4304, 8, 8),
-}
+#: One 224 px image as MoonViT sees it: a 16x16 grid of 14 px patches, 64 tokens after the 2x2 merger.
+_IMAGE_GRID = (16, 16)
 
 
 # DeepSeek's remote modeling file imports flash_attn, and transformers' static
@@ -236,76 +191,9 @@ def _dtype_from_str(name):
     }.get(name, torch.float32)
 
 
-def _scaled(value, scale, min_value=1):
-    return max(min_value, int(round(float(value) * float(scale))))
-
-
-def _scale_config(config, scale, max_layers):
-    """Shrink widths and counts, leave the MLA head dims alone.
-
-    What is NOT scaled is the point: `qk_nope_head_dim`, `qk_rope_head_dim`,
-    `v_head_dim` and `kv_lora_rank` stay at the real model's values, so a
-    preset still has MLA's asymmetric head (q is nope+rope wide, v is not) and
-    still splits the rope half off with a slice. Scaling those would turn the
-    rung into a generic attention test.
-    """
-    for name in ("hidden_size", "intermediate_size", "num_attention_heads"):
-        if hasattr(config, name):
-            setattr(config, name, _scaled(getattr(config, name), scale))
-
-    if hasattr(config, "num_key_value_heads"):
-        config.num_key_value_heads = min(
-            _scaled(config.num_key_value_heads, scale),
-            config.num_attention_heads,
-        )
-
-    for name in ("n_routed_experts", "n_shared_experts", "num_experts",
-                 "num_local_experts", "num_experts_per_tok",
-                 "num_experts_per_token", "moe_intermediate_size",
-                 "shared_expert_intermediate_size"):
-        if hasattr(config, name) and getattr(config, name) is not None:
-            setattr(config, name, _scaled(getattr(config, name), scale))
-
-    # WIDTHS A FUSED EXPERT MATMUL CAN ADDRESS. transformers 5.x runs the routed
-    # experts through `torch.nn.functional.grouped_mm` -- one batched matmul over
-    # the expert dimension instead of a loop of MLPs -- and that kernel wants
-    # strides that are a multiple of 16 bytes ("strides should be multiple of 16
-    # bytes"). Sixteen ELEMENTS covers both dtypes with one number. 4.51.3
-    # looped over per-expert MLPs and never asked. Measured and reasoned out in
-    # PyTorchSim 44814bd on the DeepSeek test, which is the same architecture.
-    for name in ("intermediate_size", "moe_intermediate_size",
-                 "shared_expert_intermediate_size"):
-        if hasattr(config, name) and getattr(config, name):
-            setattr(config, name, max(16, (int(getattr(config, name)) // 16) * 16))
-
-    # The gate groups the experts, so the count has to stay a multiple of the
-    # group count -- AND EVERY GROUP NEEDS TWO EXPERTS IN IT, because the group
-    # score is the sum of the top TWO experts in that group. A group of one asks
-    # topk for a second element that is not there ("selected index k out of
-    # range"). The group COUNT is what gives: shrinking it keeps both halves of
-    # the structure (several groups, a choice inside each) and leaves the expert
-    # count where the preset put it.
-    n_group = getattr(config, "n_group", None) or getattr(config, "num_expert_group", None)
-    if n_group and getattr(config, "n_routed_experts", None):
-        g = max(1, min(int(n_group), max(1, int(config.n_routed_experts) // 2)))
-        config.n_routed_experts = max(2 * g, ((config.n_routed_experts + g - 1) // g) * g)
-        if hasattr(config, "n_group"):
-            config.n_group = g
-        if hasattr(config, "topk_group"):
-            config.topk_group = max(1, min(int(config.topk_group), g))
-
-    if max_layers is not None and hasattr(config, "num_hidden_layers"):
-        config.num_hidden_layers = max(1, min(int(max_layers), int(config.num_hidden_layers)))
-
-    # A MULTIPLE OF THE HEAD COUNT **AND** OF 16 ELEMENTS. The head count is for
-    # the dense projections (MLA's own heads are sized by the head dims above);
-    # the 16 is the same grouped_mm stride rule as the widths. Asked of the two
-    # together rather than of either alone, so both hold at once.
-    if getattr(config, "num_attention_heads", 0):
-        step = int(config.num_attention_heads)
-        while step % 16:
-            step *= 2
-        config.hidden_size = max(step, (config.hidden_size // step) * step)
+def _cut_layers(config, layers):
+    """Keep the first `layers` layers; every per-layer size stays the published one."""
+    config.num_hidden_layers = min(int(layers), int(config.num_hidden_layers))
     return config
 
 
@@ -313,17 +201,6 @@ def _build_inputs(batch, seq_len, vocab_size, device):
     g = torch.Generator().manual_seed(0)
     ids = torch.randint(0, vocab_size, (batch, seq_len), generator=g, dtype=torch.int64)
     return ids.to(device)
-
-
-def _size_vision(vision, preset):
-    """MoonViT is sized outright. See `_VISION_PRESETS` for why, and note that
-    `patch_size` and `merge_kernel_size` are left at the real model's values."""
-    hidden, heads, layers, inter, grid_h, grid_w = _VISION_PRESETS[preset]
-    vision.hidden_size = hidden
-    vision.num_attention_heads = heads
-    vision.num_hidden_layers = layers
-    vision.intermediate_size = inter
-    return grid_h, grid_w
 
 
 def _vision_inputs(config, ids, grid_h, grid_w):
@@ -388,47 +265,38 @@ def _logits(output):
 
 
 @torch.no_grad()
-def run_rung(rung, device, preset="tiny", dtype="float32", batch=None,
-             seq_len=None, layers=None, compile_model=True, rtol=1e-3, atol=1e-3):
-    from transformers import AutoConfig, AutoModelForCausalLM
+def run_rung(rung, device, dtype="bfloat16", batch=1, seq_len=128, layers=2,
+             compile_model=True, part="model", decode=False):
+    """Build one rung at its published per-layer size, `layers` deep, and compare it with CPU at `_TOL`.
+
+    The text tower and, for the vision rungs, MoonViT are both cut to `layers`. Kimi-K2.5's
+    tower is MoonViT maintained inside transformers (kimi_k25), so it takes the same image with
+    the grid spelt thw rather than hw. MoonViT offers eager/sdpa/flash_attention_2 and this image
+    has no flash_attn, so the Kimi-VL rung asks for sdpa rather than let the default pick.
+    part "layer" runs the first MoE decoder layer alone (layer first_k_dense_replace, the dense ones before it
+    on CPU), on a prefill or with `decode` one decode step.
+    """
+    from transformers import AutoModelForCausalLM
 
     model_id, kind, source = _RUNGS[rung]
-    scale, max_layers, preset_batch, preset_seq = _PRESETS[preset]
-    batch = batch if batch is not None else preset_batch
-    seq_len = seq_len if seq_len is not None else preset_seq
-    max_layers = layers if layers is not None else max_layers
+    if part == "layer" and kind != "causal-lm":
+        raise ValueError(f"--part layer runs the text rungs; {rung} is {kind}")
+    rtol, atol = _TOL.get(dtype, _TOL["float32"])
 
     grid = None
     config = _load_config(model_id, source)
-    if kind == "image-text":
-        # ITS VISION TOWER **IS** MoonViT, maintained inside transformers: the
-        # native kimi_k25 vision config carries Kimi-VL's numbers exactly --
-        # hidden 1152, 27 layers, 16 heads, intermediate 4304, patch 14, merge
-        # (2, 2). So the same sizing applies, and the same two constraints
-        # (head_dim a multiple of 4 for the 2D rope, an even grid for the
-        # merger). pixel_values has the same (patches, 3, patch, patch) layout;
-        # only the grid spelling differs -- thw here, hw in the Hub's Kimi-VL.
-        _scale_config(getattr(config, "text_config", config), scale, max_layers)
-        grid = _size_vision(config.vision_config, preset)
-        # THE WIDTH IS STATED TWICE. `Kimi_K25MultimodalProjection` sizes its
-        # in_proj from `vision_config.hidden_size` but its pre_norm from the
-        # top-level `projection_hidden_size`, which carries the same 1152. Move
-        # one and the norm rejects the tower's output:
-        #   normalized_shape=[1152], but got input of size [4, 4, 128]
-        if hasattr(config, "projection_hidden_size"):
-            config.projection_hidden_size = config.vision_config.hidden_size
-    elif kind == "vision2seq":
-        # The vision rung carries two configs, and the text half IS the rung
-        # below -- same DeepseekV3Config, same remote code.
-        _scale_config(config.text_config, scale, max_layers)
-        grid = _size_vision(config.vision_config, preset)
-        # MoonViT offers eager/sdpa/flash_attention_2 and this image has no
-        # flash_attn, so say eager rather than let the default pick.
-        config._attn_implementation = "eager"
-        config.vision_config._attn_implementation = "eager"
-        config.text_config._attn_implementation = "eager"
-    else:
-        _scale_config(config, scale, max_layers)
+    text_config = getattr(config, "text_config", config)
+    if seq_len > text_config.max_position_embeddings:
+        raise ValueError(f"seq {seq_len} exceeds {model_id}'s "
+                         f"{text_config.max_position_embeddings} positions")
+    _cut_layers(text_config, layers)
+    if kind in ("image-text", "vision2seq"):
+        _cut_layers(config.vision_config, layers)
+        grid = _IMAGE_GRID
+    if kind == "vision2seq":
+        config._attn_implementation = "sdpa"
+        config.vision_config._attn_implementation = "sdpa"
+        config.text_config._attn_implementation = "sdpa"
     config.use_cache = False
 
     # Random weights are the model here, so seed before building: without this
@@ -443,7 +311,6 @@ def run_rung(rung, device, preset="tiny", dtype="float32", batch=None,
         config, trust_remote_code=(source == "remote")).eval()
     model = model.to(dtype=_dtype_from_str(dtype))
 
-    text_config = getattr(config, "text_config", config)
     vocab = text_config.vocab_size
     print(f"rung {rung}: {model_id}")
     print("  hidden_size:", text_config.hidden_size,
@@ -456,11 +323,23 @@ def run_rung(rung, device, preset="tiny", dtype="float32", batch=None,
     print("  params:", sum(p.numel() for p in model.parameters()))
 
     cpu_ids = _build_inputs(batch, seq_len, vocab, torch.device("cpu"))
+    if part == "layer":
+        if text_config.num_hidden_layers <= text_config.first_k_dense_replace:
+            raise ValueError(f"--layers {layers} keeps no MoE layer; the first one is layer "
+                             f"{text_config.first_k_dense_replace}")
+        layer = model.model.layers[text_config.first_k_dense_replace]
+        cpu_out, npu_out = one_layer.run(model.model, layer, text_config, cpu_ids, device,
+                                         decode=decode, compile_model=compile_model)
+        print(f"  max abs diff: {(npu_out.cpu() - cpu_out).abs().max().item():.6g}")
+        check_routed_rows(f"Kimi {rung} layer", npu_out, cpu_out, rtol, atol, _ROUTED.get(dtype, 0.0))
+        return
+
     extra = {}
     if grid is not None and kind == "image-text":
         cpu_ids, extra = _vision_inputs_thw(config, cpu_ids, *grid)
     elif grid is not None:
         cpu_ids, extra = _vision_inputs(config, cpu_ids, *grid)
+    extra = {k: v.to(_dtype_from_str(dtype)) if v.is_floating_point() else v for k, v in extra.items()}
 
     # BOTH COPIES ARE TAKEN BEFORE EITHER RUNS. MoonViT's 2D rope caches its
     # cis table in a plain attribute (`Rope2DPosEmb.freqs_cis`, not a buffer)
@@ -471,38 +350,39 @@ def run_rung(rung, device, preset="tiny", dtype="float32", batch=None,
     model_cpu = copy.deepcopy(model).cpu().eval()
     model_npu = copy.deepcopy(model).to(device).eval()
 
-    cpu_out = _logits(model_cpu(cpu_ids, **extra))
+    cpu_out = _logits(f32_reference(model_cpu)(cpu_ids, **f32(extra)))
 
     if compile_model:
         model_npu = torch.compile(model_npu, dynamic=False)
     npu_out = _logits(model_npu(cpu_ids.to(device),
                                 **{k: v.to(device) for k, v in extra.items()}))
 
-    # Print the worst element whether or not it passes: the threshold says
-    # pass/fail, this says how much room is left, and it is the number the
-    # ladder note below is written from.
     print(f"  max abs diff: {(npu_out.cpu() - cpu_out).abs().max().item():.6g}")
-    check_result(f"Kimi {rung} ({preset})", npu_out, cpu_out, rtol=rtol, atol=atol)
+    check_routed_rows(f"Kimi {rung}", npu_out, cpu_out, rtol, atol, _ROUTED.get(dtype, 0.0))
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="The Kimi ladder on the Triton route")
     parser.add_argument("--rung", default="moonlight", choices=list(_RUNGS))
-    parser.add_argument("--preset", default="tiny", choices=list(_PRESETS))
-    parser.add_argument("--dtype", default="float32", choices=["float32", "float16", "bfloat16"])
-    parser.add_argument("--batch", type=int, default=None)
-    parser.add_argument("--seq-len", type=int, default=None)
-    parser.add_argument("--layers", type=int, default=None)
+    parser.add_argument("--part", default="model", choices=["model", "layer"],
+                        help="model = the rung's model; layer = its first text decoder layer alone")
+    parser.add_argument("--dtype", default="bfloat16", choices=["float32", "float16", "bfloat16"])
+    parser.add_argument("--batch", type=int, default=1)
+    one_layer.add_grid_args(parser)
+    parser.add_argument("--layers", type=int, default=2)
     parser.add_argument("--no-compile", action="store_true")
     args = parser.parse_args()
+    if args.decode is not None and args.part != "layer":
+        parser.error("--decode runs with --part layer")
 
     run_rung(
         args.rung,
         torch.device("npu:0"),
-        preset=args.preset,
         dtype=args.dtype,
         batch=args.batch,
-        seq_len=args.seq_len,
+        seq_len=args.decode or args.seq,
         layers=args.layers,
         compile_model=not args.no_compile,
+        part=args.part,
+        decode=args.decode is not None,
     )

@@ -10,7 +10,7 @@ from diffusers.models.upsampling import Upsample2D
 from diffusers.models.resnet import ResnetBlock2D
 from diffusers.models.embeddings import Timesteps
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from result_check import check_result
+from result_check import check_result, f32_reference
 
 @torch.no_grad()
 def test_unet_conditional(
@@ -214,55 +214,76 @@ def test_cross_attn_up_block2d(
     print("Max diff >", torch.max(torch.abs(dev_out.cpu() - cpu_out)).item())
     print("CrossAttnUpBlock2D simulation done.")
 
+# stable-diffusion-v1-5/stable-diffusion-v1-5 (was runwayml/stable-diffusion-v1-5), unet/config.json.
+_SD15_UNET = dict(
+    sample_size=64,
+    in_channels=4,
+    out_channels=4,
+    down_block_types=("CrossAttnDownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D", "DownBlock2D"),
+    up_block_types=("UpBlock2D", "CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "CrossAttnUpBlock2D"),
+    block_out_channels=(320, 640, 1280, 1280),
+    layers_per_block=2,
+    cross_attention_dim=768,
+    attention_head_dim=8,
+    norm_num_groups=32,
+    norm_eps=1e-5,
+    act_fn="silu",
+    flip_sin_to_cos=True,
+    freq_shift=0,
+    center_input_sample=False,
+    downsample_padding=1,
+    mid_block_scale_factor=1,
+)
+
+
+# (rtol, atol) per dtype; the bf16 atol is 3x the worst bf16 eager-vs-Inductor CPU diff at S = 128.
+_UNET_TOL = {"bfloat16": (5e-2, 0.1), "float32": (1e-4, 1e-4)}
+_DTYPES = {"float32": torch.float32, "float16": torch.float16, "bfloat16": torch.bfloat16}
+
+
+def build_sd15_unet(dtype=torch.float32):
+    """The full SD-1.5 UNet at its published config, random weights, no checkpoint, in `dtype`."""
+    return UNet2DConditionModel(**_SD15_UNET).to("cpu", dtype).eval()
+
+
 def test_unet2d_condition_model(
     device,
     batch=1,
-    in_channels=4,
-    out_channels=4,
-    sample_size=32,
-    cross_attention_dim=[768, 768],
     seq_len=77,
-    block_out_channels=(64, 64),
-    layers_per_block=[1, 1],
-    attention_head_dim=(8, 8),
-    rtol=1e-4,
-    atol=1e-4,
+    rtol=None,
+    atol=None,
     stride=None,
+    dtype="bfloat16",
 ):
-    down_block_types = ("CrossAttnDownBlock2D", "DownBlock2D")
-    up_block_types   = ("UpBlock2D", "CrossAttnUpBlock2D")
-
-    unet_cpu = UNet2DConditionModel(
-        sample_size=sample_size,
-        in_channels=in_channels,
-        out_channels=out_channels,
-        down_block_types=down_block_types,
-        up_block_types=up_block_types,
-        block_out_channels=block_out_channels,
-        layers_per_block=layers_per_block,
-        cross_attention_dim=cross_attention_dim,
-        attention_head_dim=attention_head_dim,
-    ).to("cpu").eval()
+    """The whole SD-1.5 UNet on a B x 4 x 64 x 64 latent and a 77-token CLIP text state, weights and inputs
+    in `dtype`, checked at its `_UNET_TOL` unless given. `seq_len` is the CLIP text length the
+    cross-attention reads, not an LLM sequence."""
+    tol = _UNET_TOL.get(dtype, _UNET_TOL["float32"])
+    rtol, atol = tol[0] if rtol is None else rtol, tol[1] if atol is None else atol
+    unet_cpu = build_sd15_unet(_DTYPES[dtype])
+    in_channels = unet_cpu.config.in_channels
+    sample_size = unet_cpu.config.sample_size
+    cross_attention_dim = unet_cpu.config.cross_attention_dim
 
     g = torch.Generator().manual_seed(0)
 
     if stride is not None:
-        x_cpu = torch.empty_strided([batch, in_channels, sample_size, sample_size], stride).normal_(generator=g)
+        x_cpu = torch.empty_strided([batch, in_channels, sample_size, sample_size], stride,
+                                    dtype=_DTYPES[dtype]).normal_(generator=g)
     else:
-        x_cpu = torch.randn(batch, in_channels, sample_size, sample_size, generator=g)
+        x_cpu = torch.randn(batch, in_channels, sample_size, sample_size, generator=g, dtype=_DTYPES[dtype])
 
     t_cpu = torch.randint(low=0, high=1000, size=(batch,), generator=g, dtype=torch.long)
-    encoder_hidden_states_cpu = torch.randn(batch, seq_len, cross_attention_dim[0], generator=g)
+    encoder_hidden_states_cpu = torch.randn(batch, seq_len, cross_attention_dim, generator=g,
+                                            dtype=_DTYPES[dtype])
 
-    # CPU result
     with torch.no_grad():
-        y_cpu = unet_cpu(
-            sample=x_cpu,
+        y_cpu = f32_reference(unet_cpu)(
+            sample=x_cpu.float(),
             timestep=t_cpu,
-            encoder_hidden_states=encoder_hidden_states_cpu,
-        ).sample  # UNet2DConditionOutput.sample (Tensor)
+            encoder_hidden_states=encoder_hidden_states_cpu.float(),
+        ).sample
 
-    # Device + torch.compile
     unet_dev = unet_cpu.to(device).eval()
     unet_dev = torch.compile(unet_dev, dynamic=False)
 
@@ -615,9 +636,9 @@ if __name__ == "__main__":
     parser.add_argument("--model", type=str, default="runwayml/stable-diffusion-v1-5",
                         help="Diffusers model id (e.g., Qwen/Qwen-Image)")
     parser.add_argument("--batch", type=int, default=1)
-    parser.add_argument("--dtype", type=str, default="float32", choices=["float32", "float16", "bfloat16"])
-    parser.add_argument("--rtol", type=float, default=1e-4)
-    parser.add_argument("--atol", type=float, default=1e-4)
+    parser.add_argument("--dtype", type=str, default="bfloat16", choices=["float32", "float16", "bfloat16"])
+    parser.add_argument("--rtol", type=float, default=None, help="default: _UNET_TOL of --dtype")
+    parser.add_argument("--atol", type=float, default=None, help="default: _UNET_TOL of --dtype")
     parser.add_argument("--prompt", type=str, default="a cat in a hat")
     args = parser.parse_args()
 
@@ -633,7 +654,7 @@ if __name__ == "__main__":
     #test_cross_attn_up_block2d(device)
     #test_flip_sin_to_cos_embedding(device)
     #test_timesteps(device)
-    test_unet2d_condition_model(device)
+    test_unet2d_condition_model(device, batch=args.batch, rtol=args.rtol, atol=args.atol, dtype=args.dtype)
     #test_unet_conditional(
     #    device=device,
     #    model_id=args.model,

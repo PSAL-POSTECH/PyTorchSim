@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# What the MICRO 2026 tutorial's slides run, in the image: Hands-on 1 (the start builds; with the answer copied over,
+# What the MICRO 2026 tutorial's slides run, in the image: Hands-on 1 (with the answer copied over,
 # tests/xlane_reduce/run.sh passes), Hands-on 2's four vcix cases, Hands-on 3's PyTorch op on its machine file (its
 # values and, the machine file turning timing mode on, its cycles), and the JupyterLab the hub starts the image with. Every model comes from
 # /workspace/Coprocessor/build.

@@ -132,6 +132,7 @@ Read in `pytorchsim/config.py`:
 | `TORCHSIM_SPIKE_JOBS` | unset | Spike processes a launch's grid is split across (unset: the launcher chooses) |
 | `TORCHSIM_LOG_PATH` | `$TORCHSIM_DIR/togsim_results` | where TOGSim logs go |
 | `TORCHSIM_DUMP_PATH` | `$TORCHSIM_DIR` | misc dumps |
+| `TORCHSIM_RUNTIME_DIR` | unset | a node-local directory for the launch tensors (`.raw`): each process's `launch-<pid>/runtime` becomes a link into it (`contract.runtime_dir`), so the inputs Spike reads are not written to a network dump path |
 | `TORCHSIM_DEBUG_MODE` | `0` | extra debug |
 | `TORCHSIM_NPUWATTCH` | `0` | `1` writes `npuwattch_<YYYYMMDD_HHMMSS>_<hash>.json` beside the TOGSim results: each standalone launch's counters, totalled by its TOG's rows, in the `pytorchsim.run_stats` 1.1 form NPUWattch reads (`pytorchsim/simulator/timing/npuwattch.py`) |
 | `TORCHSIM_BREAKDOWN` | `0` | `1` prints where the run's wall clock went (compile per stage/pass, Spike, gem5, TOGSim) at exit, and writes `breakdown_<YYYYMMDD_HHMMSS>_<hash>.json` into the dump path — stamped like `togsim_results/`, so parallel runs sharing a dump path each keep their own |

@@ -413,30 +413,28 @@ def same_values(a, b):
 
 
 def capture(name, fn, make, out):
-    """Run `fn` once on make's inputs and copy each kernel it launches into out/<name>; its launches in
-    order, their tile sources and the extern calls. A kernel launched again on other values of the args its
-    runtime attributes are read from stops the bundle: its directory holds one launch's. This process's launch
-    directories in the kernels' workdirs go after, their .raw tensors being only the launch's."""
+    """Run `fn` once on make's inputs and copy each kernel it launches into out/<name>, a directory per set of
+    values its kernel file takes from the launch (launched again on others, another); its launches in order, each
+    naming its directory, their tile sources and the extern calls."""
     LAUNCHED.clear()
     EXTERNS.clear()
     RECORDED.clear()
     torch._dynamo.reset()
     xs = [x.to("npu:0") for x in make(torch.Generator().manual_seed(0))]
     torch.compile(fn, dynamic=False)(*xs)
-    dirs, kept, launches = {}, {}, []
+    kept, launches, made = {}, [], 0
     for launcher, recorded in zip(LAUNCHED, RECORDED, strict=True):
-        if launcher.workdir not in dirs:
-            d = f"{len(dirs):02d}_{launcher.kernel_name}"
+        variants = kept.setdefault(launcher.workdir, [])
+        d = next((d for values, d in variants if same_values(values, recorded)), None)
+        if d is None:
+            d = f"{made:02d}_{launcher.kernel_name}"
+            made += 1
             os.makedirs(os.path.join(out, name, d))
             copy_kernel(launcher, recorded, os.path.join(out, name, d))
-            dirs[launcher.workdir], kept[launcher.workdir] = d, recorded
-        elif not same_values(kept[launcher.workdir], recorded):
-            raise RuntimeError(f"[bundle] {name}: {launcher.kernel_name} is launched again on other values of "
-                               f"{sorted(recorded[0]) + sorted(recorded[1])}, which its kernel file takes from the "
-                               f"launch")
-        launches.append({"kernel": launcher.kernel_name, "dir": dirs[launcher.workdir]})
-    for workdir in dirs:
-        shutil.rmtree(contract.dir_for(workdir))
+            variants.append((recorded, d))
+        launches.append({"kernel": launcher.kernel_name, "dir": d})
+    for workdir in kept:
+        contract.remove_launch_dir(workdir)
     return launches, [launcher.meta.get("tile_source") for launcher in LAUNCHED], list(EXTERNS)
 
 
@@ -447,7 +445,8 @@ def pts_commit():
 
 
 KEYED_ENV = ("TORCHSIM_", "TORCHINDUCTOR_", "TRITON_")
-PER_RUN_ENV = {"TORCHSIM_DUMP_PATH", "TORCHSIM_LOG_PATH", "TORCHINDUCTOR_CACHE_DIR", "TRITON_CACHE_DIR"}
+PER_RUN_ENV = {"TORCHSIM_DUMP_PATH", "TORCHSIM_LOG_PATH", "TORCHSIM_RUNTIME_DIR", "TORCHINDUCTOR_CACHE_DIR",
+               "TRITON_CACHE_DIR"}
 
 
 def keyed_env():

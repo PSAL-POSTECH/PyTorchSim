@@ -4,7 +4,7 @@
     "repository": "https://github.com/PSAL-POSTECH/Coprocessor.git",
     "start": {
       "branch": "tutorial/xlane-reduce",
-      "commit": "f6f44212bfb820d2f93f543f7248e36028438b5b"
+      "commit": "8841d683ad3a13a2c4bdc91582d02fb3203fdf2f"
     },
     "env_image": "ghcr.io/psal-postech/coprocessor:env-e012fc13e61b"
   }

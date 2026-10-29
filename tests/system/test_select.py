@@ -165,15 +165,25 @@ def _choice(name):
     return c
 
 
+def _rendered(timed=None):
+    """Patches for time_choices off Inductor: each choice's source is its name, no prefetch, nothing timed yet."""
+    from contextlib import ExitStack
+    stack = ExitStack()
+    stack.enter_context(mock.patch.object(template_timing.kernel_metadata, "benchmark_request_meta",
+                                          side_effect=lambda req: (req.module_cache_key, {"args": []})))
+    stack.enter_context(mock.patch.object(template_timing.graph_prefetch, "choice_statement",
+                                          return_value=[]))
+    stack.enter_context(mock.patch.dict(template_timing._timed, timed or {}, clear=True))
+    return stack
+
+
 def test_a_refused_config_is_inf_and_none_left_is_an_error():
     a, b = _choice("a"), _choice("b")
-    with mock.patch.object(template_timing.kernel_metadata, "benchmark_request_meta",
-                           return_value=("", {})), \
+    with _rendered(), \
          mock.patch.object(template_timing, "_time_tile",
                            side_effect=lambda src, meta, name, wd, cut: 7.0 if wd.endswith("b") else float("inf")):
         assert template_timing.time_choices([a, b]) == {a: float("inf"), b: 7.0}
-    with mock.patch.object(template_timing.kernel_metadata, "benchmark_request_meta",
-                           return_value=("", {})), \
+    with _rendered(), \
          mock.patch.object(template_timing, "_time_tile", return_value=float("inf")):
         try:
             template_timing.time_choices([a, b])
@@ -195,11 +205,21 @@ def test_a_config_running_past_the_cut_is_inf():
             time.sleep(0.05)
         return float("inf")
     fast, slow = _choice("fast"), _choice("slow")
-    with mock.patch.object(template_timing.kernel_metadata, "benchmark_request_meta", return_value=("", {})), \
-         mock.patch.object(template_timing, "_time_tile", side_effect=tile):
+    with _rendered(), mock.patch.object(template_timing, "_time_tile", side_effect=tile):
         t0 = time.monotonic()
         assert template_timing.time_choices([slow, fast]) == {slow: float("inf"), fast: 5.0}
         assert time.monotonic() - t0 < 0.2 * template_timing.CUT_FACTOR + 1
+
+
+def test_a_config_timed_once_is_not_timed_again():
+    """A config rendered the same at another node takes the cycles this process timed it at."""
+    tile = mock.Mock(side_effect=lambda src, meta, name, wd, cut: 3.0 if wd.endswith("a") else 4.0)
+    with _rendered(), mock.patch.object(template_timing, "_time_tile", tile):
+        a, b = _choice("a"), _choice("b")
+        assert template_timing.time_choices([a, b]) == {a: 3.0, b: 4.0}
+        a2, b2 = _choice("a"), _choice("b")
+        assert template_timing.time_choices([a2, b2]) == {a2: 3.0, b2: 4.0}
+    assert tile.call_count == 2
 
 
 def _machine(root, sub, **change):
@@ -237,5 +257,6 @@ if __name__ == "__main__":
     test_graph_cache_key_names_the_machine()
     test_a_config_running_past_the_cut_is_inf()
     test_a_refused_config_is_inf_and_none_left_is_an_error()
+    test_a_config_timed_once_is_not_timed_again()
     test_select_record_and_rebuild()
     print("PASS")

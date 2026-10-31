@@ -360,7 +360,7 @@ if __name__ == "__main__":
     parser.add_argument("--max_new_tokens", type=int, default=16)
     args = parser.parse_args()
 
-    sys.path.append(os.environ.get("PYTORCHSIM_ROOT_PATH", "/workspace/PyTorchSim"))
+    sys.path.append(os.environ.get("TORCHSIM_DIR", "/workspace/PyTorchSim"))
     device = torch.device("npu:0")
     #test_triu(device, size=(32, 128), diagonal=1)
     torch.compiler.is_compiling = lambda: True # FIXME. How to fix this?

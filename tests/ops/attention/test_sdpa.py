@@ -39,7 +39,6 @@ def clear_caches():
     from torch._inductor.codecache import FxGraphCache
     AOTAutogradCache.clear()
     torch._dynamo.reset()
-    os.environ["TORCHINDUCTOR_CACHE"] = "0"
     FxGraphCache.clear()
 
 

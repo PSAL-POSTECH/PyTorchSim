@@ -994,7 +994,7 @@ if __name__ == "__main__":
     parser.add_argument("--atol", type=float, default=1e-2)
     args = parser.parse_args()
 
-    sys.path.append(os.environ.get("PYTORCHSIM_ROOT_PATH", "/workspace/PyTorchSim"))
+    sys.path.append(os.environ.get("TORCHSIM_DIR", "/workspace/PyTorchSim"))
     torch.compiler.is_compiling = lambda: True  # FIXME. Same as test_llama.py.
 
     for preset in ([args.preset] if args.preset else _GATE):

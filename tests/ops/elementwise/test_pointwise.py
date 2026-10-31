@@ -1,12 +1,10 @@
 import torch
-import os
 
 def clear_caches():
     from torch._functorch._aot_autograd.autograd_cache import AOTAutogradCache
     from torch._inductor.codecache import FxGraphCache
     AOTAutogradCache.clear()
     torch._dynamo.reset()
-    os.environ["TORCHINDUCTOR_CACHE"] = "0"
     FxGraphCache.clear()
     
 def test_result(name, out, cpu_out, rtol=1e-4, atol=1e-4):

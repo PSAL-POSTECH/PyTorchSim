@@ -336,7 +336,7 @@ if __name__ == "__main__":
     parser.add_argument("--atol", type=float, default=None, help="default: _TOL of --dtype")
     args = parser.parse_args()
 
-    sys.path.append(os.environ.get("PYTORCHSIM_ROOT_PATH", "/workspace/PyTorchSim"))
+    sys.path.append(os.environ.get("TORCHSIM_DIR", "/workspace/PyTorchSim"))
 
     for version in ([args.version] if args.version else ["2", "2.5"]):
         run_qwen_vl(

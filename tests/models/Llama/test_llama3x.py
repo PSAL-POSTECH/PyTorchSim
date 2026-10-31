@@ -230,7 +230,7 @@ if __name__ == "__main__":
     if args.decode is not None and args.part != "layer":
         parser.error("--decode runs with --part layer")
 
-    sys.path.append(os.environ.get("PYTORCHSIM_ROOT_PATH", "/workspace/PyTorchSim"))
+    sys.path.append(os.environ.get("TORCHSIM_DIR", "/workspace/PyTorchSim"))
 
     run_llama3x(
         torch.device("npu:0"),

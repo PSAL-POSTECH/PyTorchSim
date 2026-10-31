@@ -165,7 +165,7 @@ def figure_models(data, fams, step, squeeze, path):
     axes[1].set_xlabel("Sequence length", fontsize=LABEL_PT, labelpad=9, color=AXIS)
     _legend_above(axes[0], fams)
     fig.tight_layout(h_pad=0.6)
-    fig.savefig(path, dpi=110, bbox_inches="tight")
+    fig.savefig(path, dpi=220, bbox_inches="tight")
     plt.close(fig)
 
 

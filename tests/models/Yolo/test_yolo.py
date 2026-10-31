@@ -576,7 +576,7 @@ if __name__ == "__main__":
                         help="absolute floor, for an output whose reference is all zero")
     args = parser.parse_args()
 
-    sys.path.append(os.environ.get("PYTORCHSIM_ROOT_PATH", "/workspace/PyTorchSim"))
+    sys.path.append(os.environ.get("TORCHSIM_DIR", "/workspace/PyTorchSim"))
     torch.compiler.is_compiling = lambda: True  # FIXME. Same as test_llama.py.
 
     for version in ([args.version] if args.version else _GATE):

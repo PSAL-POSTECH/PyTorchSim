@@ -161,7 +161,7 @@ if __name__ == "__main__":
     parser.add_argument("--atol", type=float, default=1e-3)
     args = parser.parse_args()
 
-    sys.path.append(os.environ.get("PYTORCHSIM_ROOT_PATH", "/workspace/PyTorchSim"))
+    sys.path.append(os.environ.get("TORCHSIM_DIR", "/workspace/PyTorchSim"))
     device = torch.device("npu:0")
     torch.compiler.is_compiling = lambda: True  # FIXME. Same as test_llama.py.
     run_decoder_layer_test(device=device, batch=args.batch, seq_len=args.seq_len,

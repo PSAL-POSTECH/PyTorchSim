@@ -128,17 +128,27 @@ Read in `pytorchsim/config.py`:
 | `TORCHSIM_FUNCTIONAL_MODE` | `1` | `0` skips Spike (outputs are not computed) |
 | `TORCHSIM_FUNCTIONAL_VERIFY_PER_KERNEL` | `0` | `1` checks each kernel against a CPU golden (needs functional mode) |
 | `TORCHSIM_CODEGEN_AUTOTUNE_TEMPLATE_TOPK` | `4` | GEMM tiles offered to the selection |
+| `TORCHSIM_CODEGEN_MAPPING_STRATEGY` | `autotune` | `heuristic`, `autotune`, `external-then-heuristic` or `external-then-autotune` |
+| `TORCHSIM_CODEGEN_EXTERNAL_MAPPING_FILE` | unset | the external mapping file (relative: the working directory's) |
 | `COPROCESSOR_ENV_ROOT` | `/opt/coprocessor-env` | the Coprocessor environment: the RISC-V toolchain, pk, Spike and gem5, which the compiler's `toolchain` finds there |
 | `TORCHSIM_SPIKE_JOBS` | unset | Spike processes a launch's grid is split across (unset: the launcher chooses) |
 | `TORCHSIM_LOG_PATH` | `$TORCHSIM_DIR/togsim_results` | where TOGSim logs go |
-| `TORCHSIM_DUMP_PATH` | `$TORCHSIM_DIR` | misc dumps |
-| `TORCHSIM_DEBUG_MODE` | `0` | extra debug |
+| `TORCHSIM_DUMP_PATH` | `$TORCHSIM_DIR/outputs` | per-kernel workdirs and Inductor's cache (`.torchinductor`) |
+| `TORCHSIM_DEBUG_MODE` | `0` | extra debug; also shows Inductor's autotune tables, which `TORCHINDUCTOR_AUTOTUNE_NUM_CHOICES_DISPLAYED` / `TORCHINDUCTOR_MAX_AUTOTUNE_REPORT_CHOICES_STATS` set instead when given |
 | `TORCHSIM_NPUWATTCH` | `0` | `1` writes `npuwattch_<YYYYMMDD_HHMMSS>_<hash>.json` beside the TOGSim results: each standalone launch's counters, totalled by its TOG's rows, in the `pytorchsim.run_stats` 1.1 form NPUWattch reads (`pytorchsim/simulator/timing/npuwattch.py`) |
 | `TORCHSIM_BREAKDOWN` | `0` | `1` prints where the run's wall clock went (compile per stage/pass, Spike, gem5, TOGSim) at exit, and writes `breakdown_<YYYYMMDD_HHMMSS>_<hash>.json` into the dump path — stamped like `togsim_results/`, so parallel runs sharing a dump path each keep their own |
 | `TORCHSIM_COMPILE_DIR` | `$TORCHSIM_DIR/pytorchsim-triton-compiler` | compiler checkout (stages 1-6) |
 | `TORCHSIM_COMPILE_PYTHON` | `sys.executable` | interpreter the compiler runs under |
 | `TOGSIM_DIR` | `$TORCHSIM_COMPILE_DIR/third_party/TOGSim` | TOGSim repository root: the header is `$TOGSIM_DIR/include/togsim_runtime.h`, the binary `$TOGSIM_DIR/build/bin/Simulator`. Also handed to the compiler subprocess |
 | `TOGSIM_DEBUG_LEVEL` | unset | passed to TOGSim `--log_level` |
+
+Read where they are used:
+
+| Var | Default | Purpose |
+|---|---|---|
+| `TORCHSIM_FUNCTIONAL_VERIFY_RTOL`, `_ATOL` | `1e-4` | the per-kernel check's tolerances (`codegen/verify.py`) |
+| `TORCHSIM_FUNCTIONAL_VERIFY_TRACE` | unset | set: log every buffer's error instead of stopping at the first divergent kernel |
+| `TORCHSIM_TRITON_REPLAY` | `0` | `1` returns a saved run's outputs instead of running Spike (`simulator/functional`) |
 
 Note: `TORCHSIM_TARGET` is **overwritten** while inside a `with torch.npu.TOGSimulator(config_path=...)` block (and restored on exit). Compilation reads the same YAML as TOGSim that way.
 

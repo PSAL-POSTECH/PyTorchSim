@@ -12,6 +12,7 @@ against a float32 CPU reference, group by group.
              transformers gives them, compiled ones match the reference up to offs[-1]
   bias       a bias is refused, as aten refuses it
   table_kernels  the program table is one computation on offs: no kernel of an empty entry's zeros or an int32 cast
+  xla_structure_megablox  the validation mode's megablox visits and values
   tiles      all of K first, then for a group of one row block the fewest N tiles (Qwen3-30B-A3B's decode gate_up
              BN 2048), else no masked columns (Mixtral's gate_up keeps BN 4096)
 
@@ -188,10 +189,34 @@ def case_tiles():
     return got[0][1:] == (2048, 2048) and got[1][1:] == got[2][1:] == (4096, 4096), f"tiles {got}"
 
 
+def case_xla_structure_megablox():
+    """Validation mode (TORCHSIM_VALIDATION_XLA_STRUCTURE=megablox, run in a process of its own): megablox's visits,
+    groups in order over the 512-row tiles they touch (10 of at most 11 for the Mixtral S1024 routing below), and the
+    reference's values. Breaks if the table or the whole-tile compute stored to the group's rows drifts."""
+    import os, subprocess
+    from pytorchsim import config
+    if "megablox" not in config.CONFIG_VALIDATION_XLA_STRUCTURE:
+        env = dict(os.environ, TORCHSIM_VALIDATION_XLA_STRUCTURE="megablox")
+        out = subprocess.run([sys.executable, __file__, "xla_structure_megablox"], env=env, capture_output=True,
+                             text=True)
+        said = [l for l in out.stdout.splitlines() if "xla_structure_megablox" in l]
+        return out.returncode == 0, said[-1] if said else out.stderr[-300:]
+    from pytorchsim.frontend.dispatcher import grouped_mm_xla_structure as x
+    sizes = [250, 262, 240, 270, 255, 257, 253, 255]
+    group, tile = x._visits(torch.cumsum(torch.tensor(sizes), 0, dtype=torch.int32), 512, 4 + 8 - 1)
+    want = [(0, 0), (1, 0), (2, 1), (3, 1), (4, 1), (4, 2), (5, 2), (6, 2), (6, 3), (7, 3)]
+    live = [(g, t) for g, t in zip(group.tolist(), tile.tolist()) if g < 8]
+    x.GROUPED_MM_MEGABLOX.calls.clear()
+    err, _, externs = _run_compiled([3, 0, 600, 70, 1, 0, 130, 64], 256, 256)
+    launched = x.GROUPED_MM_MEGABLOX.calls.get("_megablox_kernel", 0)
+    return live == want and err < TOL and launched == 1 and not externs, \
+        f"visits {live}, err {err:.3g}, megablox launches {launched}, externs {externs}"
+
+
 CASES = {"routed": case_routed, "one_program_per_group": case_one_program_per_group,
          "few_rows": case_few_rows, "eager": case_eager, "grad": case_grad,
          "fallback": case_fallback, "tail": case_tail, "bias": case_bias, "table_kernels": case_table_kernels,
-         "tiles": case_tiles}
+         "tiles": case_tiles, "xla_structure_megablox": case_xla_structure_megablox}
 
 
 if __name__ == "__main__":

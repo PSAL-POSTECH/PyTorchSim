@@ -5,9 +5,10 @@ depthwise stencil (convolution.py). Rewrites after AOTAutograd are inductor/post
 
 def install():
     """Register every op's npu kernel, once each."""
-    from . import attention, convolution, grouped_mm, sort, topk
+    from pytorchsim import config
+    from . import attention, convolution, grouped_mm, grouped_mm_xla_structure, sort, topk
     attention.install()
     convolution.install()
-    grouped_mm.install()
+    (grouped_mm_xla_structure if "megablox" in config.CONFIG_VALIDATION_XLA_STRUCTURE else grouped_mm).install()
     sort.install()
     topk.install()

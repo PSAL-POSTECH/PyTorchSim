@@ -6,6 +6,10 @@ import logging
 CONFIG_TORCHSIM_DIR = os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim')
 #: How many Spike processes a launch's grid is split across; empty lets the launcher choose.
 CONFIG_SPIKE_JOBS = os.environ.get("TORCHSIM_SPIKE_JOBS", "").strip()
+#: Validation only: the XLA structures to run in place of ours, comma-separated ("megablox": MoE grouped matmul
+#: as megablox's (row tile, group) visits); empty for none, the default.
+CONFIG_VALIDATION_XLA_STRUCTURE = frozenset(
+    m for m in os.environ.get("TORCHSIM_VALIDATION_XLA_STRUCTURE", "").replace(" ", "").split(",") if m)
 #: The compiler checkout (stages 1-5, ttir to the RISC-V ELF), a separate repository, not vendored.
 CONFIG_TORCHSIM_COMPILE_DIR = os.environ.get(
     "TORCHSIM_COMPILE_DIR", default=os.path.join(CONFIG_TORCHSIM_DIR, "pytorchsim-triton-compiler"))

@@ -40,8 +40,20 @@ on:
   pull_request:
     branches: [ "pytorchsim-triton-backend" ]
     paths: *route_paths
+  # 03:00 KST. The grid alone: the sweep and the bundle do not run on a schedule.
+  schedule:
+    - cron: '0 18 * * *'
   workflow_dispatch:
     inputs:
+      grid:
+        description: "Run the model grid (the nightly job) in this run"
+        type: boolean
+        required: false
+        default: false
+      grid_only:
+        description: "Comma separated model ids the grid runs, as run_grid.py --only (empty: all thirteen)"
+        required: false
+        default: ''
       sweep_jobs:
         description: "Tests the sweep runs at once (empty: the sweep's default, 8 on a 16-CPU runner)"
         required: false
@@ -136,6 +148,7 @@ jobs:
   route:
     name: Triton route (smoke gate + coverage sweep)
     needs: base
+    if: github.event_name != 'schedule'
     runs-on: [self-hosted, slurm, big, aarch64]
     timeout-minutes: 180
     permissions:
@@ -243,7 +256,7 @@ jobs:
   bundle:
     name: Validation kernel bundle
     needs: base
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && github.event_name != 'schedule'
     runs-on: [self-hosted, slurm, big, aarch64]
     timeout-minutes: 360
     permissions:
@@ -338,3 +351,120 @@ jobs:
         run: |
           if [ -z "$PTB_TOKEN" ]; then echo "::error::the PTB_BUNDLE_TOKEN secret is not set: no bundle pull request for the compiler"; exit 1; fi
           BUNDLE=bundle/out bash scripts/ci/ptb_bundle_pr.sh
+
+  # One decoder layer of each target model at every sequence length the v6e table measures, in the
+  # base image the base job made sure of. One model a job, because one model's points take up to five
+  # hours; a job that is cut short still uploads what it finished, and the collect job keeps the rest
+  # of the table as it was, so the next night fills what this one missed.
+  grid:
+    name: Model grid (${{ matrix.model }})
+    needs: base
+    if: github.event_name == 'schedule' || inputs.grid
+    runs-on: [self-hosted, slurm, big, aarch64]
+    timeout-minutes: 360
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        model: [llama2_7b, llama3_8b, llama31_8b, llama4_scout, mixtral_8x7b,
+                gemma_7b, gemma2_2b, gemma3_1b,
+                qwen3_8b, qwen35_9b, qwen15_moe, qwen3_30b, qwen3_vl_moe]
+    env:
+      BASE_IMAGE: ${{ needs.base.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          persist-credentials: false
+      # Credentials in the job's temp directory, gone with it -- not in the runner's home.
+      - name: Registry login
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/docker"
+          { echo "DOCKER_CONFIG=$RUNNER_TEMP/docker"; echo "REGISTRY_AUTH_FILE=$RUNNER_TEMP/docker/auth.json"; } >> "$GITHUB_ENV"
+          export DOCKER_CONFIG="$RUNNER_TEMP/docker" REGISTRY_AUTH_FILE="$RUNNER_TEMP/docker/auth.json"
+          printf %s "$TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Pull the base image
+        run: docker pull "${BASE_IMAGE}"
+      # The checkout is read-only, so it is copied into the image's own TORCHSIM_DIR, where the tests
+      # write their kernels; only summary.tsv leaves the container.
+      - name: This model's points
+        if: ${{ !cancelled() }}
+        env:
+          ONLY: ${{ inputs.grid_only }}
+          MODEL: ${{ matrix.model }}
+        run: |
+          case "$ONLY" in
+            '') ;;
+            *) case ",$ONLY," in *",$MODEL,"*) ;; *) echo "$MODEL is not in grid_only ($ONLY)"; exit 0 ;; esac ;;
+          esac
+          mkdir -p grid && chmod 777 grid
+          docker run --rm -e TORCHSIM_TIMING_MODE=1 -v "$PWD:/src:ro" -v "$PWD/grid:/grid" "${BASE_IMAGE}" bash -lc '
+              mkdir -p "$TORCHSIM_DIR"
+              tar -C /src --exclude=./.git --exclude=./.github -cf - . | tar -C "$TORCHSIM_DIR" -xf -
+              (cd "$TORCHSIM_DIR/device" && python -m pip install -q --no-build-isolation -e .)
+              cd "$TORCHSIM_DIR" && python3 tests/models/run_grid.py --out /grid --points all --only '"$MODEL"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: grid-${{ matrix.model }}
+          path: grid/summary.tsv
+          if-no-files-found: warn
+
+  # Every model's points merged into validation/grid/sim.csv, the figures redrawn from it, and a pull
+  # request opened when either changed. The table is the record: the figures are only its picture.
+  grid-collect:
+    name: Model grid (collect)
+    needs: grid
+    if: ${{ !cancelled() && (github.event_name == 'schedule' || inputs.grid) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: grid-*
+          path: sweeps
+          merge-multiple: false
+      - name: Python with matplotlib
+        run: python3 -m pip install -q matplotlib
+      - name: The compiler's machine description, for the clock the cycles were counted at
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PTB_REF=$(jq -r '.pytorchsim_triton_backend.ref' third_party/pytorchsim-triton-backend.json)
+          curl -fsSL -H "Authorization: Bearer $TOKEN" \
+            "https://raw.githubusercontent.com/PSAL-POSTECH/PyTorchSim-Triton-Backend/${PTB_REF}/third_party/TOGSim/configs/tpuv6e.yml" \
+            -o tpuv6e.yml
+      - name: Merge the sweeps and redraw
+        run: |
+          python3 validation/grid/collect.py sweeps --config tpuv6e.yml
+          python3 validation/grid/plot.py | tee -a "$GITHUB_STEP_SUMMARY"
+          rm -f tpuv6e.yml
+      - name: Propose the new table
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if git diff --quiet -- validation/grid/sim.csv docs/grid-*.png; then
+            echo "the grid did not move" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -C bot/model-grid
+          git add validation/grid/sim.csv docs/grid-*.png
+          git commit -m "[Validation] The model grid of $(date -u +%Y-%m-%d)"
+          git push -f origin bot/model-grid
+          gh pr view bot/model-grid --json number >/dev/null 2>&1 ||
+            gh pr create --base "${GITHUB_REF_NAME}" --head bot/model-grid \
+              --title "[Validation] The nightly model grid" \
+              --body "One decoder layer of each target model against the TPU v6e table, from the nightly sweep. The figures under docs/ are redrawn from validation/grid/sim.csv; points whose sweep did not finish keep the microseconds they had."

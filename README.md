@@ -83,7 +83,7 @@ Any x86 hardware capable of running Docker with more than 20 GB of memory -->
 
 ## Model Validation
 
-Timing of the Model Zoo's models against measurements taken on a real TPU v6e, refreshed nightly by the model grid job.
+Timing of the Model Zoo's models against measurements taken on a real TPU v6e, refreshed nightly.
 
 ![Qwen family against TPU v6e](/docs/grid-qwen.png)
 

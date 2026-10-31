@@ -20,6 +20,19 @@ For more details, please refer to our [paper](https://doi.org/10.1145/3725843.37
 ![Validation](/docs/validation.jpg)
 **Figure description**: PyTorchSim achieves significantly better accuracy than others ([SCALE-Simv3](https://github.com/scalesim-project/scale-sim-v3), [mNPUsim](https://github.com/casys-kaist/mNPUsim), [Timeloop](https://github.com/NVlabs/timeloop), [MAESTRO](https://github.com/maestro-project/maestro)) by supporting various optimizations, data transformations, and general vector operations. It achieved an 11.5% MAE (Mean Absolute Error) of runtime relative to the real TPUv3. -->
 
+## Validation against TPU v6e
+
+One decoder layer of each target model, at every sequence length the v6e table measures, timed on
+PyTorchSim and compared with the same layer on a real TPU v6e. The error is
+(simulated / measured - 1) x 100, so a positive bar is the simulator being the slower of the two.
+The numbers behind both figures are `validation/grid/sim.csv` (ours) and `validation/grid/v6e.csv`
+(the archive row each point is compared against); the nightly grid job refreshes the first and
+redraws these pictures from it.
+
+![Qwen family against TPU v6e](/docs/grid-qwen.png)
+
+![Llama, Mistral and Gemma families against TPU v6e](/docs/grid-llama-gemma.png)
+
 ## PyTorchSim Framework Overview
 ![Overview](/docs/overview.jpg)
 PyTorchSim consists of **two main** components:

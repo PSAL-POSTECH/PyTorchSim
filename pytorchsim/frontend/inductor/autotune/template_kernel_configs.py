@@ -83,9 +83,9 @@ CONV_MAX_BLOCK_M = 2048
 
 
 def conv_config_heuristic():
-    """npu's conv tiles: the largest of this machine's mm tiles (tiling.gemm_tiles) for one tap's GEMM, pixels x
-    out channels x in channels, BLOCK_M at most CONV_MAX_BLOCK_M; the lane table (BLOCK_N per group) for a
-    grouped conv, untried at mm tiles, or when no tile fits."""
+    """npu's conv tiles: this machine's mm tiles (tiling.gemm_tiles) for one tap's GEMM, pixels x out channels
+    x in channels, BLOCK_M at most CONV_MAX_BLOCK_M, the first codegen_autotune_template_topk of them where
+    the strategy autotunes; the lane table (BLOCK_N per group) for a grouped conv or when no tile fits."""
     from torch._inductor.heuristics.template.triton import (
         BaseConfigHeuristic, ConvConfig)
 
@@ -102,12 +102,16 @@ def conv_config_heuristic():
 
         def get_conv_configs(self):
             def per_group(m, n, k, **kwargs):
+                """Every tile a timed run ranks, the first alone otherwise: one candidate is picked by the
+                order it was offered, which is no ranking (template_timing.time_choices ranks the rest)."""
                 from torch._inductor.virtualized import V
+                from pytorchsim.backend import template_record
                 groups = conv_groups_now()
                 mnk = [int(V.graph.sizevars.optimization_hint(s)) for s in (m, n, k)]
+                topk = config.codegen_autotune_template_topk if template_record.autotunes() else 1
                 tiles = [] if groups > 1 else [
                     t for t in tiling.gemm_tiles(*mnk, kwargs.get("dtype_size", 4))
-                    if t.block_m <= CONV_MAX_BLOCK_M][:1]
+                    if t.block_m <= CONV_MAX_BLOCK_M][:topk]
                 configs = [ConvConfig(t.block_m, t.block_n, t.block_k, 1, 4) for t in tiles]
                 if groups == 1 and not configs:
                     logger.warning("[torchsim-compile] no mapped conv tile for %sx%sx%s; the lane table", *mnk)

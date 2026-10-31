@@ -12,7 +12,7 @@ For more details, please refer to our [paper](https://doi.org/10.1145/3725843.37
 > **Disclaimer.** PyTorchSim is an independent project. It is neither part of the official [PyTorch](https://pytorch.org/) distribution nor affiliated with or endorsed by the PyTorch Foundation. The name reflects that this work builds on the open-source PyTorch compiler stack as its front-end for research purposes.
 
 ## Navigation
-[Overview](#pytorchsim-framework-overview) | [Model Zoo](#model-zoo) | [Validation](#validation-against-tpu-v6e) | [Getting Started](#getting-started)
+[Overview](#pytorchsim-framework-overview) | [Model Zoo](#model-zoo) | [Model Validation](#model-validation) | [Getting Started](#getting-started)
 
 <!-- ![Speedup](/docs/speedup.jpg)
 **Figure description**: we compare the simulation speed of PyTorchSim over [Accel-sim](https://accel-sim.github.io/) (a GPU simulator with Tensor Core model) as GPUs are widely used for deep learning and such a GPU simulator can be used to study systems for deep learning. We also include [mNPUsim](https://github.com/casys-kaist/mNPUsim) in the comparison. On the x-axis, we vary the size and workloads.
@@ -81,14 +81,9 @@ Our provided Docker environment resolves software dependencies.
 ### Hardware Dependencies
 Any x86 hardware capable of running Docker with more than 20 GB of memory -->
 
-## Validation against TPU v6e
+## Model Validation
 
-One decoder layer of each target model, at every sequence length the v6e table measures, timed on
-PyTorchSim and compared with the same layer on a real TPU v6e. The error is
-(simulated / measured - 1) x 100, so a positive bar is the simulator being the slower of the two.
-The numbers behind both figures are `validation/grid/sim.csv` (ours) and `validation/grid/v6e.csv`
-(the archive row each point is compared against); the nightly grid job refreshes the first and
-redraws these pictures from it.
+Timing of the Model Zoo's models against measurements taken on a real TPU v6e, refreshed nightly by the model grid job.
 
 ![Qwen family against TPU v6e](/docs/grid-qwen.png)
 

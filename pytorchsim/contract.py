@@ -6,8 +6,10 @@
     launch dir      each process's corner of a shared workdir
 """
 
+import hashlib
 import json
 import os
+import shutil
 
 
 class SpecIncomplete(RuntimeError):
@@ -169,11 +171,36 @@ def workdir_of(path):
     return os.path.dirname(d) if os.path.basename(d).startswith(f"{LAUNCH_DIR_PREFIX}-") else d
 
 
+RUNTIME_ROOT_ENV = "TORCHSIM_RUNTIME_DIR"
+
+
 def runtime_dir(workdir):
-    """Create and return this process's directory of `.raw` launch tensors."""
+    """Create and return this process's directory of `.raw` launch tensors, launch-<pid>/runtime; with env
+    TORCHSIM_RUNTIME_DIR (a node-local disk) that is a link to a directory of its own under it."""
     d = os.path.join(dir_for(workdir), "runtime")
+    root = os.environ.get(RUNTIME_ROOT_ENV)
+    target = os.path.join(os.path.abspath(root), _runtime_key(d)) if root else None
+    if os.path.islink(d) and (target is None or os.readlink(d) != target or not os.path.isdir(target)):
+        os.remove(d)
+    if target and not os.path.islink(d):
+        shutil.rmtree(d, ignore_errors=True)
+        os.makedirs(target, exist_ok=True)
+        os.symlink(target, d)
     os.makedirs(d, exist_ok=True)
     return d
+
+
+def _runtime_key(d):
+    return hashlib.sha256(os.path.abspath(d).encode()).hexdigest()[:24]
+
+
+def remove_launch_dir(workdir):
+    """Remove this process's launch directory, and the node-local runtime directory it links to."""
+    d = dir_for(workdir)
+    rt = os.path.join(d, "runtime")
+    if os.path.islink(rt):
+        shutil.rmtree(os.path.realpath(rt), ignore_errors=True)
+    shutil.rmtree(d)
 
 
 def link_shared(workdir, names):

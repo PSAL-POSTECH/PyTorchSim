@@ -29,16 +29,16 @@ int64_t _fused_sdp_choice(
     return static_cast<int64_t>(sdp::SDPBackend::error);
   }
 
-  // The overrideable op carries a call it can state whole: no mask, no dropout, no gradient (its
-  // npu kernel has no backward), H dividing Hq. Whether a fused kernel then takes it is
-  // pytorchsim/frontend/dispatcher/attention.py's fused_plan alone; what that declines runs SDPA's math.
+  // The overrideable op carries a call it can state whole: a mask but no dropout, no gradient (its
+  // npu kernel has no backward), H dividing Hq. Which masks a fused kernel then reads is
+  // pytorchsim/frontend/dispatcher/attention.py's plan alone; what that declines runs SDPA's math.
   const int64_t Hq = query.size(-3), H = key.size(-3);
   const bool grad = at::GradMode::is_enabled() &&
-      (query.requires_grad() || key.requires_grad() || value.requires_grad());
+      (query.requires_grad() || key.requires_grad() || value.requires_grad() ||
+       (attn_mask.has_value() && attn_mask->requires_grad()));
   const bool carried =
       at::globalContext().userEnabledOverrideableSDP() &&
-      H > 0 && Hq % H == 0 && (Hq == H || enable_gqa) &&
-      !attn_mask.has_value() && !grad &&
+      H > 0 && Hq % H == 0 && (Hq == H || enable_gqa) && !grad &&
       sdp::check_for_dropout(params, /*debug=*/false) &&
       sdp::check_nested_tensor(params, /*debug=*/false);
   if (carried) {

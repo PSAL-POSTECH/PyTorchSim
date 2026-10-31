@@ -39,7 +39,7 @@ def _check(name, ok):
 
 def test_post_grad_pass_form():
     from pytorchsim.frontend.inductor import postgrad as pg
-    names = [*pg.REWRITES, "complex_real_pairs"]
+    names = [*pg.REWRITES, "gqa_shared_kv_fused", "complex_real_pairs"]
     doc_words = re.findall(r"\w+", pg.__doc__)
     listed = [w for w in doc_words if w in names]
     order = list(dict.fromkeys(listed))

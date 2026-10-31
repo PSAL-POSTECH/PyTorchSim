@@ -34,7 +34,7 @@ class GroupedMM(CustomFusedKernel):
             return Decline("a bias or another out_dtype")
         if a.dtype != b.dtype:
             return Decline(f"A {a.dtype} and B {b.dtype}")
-        tiles = _tiles(b.shape[2], a.shape[1], a.element_size())
+        tiles = _tiles(b.shape[2], a.shape[1], a.element_size(), -(-a.shape[0] // min(b.shape[0], a.shape[0])))
         if tiles is None:
             return Decline(f"no mm tile of {config.CONFIG_MACHINE.vector_lanes} rows fits the scratchpad")
         bm, bn, bk = tiles
@@ -46,11 +46,10 @@ class GroupedMM(CustomFusedKernel):
         g, _, n = b.shape
         bm, bn, bk = plan["BM"], plan["BN"], plan["BK"]
         programs = min(g, s)
-        group, first, rows = _groups(offs, programs)
         c = a.new_empty(s, n)
         wrap_triton(_grouped_mm_kernel)[(programs, triton.cdiv(n, bn), 1)](
-            a.contiguous(), b, group, first, rows, c, b.stride(0), b.stride(1), b.stride(2),
-            k, triton.cdiv(k, bk) * bk, n, bm, bn, bk)
+            a.contiguous(), b, _groups(offs, programs), offs, c, b.stride(0), b.stride(1), b.stride(2),
+            k, triton.cdiv(k, bk) * bk, n, g, bm, bn, bk)
         return c
 
     def fallback(self, a, b, offs, bias, out_dtype):
@@ -64,38 +63,43 @@ def install():
     GROUPED_MM.install()
 
 
-def _tiles(n, k, esize):
-    """(BM, BN, BK): BM the lanes, BN and BK the largest tile the machine's mm rule gives a BM-row block;
-    None when it gives none."""
+def _tiles(n, k, esize, rows):
+    """(BM, BN, BK) of the machine's mm tiles for BM = lanes, ranked: all of K first (each weight read once), then
+    the fewest N tiles where a group of `rows` rows is one row block, else no masked columns first; None for none."""
     from pytorchsim.frontend import tiling
     bm = int(config.CONFIG_MACHINE.vector_lanes)
     acc = 4
     tiles = tiling.gemm_tile_candidates(bm, n, k, acc + esize, esize)
     if not tiles:
         return None
-    _, tn, tk = tiles[0]
+    blocks = lambda t: -(-n // t[1])
+    one = rows <= bm
+    rank = lambda t: (t[2] < k, blocks(t) if one else n % t[1] != 0, n % t[1] != 0 if one else blocks(t))
+    _, tn, tk = min(tiles, key=rank)
     return bm, tn, tk
 
 
 @triton.jit
-def _grouped_mm_kernel(a_ptr, b_ptr, group_ptr, start_ptr, rows_ptr, c_ptr,
+def _grouped_mm_kernel(a_ptr, b_ptr, group_ptr, offs_ptr, c_ptr,
                        sbg: tl.constexpr, sbk: tl.constexpr, sbn: tl.constexpr, K: tl.constexpr, KP: tl.constexpr,
-                       N: tl.constexpr, BM: tl.constexpr, BN: tl.constexpr, BK: tl.constexpr):
-    """Group g, the program_id(0)-th group with rows: its rows times B[g], BM rows at a time; a B tile of all
-    of K (BK == KP) is read once for the group, as v6e's grouped matmul reads each group's weight once. A
-    program past the last such group has the table's empty entry and reads nothing."""
+                       N: tl.constexpr, G: tl.constexpr, BM: tl.constexpr, BN: tl.constexpr, BK: tl.constexpr):
+    """Group g, the program_id(0)-th group with rows (rows offs[g-1]:offs[g]): its rows times B[g], BM rows at a
+    time, a B tile of all of K (BK == KP) read once for the group, as v6e's grouped matmul reads each weight once.
+    A program past the last such group has g == G and reads nothing."""
     pid = tl.program_id(0)
     pid_n = tl.program_id(1)
     g = tl.load(group_ptr + pid)
-    nr = tl.load(rows_ptr + g)
-    s0 = tl.load(start_ptr + g)
+    live_g = g < G
+    s0 = tl.load(offs_ptr + g - 1, mask=live_g & (g > 0), other=0)
+    nr = tl.load(offs_ptr + g, mask=live_g, other=0) - s0
+    bg = b_ptr + g.to(tl.int64) * sbg
     rm = tl.arange(0, BM)
     rn = pid_n * BN + tl.arange(0, BN)
     ncols = rn < N
     rk = tl.arange(0, BK)
     if BK == KP:
         if nr > 0:
-            b = tl.load(b_ptr + g * sbg + rk[:, None] * sbk + rn[None, :] * sbn,
+            b = tl.load(bg + rk[:, None] * sbk + rn[None, :] * sbn,
                         mask=(rk < K)[:, None] & ncols[None, :], other=0.0)
             for m0 in range(0, nr, BM):
                 rows = s0 + m0 + rm
@@ -114,7 +118,7 @@ def _grouped_mm_kernel(a_ptr, b_ptr, group_ptr, start_ptr, rows_ptr, c_ptr,
                 kk = k0 + rk
                 a = tl.load(a_ptr + rows[:, None] * K + kk[None, :], mask=live[:, None] & (kk < K)[None, :],
                             other=0.0)
-                b = tl.load(b_ptr + g * sbg + kk[:, None] * sbk + rn[None, :] * sbn,
+                b = tl.load(bg + kk[:, None] * sbk + rn[None, :] * sbn,
                             mask=(kk < K)[:, None] & ncols[None, :], other=0.0)
                 acc += tl.dot(a, b)
             tl.store(c_ptr + rows[:, None] * N + rn[None, :], acc.to(c_ptr.dtype.element_ty),
@@ -122,17 +126,10 @@ def _grouped_mm_kernel(a_ptr, b_ptr, group_ptr, start_ptr, rows_ptr, c_ptr,
 
 
 def _groups(offs, programs):
-    """From offs (each group's end row): the group of each of `programs` programs, the i-th group with rows
-    for program i (the count of groups whose running count of groups with rows is at most i), and each
-    group's first row and row count with one empty entry after the last for the programs left over."""
-    end = offs.to(torch.int64)
-    start = torch.cat([end.new_zeros(1), end[:-1]])
-    rows = end - start
-    ranks = torch.cumsum((rows > 0).to(torch.int64), 0)
-    group = (ranks[None, :] <= torch.arange(programs, device=offs.device)[:, None]).sum(1)
-    zero = end.new_zeros(1)
-    return (group.to(torch.int32), torch.cat([start, zero]).to(torch.int32),
-            torch.cat([rows, zero]).to(torch.int32))
+    """From offs (each group's end row), the group of each of `programs` programs: the i-th group with rows for
+    program i, the count of groups whose running count of groups with rows is at most i (G for one left over)."""
+    ranks = torch.cumsum(offs > torch.nn.functional.pad(offs[:-1], (1, 0)), 0)
+    return (ranks[None, :] <= torch.arange(programs, device=offs.device)[:, None]).sum(1)
 
 
 def _math(a, b, offs, bias, out_dtype):

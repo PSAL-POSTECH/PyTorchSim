@@ -7,11 +7,22 @@ kernel, one "fallback" count per math call run outside a compiled graph, nothing
 into the graph (Inductor's own kernels). So a gate that silently sends a fused case to math, or a
 math case to a kernel, fails:
 
-  prefill    causal GQA and non-causal, L == S
-  decode     GQA, L == 1, not causal; MLA's (DeepSeek-V3, Moonlight), k's D 192 = 128 + 64, v's 128
+  prefill    causal GQA and non-causal, L == S; a head of 80 (Mllama's vision tower), a
+             non-power-of-two S causal and not, and a non-causal L != S cross-attention block, each
+             padded to the blocks a dot takes and masked back
+  decode     GQA, L == 1, not causal; MLA's (DeepSeek-V3, Moonlight), k's D 192 = 128 + 64, v's 128;
+             a head of 80 over a non-power-of-two S
   fallback   a causal decode (SDPA's is_causal is top-left: an L == 1 query attends key 0 alone),
-             a non-power-of-two S, and a call whose inputs require grad (whose gradients are checked
-             against the CPU's: the overrideable op has no backward)
+             and a call whose inputs require grad (whose gradients are checked against the CPU's:
+             the overrideable op has no backward)
+  mask       a mask reaches the prefill kernel: Mllama's cross-attention mask as HF builds it (additive,
+             [1, 1, L, S]) and as a bool, and one that masks a whole KV block out of every query row
+             (the online softmax must take nothing from a block it masks whole); a mask on an L == 1
+             decode stays the fallback
+  shapes     plan() on meta tensors for the shapes the model suite brings, each a kernel or a
+             Decline, so the gates are read without simulating: Mllama's vision tower (D 80, S 1601)
+             and its cross-attention (L 32, S 6404), Qwen-VL's vision tower (D 80), and the
+             top-left causal L != S that stays declined
   eager      a prefill-shaped call outside torch.compile runs math (no Triton launch outside a
              compiled graph) and says so in its calls; under inference_mode too, which skips the
              autograd key the op's npu kernel is registered at, eagerly and compiled
@@ -50,7 +61,29 @@ CASES = {
     "decode_gqa": ("_decode_kernel", 2, 8, 2, 1, 512, 64, False),
     "decode_mla": ("_decode_kernel", 1, 16, 16, 1, 512, 192, False, 128),
     "decode_causal_top_left": ("fallback", 1, 4, 1, 1, 128, 64, True),
-    "prefill_non_pow2": ("fallback", 1, 2, 2, 96, 96, 64, True),
+    "prefill_non_pow2": ("_prefill_kernel", 1, 2, 2, 96, 96, 64, True),
+    "prefill_head80": ("_prefill_kernel", 1, 2, 2, 128, 128, 80, False, 80),
+    "prefill_pad_keys": ("_prefill_kernel", 1, 2, 2, 192, 192, 64, False),
+    "prefill_cross": ("_prefill_kernel", 1, 4, 2, 32, 200, 64, False),
+    "decode_head80_pad_keys": ("_decode_kernel", 1, 8, 2, 1, 300, 80, False, 80),
+}
+
+#  (B, Hq, H, L, S, D, DV, causal, the mask's shape or None): what the model suite brings, on meta tensors
+SHAPES = {
+    "mllama_vision": ((1, 16, 16, 1601, 1601, 80, 80, False, None), "_prefill_kernel"),
+    "mllama_cross": ((1, 32, 8, 32, 6404, 128, 128, False, (1, 1, 32, 6404)), "_prefill_kernel"),
+    "qwen_vl_vision": ((1, 16, 16, 16, 16, 80, 80, False, None), "_prefill_kernel"),
+    "causal_l_not_s": ((1, 32, 8, 32, 6404, 128, 128, True, None), "Decline"),
+    "mask_on_decode": ((1, 32, 8, 1, 6404, 128, 128, False, (1, 1, 1, 6404)), "Decline"),
+    "mask_wrong_head": ((1, 32, 8, 32, 6404, 128, 128, False, (1, 4, 32, 6404)), "Decline"),
+}
+
+#  name: (route, B, Hq, H, L, S, D, the mask's kind); never causal, SDPA forbids a mask with is_causal
+MASK_CASES = {
+    "mask_cross_additive": ("_prefill_kernel", 1, 4, 2, 32, 200, 64, "additive"),
+    "mask_cross_bool": ("_prefill_kernel", 1, 4, 2, 32, 200, 64, "bool"),
+    "mask_blocks": ("_prefill_kernel", 1, 1, 1, 2048, 2048, 64, "blocks"),
+    "mask_decode": ("fallback", 1, 8, 2, 1, 256, 64, "additive"),
 }
 
 TOL = 2e-2  # max |err| over max |ref|: bf16 inputs, f32 softmax state
@@ -272,9 +305,63 @@ def run_layout(name):
     return ok
 
 
-EXTRA = {"spad": run_spad, "requires_grad": run_grad, "eager": run_eager,
+def run_shapes(name):
+    """Every SHAPES entry planned on meta tensors through FUSED_SDPA.plan, so the mask gate is read with
+    the shape ones: the kernel it must take, or a Decline, without compiling or simulating anything."""
+    from pytorchsim.frontend.dispatcher import attention
+    from pytorchsim.frontend.dispatcher.custom_fused_kernel import Decline
+    bad = []
+    for case, ((B, Hq, H, L, S, D, DV, causal, mask), want) in SHAPES.items():
+        q, k, v = (torch.empty(B, h, n, d, dtype=torch.bfloat16, device="meta")
+                   for h, n, d in ((Hq, L, D), (H, S, D), (H, S, DV)))
+        bias = None if mask is None else torch.empty(mask, dtype=torch.bfloat16, device="meta")
+        plan = attention.FUSED_SDPA.plan(q, k, v, bias, 0.0, causal, D ** -0.5, 0, 0.0)
+        got = "Decline" if isinstance(plan, Decline) else plan["kernel"].__name__
+        print(f"  {case}: {got} {plan if got != 'Decline' else f'({plan})'}", flush=True)
+        if got != want:
+            bad.append(f"{case} took {got}, not {want}")
+    print(f"{name}: {len(SHAPES) - len(bad)}/{len(SHAPES)} {'; '.join(bad) or ''} "
+          f"{'PASS' if not bad else 'FAIL'}", flush=True)
+    return not bad
+
+
+def _mask_for(kind, L, S, dtype):
+    """A [1, 1, L, S] mask: "blocks" gives each query row the half of the keys its own half is not in, so
+    one whole KV block is masked out of every row; the others keep the first three quarters of the keys."""
+    rows, cols = torch.arange(L)[:, None], torch.arange(S)[None, :]
+    keep = (torch.where(rows < L // 2, cols >= S // 2, cols < S // 2) if kind == "blocks"
+            else (cols < (S * 3) // 4).expand(L, S))
+    keep = keep.reshape(1, 1, L, S).contiguous()
+    if kind == "bool":
+        return keep
+    return torch.zeros(1, 1, L, S, dtype=dtype).masked_fill(~keep, torch.finfo(dtype).min)
+
+
+def run_masked(name):
+    """One MASK_CASES case compiled on the npu: the route it must take with a mask, and its values against
+    float32 SDPA given the same mask on the CPU."""
+    route, B, Hq, H, L, S, D, kind = MASK_CASES[name]
+    q, k, v = _inputs(B, Hq, H, L, S, D)
+    mask = _mask_for(kind, L, S, torch.bfloat16)
+    gqa = Hq != H
+    call = lambda q, k, v, m: F.scaled_dot_product_attention(q, k, v, attn_mask=m, enable_gqa=gqa)
+    ref = call(q.float(), k.float(), v.float(), mask if mask.dtype == torch.bool else mask.float())
+    _clear()
+    torch._dynamo.reset()
+    f = torch.compile(call, dynamic=False)
+    with torch.no_grad():
+        out = f(q.to(device), k.to(device), v.to(device), mask.to(device)).cpu()
+    err = _err(out, ref)
+    ok = err < TOL and _route_ok({} if route == "fallback" else {route: 1})
+    print(f"{name}: route={dict(_routed() or {})} want={route} err={err:.3e} "
+          f"{'PASS' if ok else 'FAIL'}", flush=True)
+    return ok
+
+
+EXTRA = {"shapes": run_shapes, "spad": run_spad, "requires_grad": run_grad, "eager": run_eager,
          "inference_mode": run_eager, "inference_mode_compiled": run_eager, "counts": run_counts, "layout": run_layout,
-         **{n: run_attention for n in ATTENTION_CASES}}
+         **{n: run_attention for n in ATTENTION_CASES},
+         **{n: run_masked for n in MASK_CASES}}
 
 
 if __name__ == "__main__":

@@ -84,6 +84,36 @@ def convolution_1d(node, x, weight, bias, stride, padding, dilation, transposed,
     return _exact_arity(as_2d, x, weight, bias)
 
 
+# convolution_pointwise: a 1x1 conv as the matrix its weight already is
+
+def _is_pointwise(match):
+    """A floating 2-D conv, not transposed, of one group, a 1x1 kernel at stride 1, no padding or dilation."""
+    x, weight, _, stride, padding, dilation, transposed, _, groups = match.args
+    xv, wv = fake_value(x), fake_value(weight)
+    if transposed is not False or groups != 1 or xv is None or wv is None or xv.dim() != 4:
+        return False
+    return (list(wv.shape[2:]) == [1, 1] and all(s == 1 for s in stride) and all(p == 0 for p in padding)
+            and all(d == 1 for d in dilation) and xv.is_floating_point())
+
+
+@register_rewrite(CallFunction(aten.convolution.default, *(Arg() for _ in range(9))), _is_pointwise)
+def convolution_pointwise(node, x, weight, bias, stride, padding, dilation, transposed, output_padding, groups):
+    """A 1x1 convolution as [O, C] times the pixels, [C, N * H * W]: the weight is already that matrix and the
+    product is already the output's rows, so neither operand is transposed and the lanes ride the pixels --
+    the conv template would put them on the output channels, which a stem has sixteen of."""
+    def pointwise(x, weight, bias):
+        n, c, h, w = x.shape
+        o = weight.shape[0]
+        rows = weight.reshape(o, c)
+        y = (torch.mm(rows, x.reshape(c, h * w)) if n == 1
+             else torch.matmul(rows, x.reshape(n, c, h * w)))
+        if bias is not None:
+            y = y + bias.reshape(o, 1)
+        return y.reshape(n, o, h, w)
+
+    return _exact_arity(pointwise, x, weight, bias)
+
+
 # convolution_patches: a conv whose kernel is its stride (a ViT's patch embedding) as one mm
 
 def _is_patches(match):

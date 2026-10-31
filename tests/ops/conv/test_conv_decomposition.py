@@ -1,7 +1,8 @@
 """Convolutions the npu runs as other ops, against the CPU: a depthwise conv2d as one kernel (dispatcher), a
-1-D conv as a 2-D one (postgrad), and no npu entry in Inductor's global decomposition table. Cases: conv1d,
-conv1d_same, depthwise, depthwise_same, depthwise_batchless, depthwise_7x7, grouped, conv1d_no_bias,
-depthwise_grad, depthwise_inference, depthwise_one_kernel, no_global_decomp."""
+1-D conv as a 2-D one and a 1x1 conv as one mm (postgrad), and no npu entry in Inductor's global decomposition
+table. Cases: conv1d, conv1d_same, depthwise, depthwise_same, depthwise_batchless, depthwise_7x7, grouped,
+pointwise, pointwise_batched, conv1d_no_bias, depthwise_grad, depthwise_inference, depthwise_one_kernel,
+pointwise_one_mm, no_global_decomp."""
 import os
 import sys
 
@@ -23,6 +24,8 @@ CASES = {
     "depthwise_batchless": ((16, 12, 12), (16, 1, 3, 3), 1, 1, 16),
     "depthwise_7x7": ((1, 96, 28, 28), (96, 1, 7, 7), 1, 3, 96),
     "grouped": ((1, 8, 12, 12), (16, 4, 3, 3), 1, 1, 2),
+    "pointwise": ((1, 16, 20, 20), (32, 16, 1, 1), 1, 0, 1),
+    "pointwise_batched": ((2, 16, 10, 10), (32, 16, 1, 1), 1, 0, 1),
 }
 
 
@@ -102,6 +105,23 @@ def run_one_kernel(name):
                  torch.tensor([DEPTHWISE.calls.get("_depthwise_kernel", 0) - before]), torch.tensor([1]))
 
 
+def run_pointwise_one_mm(name):
+    """Breaks if a 1x1 conv runs on the conv template: there the lanes ride the output channels, of which a
+    stem has sixteen, and the X load stays a gather. The count is cumulative, not a delta -- the FX graph
+    cache serves the identical graph, so a delta here measures the cache and not the rewrite."""
+    from pytorchsim.frontend.inductor.postgrad import CALLS
+    x, w, b = _inputs("pointwise")
+    params = CASES["pointwise"][2:]
+    torch._dynamo.reset()
+    f = torch.compile(lambda x, w, b: _conv(x, w, b, *params), dynamic=False)
+    with torch.no_grad():
+        out = f(x.to(device), w.to(device), b.to(device))
+    check_result("ConvDecomposition pointwise_one_mm", out, _conv(x, w, b, *params), rtol=1e-3, atol=1e-3)
+    check_result("ConvDecomposition pointwise_one_mm (rewritten)",
+                 torch.tensor([CALLS.get("convolution_pointwise", {}).get("rewritten", 0) >= 1]),
+                 torch.tensor([True]))
+
+
 def run_no_global_decomp(name):
     from torch._inductor.decomposition import select_decomp_table
     check_result("ConvDecomposition no_global_decomp",
@@ -110,7 +130,8 @@ def run_no_global_decomp(name):
 
 
 EXTRA = {"conv1d_no_bias": run_no_bias, "depthwise_grad": run_grad, "depthwise_inference": run_inference,
-         "depthwise_one_kernel": run_one_kernel, "no_global_decomp": run_no_global_decomp}
+         "depthwise_one_kernel": run_one_kernel, "pointwise_one_mm": run_pointwise_one_mm,
+         "no_global_decomp": run_no_global_decomp}
 
 
 if __name__ == "__main__":

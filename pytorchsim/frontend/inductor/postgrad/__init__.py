@@ -7,6 +7,7 @@ the device, one module per op family; the one-op graph patterns run first, in im
                      gqa_shared_kv            an attention bmm against repeat_kv's copy, against the shared head
     convolution.py   convolution_transposed   a transposed conv as its direct equivalent
                      convolution_1d           a 1-D conv as a 2-D one over a height of 1
+                     convolution_pointwise    a 1x1 conv as [O, C] times the pixels: one mm, lanes on pixels
                      convolution_patches      a conv whose kernel is its stride as one mm over the patches
 
 then gemm.py's gqa_shared_kv_fused: the fused SDPA on the shared key and value heads, not repeat_kv's copies;

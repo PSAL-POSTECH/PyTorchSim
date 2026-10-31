@@ -84,9 +84,14 @@ class CustomFusedKernel:
 
     def _entry(self, op):
         def entry(*args, **kwargs):
-            call = self.arguments(op, *args, **kwargs)
-            return self.outputs(op, self._route(op, call), *call)
+            return self.call(op, *args, **kwargs)
         return entry
+
+    def call(self, op, *args, **kwargs):
+        """A call of `op` routed as a registered one is: the kernel's own npu kernel when another op's
+        (conv2d's) takes only some of its calls here."""
+        call = self.arguments(op, *args, **kwargs)
+        return self.outputs(op, self._route(op, call), *call)
 
     def _route(self, op, call):
         if not torch.compiler.is_compiling():

@@ -1,7 +1,7 @@
-"""Convolutions the npu runs as other ops, against the CPU: a depthwise conv2d as a stencil (dispatcher), a 1-D
-conv as a 2-D one (postgrad), and no npu entry in Inductor's global decomposition table. Cases: conv1d, conv1d_same,
-depthwise, depthwise_same, depthwise_batchless, grouped, conv1d_no_bias, depthwise_grad, depthwise_inference,
-no_global_decomp."""
+"""Convolutions the npu runs as other ops, against the CPU: a depthwise conv2d as one kernel (dispatcher), a
+1-D conv as a 2-D one (postgrad), and no npu entry in Inductor's global decomposition table. Cases: conv1d,
+conv1d_same, depthwise, depthwise_same, depthwise_batchless, depthwise_7x7, grouped, conv1d_no_bias,
+depthwise_grad, depthwise_inference, depthwise_one_kernel, no_global_decomp."""
 import os
 import sys
 
@@ -21,6 +21,7 @@ CASES = {
     "depthwise": ((2, 16, 15, 15), (16, 1, 3, 3), 2, 1, 16),
     "depthwise_same": ((1, 16, 12, 12), (16, 1, 4, 4), 1, "same", 16),
     "depthwise_batchless": ((16, 12, 12), (16, 1, 3, 3), 1, 1, 16),
+    "depthwise_7x7": ((1, 96, 28, 28), (96, 1, 7, 7), 1, 3, 96),
     "grouped": ((1, 8, 12, 12), (16, 4, 3, 3), 1, 1, 2),
 }
 
@@ -86,6 +87,21 @@ def run_inference(name):
                  rtol=1e-3, atol=1e-3)
 
 
+def run_one_kernel(name):
+    """Breaks if a depthwise conv runs as its taps (49 loads for a 7x7), not one depthwise kernel launch."""
+    from pytorchsim.frontend.dispatcher.depthwise_conv import DEPTHWISE
+    x, w, b = _inputs("depthwise_7x7")
+    params = CASES["depthwise_7x7"][2:]
+    torch._dynamo.reset()
+    before = DEPTHWISE.calls.get("_depthwise_kernel", 0)
+    f = torch.compile(lambda x, w, b: _conv(x, w, b, *params), dynamic=False)
+    with torch.no_grad():
+        out = f(x.to(device), w.to(device), b.to(device))
+    check_result("ConvDecomposition depthwise_one_kernel", out, _conv(x, w, b, *params), rtol=1e-3, atol=1e-3)
+    check_result("ConvDecomposition depthwise_one_kernel (launches)",
+                 torch.tensor([DEPTHWISE.calls.get("_depthwise_kernel", 0) - before]), torch.tensor([1]))
+
+
 def run_no_global_decomp(name):
     from torch._inductor.decomposition import select_decomp_table
     check_result("ConvDecomposition no_global_decomp",
@@ -94,7 +110,7 @@ def run_no_global_decomp(name):
 
 
 EXTRA = {"conv1d_no_bias": run_no_bias, "depthwise_grad": run_grad, "depthwise_inference": run_inference,
-         "no_global_decomp": run_no_global_decomp}
+         "depthwise_one_kernel": run_one_kernel, "no_global_decomp": run_no_global_decomp}
 
 
 if __name__ == "__main__":

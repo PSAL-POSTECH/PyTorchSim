@@ -11,6 +11,7 @@ the device, one module per op family; the one-op graph patterns run first, in im
 
 then gemm.py's gqa_shared_kv_fused: the fused SDPA on the shared key and value heads, not repeat_kv's copies;
 then complex.py's complex_real_pairs: complex values as real [..., 2] pairs, by _REAL_PAIR's rules.
+scatter.py's scatter_chain is no pass: it patches Inductor's reinplace, which runs after this pass.
 """
 
 import contextlib

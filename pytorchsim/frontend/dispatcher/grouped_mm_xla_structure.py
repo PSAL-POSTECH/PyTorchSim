@@ -1,6 +1,6 @@
 """Validation only (TORCHSIM_VALIDATION_XLA_STRUCTURE=megablox): aten._grouped_mm as megablox's structure, the one
 XLA runs on v6e -- a program per (row tile, group) visit, V = tiles_m + G - 1 at most, each reading its group's
-weight again and computing all TM rows of the tile; only the group's rows are stored. Same values as grouped_mm."""
+weight again and computing all TM rows of the tile, TM as torch_xla picks it; only the group's rows are stored."""
 
 from typing import Optional
 
@@ -9,10 +9,12 @@ import triton
 import triton.language as tl
 from torch.library import wrap_triton
 
+from pytorchsim.frontend.dispatcher.custom_fused_kernel import Decline
 from pytorchsim.frontend.dispatcher.grouped_mm import GroupedMM, _math
 
-#: megablox's tiling as torch_xla's gmm calls it: (TM, TK, TN).
-TILING = (512, 512, 512)
+#: torch_xla 2.9's gmm tiling (custom_kernel._get_tiling_size_for_gmm_kernel), which both its registered experts
+#: path and the stock one take: TM from twice a group's mean rows, TK and TN from K and N, each a multiple of 128.
+TM_LIMIT, TKN_LIMIT = 512, 2048
 
 
 class GroupedMMMegablox(GroupedMM):
@@ -22,12 +24,15 @@ class GroupedMMMegablox(GroupedMM):
         return (_megablox_kernel,)
 
     def plan(self, a, b, offs, bias, out_dtype):
-        """(TM, BN, BK): megablox's tiling, each side at most the next power of two of its extent."""
+        """(TM, BN, BK): torch_xla's tiling; TK and TN as the largest power of two within it (triton's blocks), TM
+        exactly or declined, as the visits are counted in it."""
         declined = super().plan(a, b, offs, bias, out_dtype)
         if isinstance(declined, str):
             return declined
-        tm, tk, tn = (min(t, triton.next_power_of_2(d)) for t, d in zip(TILING, (a.shape[0], a.shape[1], b.shape[2])))
-        return {"BM": tm, "BN": tn, "BK": tk}
+        tm, tk, tn = _xla_tiling(a.shape[0], a.shape[1], b.shape[2], b.shape[0])
+        if tm & (tm - 1):
+            return Decline(f"torch_xla's row tile {tm} is no power of two, which a triton block must be")
+        return {"BM": tm, "BN": 1 << (tn.bit_length() - 1), "BK": 1 << (tk.bit_length() - 1)}
 
     def launch(self, plan, a: torch.Tensor, b: torch.Tensor, offs: Optional[torch.Tensor],
                bias: Optional[torch.Tensor], out_dtype: Optional[torch.dtype]) -> torch.Tensor:
@@ -50,6 +55,17 @@ GROUPED_MM_MEGABLOX = GroupedMMMegablox()
 
 def install():
     GROUPED_MM_MEGABLOX.install()
+
+
+def _xla_tiling(m, k, n, g):
+    """(TM, TK, TN) as torch_xla 2.9's gmm picks them when no tiling is given."""
+    def within(x, limit):
+        if x <= 128:
+            return 128
+        if x < limit:
+            return (x + 127) // 128 * 128
+        return next((c for c in range(limit, 511, -128) if x % c == 0), limit)
+    return min(within(2 * m // g, TM_LIMIT), m), within(k, TKN_LIMIT), within(n, TKN_LIMIT)
 
 
 def _visits(offs, tm, visits):

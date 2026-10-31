@@ -190,9 +190,9 @@ def case_tiles():
 
 
 def case_xla_structure_megablox():
-    """Validation mode (TORCHSIM_VALIDATION_XLA_STRUCTURE=megablox, run in a process of its own): megablox's visits,
-    groups in order over the 512-row tiles they touch (10 of at most 11 for the Mixtral S1024 routing below), and the
-    reference's values. Breaks if the table or the whole-tile compute stored to the group's rows drifts."""
+    """Validation mode (TORCHSIM_VALIDATION_XLA_STRUCTURE=megablox, in a process of its own): torch_xla's tiling
+    (Mixtral S256 TM 128, S1024 512; Llama-4 TK 1280), megablox's visits (10 of at most 11 for an S1024 routing) and
+    the reference's values. Breaks if the tiling rule, the table or the whole-tile compute drifts."""
     import os, subprocess
     from pytorchsim import config
     if "megablox" not in config.CONFIG_VALIDATION_XLA_STRUCTURE:
@@ -206,11 +206,13 @@ def case_xla_structure_megablox():
     group, tile = x._visits(torch.cumsum(torch.tensor(sizes), 0, dtype=torch.int32), 512, 4 + 8 - 1)
     want = [(0, 0), (1, 0), (2, 1), (3, 1), (4, 1), (4, 2), (5, 2), (6, 2), (6, 3), (7, 3)]
     live = [(g, t) for g, t in zip(group.tolist(), tile.tolist()) if g < 8]
+    tilings = [x._xla_tiling(*s) for s in ((512, 4096, 28672, 8), (2048, 4096, 28672, 8), (128, 5120, 16384, 16))]
     x.GROUPED_MM_MEGABLOX.calls.clear()
     err, _, externs = _run_compiled([3, 0, 600, 70, 1, 0, 130, 64], 256, 256)
     launched = x.GROUPED_MM_MEGABLOX.calls.get("_megablox_kernel", 0)
-    return live == want and err < TOL and launched == 1 and not externs, \
-        f"visits {live}, err {err:.3g}, megablox launches {launched}, externs {externs}"
+    xla = [(128, 2048, 2048), (512, 2048, 2048), (128, 1280, 2048)]
+    return live == want and tilings == xla and err < TOL and launched == 1 and not externs, \
+        f"visits {live}, tilings {tilings}, err {err:.3g}, megablox launches {launched}, externs {externs}"
 
 
 CASES = {"routed": case_routed, "one_program_per_group": case_one_program_per_group,

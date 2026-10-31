@@ -12,7 +12,7 @@ For more details, please refer to our [paper](https://doi.org/10.1145/3725843.37
 > **Disclaimer.** PyTorchSim is an independent project. It is neither part of the official [PyTorch](https://pytorch.org/) distribution nor affiliated with or endorsed by the PyTorch Foundation. The name reflects that this work builds on the open-source PyTorch compiler stack as its front-end for research purposes.
 
 ## Navigation
-[Overview](#pytorchsim-framework-overview) | [Model Zoo](#model-zoo) | [Getting Started](#getting-started)
+[Overview](#pytorchsim-framework-overview) | [Model Zoo](#model-zoo) | [Model Validation](#model-validation) | [Getting Started](#getting-started)
 
 <!-- ![Speedup](/docs/speedup.jpg)
 **Figure description**: we compare the simulation speed of PyTorchSim over [Accel-sim](https://accel-sim.github.io/) (a GPU simulator with Tensor Core model) as GPUs are widely used for deep learning and such a GPU simulator can be used to study systems for deep learning. We also include [mNPUsim](https://github.com/casys-kaist/mNPUsim) in the comparison. On the x-axis, we vary the size and workloads.
@@ -38,27 +38,29 @@ PyTorchSim **supports**:
 ## Model Zoo
 | Model | Source | Status | Note |
 |---|:-:|:-:|---|
-| ResNet-18 | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | channel last format |
-| ResNet-50 | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | channel last format |
-| MobileNet-v2 | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | `tests/models/MobileNet/` (torchvision) |
-| YOLOv5 | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | `tests/models/Yolov5/` — pretrained weights via torch.hub, and the only anchor-based YOLO head in the suite |
-| YOLO v5 / v8 (ultralytics parser) | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | `tests/models/Yolo/test_yolo.py` — one preset per version directory in `ultralytics/cfg/models`, built from YAML with random weights. v5 (C3+SPPF) and v8 (C2f) pass; `--version` also builds v3, v6, v9, v10, 11, 12, 26, each of which has a measured stopping point in the test docstring |
-| BERT | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ |  |
-| GPT-2 | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ |  |
+| ResNet-18 | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | channels last |
+| ResNet-50 | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | channels last |
+| MobileNet-v2 | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | `tests/models/MobileNet/` |
+| YOLOv5 | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | `tests/models/Yolov5/` — pretrained weights via torch.hub |
+| YOLO v5 / v8 (ultralytics parser) | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | `tests/models/Yolo/test_yolo.py` — built from YAML with random weights; `--version` also builds v3 to 26 |
+| BERT | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | |
+| GPT-2 | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | |
 | ViT | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | `tests/models/test_vit.py` |
 | Mistral | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | |
-| Stable-diffusion v1 | 🤗 | ✅ |  |
-| Llama 2 / 3 / 3.1 / 3.2 / 3.3 | 🤗 | ✅ | `tests/models/Llama/` — `test_llama3x.py` runs one block at the real 8B width (4096 hidden, head_dim 128, SwiGLU 14336) plus the 3.2 1B/3B shapes and 3.1's rope scaling. 3.3 is config-identical to 3.1 70B |
-| Llama 3.2 Vision (Mllama) | 🤗 | ✅ | `tests/models/Llama/test_mllama.py` — both towers. The vision tower keeps the real 4 tiles and the local/global layer split; the text tower runs `MllamaCrossAttentionDecoderLayer` with its second mask (`full_text_row_masked_out_mask`). Needed a triton-npu absorb_layout fix for the unit middle axis its cross-attention leaves behind |
-| Qwen 1.5 / 2 / 2.5 / 3 | 🤗 | ✅ | `tests/models/Qwen/` — one block per version. `3-8b` runs Qwen3 at its real 4096 width (q_norm/k_norm, head_dim 128); `2.5-7b` at the real 7B width (QKV bias, n_rep=7). Qwen 1 (remote-code `QWenLMHeadModel`) is not covered |
-| Qwen2-VL / Qwen2.5-VL | 🤗 | ⚠️ | `tests/models/Qwen/test_qwen_vl.py` — end to end at reduced width, and at the **real 1280 vision width** with `--preset 2b`. M-RoPE, the 3D patchifier and the image splice are all exercised, with no CPU fallback. Needs the i64 `get_structured_state` fix in triton_shared, the replicate-axes fix in triton-npu, and `NPUChoices.reduction_split_factor` pinning the split at 1 so the splice's cumsum is not lowered as a cross-block scan this route cannot express |
-| Qwen1.5-MoE / Qwen3-MoE | 🤗 | ✅ | `tests/models/Qwen/test_qwen.py --preset 2-moe / 3-moe` — 8 experts instead of the shipped 60 and 128; the shared expert and its sigmoid gate are the tested difference |
-| DeepSeek-V3 (base) | 🤗 | ✅ | `tests/models/DeepSeek/` — several ops(e.g., gate ops) are not cycle-modeled |
+| Stable-diffusion v1 | 🤗 | ✅ | |
+| Llama 2 / 3 / 3.1 / 3.2 / 3.3 | 🤗 | ✅ | `tests/models/Llama/` — one block at the real 8B width |
+| Llama 3.2 Vision (Mllama) | 🤗 | ✅ | `tests/models/Llama/test_mllama.py` — both towers, the vision one at its real 4 tiles |
+| Qwen 1.5 / 2 / 2.5 / 3 | 🤗 | ✅ 🎯 | `tests/models/Qwen/` — one block per version at its real width; Qwen 1 is not covered |
+| Qwen2-VL / Qwen2.5-VL | 🤗 | ⚠️ | `tests/models/Qwen/test_qwen_vl.py` — end to end, and at the real 1280 vision width with `--preset 2b` |
+| Qwen1.5-MoE / Qwen3-MoE | 🤗 | ✅ 🎯 | `tests/models/Qwen/test_qwen.py --preset 2-moe / 3-moe` — 8 experts instead of the shipped 60 and 128 |
+| DeepSeek-V3 (base) | 🤗 | ✅ | `tests/models/DeepSeek/` — a few ops (the gate among them) are not cycle-modeled |
 | SwinV2 | 🤗 | ✅ | `tests/models/test_swinv2.py` (shifted-window attention) |
 | CLIP (vision) | 🤗 | ✅ | `tests/models/test_clip.py` |
 | ConvNeXt V2 | 🤗 | ✅ | `tests/models/test_convnextv2.py` (channels-first LayerNorm, depthwise conv) |
-| Llama 4 | 🤗 | ✅ | `tests/models/Llama/test_llama4.py` — MoE in every layer (no dense layer to fall back on), the NoPE period, per-head qk_norm and chunked attention, all four in one run. Experts are scaled to 4; the routing and the combine are what the shapes decide, not the count. 31 kernels, 4.77e-06. The complex rotary stays on the device: `polar` becomes a view over a real pair and `extension_complex_to_real` rewrites the rest, so none of it falls back. Gated at 1024 hidden — `--preset scout` builds Scout's real 5120 width but stops in the functional simulator, where tnpu's wrapper doubles every buffer and the 1.25 GiB expert stack fails to allocate |
+| Llama 4 | 🤗 | ✅ | `tests/models/Llama/test_llama4.py` — MoE in every layer, experts scaled to 4; `--preset scout` builds the real 5120 width but stops in the functional simulator |
 | Broader model support | — | ⏳ | In development |
+
+✅ runs end to end on PyTorchSim · ⚠️ runs with the noted limits · ⏳ in development · 🎯 timing validated against TPU v6e
 <!-- ## Requirements
 
 ### OS Distribution
@@ -78,6 +80,14 @@ Our provided Docker environment resolves software dependencies.
 
 ### Hardware Dependencies
 Any x86 hardware capable of running Docker with more than 20 GB of memory -->
+
+## Model Validation
+
+Timing of the Model Zoo's models against measurements taken on a real TPU v6e, refreshed nightly.
+
+![Qwen family against TPU v6e](/docs/grid-qwen.png)
+
+![Llama, Mistral and Gemma families against TPU v6e](/docs/grid-llama-gemma.png)
 
 ## Supported Operations
 - GEMM

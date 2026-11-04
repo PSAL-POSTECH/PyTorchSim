@@ -126,6 +126,9 @@ def _reads_given(cache, given, device, dtype=None):
     """`cache` whose update hands each layer its `given` K and V (on `device`, in `dtype` or as they are) and
     writes nothing: the TPU decode row reads its full cache in place, with no copy of it per step."""
     given = [g if g is None else tuple(t.to(device, dtype or t.dtype).contiguous() for t in g) for g in given]
+    from pytorchsim import config
+    if config.CONFIG_KVCACHE_LAYOUT == "paged":
+        given = [g if g is None else _paged(*g) for g in given]
     base = type(cache)
 
     def update(self, key_states, value_states, layer_idx, *args, **kwargs):
@@ -135,6 +138,18 @@ def _reads_given(cache, given, device, dtype=None):
 
     cache.__class__ = type(f"Reads{base.__name__}", (base,), {"update": update})
     return cache
+
+
+def _paged(k, v):
+    """K and V [B, H, S, D] as views of one tokenwise page tensor [B, S, 2H, D], each head's K then its V, as
+    ragged paged attention's kv_pages hold them (pages in order: page_indices the identity, as the TPU row runs)."""
+    if k.shape != v.shape:
+        return k, v
+    b, h, s, d = k.shape
+    pages = torch.empty(b, s, 2 * h, d, dtype=k.dtype, device=k.device)
+    pages[:, :, 0::2] = k.transpose(1, 2)
+    pages[:, :, 1::2] = v.transpose(1, 2)
+    return pages[:, :, 0::2].transpose(1, 2), pages[:, :, 1::2].transpose(1, 2)
 
 
 def _swap(x, old, new):

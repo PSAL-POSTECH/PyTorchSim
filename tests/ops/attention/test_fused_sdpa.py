@@ -33,6 +33,7 @@ math case to a kernel, fails:
   counts     a compiled prefill called twice counts two launches, not its traces; under
              backend="eager" the call runs math, and only the fallback is counted
   layout     a v viewed and transposed out of a projection is read in place (one launch)
+  paged_kvcache  TORCHSIM_KVCACHE_LAYOUT=paged: a decode over tokenwise page views is read in place by the paged kernel
   attention  torchsim::attention's sliding window and logit softcap (gemma3's 512 window at S 1024, and
              at S 2048, where rows have no key of an earlier block in the window, gemma2's softcap) in the
              prefill and decode kernels, and an MLA prefill through SDPA (k's D
@@ -358,7 +359,36 @@ def run_masked(name):
     return ok
 
 
-EXTRA = {"shapes": run_shapes, "spad": run_spad, "requires_grad": run_grad, "eager": run_eager,
+def run_paged_kvcache(name):
+    """TORCHSIM_KVCACHE_LAYOUT=paged (in a process of its own): a decode over K and V
+    viewed out of the harness's tokenwise pages (one_layer._paged) runs as one _paged_decode_kernel reading them in
+    place -- no copy kernel -- with the reference's values. Breaks if the views are copied or read wrong."""
+    import subprocess
+    from pytorchsim import config
+    from pytorchsim.backend import launch_hooks
+    if config.CONFIG_KVCACHE_LAYOUT != "paged":
+        env = dict(os.environ, TORCHSIM_KVCACHE_LAYOUT="paged")
+        out = subprocess.run([sys.executable, __file__, name], env=env, capture_output=True, text=True)
+        said = [l for l in out.stdout.splitlines() if l.startswith(name)]
+        print(said[-1] if said else f"{name}: FAIL {out.stderr[-400:]}", flush=True)
+        return out.returncode == 0
+    from one_layer import _paged
+    B, Hq, H, S, D = 1, 8, 2, 512, 128
+    q, k, v = _inputs(B, Hq, H, 1, S, D)
+    ref = _sdpa(q.float(), k.float(), v.float(), False)
+    kp, vp = _paged(k.to(device), v.to(device))
+    launches = []
+    launch_hooks.observe_every_launch(lambda launcher: launches.append(getattr(launcher, "kernel_name", "?")))
+    torch._dynamo.reset()
+    with torch.no_grad():
+        out = torch.compile(lambda q, k, v: _sdpa(q, k, v, False), dynamic=False)(q.to(device), kp, vp)
+    err = _err(out.cpu(), ref)
+    ok = err < TOL and launches == ["_paged_decode_kernel"]
+    print(f"{name}: launches={launches} strides={kp.stride()} err={err:.3e} {'PASS' if ok else 'FAIL'}", flush=True)
+    return ok
+
+
+EXTRA = {"shapes": run_shapes, "spad": run_spad, "paged_kvcache": run_paged_kvcache, "requires_grad": run_grad, "eager": run_eager,
          "inference_mode": run_eager, "inference_mode_compiled": run_eager, "counts": run_counts, "layout": run_layout,
          **{n: run_attention for n in ATTENTION_CASES},
          **{n: run_masked for n in MASK_CASES}}

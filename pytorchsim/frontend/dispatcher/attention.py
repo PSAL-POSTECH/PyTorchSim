@@ -93,14 +93,15 @@ FUSED_SDPA = FusedSDPA()
 _lib = None
 
 
-def install():
-    """Define torchsim::attention (its math everywhere but the npu), then register FUSED_SDPA."""
+def install(kernel=None):
+    """Define torchsim::attention (its math everywhere but the npu), then register `kernel`, FUSED_SDPA unless
+    another is given."""
     global _lib
     if _lib is None:
         _lib = torch.library.Library("torchsim", "FRAGMENT")
         _lib.define(ATTENTION_SCHEMA)
         _lib.impl("attention", _attention_math, "CompositeImplicitAutograd")
-    FUSED_SDPA.install()
+    (kernel or FUSED_SDPA).install()
 
 
 def _sdpa_arguments(query, key, value, attn_bias=None, dropout_p=0.0, is_causal=False,

@@ -1,55 +1,31 @@
 """Llama 3.x on the Triton codegen route.
 
 Built from ``LlamaConfig`` with random weights, so it needs no network and no
-checkpoint. ``test_llama3.py`` already covers Llama 3's character at a narrow
-width; this file exists for the two things that file cannot say:
+checkpoint. Every preset is a shipped model at its published sizes; only the
+layer count is cut, to one block. ``test_llama3.py`` runs the same 8B block
+without the vocab projection; this file adds:
 
-  * the real 8B width.  1024 hidden is not any shipped Llama, and it puts
-    head_dim at 32 -- a quarter of the 128x128 array.  The tile choice, the
-    SPAD pressure and the DRAM traffic at 4096 hidden / 128 head_dim are a
-    different problem, and passing at 1024 does not predict it.
+  * the lm head over the real 128256 vocab, at 4096 hidden / 128 head_dim.
 
   * the 3.2 shapes.  3.2-3B is 24 q heads against 8 kv heads, so repeat_kv
-    broadcasts by **3** -- every GQA shape tested so far has been a power of
-    two.  3.2-1B ties lm_head to the embedding, which is a buffer-aliasing
-    question rather than a kernel one.
+    broadcasts by **3** -- every other GQA shape in the suite is a power of
+    two.  3.2-1B and 3B tie lm_head to the embedding, which is a
+    buffer-aliasing question rather than a kernel one.
+
+  * 3.1's rope scaling.  It is computed in ``LlamaRotaryEmbedding.__init__``
+    and lands in the ``inv_freq`` buffer, so the compiled graph is Llama 3's
+    graph with different constants -- see ``_assert_character``, which fails if
+    a preset claims a feature the model did not actually get.
 
 Depth is not one of them: the layers are the same block again, so a preset
-runs one.  What a second layer would add is the block-to-block seam, and
-``test_llama3.py``'s model test already crosses it at the narrow width.
-
-3.1 rides along as a flag rather than a preset.  Its rope scaling is computed
-in ``LlamaRotaryEmbedding.__init__`` and lands in the ``inv_freq`` buffer, so
-the compiled graph is Llama 3's graph with different constants -- see
-``_assert_character``, which fails if a preset claims a feature the model did
-not actually get.  Without that assert a 3.1 test passes while proving nothing.
+runs one. Weights and inputs are bfloat16 by default (``--dtype float32`` for
+the old run). ``--part layer`` runs the first decoder layer alone
+(tests/one_layer.py), on ``--seq S`` or on one ``--decode S`` step after a KV
+cache.
 
     source /workspace/torchsim-env.sh
-    python tests/models/Llama/test_llama3x.py --preset 8b
-
-ALL SEVEN CONFIGURATIONS PASS, measured 2026-08-13 against the same model on
-CPU, one cleared cache each so the wall clock is what the sweep would pay.
-triton-npu pinned to develop 3434608 -- develop-refactor was mid-edit in
-p11_select_lane_axis.py and a pass in that state fails in ways that look local:
-
-    preset      layers  hidden  heads/kv  head_dim  interm  params       kern  max diff    time
-    tiny          1       256     8/2        32      1024     1,016,576   22   1.5497e-06   87s
-    small         1      1024    16/4        64      3584    14,683,136   22   3.4571e-06  100s
-    small +3.1    1      1024    16/4        64      3584    14,683,136   22   3.3155e-06   99s
-    1b (lm)       1      1024    16/4        64      4096    16,256,000   23   2.3246e-06  106s
-    3b            1      1536    12/4       128      6144    36,180,480   22   4.0531e-06  118s
-    8b            1      4096    32/8       128     14336   251,670,528   22   6.0797e-06  275s
-    8b (lm)       1      4096    32/8       128     14336   285,224,960   23   8.5831e-06  301s
-
-The kernel count does not move with width -- 22 at 256 hidden and 22 at 4096 --
-which is the same observation GPT-2 made about depth, one axis over: one block
-is every distinct kernel Llama has, and widening it re-tiles the same kernels
-rather than adding new ones.  Time grows 2.75x across a 4x width and a 17x
-parameter count, so Spike is not paying linearly for the extra work either.
-
-WHAT THIS FOUND: nothing broken.  n_rep=3 and the tied lm_head were the two
-shapes expected to fail and both were already handled.  The value of the file
-is now the gate, not the bug it did not find.
+    python tests/models/Llama/test_llama3x.py --preset 3.1-8b
+    python tests/models/Llama/test_llama3x.py --preset 3.1-8b --part layer --decode 1024
 """
 
 import argparse
@@ -60,45 +36,41 @@ import sys
 import torch
 
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from result_check import check_result
+from result_check import check_result, f32_reference
+import one_layer
 
 
-# Presets shrink the model, not the shapes' character.  Width is the axis that
-# must stay honest: head_dim, the GQA repeat and the SwiGLU ratio are what make
-# a shape the shape it is, and all three ride on hidden.  Layers and vocab are
-# the cheap axes -- one block covers every distinct kernel, and the vocab only
-# has to be large enough that the gather is a gather.
+_LLAMA3_ROPE = dict(rope_type="llama3", low_freq_factor=1.0, high_freq_factor=4.0,
+                    original_max_position_embeddings=8192)
+
+#: preset -> the published config of that model, minus num_hidden_layers.
 _PRESETS = {
-    # 3.0 character at a narrow width, matching test_llama3.py's ratios but with
-    # head_dim at 64 rather than 32.  The bisection width, not the gate.
-    "small": dict(layers=1, hidden=1024, heads=16, kv_heads=4,
-                  intermediate=3584, vocab=1024, seq=32),
-
-    # Smoke.  Small enough to tell a broken test file from a broken backend.
-    "tiny": dict(layers=1, hidden=256, heads=8, kv_heads=2,
-                 intermediate=1024, vocab=256, seq=16),
-
-    # 3.2-1B character: head_dim 64 and a tied lm_head.
-    "1b": dict(layers=1, hidden=1024, heads=16, kv_heads=4,
-               intermediate=4096, vocab=1024, seq=32, tie=True),
-
-    # 3.2-3B character: n_rep = 3.  head_dim stays at the real 128.
-    "3b": dict(layers=1, hidden=1536, heads=12, kv_heads=4,
-               intermediate=6144, vocab=1024, seq=32),
-
-    # 3/3.1 8B, at its real width.  Only vocab and depth are scaled down.
-    "8b": dict(layers=1, hidden=4096, heads=32, kv_heads=8,
-               intermediate=14336, vocab=8192, seq=32),
+    # meta-llama/Meta-Llama-3-8B
+    "3-8b": dict(hidden_size=4096, num_attention_heads=32, num_key_value_heads=8,
+                 intermediate_size=14336, vocab_size=128256, max_position_embeddings=8192,
+                 rope_theta=500000.0, rope_scaling=None, tie_word_embeddings=False),
+    # meta-llama/Llama-3.1-8B
+    "3.1-8b": dict(hidden_size=4096, num_attention_heads=32, num_key_value_heads=8,
+                   intermediate_size=14336, vocab_size=128256, max_position_embeddings=131072,
+                   rope_theta=500000.0, rope_scaling=dict(_LLAMA3_ROPE, factor=8.0),
+                   tie_word_embeddings=False),
+    # meta-llama/Llama-3.2-1B
+    "3.2-1b": dict(hidden_size=2048, num_attention_heads=32, num_key_value_heads=8,
+                   head_dim=64, intermediate_size=8192, vocab_size=128256,
+                   max_position_embeddings=131072, rope_theta=500000.0,
+                   rope_scaling=dict(_LLAMA3_ROPE, factor=32.0), tie_word_embeddings=True),
+    # meta-llama/Llama-3.2-3B
+    "3.2-3b": dict(hidden_size=3072, num_attention_heads=24, num_key_value_heads=8,
+                   head_dim=128, intermediate_size=8192, vocab_size=128256,
+                   max_position_embeddings=131072, rope_theta=500000.0,
+                   rope_scaling=dict(_LLAMA3_ROPE, factor=32.0), tie_word_embeddings=True),
 }
 
-# 3.1's rope scaling, as shipped on Llama 3.1 8B.  Applied with --rope31.
-_ROPE_31 = {
-    "rope_type": "llama3",
-    "factor": 8.0,
-    "low_freq_factor": 1.0,
-    "high_freq_factor": 4.0,
-    "original_max_position_embeddings": 8192,
-}
+#: The number of layers each preset keeps.
+_LAYERS = 1
+
+# (rtol, atol) per dtype; the bf16 atol is 3x the worst bf16 eager-vs-Inductor CPU diff at S = 128.
+_TOL = {"bfloat16": (5e-2, 0.6), "float32": (1e-2, 1e-2)}
 
 
 def _dtype_from_str(name):
@@ -109,74 +81,55 @@ def _dtype_from_str(name):
     }.get(name, torch.float32)
 
 
-def _build_config(preset, seq_len, rope31):
+def _build_config(preset, seq_len):
+    """The preset's published config at `_LAYERS` blocks; raises if `seq_len` exceeds its positions.
+
+    Attention is sdpa, the fused kernel the TPU rows are measured on.
+    """
     from transformers.models.llama.configuration_llama import LlamaConfig
 
     p = _PRESETS[preset]
-    seq_len = seq_len if seq_len is not None else p["seq"]
-
+    if seq_len > p["max_position_embeddings"]:
+        raise ValueError(f"seq {seq_len} exceeds {preset}'s {p['max_position_embeddings']} positions")
     return LlamaConfig(
-        vocab_size=p["vocab"],
-        hidden_size=p["hidden"],
-        num_attention_heads=p["heads"],
-        num_key_value_heads=p["kv_heads"],
-        intermediate_size=p["intermediate"],
-        num_hidden_layers=p["layers"],
-        max_position_embeddings=131072 if rope31 else 8192,
-        rope_theta=500000.0,
-        rope_scaling=_ROPE_31 if rope31 else None,
+        **p,
+        num_hidden_layers=_LAYERS,
         rms_norm_eps=1e-5,
         hidden_act="silu",
         attention_bias=False,
         mlp_bias=False,
-        tie_word_embeddings=p.get("tie", False),
+        bos_token_id=128000,
+        eos_token_id=128001,
         use_cache=False,
-        # Eager keeps the graph free of the sdpa dispatch, so a failure is about
-        # the model and not about which attention kernel transformers picked.
-        attn_implementation="eager",
-    ), seq_len
+        attn_implementation="sdpa",
+    )
 
 
-def _assert_character(preset, cfg, model, rope31):
-    """Fail if the model did not actually get the feature the preset claims.
+def _assert_character(cfg, model):
+    """Fail if the model did not actually get the feature its config claims.
 
     Every check here guards against a test that passes without exercising
-    anything new.  A preset is a claim about shape; this is where the claim is
-    cashed.
+    anything new.  Rope scaling is folded into inv_freq at construction: if the
+    config were ignored the buffer would equal the unscaled one and the run
+    would prove nothing about 3.1 or 3.2.
     """
-    n_rep = cfg.num_attention_heads // cfg.num_key_value_heads
-    head_dim = cfg.hidden_size // cfg.num_attention_heads
-
-    if preset == "3b":
-        assert n_rep == 3, f"3b preset must exercise a non-power-of-two GQA repeat, got n_rep={n_rep}"
-    if preset == "8b":
-        assert cfg.hidden_size == 4096, "8b preset must run at the real 8B width"
-        assert head_dim == 128, f"8b preset must run at the real head_dim, got {head_dim}"
-        assert cfg.intermediate_size == 14336, "8b preset must run at the real SwiGLU width"
-
-    if _PRESETS[preset].get("tie", False):
+    if cfg.tie_word_embeddings:
         body = model.model if hasattr(model, "model") else model
         head = getattr(model, "lm_head", None)
         assert head is not None, "tie check needs the LM head; run this preset with --part lm"
         assert head.weight.data_ptr() == body.embed_tokens.weight.data_ptr(), \
             "tie_word_embeddings was requested but lm_head does not share the embedding storage"
 
-    if rope31:
-        # The scaling is folded into inv_freq at construction.  If the config
-        # were ignored the buffer would be identical to the unscaled one and
-        # the run would prove nothing about 3.1.
+    if cfg.rope_parameters["rope_type"] != "default":
         from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding
 
         plain = copy.deepcopy(cfg)
-        plain.rope_scaling = None
-        # rope_type is cached on the config object by the rope init path.
-        if hasattr(plain, "rope_type"):
-            plain.rope_type = "default"
+        plain.rope_parameters = {"rope_type": "default", "rope_theta": cfg.rope_parameters["rope_theta"]}
         unscaled = LlamaRotaryEmbedding(config=plain).inv_freq
         scaled = LlamaRotaryEmbedding(config=cfg).inv_freq
         assert not torch.allclose(scaled, unscaled), \
-            "rope_scaling was requested but inv_freq is unchanged -- 3.1 is not being exercised"
-        print(f"rope31 guard ok: inv_freq max delta "
+            "rope_scaling was requested but inv_freq is unchanged -- the scaling is not being exercised"
+        print(f"rope scaling guard ok: inv_freq max delta "
               f"{(scaled - unscaled).abs().max().item():.6e}")
 
 
@@ -195,56 +148,63 @@ def _out(output):
 @torch.no_grad()
 def run_llama3x(
     device,
-    preset="small",
+    preset="3.1-8b",
     part="body",
     batch=1,
-    seq_len=None,
-    dtype="float32",
-    rope31=False,
+    seq_len=128,
+    dtype="bfloat16",
     compile_model=True,
-    rtol=1e-2,
-    atol=1e-2,
+    rtol=None,
+    atol=None,
+    decode=False,
 ):
+    """The preset's `part` on a prefill of `seq_len` tokens, or with `decode` (--part layer) one step at
+    position seq_len - 1 after a KV cache; CPU against `device`, at `dtype`'s `_TOL` unless given.
+    lm and body take test_llama3.py's explicit 4D causal mask, layer the masks the model builds."""
     from transformers.models.llama.modeling_llama import LlamaForCausalLM, LlamaModel
 
     torch_dtype = _dtype_from_str(dtype)
-    cfg, seq_len = _build_config(preset, seq_len, rope31)
+    tol = _TOL.get(dtype, _TOL["float32"])
+    rtol, atol = tol[0] if rtol is None else rtol, tol[1] if atol is None else atol
+    cfg = _build_config(preset, seq_len)
 
     # Seed before construction: config-random weights otherwise differ per run,
     # so the worst element wanders across the threshold and the test is flaky.
     torch.manual_seed(0)
-    cls = LlamaForCausalLM if part == "lm" else LlamaModel
+    cls = LlamaModel if part == "body" else LlamaForCausalLM
     model_cpu = cls(cfg).to(dtype=torch_dtype).eval()
 
-    head_dim = cfg.hidden_size // cfg.num_attention_heads
+    head_dim = cfg.head_dim
     n_rep = cfg.num_attention_heads // cfg.num_key_value_heads
     print(f"preset={preset} part={part} layers={cfg.num_hidden_layers} "
           f"hidden={cfg.hidden_size} heads={cfg.num_attention_heads}/{cfg.num_key_value_heads} "
           f"head_dim={head_dim} n_rep={n_rep} interm={cfg.intermediate_size} "
-          f"vocab={cfg.vocab_size} seq={seq_len} dtype={dtype} rope31={rope31}")
+          f"vocab={cfg.vocab_size} seq={seq_len} dtype={dtype} "
+          f"rope={cfg.rope_parameters['rope_type']}")
     print("model params:", sum(p.numel() for p in model_cpu.parameters()))
 
-    _assert_character(preset, cfg, model_cpu, rope31)
+    _assert_character(cfg, model_cpu)
 
     g = torch.Generator().manual_seed(0)
     input_ids = torch.randint(0, cfg.vocab_size, (batch, seq_len), generator=g, dtype=torch.int64)
 
-    # The explicit 4D causal mask is test_llama3.py's, kept so a failure here is
-    # comparable to that file's rather than to whatever _update_causal_mask
-    # decided to build.
-    min_dtype = torch.finfo(torch_dtype).min
-    causal_mask = torch.full((seq_len, seq_len), fill_value=min_dtype, dtype=torch_dtype)
-    if seq_len > 1:
-        causal_mask = torch.triu(causal_mask, diagonal=1)
-    attn_mask = causal_mask[None, None, :, :].expand(batch, 1, -1, -1)
+    if part == "layer":
+        cpu_out, npu_out = one_layer.run(model_cpu.model, model_cpu.model.layers[0], cfg, input_ids, device,
+                                         decode=decode, compile_model=compile_model)
+    else:
+        min_dtype = torch.finfo(torch_dtype).min
+        causal_mask = torch.full((seq_len, seq_len), fill_value=min_dtype, dtype=torch_dtype)
+        if seq_len > 1:
+            causal_mask = torch.triu(causal_mask, diagonal=1)
+        attn_mask = causal_mask[None, None, :, :].expand(batch, 1, -1, -1)
 
-    cpu_out = _out(model_cpu(input_ids=input_ids, attention_mask=attn_mask))
+        cpu_out = _out(f32_reference(model_cpu)(input_ids=input_ids, attention_mask=attn_mask.float()))
 
-    model_npu = copy.deepcopy(model_cpu).to(device).eval()
-    if compile_model:
-        model_npu = torch.compile(model_npu, dynamic=False)
-    npu_out = _out(model_npu(input_ids=input_ids.to(device),
-                             attention_mask=attn_mask.to(device)))
+        model_npu = copy.deepcopy(model_cpu).to(device).eval()
+        if compile_model:
+            model_npu = torch.compile(model_npu, dynamic=False)
+        npu_out = _out(model_npu(input_ids=input_ids.to(device),
+                                 attention_mask=attn_mask.to(device)))
 
     check_result(f"Llama 3.x {part} ({preset})", npu_out, cpu_out, rtol=rtol, atol=atol)
     print("Max diff > ", torch.max(torch.abs(npu_out.cpu() - cpu_out)))
@@ -253,41 +213,33 @@ def run_llama3x(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Llama 3.x end to end on the Triton route")
-    # THE DEFAULT IS THE GATE: the sweep runs this file with no arguments.
-    # It is `8b --part lm` -- one layer of the real 8B block, 4096 hidden and
-    # head_dim 128 -- because width is the axis this file exists to hold.
-    # GPT-2's gate is already at its real width (base is 768 wide), so gating
-    # Llama at 1024 would be a narrower promise than the suite's other models
-    # make, not an equal one.  It costs 301s against the sweep's 1800s, and the
-    # allowlist already carries an 11-minute entry.
-    #
-    # `small` is the same shapes at a quarter of the width; reach for it when
-    # bisecting, not as the thing CI believes.
-    parser.add_argument("--preset", type=str, default="8b", choices=sorted(_PRESETS))
-    parser.add_argument("--part", type=str, default="lm", choices=["lm", "body"],
-                        help="lm = LlamaForCausalLM (adds the vocab projection); body = LlamaModel")
+    # The default is the gate the sweep runs with no arguments: one layer of Llama-3.1-8B plus its lm
+    # head, the real 8B width and 3.1's rope scaling in one run.
+    parser.add_argument("--preset", type=str, default="3.1-8b", choices=sorted(_PRESETS))
+    parser.add_argument("--part", type=str, default="lm", choices=["lm", "body", "layer"],
+                        help="lm = LlamaForCausalLM (adds the vocab projection); body = LlamaModel; "
+                             "layer = the first decoder layer alone")
     parser.add_argument("--batch", type=int, default=1)
-    parser.add_argument("--seq-len", type=int, default=None)
-    parser.add_argument("--dtype", type=str, default="float32",
+    one_layer.add_grid_args(parser)
+    parser.add_argument("--dtype", type=str, default="bfloat16",
                         choices=["float32", "float16", "bfloat16"])
-    parser.add_argument("--rope31", action="store_true",
-                        help="apply Llama 3.1's rope scaling (guarded by _assert_character)")
     parser.add_argument("--no-compile", dest="compile", action="store_false", default=True)
-    parser.add_argument("--rtol", type=float, default=1e-2)
-    parser.add_argument("--atol", type=float, default=1e-2)
+    parser.add_argument("--rtol", type=float, default=None, help="default: _TOL of --dtype")
+    parser.add_argument("--atol", type=float, default=None, help="default: _TOL of --dtype")
     args = parser.parse_args()
+    if args.decode is not None and args.part != "layer":
+        parser.error("--decode runs with --part layer")
 
     sys.path.append(os.environ.get("PYTORCHSIM_ROOT_PATH", "/workspace/PyTorchSim"))
-    torch.compiler.is_compiling = lambda: True  # FIXME. Same as test_llama.py.
 
     run_llama3x(
         torch.device("npu:0"),
         preset=args.preset,
         part=args.part,
         batch=args.batch,
-        seq_len=args.seq_len,
+        seq_len=args.decode or args.seq,
+        decode=args.decode is not None,
         dtype=args.dtype,
-        rope31=args.rope31,
         compile_model=args.compile,
         rtol=args.rtol,
         atol=args.atol,

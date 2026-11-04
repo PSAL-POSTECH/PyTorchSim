@@ -3,6 +3,7 @@
     Dynamo's device interfaces    NPUDeviceInterface: what Inductor asks of the device
     GPU_TYPES                     npu as a Triton GPU (a patch: it has no hook)
     Inductor's device codegens    scheduling, wrapper, post-grad pass
+    Inductor's reinplace          a chain of view scatters in place (a patch: it has no hook), postgrad/'s
     device op overrides           NPUDeviceOpOverrides: the device code in a wrapper
     Inductor's choices class      NPUChoices, answered by autotune/
     template heuristics           the mm/bmm configs and the resident mm's, autotune/'s
@@ -26,6 +27,7 @@ def install():
     _register_device_interface()
     _register_triton_gpu()
     _register_device_codegen()
+    _register_scatter_reinplace()
     _register_device_op_overrides()
     _register_choices()
     _register_template_heuristics()
@@ -110,6 +112,15 @@ def _register_device_codegen():
 
     register_backend_for_device("npu", TritonNPUScheduling, TritonNPUWrapperCodegen,
                                 device_custom_pass=pytorchsim_post_grad_pass)
+
+
+# Inductor's reinplace (fx_passes.reinplace.inplaceable_ops): a patch, it has no hook
+
+def _register_scatter_reinplace():
+    """An npu view scatter onto another scatter's result is written in place (postgrad/scatter.py)."""
+    from pytorchsim.frontend.inductor.postgrad.scatter import install_scatter_chain
+
+    install_scatter_chain()
 
 
 # Inductor's device op overrides (register_device_op_overrides)

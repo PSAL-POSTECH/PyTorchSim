@@ -20,8 +20,9 @@ RECORD_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "selection
 RECORD_LOG = "selection.jsonl"
 
 
-#: The templates whose configs are timed. Another template (a convolution) keeps the offered order.
-TIMED_TEMPLATES = ("triton::mm", "triton::bmm", "triton::mm_resident")
+#: The templates whose configs are timed. A depthwise conv1d is the dispatcher's one kernel, not a tile.
+TIMED_TEMPLATES = ("triton::mm", "triton::bmm", "triton::mm_resident",
+                   "triton::convolution2d", "triton::convolution3d")
 
 
 #: The KernelTemplateChoice annotation that says where a choice came from.

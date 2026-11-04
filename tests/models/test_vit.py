@@ -7,7 +7,11 @@ from torchvision.models.vision_transformer import _vision_transformer, EncoderBl
 import os
 import sys
 sys.path.insert(0, os.path.join(os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim'), 'tests'))
-from result_check import check_result
+from result_check import check_result, f32_reference
+
+# (rtol, atol) per dtype, float32 at check_result's default; the bf16 atol is 3x the worst bf16 CPU diff.
+_TOL = {"bfloat16": (5e-2, 0.5), "float32": (1e-4, 1e-4)}
+_DTYPES = {"float32": torch.float32, "bfloat16": torch.bfloat16}
 
 def init_vit_weights(m):
     if isinstance(m, torch.nn.Linear):
@@ -39,7 +43,9 @@ def init_vit_weights(m):
             if m.out_proj.bias is not None:
                 torch.nn.init.normal_(m.out_proj.bias)
 
-def test_vit(device, batch=1, shape=(3, 224, 224), num_layers=1, num_heads=12, hidden_dim=768, mlp_dim=3072):
+def test_vit(device, batch=1, shape=(3, 224, 224), num_layers=1, num_heads=12, hidden_dim=768, mlp_dim=3072,
+             dtype="bfloat16"):
+    """ViT-B/16 sizes at `num_layers`, weights and input in `dtype`, against its float32 CPU reference."""
     with torch.no_grad():
         #model = models.vit_b_16(models.ViT_B_16_Weights.IMAGENET1K_V1).eval()
         model = _vision_transformer(
@@ -52,19 +58,20 @@ def test_vit(device, batch=1, shape=(3, 224, 224), num_layers=1, num_heads=12, h
             progress=False
         ).eval()
         model.apply(init_vit_weights)
+        model.to(_DTYPES[dtype])
 
-        input_tensor = torch.randn(batch, *shape)
+        input_tensor = torch.randn(batch, *shape).to(_DTYPES[dtype])
         x_device = input_tensor.to(device=device)
-        x_cpu = input_tensor.cpu()
+        x_cpu = input_tensor.cpu().float()
 
+        cpu_model = f32_reference(model)
         model.to(device)
         opt_model = torch.compile(dynamic=False)(model)
         out_device = opt_model(x_device)
 
-        cpu_model = model.cpu()
         out_cpu = cpu_model(x_cpu)
 
-    check_result("VisionTransformer inference", out_device, out_cpu)
+    check_result("VisionTransformer inference", out_device, out_cpu, *_TOL[dtype])
     print("Max diff > ", torch.max(torch.abs(out_device.cpu() - out_cpu)))
     print("VisionTransformer Simulation Done")
 
@@ -186,6 +193,7 @@ if __name__ == "__main__":
     parser.add_argument('--num_heads', type=int, default=12)
     parser.add_argument('--hidden_dim', type=int, default=768)
     parser.add_argument('--mlp_dim', type=int, default=3072)
+    parser.add_argument("--dtype", type=str, default="bfloat16", choices=sorted(_DTYPES))
     args = parser.parse_args()
 
     shape = tuple(map(int, args.shape.strip('()').split(',')))
@@ -201,5 +209,6 @@ if __name__ == "__main__":
         num_layers=args.num_layers,
         num_heads=args.num_heads,
         hidden_dim=args.hidden_dim,
-        mlp_dim=args.mlp_dim
+        mlp_dim=args.mlp_dim,
+        dtype=args.dtype,
     )

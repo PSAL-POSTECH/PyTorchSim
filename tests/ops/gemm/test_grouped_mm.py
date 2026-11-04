@@ -11,6 +11,9 @@ against a float32 CPU reference, group by group.
   tail       offs ending before A's last row: the output keeps A's rows, eager ones past offs[-1] zero as
              transformers gives them, compiled ones match the reference up to offs[-1]
   bias       a bias is refused, as aten refuses it
+  table_kernels  the program table is one computation on offs: no kernel of an empty entry's zeros or an int32 cast
+  tiles      all of K first, then for a group of one row block the fewest N tiles (Qwen3-30B-A3B's decode gate_up
+             BN 2048), else no masked columns (Mixtral's gate_up keeps BN 4096)
 
 Usage: test_grouped_mm.py [case ...]   (all cases when none is named)
 """
@@ -165,9 +168,30 @@ def case_bias():
     return False, "a bias was taken"
 
 
+def case_table_kernels():
+    """Breaks if the table grows small kernels again (an empty entry's new_zeros, the i64 -> i32 casts): each paid
+    819 and 1,805 cycles a call in a Qwen3-30B-A3B decode layer; 4 rows over 16 groups here."""
+    from pytorchsim.backend import launch_hooks
+    names = []
+    launch_hooks.observe_every_launch(lambda launcher: names.append(launcher.kernel_name))
+    err, launched, _ = _run_compiled([1, 0, 1, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0], 256, 256)
+    extra = [n for n in names if "new_zeros" in n or "_to_copy" in n]
+    return err < TOL and launched == 1 and not extra, f"err {err:.3g}, launches {names}"
+
+
+def case_tiles():
+    """Breaks if a tile whose BN divides N wins again over fewer N tiles for a group of one row block: Qwen3-30B-A3B's
+    decode gate_up took BN 512, three programs per group, +4,942 cycles; Mixtral's gate_up keeps all of K once."""
+    from pytorchsim.frontend.dispatcher import grouped_mm
+    got = (grouped_mm._tiles(1536, 2048, 2, 1), grouped_mm._tiles(28672, 4096, 2, 32),
+           grouped_mm._tiles(28672, 4096, 2, 1024))
+    return got[0][1:] == (2048, 2048) and got[1][1:] == got[2][1:] == (4096, 4096), f"tiles {got}"
+
+
 CASES = {"routed": case_routed, "one_program_per_group": case_one_program_per_group,
          "few_rows": case_few_rows, "eager": case_eager, "grad": case_grad,
-         "fallback": case_fallback, "tail": case_tail, "bias": case_bias}
+         "fallback": case_fallback, "tail": case_tail, "bias": case_bias, "table_kernels": case_table_kernels,
+         "tiles": case_tiles}
 
 
 if __name__ == "__main__":

@@ -4,10 +4,15 @@ the device, one module per op family; the one-op graph patterns run first, in im
     histc.py         histc                    aten.histc counted on the device
     gemm.py          mm_row, addmm_row        a 1 x K row times a matrix as a multiply and a sum: vector work
                      gemm_zero_length         a matmul with an empty output, or K = 0 and no bias, as zeros
+                     gqa_shared_kv            an attention bmm against repeat_kv's copy, against the shared head
     convolution.py   convolution_transposed   a transposed conv as its direct equivalent
                      convolution_1d           a 1-D conv as a 2-D one over a height of 1
+                     convolution_pointwise    a 1x1 conv as [O, C] times the pixels: one mm, lanes on pixels
+                     convolution_patches      a conv whose kernel is its stride as one mm over the patches
 
+then gemm.py's gqa_shared_kv_fused: the fused SDPA on the shared key and value heads, not repeat_kv's copies;
 then complex.py's complex_real_pairs: complex values as real [..., 2] pairs, by _REAL_PAIR's rules.
+scatter.py's scatter_chain is no pass: it patches Inductor's reinplace, which runs after this pass.
 """
 
 import contextlib
@@ -24,7 +29,7 @@ from pytorchsim.frontend.dispatcher.custom_fused_kernel import Decline
 
 logger = config.setup_logger()
 
-# The pass: its graph patterns, then the complex values
+# The pass: its graph patterns, then the fused SDPA's shared heads and the complex values
 
 PATTERNS = PatternMatcherPass(pass_name="pytorchsim_post_grad_pass")
 
@@ -36,8 +41,8 @@ REWRITES = []
 
 
 class _PostGradPass(CustomGraphModulePass):
-    """The graph patterns, then complex values as real pairs; its uuid hashes every module of this
-    package, so an edit to any rewrite is a new cache key."""
+    """The graph patterns, the fused SDPA on shared heads, then complex values as real pairs; its uuid
+    hashes every module of this package, so an edit to any rewrite is a new cache key."""
 
     def __call__(self, gm: fx.GraphModule) -> None:
         """Replacements trace under the graph's fake mode: Inductor sets it, a caller outside it may not."""
@@ -45,7 +50,8 @@ class _PostGradPass(CustomGraphModulePass):
 
         fake_mode = _fake_mode(gm.graph)
         with V.set_fake_mode(fake_mode) if fake_mode is not None else contextlib.nullcontext():
-            changed = PATTERNS.apply(gm) + complex_real_pairs(gm.graph, fake_mode)
+            changed = (PATTERNS.apply(gm) + gemm.gqa_shared_kv_fused(gm.graph)
+                       + complex_real_pairs(gm.graph, fake_mode))
         if changed:
             gm.graph.eliminate_dead_code()
             gm.recompile()

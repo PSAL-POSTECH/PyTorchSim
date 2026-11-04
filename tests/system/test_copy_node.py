@@ -141,14 +141,25 @@ def test_an_mm_holding_a_computed_operand_keeps_the_mm_template():
     assert _offered(g, first) == [mm_resident.mm_resident_template]
 
 
-def test_its_config_is_the_plan():
-    """Breaks if the config holds another operand than the graph's prefetch (x, the larger input here)."""
+def test_its_configs_are_the_compiler_s_tiles_best_first():
+    """Breaks if a config holds another operand than the graph's prefetch (x, the larger input here), if the
+    configs are not copy_node.tiles in its order, or if more than one is offered where nothing is timed."""
     from torch._inductor.virtualized import V
+    from pytorchsim.backend import template_record
     g, node = _lone(8192, 4096, 4096)
     g.current_node = node
-    with V.set_graph_handler(g):
-        (cfg,) = mm_resident.configs(_Inputs(8192, 4096, 4096))
-    assert cfg["RESIDENT"] == 0 and cfg["BLOCK_M"] == 8192 and cfg["BLOCK_K"] == 4096, cfg
+    saved = template_record.autotunes
+    try:
+        for timed in (True, False):
+            template_record.autotunes = lambda: timed
+            with V.set_graph_handler(g):
+                got = list(mm_resident.configs(_Inputs(8192, 4096, 4096)))
+            want = mm_resident._copy_node().tiles(0, 8192, 4096, 4096, 2, 4, 2, *mm_resident._machine())
+            want = want[:config.codegen_autotune_template_topk] if timed else want[:1]
+            assert [c["BLOCK_N"] for c in got] == want, (timed, got, want)
+            assert all(c["RESIDENT"] == 0 and c["BLOCK_M"] == 8192 and c["BLOCK_K"] == 4096 for c in got), got
+    finally:
+        template_record.autotunes = saved
 
 
 def _launched(fn, *xs, **kw):
@@ -164,9 +175,9 @@ def _launched(fn, *xs, **kw):
 
 
 def _resident(metas):
-    """The launches the resident mm made: the one config copy_node.plan gave (template_record.PLANNED)."""
-    from pytorchsim.backend import template_record
-    return [m for m in metas if m.get(template_record.SOURCE) == template_record.PLANNED]
+    """The launches the resident mm made: the kernels that hold an operand (graph_prefetch), of its form alone,
+    whether its config was the first tile or timed among them."""
+    return [m for m in metas if m.get("graph_prefetch")]
 
 
 def _close(got, want):
@@ -298,7 +309,8 @@ def test_a_timed_mm_carries_its_copy_node():
 
 def test_a_timed_resident_candidate_holds_its_operand():
     """Breaks if a resident mm candidate is timed without the operand it holds: built as a kernel that holds
-    nothing it gets half the bank, and a held operand over that is refused (timing mode only)."""
+    nothing it gets half the bank, and a held operand over that is refused (timing mode only). Only this
+    shape's candidates are read: the earlier tests' are timed into the same directory."""
     if not config.pytorchsim_timing_mode:
         print("SKIP test_a_timed_resident_candidate_holds_its_operand: TORCHSIM_TIMING_MODE is off")
         return
@@ -308,9 +320,31 @@ def test_a_timed_resident_candidate_holds_its_operand():
     select = os.path.join(config.get_dump_path(), "select")
     metas = [json.load(open(p)) for p in (os.path.join(select, d, "meta.json") for d in os.listdir(select))
              if os.path.isfile(p)]
-    resident = [m for m in metas if m["kernel_name"].startswith("triton_mm_resident")]
+    resident = [m for m in metas if m["kernel_name"].startswith("triton_mm_resident")
+                and {x["name"]: x["sizes"] for x in m["args"]}.get("arg_B") == [512, 768]]
     assert resident and all(m["graph_prefetch"] == ["arg_B"] for m in resident), \
         [(m["kernel_name"], m["graph_prefetch"]) for m in resident]
+
+
+def test_a_timed_fusion_of_it_holds_its_operand():
+    """Breaks if the resident mm with an epilogue fused is timed as a kernel that holds nothing: it then gets
+    half the bank, and a tile that fits the whole bank is refused (timing mode only)."""
+    if not config.pytorchsim_timing_mode:
+        print("SKIP test_a_timed_fusion_of_it_holds_its_operand: TORCHSIM_TIMING_MODE is off")
+        return
+    a, b = _ab(m=256, k=640, n=768)
+    _launched(lambda x, y: torch.relu(torch.mm(x, y)), a, b)
+    select = os.path.join(config.get_dump_path(), "select")
+    fused = []
+    for d in os.listdir(select):
+        p, src = os.path.join(select, d, "meta.json"), os.path.join(select, d, "kernel.py")
+        if os.path.isfile(p) and os.path.isfile(src) and "RESIDENT : tl.constexpr" in open(src).read():
+            m = json.load(open(p))
+            if "aten.relu.default" in (m.get("aten_ops") or []) or m["kernel_name"] == "triton_":
+                if {x["name"]: x["sizes"] for x in m["args"]}.get("arg_B") == [640, 768]:
+                    fused.append(m)
+    assert fused and all(m["graph_prefetch"] == ["arg_B"] for m in fused), \
+        [(m["kernel_name"], m.get("graph_prefetch")) for m in fused]
 
 
 if __name__ == "__main__":

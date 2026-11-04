@@ -157,23 +157,33 @@ def test_select_record_and_rebuild():
         assert [m["tile_source"] for m in _templates(stale).values()] == [template_record.HEURISTIC]
 
 
-def _choice(name):
+def _choice(name, uid="triton::mm"):
     c = object.__new__(TritonTemplateCaller)
     c.name, c.description = name, name
-    c.annotations = {"ktc": mock.Mock(template=mock.Mock(uid="triton::mm"), annotations={})}
+    c.annotations = {"ktc": mock.Mock(template=mock.Mock(uid=uid), annotations={})}
     c.bmreq = mock.Mock(kernel_name="triton_mm", module_cache_key=name)
     return c
 
 
+def _rendered(timed=None):
+    """Patches for time_choices off Inductor: each choice's source is its name, no prefetch, nothing timed yet."""
+    from contextlib import ExitStack
+    stack = ExitStack()
+    stack.enter_context(mock.patch.object(template_timing.kernel_metadata, "benchmark_request_meta",
+                                          side_effect=lambda req: (req.module_cache_key, {"args": []})))
+    stack.enter_context(mock.patch.object(template_timing.graph_prefetch, "choice_statement",
+                                          return_value=[]))
+    stack.enter_context(mock.patch.dict(template_timing._timed, timed or {}, clear=True))
+    return stack
+
+
 def test_a_refused_config_is_inf_and_none_left_is_an_error():
     a, b = _choice("a"), _choice("b")
-    with mock.patch.object(template_timing.kernel_metadata, "benchmark_request_meta",
-                           return_value=("", {})), \
+    with _rendered(), \
          mock.patch.object(template_timing, "_time_tile",
                            side_effect=lambda src, meta, name, wd, cut: 7.0 if wd.endswith("b") else float("inf")):
         assert template_timing.time_choices([a, b]) == {a: float("inf"), b: 7.0}
-    with mock.patch.object(template_timing.kernel_metadata, "benchmark_request_meta",
-                           return_value=("", {})), \
+    with _rendered(), \
          mock.patch.object(template_timing, "_time_tile", return_value=float("inf")):
         try:
             template_timing.time_choices([a, b])
@@ -195,11 +205,21 @@ def test_a_config_running_past_the_cut_is_inf():
             time.sleep(0.05)
         return float("inf")
     fast, slow = _choice("fast"), _choice("slow")
-    with mock.patch.object(template_timing.kernel_metadata, "benchmark_request_meta", return_value=("", {})), \
-         mock.patch.object(template_timing, "_time_tile", side_effect=tile):
+    with _rendered(), mock.patch.object(template_timing, "_time_tile", side_effect=tile):
         t0 = time.monotonic()
         assert template_timing.time_choices([slow, fast]) == {slow: float("inf"), fast: 5.0}
         assert time.monotonic() - t0 < 0.2 * template_timing.CUT_FACTOR + 1
+
+
+def test_a_config_timed_once_is_not_timed_again():
+    """A config rendered the same at another node takes the cycles this process timed it at."""
+    tile = mock.Mock(side_effect=lambda src, meta, name, wd, cut: 3.0 if wd.endswith("a") else 4.0)
+    with _rendered(), mock.patch.object(template_timing, "_time_tile", tile):
+        a, b = _choice("a"), _choice("b")
+        assert template_timing.time_choices([a, b]) == {a: 3.0, b: 4.0}
+        a2, b2 = _choice("a"), _choice("b")
+        assert template_timing.time_choices([a2, b2]) == {a2: 3.0, b2: 4.0}
+    assert tile.call_count == 2
 
 
 def _machine(root, sub, **change):
@@ -233,9 +253,39 @@ def test_graph_cache_key_names_the_machine():
         assert len(set(keys)) == len(keys), keys
 
 
+def test_a_convolution_config_is_timed():
+    """Breaks if a convolution's tile is taken in the order it was offered: with its template out of
+    TIMED_TEMPLATES, times() is False and pick_config ranks by index, so tile 0 always wins."""
+    from torch._inductor.kernel.conv import conv2d_template, conv3d_template
+    for uid in (conv2d_template.uid, conv3d_template.uid):
+        assert template_record.is_timed(_choice("conv", uid=uid)), uid
+    assert template_timing.times([_choice("conv", uid=conv2d_template.uid)])
+
+
+def test_a_convolution_is_offered_every_tile_a_timed_run_ranks():
+    """Breaks if the conv heuristic offers one tile while the strategy autotunes: a lone candidate is
+    taken whatever its cycles, so timing it decides nothing (rule 6)."""
+    from pytorchsim import config
+    from pytorchsim.frontend.inductor.autotune import template_kernel_configs
+    from torch._inductor.heuristics.template.triton import BaseConfigHeuristic
+    from torch._inductor.virtualized import V
+
+    graph = mock.Mock(sizevars=mock.Mock(optimization_hint=int))
+    with V.set_graph_handler(graph), \
+         mock.patch.object(BaseConfigHeuristic, "preprocess_mm_configs",
+                           lambda self, m, n, k, configs, **kw: configs):
+        got = template_kernel_configs.conv_config_heuristic().get_conv_configs()(
+            25600, 256, 512, dtype_size=2)
+    blocks = {(c.block_m, c.block_n, c.block_k) for c in got}
+    assert 1 < len(blocks) <= config.codegen_autotune_template_topk, blocks
+
+
 if __name__ == "__main__":
+    test_a_convolution_config_is_timed()
+    test_a_convolution_is_offered_every_tile_a_timed_run_ranks()
     test_graph_cache_key_names_the_machine()
     test_a_config_running_past_the_cut_is_inf()
     test_a_refused_config_is_inf_and_none_left_is_an_error()
+    test_a_config_timed_once_is_not_timed_again()
     test_select_record_and_rebuild()
     print("PASS")

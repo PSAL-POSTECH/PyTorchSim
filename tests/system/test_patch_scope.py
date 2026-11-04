@@ -103,6 +103,27 @@ def test_conv_heuristics_are_upstream_outside_npu_choices():
     check_result("ConvHeuristicsScoped", torch.tensor(got), torch.tensor([True, True]))
 
 
+def test_scatter_chain_is_upstream_off_device():
+    """A cpu view scatter onto another scatter's result keeps upstream's reinplace answer;
+    only the npu chain is written in place (postgrad/scatter.py)."""
+    from torch._inductor.fx_passes import reinplace
+    from torch.fx import Graph
+
+    scatter = reinplace._generalized_scatter
+    check = reinplace.inplaceable_ops[scatter].extra_check
+    got = []
+    for device in ("cpu", "npu"):
+        g = Graph()
+        x, v = g.placeholder("x"), g.placeholder("v")
+        first = g.call_function(scatter, (x, v, []))
+        second = g.call_function(scatter, (first, v, []))
+        g.output(second)
+        for n in (x, v, first, second):
+            n.meta["val"] = torch.empty(4, device=device)
+        got.append(check(second) == check.upstream(second) if device == "cpu" else check(second))
+    check_result("ScatterChainScoped", torch.tensor(got), torch.tensor([True, True]))
+
+
 _SDP_PROBE = """
 import torch
 q = torch.randn(1, 2, 16, 8)
@@ -139,3 +160,4 @@ if __name__ == "__main__":
     test_device_predicate_reads_every_spelling()
     test_conv_grid_is_upstream_off_device()
     test_this_device_still_gets_its_own_answers()
+    test_scatter_chain_is_upstream_off_device()

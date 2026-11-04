@@ -14,9 +14,17 @@ import os
 import sys
 import shutil
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from result_check import check_result
+from result_check import check_result, f32_reference
 
-def run_yolo(batch):
+_IMGSZ = 640
+
+# (rtol, atol) per dtype; bf16 takes test_yolo's measured bf16 bound (yolov5n/v8n at 640 px).
+_TOL = {"bfloat16": (0.5, 0.5), "float32": (1e-4, 1e-4)}
+_DTYPES = {"float32": torch.float32, "bfloat16": torch.bfloat16}
+
+
+def run_yolo(batch, dtype="bfloat16"):
+    """yolov5s from the hub on one 640 x 640 image in `dtype`, CPU against npu at `_TOL`."""
     import copy
 
     device = torch.device("npu:0")
@@ -25,24 +33,23 @@ def run_yolo(batch):
     torch._dynamo.config.cache_size_limit = 128
 
     # Load model and prepare input
-    model = torch.hub.load("ultralytics/yolov5", "yolov5s", trust_repo=True).cpu().eval()
+    model = torch.hub.load("ultralytics/yolov5", "yolov5s", trust_repo=True).cpu().to(_DTYPES[dtype]).eval()
     url = "https://ultralytics.com/images/zidane.jpg"
 
     response = requests.get(url)
     img = Image.open(BytesIO(response.content)).convert("RGB")
 
-    imgsz = 64
     transform = transforms.Compose([
-        transforms.Resize((imgsz, imgsz)),
+        transforms.Resize((_IMGSZ, _IMGSZ)),
         transforms.ToTensor(),
     ])
 
-    x = transform(img).unsqueeze(0)   # [1, 3, H, W]
+    x = transform(img).unsqueeze(0).to(_DTYPES[dtype])
 
     # CPU version
     model_cpu = copy.deepcopy(model).cpu().eval()
     x_cpu = copy.deepcopy(x).cpu()
-    y_cpu = model_cpu(x_cpu)
+    y_cpu = f32_reference(model_cpu)(x_cpu.float())
 
     # NPU version
     model_npu = model_cpu.to(device).eval()
@@ -54,9 +61,9 @@ def run_yolo(batch):
     # YOLOv5 output is typically a list or tensor, handle both cases
     if isinstance(y_cpu, (list, tuple)):
         for i, (out_npu, out_cpu) in enumerate(zip(y_npu, y_cpu)):
-            check_result(f"YOLOv5 Output {i}", out_npu, out_cpu)
+            check_result(f"YOLOv5 Output {i}", out_npu, out_cpu, *_TOL[dtype])
     else:
-        check_result("YOLOv5 Output", y_npu, y_cpu)
+        check_result("YOLOv5 Output", y_npu, y_cpu, *_TOL[dtype])
 
     print("Yolo Simulation Done")
 
@@ -229,6 +236,7 @@ if __name__ == "__main__":
     args = argparse.ArgumentParser()
     args.add_argument("--batch", type=int, default=1)
     args.add_argument("--dump_path", type=str, default="results")
+    args.add_argument("--dtype", type=str, default="bfloat16", choices=sorted(_DTYPES))
     args = args.parse_args()
     batch = args.batch
 
@@ -262,4 +270,4 @@ if __name__ == "__main__":
     print("\n" + "=" * 80)
     print("Testing Full YOLOv5 Model")
     print("=" * 80)
-    run_yolo(batch)
+    run_yolo(batch, args.dtype)

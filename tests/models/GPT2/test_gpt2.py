@@ -6,29 +6,19 @@ suite's kernels do not: two embedding gathers (``wte``/``wpe``), Conv1D's
 ``addmm`` with the fused QKV projection, the causal ``where`` mask, softmax,
 and ``gelu_new``'s tanh.
 
-Judgement is spike's, against the same model on CPU. Run it with the Triton
+The block is GPT-2 base at its published size (openai-community/gpt2), cut to
+2 of its 12 layers: 768 wide, 12 heads, the 4x MLP and the full 50257-row vocab,
+in bfloat16 by default (``--dtype float32`` for the old run). The input is one
+prefill of ``--seq`` tokens, batch 1, at most n_positions 1024. ``--part layer``
+runs the first block alone (tests/one_layer.py), on ``--seq S`` or on one
+``--decode S`` step after a KV cache.
+
+Judgement is spike's, against the same model's float32 copy on the CPU. Run it with the Triton
 route on and timing off (rule 13a):
 
     source .envrc
-    python tests/models/GPT2/test_gpt2.py --preset small
-
-ALL FOUR PRESETS PASS, measured 2026-08-12 with per-kernel verify on
-(pytorchsim_functional_verify_per_kernel), so every intermediate buffer is
-compared to a CPU golden and not just the logits:
-
-    preset  layers  n_embd  vocab   kernels  max diff     goldens  time
-    tiny      1      128      256      14    4.7684e-07     121
-    small     2      768     1024      26    2.9206e-06     219
-    medium    4      768     4096      50    4.1723e-06     415     235s
-    full     12      768    50257     146    5.1260e-06    1199     717s
-
-`full` is GPT-2 base itself -- 123,702,528 parameters -- and zero buffers
-diverge in any of the four.
-
-THE GATE IS `small`, DELIBERATELY. `full` compiles 146 kernels but only ~30
-distinct ones, the same block repeated twelve times, so it costs the sweep
-twelve minutes to cover what `small` already covers. Raise the default only
-if a defect appears that needs the depth.
+    python tests/models/GPT2/test_gpt2.py --seq 128
+    python tests/models/GPT2/test_gpt2.py --part layer --decode 1024
 """
 
 import argparse
@@ -39,19 +29,16 @@ import sys
 import torch
 
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
-from result_check import check_result
+from result_check import check_result, f32_reference
+import one_layer
 
 
-# Presets shrink the model, not the shapes' character: the head dim, the 4x MLP
-# ratio and the vocab gather all survive. "small" is the one to reach for --
-# 2 layers of the real 768-wide block is already every kernel GPT-2 has.
-_PRESETS = {
-    #          n_layer  n_embd  n_head  vocab  seq
-    "tiny":   (1,       128,    2,      256,   16),
-    "small":  (2,       768,    12,     1024,  32),
-    "medium": (4,       768,    12,     4096,  32),
-    "full":   (12,      768,    12,     50257, 32),
-}
+# openai-community/gpt2, published config; only n_layer is cut (12 -> 2).
+_GPT2 = dict(vocab_size=50257, n_positions=1024, n_embd=768, n_layer=2, n_head=12, n_inner=None,
+             activation_function="gelu_new", layer_norm_epsilon=1e-5)
+
+# (rtol, atol) per dtype; the bf16 atol is 3x the worst bf16 eager-vs-Inductor CPU diff at S = 128.
+_TOL = {"bfloat16": (5e-2, 0.05), "float32": (1e-2, 1e-2)}
 
 
 def _dtype_from_str(name):
@@ -62,26 +49,20 @@ def _dtype_from_str(name):
     }.get(name, torch.float32)
 
 
-def _build_config(preset, seq_len, dtype):
+def _build_config(seq_len):
+    """GPT-2 base with dropout at 0, so the graph is free of RNG ops; dropout is identity under eval()."""
     from transformers.models.gpt2.configuration_gpt2 import GPT2Config
 
-    n_layer, n_embd, n_head, vocab, preset_seq = _PRESETS[preset]
-    seq_len = seq_len if seq_len is not None else preset_seq
-
+    if seq_len > _GPT2["n_positions"]:
+        raise ValueError(f"seq {seq_len} exceeds GPT-2's n_positions {_GPT2['n_positions']}")
     return GPT2Config(
-        vocab_size=vocab,
-        n_positions=max(seq_len, 64),
-        n_embd=n_embd,
-        n_layer=n_layer,
-        n_head=n_head,
-        # Dropout is identity under eval(), but leaving it at 0 keeps the graph
-        # free of the RNG ops so a failure is about the model, not about seeds.
+        **_GPT2,
         resid_pdrop=0.0,
         embd_pdrop=0.0,
         attn_pdrop=0.0,
         use_cache=False,
-        attn_implementation="eager",
-    ), seq_len
+        attn_implementation="sdpa",
+    )
 
 
 def _logits(output):
@@ -97,19 +78,23 @@ def _logits(output):
 @torch.no_grad()
 def run_gpt2(
     device,
-    preset="small",
     part="lm",
     batch=1,
-    seq_len=None,
-    dtype="float32",
+    seq_len=128,
+    dtype="bfloat16",
     compile_model=True,
-    rtol=1e-2,
-    atol=1e-2,
+    rtol=None,
+    atol=None,
+    decode=False,
 ):
+    """GPT-2 `part` on a prefill of `seq_len` tokens, or with `decode` (--part layer) on one step at
+    position seq_len - 1 after a KV cache of the tokens before it; CPU against `device`, at `_TOL`."""
     from transformers.models.gpt2.modeling_gpt2 import GPT2LMHeadModel, GPT2Model
 
     torch_dtype = _dtype_from_str(dtype)
-    config, seq_len = _build_config(preset, seq_len, torch_dtype)
+    tol = _TOL.get(dtype, _TOL["float32"])
+    rtol, atol = tol[0] if rtol is None else rtol, tol[1] if atol is None else atol
+    config = _build_config(seq_len)
 
     # Seed before construction: config-random weights otherwise differ per run,
     # so the worst element wanders across the threshold and the test is flaky.
@@ -117,55 +102,50 @@ def run_gpt2(
     cls = GPT2LMHeadModel if part == "lm" else GPT2Model
     model_cpu = cls(config).to(dtype=torch_dtype).eval()
 
-    print(f"preset={preset} part={part} n_layer={config.n_layer} n_embd={config.n_embd} "
+    print(f"part={part} n_layer={config.n_layer} n_embd={config.n_embd} "
           f"n_head={config.n_head} vocab={config.vocab_size} seq={seq_len} dtype={dtype}")
     print("model params:", sum(p.numel() for p in model_cpu.parameters()))
 
     g = torch.Generator().manual_seed(0)
     input_ids = torch.randint(0, config.vocab_size, (batch, seq_len), generator=g, dtype=torch.int64)
 
-    cpu_out = _logits(model_cpu(input_ids))
+    if part == "layer":
+        cpu_out, npu_out = one_layer.run(model_cpu, model_cpu.h[0], config, input_ids, device,
+                                         decode=decode, compile_model=compile_model)
+    else:
+        cpu_out = _logits(f32_reference(model_cpu)(input_ids))
 
-    model_npu = copy.deepcopy(model_cpu).to(device).eval()
-    if compile_model:
-        model_npu = torch.compile(model_npu, dynamic=False)
-    npu_out = _logits(model_npu(input_ids.to(device)))
+        model_npu = copy.deepcopy(model_cpu).to(device).eval()
+        if compile_model:
+            model_npu = torch.compile(model_npu, dynamic=False)
+        npu_out = _logits(model_npu(input_ids.to(device)))
 
-    check_result(f"GPT-2 {part} ({preset})", npu_out, cpu_out, rtol=rtol, atol=atol)
+    check_result(f"GPT-2 {part}", npu_out, cpu_out, rtol=rtol, atol=atol)
     print("Max diff > ", torch.max(torch.abs(npu_out.cpu() - cpu_out)))
     print("GPT-2 Simulation Done")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="GPT-2 end to end on the Triton route")
-    # THE DEFAULT IS THE GATE: scripts/ci/triton_route_sweep.py runs this file
-    # with no arguments. It is `small` -- 2 layers of the real 768-wide block,
-    # 12 heads -- because that is what passes: 26 kernels, max diff 2.0862e-06,
-    # and zero divergent buffers over 219 goldens with per-kernel verify on.
-    #
-    # It was `tiny` until the wide-tile gather was fixed (triton-npu
-    # develop-select-grid 2007619, pinned by
-    # kernels/coverage/gather/gather_masked_deep_in_loop.py): a gathered MVIN
-    # used to fill only lane-count elements per lane and repeat them, which
-    # took out this model's very first kernel at any width above the lanes.
-    parser.add_argument("--preset", type=str, default="small", choices=sorted(_PRESETS))
-    parser.add_argument("--part", type=str, default="lm", choices=["lm", "body"],
-                        help="lm = GPT2LMHeadModel (adds the vocab projection); body = GPT2Model")
+    parser.add_argument("--part", type=str, default="lm", choices=["lm", "body", "layer"],
+                        help="lm = GPT2LMHeadModel (adds the vocab projection); body = GPT2Model; "
+                             "layer = the first block alone")
     parser.add_argument("--batch", type=int, default=1)
-    parser.add_argument("--seq-len", type=int, default=None)
-    parser.add_argument("--dtype", type=str, default="float32",
-                        choices=["float32", "float16", "bfloat16"])
+    one_layer.add_grid_args(parser)
+    parser.add_argument("--dtype", type=str, default="bfloat16", choices=["float32", "float16", "bfloat16"])
     parser.add_argument("--no-compile", dest="compile", action="store_false", default=True)
-    parser.add_argument("--rtol", type=float, default=1e-2)
-    parser.add_argument("--atol", type=float, default=1e-2)
+    parser.add_argument("--rtol", type=float, default=None, help="default: _TOL of --dtype")
+    parser.add_argument("--atol", type=float, default=None, help="default: _TOL of --dtype")
     args = parser.parse_args()
+    if args.decode is not None and args.part != "layer":
+        parser.error("--decode runs with --part layer")
 
     run_gpt2(
         torch.device("npu:0"),
-        preset=args.preset,
         part=args.part,
         batch=args.batch,
-        seq_len=args.seq_len,
+        seq_len=args.decode or args.seq,
+        decode=args.decode is not None,
         dtype=args.dtype,
         compile_model=args.compile,
         rtol=args.rtol,

@@ -134,9 +134,13 @@ def compiler_env():
     return env
 
 
-def run_pipeline(spec_path, workdir, to_stage="pytorchsim-compile", tog=False, timeout=1800):
+def run_pipeline(spec_path, workdir, to_stage="pytorchsim-compile", tog=False, timeout=None):
     """Drive the compiler's stages over `spec_path`, writing artifacts into `workdir`, up to
-    `to_stage` (by default `pytorchsim-compile`, the ELF)."""
+    `to_stage` (by default `pytorchsim-compile`, the ELF). `timeout` is seconds, by default
+    TORCHSIM_COMPILE_TIMEOUT or 1800; 0 waits as long as it takes."""
+    if timeout is None:
+        timeout = int(os.environ.get("TORCHSIM_COMPILE_TIMEOUT") or 1800)
+    timeout = timeout or None
     cmd = [config.CONFIG_TORCHSIM_COMPILE_PYTHON,
            os.path.join(compiler_dir(), "pytorchsim-triton-compiler"), spec_path,
            "--from", "triton-compile", "--to", to_stage, "--workdir", workdir] + (["--tog"] if tog else [])

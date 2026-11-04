@@ -6,9 +6,9 @@ depthwise stencil (convolution.py). Rewrites after AOTAutograd are inductor/post
 def install():
     """Register every op's npu kernel, once each."""
     from pytorchsim import config
-    from . import attention, attention_paged_kvcache, convolution, grouped_mm, grouped_mm_xla_structure, sort, topk
-    attention.install(attention_paged_kvcache.PAGED_SDPA if config.CONFIG_VALIDATION_KVCACHE_LAYOUT == "paged" else None)
+    from . import attention, attention_paged_kvcache, convolution, grouped_mm, grouped_mm_megablox, sort, topk
+    attention.install(attention_paged_kvcache.PAGED_SDPA if config.CONFIG_KVCACHE_LAYOUT == "paged" else None)
     convolution.install()
-    (grouped_mm_xla_structure if "megablox" in config.CONFIG_VALIDATION_XLA_STRUCTURE else grouped_mm).install()
+    (grouped_mm_megablox if config.CONFIG_GROUPED_MM_STRUCTURE == "megablox" else grouped_mm).install()
     sort.install()
     topk.install()

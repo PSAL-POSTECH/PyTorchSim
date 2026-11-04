@@ -1,4 +1,4 @@
-"""Validation only (TORCHSIM_VALIDATION_XLA_STRUCTURE=megablox): aten._grouped_mm as megablox's structure, the one
+"""TORCHSIM_GROUPED_MM_STRUCTURE=megablox: aten._grouped_mm as megablox's structure, the one
 XLA runs on v6e -- a program per (row tile, group) visit, V = tiles_m + G - 1 at most, each reading its group's
 weight again and computing all TM rows of the tile, TM as torch_xla picks it; only the group's rows are stored."""
 
@@ -18,7 +18,7 @@ TM_LIMIT, TKN_LIMIT = 512, 2048
 
 
 class GroupedMMMegablox(GroupedMM):
-    name = "torchsim::grouped_mm_xla_structure"
+    name = "torchsim::grouped_mm_megablox"
 
     def kernels(self):
         return (_megablox_kernel,)

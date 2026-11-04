@@ -6,16 +6,18 @@ import logging
 CONFIG_TORCHSIM_DIR = os.environ.get('TORCHSIM_DIR', default='/workspace/PyTorchSim')
 #: How many Spike processes a launch's grid is split across; empty lets the launcher choose.
 CONFIG_SPIKE_JOBS = os.environ.get("TORCHSIM_SPIKE_JOBS", "").strip()
-#: Validation only: the XLA structures to run in place of ours, comma-separated ("megablox": MoE grouped matmul
-#: as megablox's (row tile, group) visits); empty for none, the default.
-CONFIG_VALIDATION_XLA_STRUCTURE = frozenset(
-    m for m in os.environ.get("TORCHSIM_VALIDATION_XLA_STRUCTURE", "").replace(" ", "").split(",") if m)
-#: Validation only: how the harness lays out a decode's KV cache and the decode kernel reads it -- "headwise" (the
+#: How grouped_mm runs a MoE's experts -- "pergroup" (the default: a program a group with rows, its weight read
+#: once) or "megablox" (torch_xla's Pallas gmm on v6e: a program a (row tile, group) visit, the weight read again
+#: at each, the whole row tile computed).
+CONFIG_GROUPED_MM_STRUCTURE = os.environ.get("TORCHSIM_GROUPED_MM_STRUCTURE", "pergroup").strip() or "pergroup"
+if CONFIG_GROUPED_MM_STRUCTURE not in ("pergroup", "megablox"):
+    raise ValueError(f"TORCHSIM_GROUPED_MM_STRUCTURE={CONFIG_GROUPED_MM_STRUCTURE!r}: pergroup or megablox")
+#: How the harness lays out a decode's KV cache and the decode kernel reads it -- "headwise" (the
 #: default: [B, H, S, D], a program a KV head) or "paged" (ragged paged attention's tokenwise pages [S, K and V of
 #: every head, D], read in place, a program a sequence).
-CONFIG_VALIDATION_KVCACHE_LAYOUT = os.environ.get("TORCHSIM_VALIDATION_KVCACHE_LAYOUT", "headwise").strip() or "headwise"
-if CONFIG_VALIDATION_KVCACHE_LAYOUT not in ("headwise", "paged"):
-    raise ValueError(f"TORCHSIM_VALIDATION_KVCACHE_LAYOUT={CONFIG_VALIDATION_KVCACHE_LAYOUT!r}: headwise or paged")
+CONFIG_KVCACHE_LAYOUT = os.environ.get("TORCHSIM_KVCACHE_LAYOUT", "headwise").strip() or "headwise"
+if CONFIG_KVCACHE_LAYOUT not in ("headwise", "paged"):
+    raise ValueError(f"TORCHSIM_KVCACHE_LAYOUT={CONFIG_KVCACHE_LAYOUT!r}: headwise or paged")
 #: The compiler checkout (stages 1-5, ttir to the RISC-V ELF), a separate repository, not vendored.
 CONFIG_TORCHSIM_COMPILE_DIR = os.environ.get(
     "TORCHSIM_COMPILE_DIR", default=os.path.join(CONFIG_TORCHSIM_DIR, "pytorchsim-triton-compiler"))

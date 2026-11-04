@@ -1,4 +1,4 @@
-"""Validation only (TORCHSIM_VALIDATION_KVCACHE_LAYOUT=paged): the decode read as v6e's ragged paged attention
+"""TORCHSIM_KVCACHE_LAYOUT=paged: the decode read as v6e's ragged paged attention
 reads it -- one program a sequence walking its KV in steps, every KV head in it, K and V read in place from the
 harness's tokenwise pages by their strides, not made contiguous per head. Prefill and every value as FusedSDPA."""
 

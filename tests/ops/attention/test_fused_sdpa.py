@@ -33,7 +33,7 @@ math case to a kernel, fails:
   counts     a compiled prefill called twice counts two launches, not its traces; under
              backend="eager" the call runs math, and only the fallback is counted
   layout     a v viewed and transposed out of a projection is read in place (one launch)
-  paged_kvcache  validation mode: a decode over tokenwise page views is read in place by the paged kernel
+  paged_kvcache  TORCHSIM_KVCACHE_LAYOUT=paged: a decode over tokenwise page views is read in place by the paged kernel
   attention  torchsim::attention's sliding window and logit softcap (gemma3's 512 window at S 1024, and
              at S 2048, where rows have no key of an earlier block in the window, gemma2's softcap) in the
              prefill and decode kernels, and an MLA prefill through SDPA (k's D
@@ -360,14 +360,14 @@ def run_masked(name):
 
 
 def run_paged_kvcache(name):
-    """Validation mode (TORCHSIM_VALIDATION_KVCACHE_LAYOUT=paged, in a process of its own): a decode over K and V
+    """TORCHSIM_KVCACHE_LAYOUT=paged (in a process of its own): a decode over K and V
     viewed out of the harness's tokenwise pages (one_layer._paged) runs as one _paged_decode_kernel reading them in
     place -- no copy kernel -- with the reference's values. Breaks if the views are copied or read wrong."""
     import subprocess
     from pytorchsim import config
     from pytorchsim.backend import launch_hooks
-    if config.CONFIG_VALIDATION_KVCACHE_LAYOUT != "paged":
-        env = dict(os.environ, TORCHSIM_VALIDATION_KVCACHE_LAYOUT="paged")
+    if config.CONFIG_KVCACHE_LAYOUT != "paged":
+        env = dict(os.environ, TORCHSIM_KVCACHE_LAYOUT="paged")
         out = subprocess.run([sys.executable, __file__, name], env=env, capture_output=True, text=True)
         said = [l for l in out.stdout.splitlines() if l.startswith(name)]
         print(said[-1] if said else f"{name}: FAIL {out.stderr[-400:]}", flush=True)

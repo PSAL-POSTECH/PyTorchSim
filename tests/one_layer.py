@@ -127,7 +127,7 @@ def _reads_given(cache, given, device, dtype=None):
     writes nothing: the TPU decode row reads its full cache in place, with no copy of it per step."""
     given = [g if g is None else tuple(t.to(device, dtype or t.dtype).contiguous() for t in g) for g in given]
     from pytorchsim import config
-    if config.CONFIG_VALIDATION_KVCACHE_LAYOUT == "paged":
+    if config.CONFIG_KVCACHE_LAYOUT == "paged":
         given = [g if g is None else _paged(*g) for g in given]
     base = type(cache)
 

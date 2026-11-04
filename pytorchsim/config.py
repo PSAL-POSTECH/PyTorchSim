@@ -10,12 +10,12 @@ CONFIG_SPIKE_JOBS = os.environ.get("TORCHSIM_SPIKE_JOBS", "").strip()
 #: as megablox's (row tile, group) visits); empty for none, the default.
 CONFIG_VALIDATION_XLA_STRUCTURE = frozenset(
     m for m in os.environ.get("TORCHSIM_VALIDATION_XLA_STRUCTURE", "").replace(" ", "").split(",") if m)
-#: Validation only: how the harness lays out a decode's KV cache and the decode kernel reads it -- "headwise" (the
+#: How the harness lays out a decode's KV cache and the decode kernel reads it -- "headwise" (the
 #: default: [B, H, S, D], a program a KV head) or "paged" (ragged paged attention's tokenwise pages [S, K and V of
 #: every head, D], read in place, a program a sequence).
-CONFIG_VALIDATION_KVCACHE_LAYOUT = os.environ.get("TORCHSIM_VALIDATION_KVCACHE_LAYOUT", "headwise").strip() or "headwise"
-if CONFIG_VALIDATION_KVCACHE_LAYOUT not in ("headwise", "paged"):
-    raise ValueError(f"TORCHSIM_VALIDATION_KVCACHE_LAYOUT={CONFIG_VALIDATION_KVCACHE_LAYOUT!r}: headwise or paged")
+CONFIG_KVCACHE_LAYOUT = os.environ.get("TORCHSIM_KVCACHE_LAYOUT", "headwise").strip() or "headwise"
+if CONFIG_KVCACHE_LAYOUT not in ("headwise", "paged"):
+    raise ValueError(f"TORCHSIM_KVCACHE_LAYOUT={CONFIG_KVCACHE_LAYOUT!r}: headwise or paged")
 #: The compiler checkout (stages 1-5, ttir to the RISC-V ELF), a separate repository, not vendored.
 CONFIG_TORCHSIM_COMPILE_DIR = os.environ.get(
     "TORCHSIM_COMPILE_DIR", default=os.path.join(CONFIG_TORCHSIM_DIR, "pytorchsim-triton-compiler"))

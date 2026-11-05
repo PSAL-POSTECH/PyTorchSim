@@ -1,19 +1,13 @@
-"""One decoder layer of a real-size model test alone on the device, at one point of the TPU v6e grid,
-``--seq S`` a prefill of S tokens, ``--decode S`` one step at position S - 1 that reads a cache of S already
-filled and writes nothing to it, as the TPU decode row does (`_reads_given`); an MLA layer's attention is handed
-the step's K and V whole, as the TPU harness does, see `_given_kv`. The layer's inputs and cache come from the model's
-float32 reference (result_check.f32_reference) on the CPU, rounded to the dtypes the model's own forward
-gives them; the device runs the model's layer on those, the reference the same values in float32.
-
-Imported the way result_check is (tests/ on sys.path): ``import one_layer``.
-"""
+"""One decoder layer of a real-size model on the device at a TPU v6e grid point: ``--seq S`` a prefill,
+``--decode S`` a step at S - 1 writing its K and V into slot S - 1 in place, as the TPU decode row does;
+inputs from the float32 reference, rounded to the forward's dtypes. ``import one_layer`` (tests/ on path)."""
 
 import contextlib
 import copy
 
 import torch
 
-from result_check import f32, f32_reference
+from result_check import check_result, f32, f32_reference
 
 
 class _Stop(Exception):
@@ -109,35 +103,61 @@ def _mla_attention(layer):
     return next((m for m in layer.modules() if hasattr(m, "kv_b_proj") and hasattr(m, "kv_lora_rank")), None)
 
 
-def _given_kv_of(step, filled):
-    """Per cache layer, the K and V its update would hand the step (`step`'s S - 1, or its sliding window, then
-    the step's own token, the last of `filled`), built once off the device; None where a layer holds none."""
-    out = []
-    for a, b in zip(step.layers, filled.layers):
-        keys, values = getattr(a, "keys", None), getattr(a, "values", None)
-        if keys is None or getattr(b, "keys", None) is None:
-            out.append(None)
-            continue
-        out.append((torch.cat([keys, b.keys[:, :, -1:]], 2), torch.cat([values, b.values[:, :, -1:]], 2)))
-    return out
-
-
-def _reads_given(cache, given, device, dtype=None):
-    """`cache` whose update hands each layer its `given` K and V (on `device`, in `dtype` or as they are) and
-    writes nothing: the TPU decode row reads its full cache in place, with no copy of it per step."""
-    given = [g if g is None else tuple(t.to(device, dtype or t.dtype).contiguous() for t in g) for g in given]
+def _writes_in_place(cache, device, dtype=None):
+    """`cache` (CPU) on `device` in `dtype`, each layer's K and V grown by one empty slot that update fills in
+    place with the step's own K and V, at a Python-int slot so the store address is a compile-time constant
+    (tokenwise into the page tensor itself); the layer gets the whole buffer."""
     from pytorchsim import config
-    if config.CONFIG_KVCACHE_LAYOUT == "tokenwise":
-        given = [g if g is None else _paged(*g) for g in given]
+    slots, pages = [], []
+    for layer in cache.layers:
+        keys, values = getattr(layer, "keys", None), getattr(layer, "values", None)
+        if keys is None:
+            slots.append(None)
+            pages.append(None)
+            continue
+        kv = [torch.cat([t, t.new_zeros(*t.shape[:2], 1, t.shape[3])], 2).to(dtype or t.dtype)
+              for t in (keys, values)]
+        tokenwise = config.CONFIG_KVCACHE_LAYOUT == "tokenwise" and kv[0].shape == kv[1].shape
+        page = _get_pages(*kv).to(device) if tokenwise else None
+        layer.keys, layer.values = _get_views(page) if tokenwise else [t.to(device).contiguous() for t in kv]
+        pages.append(page)
+        slots.append(int(keys.shape[2]))
     base = type(cache)
 
     def update(self, key_states, value_states, layer_idx, *args, **kwargs):
-        if given[layer_idx] is None:
+        slot, page = self._slots[layer_idx], self._pages[layer_idx]
+        if slot is None:
             return base.update(self, key_states, value_states, layer_idx, *args, **kwargs)
-        return given[layer_idx]
+        if page is not None:
+            new = torch.stack([key_states, value_states], 2).permute(0, 3, 1, 2, 4).flatten(2, 3)
+            page[:, slot:slot + 1].copy_(new)
+            return _get_views(page)
+        layer = self.layers[layer_idx]
+        layer.keys[:, :, slot:slot + 1].copy_(key_states)
+        layer.values[:, :, slot:slot + 1].copy_(value_states)
+        return layer.keys, layer.values
 
-    cache.__class__ = type(f"Reads{base.__name__}", (base,), {"update": update})
+    cache.__class__ = type(f"InPlace{base.__name__}", (base,), {"update": update})
+    cache._slots, cache._pages = slots, pages
     return cache
+
+
+def _check_written(ref_cache, device_cache, before):
+    """Each layer's written slot of `device_cache` against `ref_cache`'s, and every slot before it as placed
+    (`before`); prints a line, not a verdict (run_grid counts one per point): a mismatch fails through
+    check_result."""
+    for i, slot in enumerate(device_cache._slots):
+        if slot is None:
+            continue
+        for name in ("keys", "values"):
+            got = getattr(device_cache.layers[i], name).cpu()
+            want = getattr(ref_cache.layers[i], name)[:, :, -1:].float()
+            if not torch.equal(got[:, :, :-1], before[i][name]):
+                raise AssertionError(f"layer {i} {name}: a slot before the step's moved")
+            what, tol = f"KV cache layer {i} {name} slot {got.shape[2] - 1}", 5e-2 * float(want.abs().max())
+            if not torch.allclose(got[:, :, -1:].float(), want, rtol=5e-2, atol=tol):
+                check_result(what, got[:, :, -1:], want, rtol=5e-2, atol=tol)
+            print(f"{what} written: max diff {(got[:, :, -1:].float() - want).abs().max().item():.3g}")
 
 
 def _paged(k, v):
@@ -145,10 +165,20 @@ def _paged(k, v):
     ragged paged attention's kv_pages hold them (pages in order: page_indices the identity, as the TPU row runs)."""
     if k.shape != v.shape:
         return k, v
+    return _get_views(_get_pages(k, v))
+
+
+def _get_pages(k, v):
+    """The tokenwise page tensor [B, S, 2H, D] of K and V [B, H, S, D]: head h's K at 2h, its V at 2h + 1."""
     b, h, s, d = k.shape
     pages = torch.empty(b, s, 2 * h, d, dtype=k.dtype, device=k.device)
     pages[:, :, 0::2] = k.transpose(1, 2)
     pages[:, :, 1::2] = v.transpose(1, 2)
+    return pages
+
+
+def _get_views(pages):
+    """K and V [B, H, S, D] as views of tokenwise `pages`."""
     return pages[:, :, 0::2].transpose(1, 2), pages[:, :, 1::2].transpose(1, 2)
 
 
@@ -159,10 +189,9 @@ def _swap(x, old, new):
             {k: new if v is old else v for k, v in kwargs.items()})
 
 
-
 def _drop_plain_mask(kwargs):
-    """`kwargs` without an attention_mask that says only what no mask does (all keys at L 1, causal at L == S), as
-    the TPU rows pass none: ragged paged attention and causal splash read the shared KV heads, unmasked."""
+    """`kwargs` without an attention_mask saying only what no mask does (all keys at L 1, causal at L == S),
+    as the TPU rows pass none: ragged paged attention and causal splash read the shared KV heads, unmasked."""
     m = kwargs.get("attention_mask")
     if not torch.is_tensor(m) or m.dim() != 4 or m.shape[-2] not in (1, m.shape[-1]):
         return kwargs
@@ -173,6 +202,7 @@ def _drop_plain_mask(kwargs):
     if not torch.equal(keep, torch.ones(q, k, dtype=torch.bool).tril(k - q).expand_as(keep)):
         return kwargs
     return {**kwargs, "attention_mask": None}
+
 
 @contextlib.contextmanager
 def _given_kv(impl, seen):
@@ -232,12 +262,11 @@ def run(body, layer, config, ids, device, decode=False, compile_model=True, **ex
         args, kwargs = _run_until(ref_body, ref_layer, False,
                                   **point.tokens(s - 1, s, past_key_values=ref_cache, use_cache=True))
         if _mla_attention(layer) is None:
-            filled = DynamicCache(config=config)
-            _run_until(ref_body, ref_layer, True, **point.tokens(0, s, past_key_values=filled, use_cache=True))
-            given = _given_kv_of(rounded_cache, _cache_like(filled, probe_cache, cpu))
             step_cache = ref_cache
-            ref_cache = _reads_given(_cache_like(rounded_cache, torch.float32, cpu), given, cpu, torch.float32)
-            device_cache = _reads_given(_cache_like(rounded_cache, rounded_cache, device), given, device)
+            ref_cache = _writes_in_place(_cache_like(rounded_cache, torch.float32, cpu), cpu, torch.float32)
+            device_cache = _writes_in_place(_cache_like(rounded_cache, rounded_cache, cpu), device)
+            before = [None if t is None else {n: getattr(l, n)[:, :, :-1].cpu() for n in ("keys", "values")}
+                      for l, t in zip(device_cache.layers, device_cache._slots)]
             args, kwargs = _swap((args, kwargs), step_cache, ref_cache)
     else:
         probe = _run_until(body, layer, False, **point.tokens(0, 2, use_cache=False))
@@ -254,7 +283,10 @@ def run(body, layer, config, ids, device, decode=False, compile_model=True, **ex
     layer.to(device)
     device_layer = torch.compile(layer, dynamic=False) if compile_model else layer
     device_args, device_kwargs = _like(rounded, rounded, device, (ref_cache, device_cache))
-    return ref_out, _first_tensor(device_layer(*device_args, **device_kwargs))
+    device_out = _first_tensor(device_layer(*device_args, **device_kwargs))
+    if decode:
+        _check_written(ref_cache, device_cache, before)
+    return ref_out, device_out
 
 
 def _run_mla_decode(layer, ref_layer, mla, ref_mla, rounded, ref_args, ref_kwargs, ref_cache, device,

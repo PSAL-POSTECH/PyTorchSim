@@ -1,6 +1,6 @@
-"""TORCHSIM_KVCACHE_LAYOUT=paged: the decode read as v6e's ragged paged attention
-reads it -- one program a sequence walking its KV in steps, every KV head in it, K and V read in place from the
-harness's tokenwise pages by their strides, not made contiguous per head. Prefill and every value as FusedSDPA."""
+"""TORCHSIM_KVCACHE_LAYOUT=tokenwise: the decode read as v6e's ragged paged attention reads it -- one program
+a sequence walking its KV in steps, every KV head in it, K and V read in place from the harness's tokenwise
+pages by their strides, not made contiguous per head. Prefill and every value as FusedSDPA."""
 
 from typing import Optional
 
@@ -9,7 +9,7 @@ import triton
 import triton.language as tl
 from torch.library import wrap_triton
 
-from pytorchsim.frontend.dispatcher.attention import FusedSDPA, _attend, _decode_kernel
+from pytorchsim.frontend.dispatcher.attention import FusedSDPA, _attend, _bias_as_strides, _decode_kernel
 
 
 class PagedSDPA(FusedSDPA):
@@ -27,10 +27,11 @@ class PagedSDPA(FusedSDPA):
         q = query.contiguous()
         o = q.new_empty(B, Hq, L, DV)
         kv0 = (S - window) // plan["BKV"] * plan["BKV"] if window else 0
+        m, kind, mstride = _bias_as_strides(attn_bias, (B, Hq, L, S))
         wrap_triton(_paged_decode_kernel)[(B, 1, 1)](
-            q, k, v, o, H, Hq // H, plan["GP"], S, D, plan["DA"], D - plan["DA"], DV, plan["BKV"],
+            q, k, v, o, m, H, Hq // H, plan["GP"], S, D, plan["DA"], D - plan["DA"], DV, plan["BKV"],
             scale, softcap, window, kv0, plan["KEYS"], plan["DW"], plan["VW"],
-            *k.stride()[:3], *v.stride()[:3])
+            *k.stride()[:3], *v.stride()[:3], kind, mstride[0], mstride[1], mstride[3])
         return o
 
 
@@ -38,15 +39,17 @@ PAGED_SDPA = PagedSDPA()
 
 
 @triton.jit
-def _paged_decode_kernel(q_ptr, k_ptr, v_ptr, o_ptr, HKV: tl.constexpr, G: tl.constexpr,
+def _paged_decode_kernel(q_ptr, k_ptr, v_ptr, o_ptr, m_ptr, HKV: tl.constexpr, G: tl.constexpr,
                          GP: tl.constexpr, S: tl.constexpr, D: tl.constexpr, DA: tl.constexpr,
                          DB: tl.constexpr, DV: tl.constexpr, BKV: tl.constexpr, SCALE: tl.constexpr,
                          SOFTCAP: tl.constexpr, WINDOW: tl.constexpr, KV0: tl.constexpr,
                          KEYS: tl.constexpr, DW: tl.constexpr, VW: tl.constexpr,
                          KB: tl.constexpr, KH: tl.constexpr, KS: tl.constexpr,
-                         VB: tl.constexpr, VH: tl.constexpr, VS: tl.constexpr):
+                         VB: tl.constexpr, VH: tl.constexpr, VS: tl.constexpr,
+                         MKIND: tl.constexpr = 0, MB: tl.constexpr = 0, MH: tl.constexpr = 0,
+                         MK: tl.constexpr = 0):
     """Sequence pid: each KV head's G query heads over its keys, K and V at (batch, head, token) strides.
-    KEYS, DW and VW (0: none) are what the padding is masked back to, as _decode_kernel reads them."""
+    KEYS, DW, VW (0: none) and the MKIND (0: none) mask at m_ptr are what _decode_kernel reads them as."""
     b = tl.program_id(0)
     rg = tl.arange(0, GP)
     ra = tl.arange(0, DA)
@@ -67,10 +70,11 @@ def _paged_decode_kernel(q_ptr, k_ptr, v_ptr, o_ptr, HKV: tl.constexpr, G: tl.co
         m_i = tl.full((GP,), -1.0e30, dtype=tl.float32)
         l_i = tl.zeros((GP,), dtype=tl.float32)
         acc = tl.zeros((GP, DV), dtype=tl.float32)
+        mbase = b * MB + (h * G + tl.where(rows, rg[:, None], 0)) * MH
         for start in range(KV0, S, BKV):
             m_i, l_i, acc = _attend(q, qx, m_i, l_i, acc, k_ptr, v_ptr, b * KB + h * KH, b * VB + h * VH, pos,
                                     start + tl.arange(0, BKV), KS, VS, DA, DB, DV, SCALE, SOFTCAP, False, WINDOW,
-                                    False, KEYS, DW, VW, 0, None, 0, 0, 0, 0)
+                                    False, KEYS, DW, VW, 0, m_ptr, mbase, 0, MK, MKIND)
         op = o_ptr + (b * HKV + h) * (G * DV) + rg[:, None] * DV + rv[None, :]
         out = (acc / l_i[:, None]).to(o_ptr.dtype.element_ty)
         if VW > 0:

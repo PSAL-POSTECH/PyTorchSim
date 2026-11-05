@@ -15,10 +15,11 @@ math case to a kernel, fails:
   fallback   a causal decode (SDPA's is_causal is top-left: an L == 1 query attends key 0 alone),
              and a call whose inputs require grad (whose gradients are checked against the CPU's:
              the overrideable op has no backward)
-  mask       a mask reaches the prefill kernel: Mllama's cross-attention mask as HF builds it (additive,
+  mask       a mask reaches both kernels: Mllama's cross-attention mask as HF builds it (additive,
              [1, 1, L, S]) and as a bool, and one that masks a whole KV block out of every query row
-             (the online softmax must take nothing from a block it masks whole); a mask on an L == 1
-             decode stays the fallback
+             (the online softmax must take nothing from a block it masks whole); on an L == 1 decode,
+             which is what a HF layer hands a filled KV cache, over a power-of-two S and a padded one, and a
+             random per-batch, per-head mask (B 2, Hq 8, H 2, S 256), additive and bool
   shapes     plan() on meta tensors for the shapes the model suite brings, each a kernel or a
              Decline, so the gates are read without simulating: Mllama's vision tower (D 80, S 1601)
              and its cross-attention (L 32, S 6404), Qwen-VL's vision tower (D 80), and the
@@ -33,7 +34,8 @@ math case to a kernel, fails:
   counts     a compiled prefill called twice counts two launches, not its traces; under
              backend="eager" the call runs math, and only the fallback is counted
   layout     a v viewed and transposed out of a projection is read in place (one launch)
-  paged_kvcache  TORCHSIM_KVCACHE_LAYOUT=paged: a decode over tokenwise page views is read in place by the paged kernel
+  paged_kvcache  TORCHSIM_KVCACHE_LAYOUT=tokenwise: a decode over tokenwise page views is read in place by
+             the paged kernel, without a mask, with the one a HF layer hands it, and the per-head random ones
   attention  torchsim::attention's sliding window and logit softcap (gemma3's 512 window at S 1024, and
              at S 2048, where rows have no key of an earlier block in the window, gemma2's softcap) in the
              prefill and decode kernels, and an MLA prefill through SDPA (k's D
@@ -75,7 +77,8 @@ SHAPES = {
     "mllama_cross": ((1, 32, 8, 32, 6404, 128, 128, False, (1, 1, 32, 6404)), "_prefill_kernel"),
     "qwen_vl_vision": ((1, 16, 16, 16, 16, 80, 80, False, None), "_prefill_kernel"),
     "causal_l_not_s": ((1, 32, 8, 32, 6404, 128, 128, True, None), "Decline"),
-    "mask_on_decode": ((1, 32, 8, 1, 6404, 128, 128, False, (1, 1, 1, 6404)), "Decline"),
+    "mask_on_decode": ((1, 32, 8, 1, 6404, 128, 128, False, (1, 1, 1, 6404)), "_decode_kernel"),
+    "mask_per_head_decode": ((1, 32, 8, 1, 1024, 128, 128, False, (1, 32, 1, 1024)), "_decode_kernel"),
     "mask_wrong_head": ((1, 32, 8, 32, 6404, 128, 128, False, (1, 4, 32, 6404)), "Decline"),
 }
 
@@ -84,7 +87,19 @@ MASK_CASES = {
     "mask_cross_additive": ("_prefill_kernel", 1, 4, 2, 32, 200, 64, "additive"),
     "mask_cross_bool": ("_prefill_kernel", 1, 4, 2, 32, 200, 64, "bool"),
     "mask_blocks": ("_prefill_kernel", 1, 1, 1, 2048, 2048, 64, "blocks"),
-    "mask_decode": ("fallback", 1, 8, 2, 1, 256, 64, "additive"),
+    "mask_decode": ("_decode_kernel", 1, 8, 2, 1, 256, 64, "additive"),
+    "mask_decode_bool": ("_decode_kernel", 1, 8, 2, 1, 256, 64, "bool"),
+    "mask_decode_pad_keys": ("_decode_kernel", 1, 8, 2, 1, 300, 64, "additive"),
+    "mask_decode_per_head": ("_decode_kernel", 2, 8, 2, 1, 256, 64, "random"),
+    "mask_decode_per_head_bool": ("_decode_kernel", 2, 8, 2, 1, 256, 64, "random_bool"),
+}
+
+#  name: (B, Hq, H, S, D, the mask's kind or None) of a tokenwise paged decode
+PAGED_CASES = {
+    "paged_kvcache": (1, 8, 2, 512, 128, None),
+    "paged_kvcache_masked": (1, 8, 2, 512, 128, "additive"),
+    "paged_kvcache_per_head": (2, 8, 2, 256, 128, "random"),
+    "paged_kvcache_per_head_bool": (2, 8, 2, 256, 128, "random_bool"),
 }
 
 TOL = 2e-2  # max |err| over max |ref|: bf16 inputs, f32 softmax state
@@ -326,16 +341,21 @@ def run_shapes(name):
     return not bad
 
 
-def _mask_for(kind, L, S, dtype):
-    """A [1, 1, L, S] mask: "blocks" gives each query row the half of the keys its own half is not in, so
-    one whole KV block is masked out of every row; the others keep the first three quarters of the keys."""
+def _mask_for(kind, L, S, dtype, B=1, Hq=1):
+    """A [1, 1, L, S] mask ("blocks": each row the keys outside its own half; else the first three quarters),
+    or for "random"/"random_bool" a [B, Hq, L, S] one drawn per batch, head and row, key 0 always kept."""
     rows, cols = torch.arange(L)[:, None], torch.arange(S)[None, :]
-    keep = (torch.where(rows < L // 2, cols >= S // 2, cols < S // 2) if kind == "blocks"
-            else (cols < (S * 3) // 4).expand(L, S))
-    keep = keep.reshape(1, 1, L, S).contiguous()
-    if kind == "bool":
+    if kind.startswith("random"):
+        keep = torch.rand(B, Hq, L, S, generator=torch.Generator().manual_seed(1)) < 0.6
+        keep[..., 0] = True
+    else:
+        keep = (torch.where(rows < L // 2, cols >= S // 2, cols < S // 2) if kind == "blocks"
+                else (cols < (S * 3) // 4).expand(L, S))
+        keep = keep.reshape(1, 1, L, S).contiguous()
+    if kind.endswith("bool"):
         return keep
-    return torch.zeros(1, 1, L, S, dtype=dtype).masked_fill(~keep, torch.finfo(dtype).min)
+    B, Hq = keep.shape[:2]
+    return torch.zeros(B, Hq, L, S, dtype=dtype).masked_fill(~keep, torch.finfo(dtype).min)
 
 
 def run_masked(name):
@@ -343,7 +363,7 @@ def run_masked(name):
     float32 SDPA given the same mask on the CPU."""
     route, B, Hq, H, L, S, D, kind = MASK_CASES[name]
     q, k, v = _inputs(B, Hq, H, L, S, D)
-    mask = _mask_for(kind, L, S, torch.bfloat16)
+    mask = _mask_for(kind, L, S, torch.bfloat16, B, Hq)
     gqa = Hq != H
     call = lambda q, k, v, m: F.scaled_dot_product_attention(q, k, v, attn_mask=m, enable_gqa=gqa)
     ref = call(q.float(), k.float(), v.float(), mask if mask.dtype == torch.bool else mask.float())
@@ -360,35 +380,40 @@ def run_masked(name):
 
 
 def run_paged_kvcache(name):
-    """TORCHSIM_KVCACHE_LAYOUT=paged (in a process of its own): a decode over K and V
-    viewed out of the harness's tokenwise pages (one_layer._paged) runs as one _paged_decode_kernel reading them in
-    place -- no copy kernel -- with the reference's values. Breaks if the views are copied or read wrong."""
+    """TORCHSIM_KVCACHE_LAYOUT=tokenwise (in a process of its own): a decode over K and V viewed out of the
+    harness's tokenwise pages (one_layer._paged) runs as one _paged_decode_kernel reading them in place --
+    no copy kernel; a bool mask first takes SDPA's where to additive -- under its PAGED_CASES mask."""
     import subprocess
     from pytorchsim import config
     from pytorchsim.backend import launch_hooks
-    if config.CONFIG_KVCACHE_LAYOUT != "paged":
-        env = dict(os.environ, TORCHSIM_KVCACHE_LAYOUT="paged")
+    if config.CONFIG_KVCACHE_LAYOUT != "tokenwise":
+        env = dict(os.environ, TORCHSIM_KVCACHE_LAYOUT="tokenwise")
         out = subprocess.run([sys.executable, __file__, name], env=env, capture_output=True, text=True)
         said = [l for l in out.stdout.splitlines() if l.startswith(name)]
         print(said[-1] if said else f"{name}: FAIL {out.stderr[-400:]}", flush=True)
         return out.returncode == 0
     from one_layer import _paged
-    B, Hq, H, S, D = 1, 8, 2, 512, 128
+    B, Hq, H, S, D, kind = PAGED_CASES[name]
     q, k, v = _inputs(B, Hq, H, 1, S, D)
-    ref = _sdpa(q.float(), k.float(), v.float(), False)
+    mask = None if kind is None else _mask_for(kind, 1, S, torch.bfloat16, B, Hq)
+    call = lambda q, k, v, m: F.scaled_dot_product_attention(q, k, v, attn_mask=m, enable_gqa=True)
+    ref = call(q.float(), k.float(), v.float(), mask if mask is None or mask.dtype == torch.bool else mask.float())
     kp, vp = _paged(k.to(device), v.to(device))
     launches = []
     launch_hooks.observe_every_launch(lambda launcher: launches.append(getattr(launcher, "kernel_name", "?")))
     torch._dynamo.reset()
     with torch.no_grad():
-        out = torch.compile(lambda q, k, v: _sdpa(q, k, v, False), dynamic=False)(q.to(device), kp, vp)
+        out = torch.compile(call, dynamic=False)(q.to(device), kp, vp,
+                                                 None if mask is None else mask.to(device))
     err = _err(out.cpu(), ref)
-    ok = err < TOL and launches == ["_paged_decode_kernel"]
+    converted = mask is not None and mask.dtype == torch.bool
+    ok = err < TOL and launches[-1:] == ["_paged_decode_kernel"] and len(launches) == 1 + converted
     print(f"{name}: launches={launches} strides={kp.stride()} err={err:.3e} {'PASS' if ok else 'FAIL'}", flush=True)
     return ok
 
 
-EXTRA = {"shapes": run_shapes, "spad": run_spad, "paged_kvcache": run_paged_kvcache, "requires_grad": run_grad, "eager": run_eager,
+EXTRA = {"shapes": run_shapes, "spad": run_spad, **{n: run_paged_kvcache for n in PAGED_CASES},
+         "requires_grad": run_grad, "eager": run_eager,
          "inference_mode": run_eager, "inference_mode_compiled": run_eager, "counts": run_counts, "layout": run_layout,
          **{n: run_attention for n in ATTENTION_CASES},
          **{n: run_masked for n in MASK_CASES}}

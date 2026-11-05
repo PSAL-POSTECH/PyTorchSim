@@ -39,5 +39,19 @@ def _reference(module, query, key, value, attention_mask, dropout, scaling, slid
         return sdpa_attention_forward(module, query, key, value, attention_mask, dropout=dropout,
                                       scaling=scaling, **kwargs)
     eager = sys.modules[type(module).__module__].eager_attention_forward
+    if attention_mask is None and getattr(module, "is_causal", True):
+        attention_mask = _build_causal_band(query, key, sliding_window)
     return eager(module, query, key, value, attention_mask, dropout=dropout, scaling=scaling, softcap=softcap,
                  sliding_window=sliding_window, **kwargs)
+
+
+def _build_causal_band(query, key, sliding_window):
+    """The additive mask [1, 1, L, S] no mask means on the npu (is_causal, `sliding_window`): eager attention
+    applies causality only through its mask, so a dropped plain mask is restated here, the last L of S keys
+    being the queries'."""
+    q, k = query.shape[-2], key.shape[-2]
+    i = torch.arange(q, device=query.device)[:, None] + (k - q)
+    j = torch.arange(k, device=query.device)[None, :]
+    keep = (j <= i) & ((i - j < sliding_window) if sliding_window else True)
+    zero = torch.zeros((), dtype=query.dtype, device=query.device)
+    return torch.where(keep, zero, torch.finfo(query.dtype).min)[None, None]

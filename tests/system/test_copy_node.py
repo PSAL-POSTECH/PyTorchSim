@@ -10,6 +10,7 @@ sys.path.insert(0, os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim
 import torch  # noqa: E402
 
 _LAUNCHED = []
+_OBSERVING = []
 
 from pytorchsim import config, contract  # noqa: E402
 from pytorchsim.frontend.inductor.autotune import mm_resident  # noqa: E402
@@ -163,10 +164,12 @@ def test_its_configs_are_the_compiler_s_tiles_best_first():
 
 
 def _launched(fn, *xs, **kw):
-    """`fn` run on the npu over `xs` (compiled unless `eager`), with the meta of every kernel it launched."""
+    """`fn` run on the npu over `xs` (compiled unless `eager`), with the meta of every kernel it launched; the
+    observer is registered once per process, so a test sees each launch once whatever ran before it."""
     from pytorchsim.backend import launch_hooks
-    if not _LAUNCHED:
+    if not _OBSERVING:
         launch_hooks.observe_every_launch(lambda la: _LAUNCHED and _LAUNCHED[-1].append(la.meta))
+        _OBSERVING.append(True)
     _LAUNCHED.append([])
     torch._dynamo.reset()
     run = fn if kw.pop("eager", False) else torch.compile(fn, dynamic=False)

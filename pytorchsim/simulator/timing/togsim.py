@@ -16,6 +16,9 @@ from pytorchsim import config
 
 logger = config.setup_logger()
 
+#: The first TOGSim that places a launch's tensors at the addresses tog_tensor_addrs.txt gives.
+PLACEMENT_VERSION = (1, 1, 0)
+_VERSIONS = {}
 
 
 class Cut(RuntimeError):
@@ -68,6 +71,7 @@ class TOGSimProcess():
         self.config_path = config_path
         if not os.path.isfile(self.config_path):
             raise FileNotFoundError(f"machine file not found: {self.config_path}")
+        self._command = self.get_togsim_command(self.config_path, self.base_dir)
         self.process = None
         self.held = []
         self._next_kernel_id = 0
@@ -95,7 +99,7 @@ class TOGSimProcess():
             raise RuntimeError(f"Failed to open trace file: {e}")
 
     def _start_process(self):
-        cmd = (f"{self.get_togsim_command(self.config_path, self.base_dir)} --models_list {self.trace_file_path}"
+        cmd = (f"{self._command} --models_list {self.trace_file_path}"
                f" --result {self.result_path}")
         if config.CONFIG_TOGSIM_DEBUG_LEVEL:
             cmd += f" --log_level {config.CONFIG_TOGSIM_DEBUG_LEVEL}"
@@ -193,6 +197,7 @@ class TOGSimProcess():
             raise FileNotFoundError(
                 f"{bin} not found: TOGSIM_DIR must name a TOGSim checkout that has been built "
                 f"(the compiler's setup/toolchain.sh togsim builds the one it carries)")
+        require_placement(bin)
         config_file = os.path.join(togsim_path, config_path)
         cmd = f"{bin} --config {config_file}"
         return cmd
@@ -288,6 +293,25 @@ class TOGSimProcess():
         and kernels, each as its end-of-run line prints it (TOGSim's docs/output-lines.md)."""
         with open(result_path) as f:
             return json.load(f)
+
+
+def require_placement(bin):
+    """Refuse a Simulator older than PLACEMENT_VERSION, which ignores tog_tensor_addrs.txt and lays every
+    launch's tensors out from 0; what `bin --version` printed is kept per binary and mtime."""
+    from pytorchsim.simulator.timing import TENSOR_ADDRS_TXT
+    key = (bin, os.path.getmtime(bin))
+    if key not in _VERSIONS:
+        got = subprocess.run([bin, "--version"], capture_output=True, text=True)
+        said = got.stdout.strip().split(".")
+        _VERSIONS[key] = tuple(int(v) for v in said) if got.returncode == 0 and all(
+            v.isdigit() for v in said) and len(said) == 3 else None
+    have = _VERSIONS[key]
+    if have is None or have[0] != PLACEMENT_VERSION[0] or have < PLACEMENT_VERSION:
+        shown = "no version (it has no --version)" if have is None else ".".join(map(str, have))
+        raise RuntimeError(
+            f"{bin} reports {shown}; the timing path needs TOGSim "
+            f"{'.'.join(map(str, PLACEMENT_VERSION))} or newer of the same major, which places each tensor at "
+            f"the address {TENSOR_ADDRS_TXT} gives instead of laying every launch out from 0. Rebuild TOGSIM_DIR")
 
 
 def _stamp():

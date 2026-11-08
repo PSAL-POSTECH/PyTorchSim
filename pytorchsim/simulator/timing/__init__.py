@@ -1,6 +1,6 @@
 """The timing path: the compiler's tile-operation graph (tog.so) -> TOGSim. run writes the cycle
 tables if needed (write_cycle_tables: tog.so + gem5's sampled tiles) and simulates (run_togsim);
-write_shape and write_tensors are the per-launch files TOGSim reads."""
+write_shape, write_tensors and write_tensor_addrs are the per-launch files TOGSim reads."""
 
 import json
 import os
@@ -20,6 +20,7 @@ SHARED = (TOG_SO, CYCLE_TSV, UNITS_TSV)
 SHAPE_TXT = "tog_shape.txt"
 TENSORS_TXT = "tog_tensors.txt"
 TENSOR_SHAPES_TXT = "tog_tensor_shapes.txt"
+TENSOR_ADDRS_TXT = "tog_tensor_addrs.txt"
 
 AXES_TXT = "tog_axes.txt"
 
@@ -59,6 +60,7 @@ def run_togsim(workdir, meta, args=(), names=None):
     mine = contract.new_launch_dir(workdir, SHARED, build_launch_record(meta, args, names))
     write_shape(workdir, meta, args, mine)
     write_tensors(workdir, mine)
+    write_tensor_addrs(workdir, meta, args, mine)
 
     attribute = attribute_dir(workdir)
     sim = torch.npu.get_tog_simulator()
@@ -103,8 +105,9 @@ def copy_node_handles(workdir, mine):
         os.symlink(so, os.path.join(d, TOG_SO))
         for name in (CYCLE_TSV, UNITS_TSV):
             open(os.path.join(d, name), "w").close()
-        for name in (TENSORS_TXT, TENSOR_SHAPES_TXT):
-            shutil.copyfile(os.path.join(mine, name), os.path.join(d, name))
+        for name in (TENSORS_TXT, TENSOR_SHAPES_TXT, TENSOR_ADDRS_TXT):
+            if os.path.isfile(os.path.join(mine, name)):
+                shutil.copyfile(os.path.join(mine, name), os.path.join(d, name))
         handles.append(os.path.join(d, "tile_graph.onnx"))
     return handles
 
@@ -240,16 +243,53 @@ def write_tensors(workdir, into=None):
     axis folded into the rows, in argument order, where TOGSim reads them to lay it out in DRAM."""
     import math
 
-    import torch
-
-
     manifest = contract.kernel_object(workdir)
     if manifest is None:
         raise FileNotFoundError(f"{workdir} has no kernel.json -- compile the kernel first")
-    args = [(a["shape"], getattr(torch, a["dtype"]).itemsize) for a in manifest["args"]]
     into = into or contract.dir_for(workdir)
     with open(os.path.join(into, TENSORS_TXT), "w") as f:
-        f.write("".join(f"{math.prod(shape) * elem}\n" for shape, elem in args))
+        f.write("".join(f"{_get_arg_bytes(a)}\n" for a in manifest["args"]))
     with open(os.path.join(into, TENSOR_SHAPES_TXT), "w") as f:
-        f.write("".join(f"{math.prod(shape[:-1])} {shape[-1] if shape else 1} {elem}\n"
-                        for shape, elem in args))
+        f.write("".join(f"{math.prod(a['shape'][:-1])} {a['shape'][-1] if a['shape'] else 1} {_get_itemsize(a)}\n"
+                        for a in manifest["args"]))
+
+
+def write_tensor_addrs(workdir, meta, args, into):
+    """Write `name addr bytes align role` per kernel argument, in argument order: the simulated DRAM address
+    the device allocator gave the launch tensor's storage, plus its offset. Refused past the machine's
+    dram_size; none, with the reason logged, for a launch that passes no tensor."""
+    import torch
+
+    from pytorchsim.backend import compiler_bridge
+    from pytorchsim.simulator import functional
+
+    if not any(torch.is_tensor(a) for a in args):
+        logger.info("[TOGSim] %s passes no tensor: no %s, TOGSim lays its arguments out from 0",
+                    meta["kernel_name"], TENSOR_ADDRS_TXT)
+        return None
+    by_name = {m["name"]: t for m, t in functional.tensor_args(meta, args)}
+    dram_size = compiler_bridge.target().dram_size
+    lines = []
+    for a in contract.kernel_object(workdir)["args"]:
+        addr, size = torch.npu.sim_address(by_name[a["name"]]), _get_arg_bytes(a)
+        if addr + size > dram_size:
+            raise RuntimeError(
+                f"{meta['kernel_name']}: argument {a['name']} sits at [{addr:#x}, {addr + size:#x}) of simulated "
+                f"DRAM, past the {dram_size:#x} bytes of {compiler_bridge.target().file}: the npu storages alive "
+                f"now do not fit that machine")
+        align = min(addr & -addr or torch.npu.sim_address_alignment(), torch.npu.sim_address_alignment())
+        lines.append(f"{a['name']} {addr} {size} {align} {a['role']}\n")
+    path = os.path.join(into, TENSOR_ADDRS_TXT)
+    with open(path, "w") as f:
+        f.write("".join(lines))
+    return path
+
+
+def _get_itemsize(arg):
+    import torch
+    return getattr(torch, arg["dtype"]).itemsize
+
+
+def _get_arg_bytes(arg):
+    import math
+    return math.prod(arg["shape"]) * _get_itemsize(arg)

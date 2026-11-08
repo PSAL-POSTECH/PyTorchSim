@@ -1,6 +1,6 @@
-"""A Simulator that exits non-zero is a RuntimeError on both paths: run_standalone carries its last
-line, shutdown its status; a session on a machine file that is not there is refused before it starts.
-The Simulator here is a stub, so no TOGSim is needed."""
+"""A Simulator that exits non-zero is a RuntimeError on both paths: run_standalone carries its last line,
+shutdown its status; a session on a machine file that is not there, or a Simulator older than 1.1.0, is
+refused before it starts. The Simulator here is a stub, so no TOGSim is needed."""
 import os
 import stat
 import sys
@@ -10,10 +10,12 @@ from unittest import mock
 sys.path.insert(0, os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"))
 
 from pytorchsim import config
-from pytorchsim.simulator.timing.togsim import TOGSimProcess
+from pytorchsim.simulator.timing.togsim import PLACEMENT_VERSION, TOGSimProcess
 
 REFUSAL = "[error] [TOGSim] TOG k/tog.so: work-item 0 (key 10) needs 49153 bytes in the spad at once"
+VERSION = "{ echo %s; exit 0; }" % ".".join(map(str, PLACEMENT_VERSION))
 STUB = """#!/bin/sh
+[ "$1" = --version ] && {version}
 while [ $# -gt 0 ]; do [ "$1" = --models_list ] && cat "$2" > /dev/null; shift; done
 echo "[info] [TOGSim] loading"
 echo "{refusal}"
@@ -21,13 +23,13 @@ exit {status}
 """
 
 
-def _checkout(root, status):
-    """A TOGSim checkout whose Simulator drains its command stream, prints REFUSAL and exits `status`,
-    and a machine file in it; the simulator is handed both explicitly."""
+def _checkout(root, status, version=VERSION):
+    """A TOGSim checkout whose Simulator answers --version by `version`, drains its command stream, prints
+    REFUSAL and exits `status`, and a machine file in it; the simulator is handed both explicitly."""
     os.makedirs(os.path.join(root, "build", "bin"))
     simulator = config.togsim_simulator(root)
     with open(simulator, "w") as f:
-        f.write(STUB.format(refusal=REFUSAL, status=status))
+        f.write(STUB.format(refusal=REFUSAL, status=status, version=version))
     os.chmod(simulator, os.stat(simulator).st_mode | stat.S_IXUSR)
     machine = os.path.join(root, "machine.yml")
     with open(machine, "w") as f:
@@ -89,6 +91,18 @@ def test_session_on_a_missing_machine_file_is_refused():
     raise AssertionError("a session started on a machine file that is not there")
 
 
+def test_a_simulator_older_than_placement_is_refused():
+    for version, shown in (("{ echo 1.0.0; exit 0; }", "reports 1.0.0"),
+                           ("{ echo unrecognised option >&2; exit 1; }", "reports no version")):
+        with tempfile.TemporaryDirectory() as root, _logs_in(root):
+            machine, handle, attribute = _checkout(root, 0, version)
+            said = _raised(lambda: TOGSimProcess(config_path=machine, togsim_path=root))
+            assert said is not None and shown in said and "tog_tensor_addrs.txt" in said, said
+            said = _raised(lambda: TOGSimProcess.run_standalone(
+                handle, attribute, autotune_mode=True, config_path=machine, togsim_path=root))
+            assert said is not None and shown in said, said
+
+
 def test_environment_is_left_as_found():
     """No TOGSIM_CONFIG (which the compiler bridge refuses) or log path outlives a test here."""
     before = dict(os.environ)
@@ -102,5 +116,6 @@ if __name__ == "__main__":
     test_session_refusal_is_a_runtime_error()
     test_session_that_ran_shuts_down_quietly()
     test_session_on_a_missing_machine_file_is_refused()
+    test_a_simulator_older_than_placement_is_refused()
     test_environment_is_left_as_found()
     print("PASS")

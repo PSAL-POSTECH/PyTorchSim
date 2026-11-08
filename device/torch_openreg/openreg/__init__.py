@@ -155,6 +155,19 @@ def synchronize():
 
     torch_openreg._C._device_synchronize()
 
+def sim_address(tensor):
+    """The simulated DRAM address of `tensor`'s first element: its storage's range, given when the storage was
+    allocated and returned when it is freed, plus the tensor's byte offset in it. TOGSim places it there."""
+    if tensor.device.type != "npu":
+        raise ValueError(f"sim_address: a {tensor.device} tensor has no simulated DRAM address, only an npu one")
+    return torch_openreg._C._sim_address(tensor.data_ptr())
+
+
+def sim_address_alignment():
+    """Alignment in bytes of every storage's simulated DRAM range; a view's address may be less aligned."""
+    return torch_openreg._C._sim_address_alignment()
+
+
 def get_tog_simulator():
     return _tog_simulator
 
@@ -352,6 +365,8 @@ __all__ = [
     "launch_kernel",
     "launch_model",
     "synchronize",
+    "sim_address",
+    "sim_address_alignment",
     "get_tog_simulator",
     "set_tog_simulator",
     "TOGSimulator",

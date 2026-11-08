@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 
 #ifdef _WIN32
 #define OPENREG_EXPORT __declspec(dllexport)
@@ -62,6 +63,10 @@ OPENREG_EXPORT orError_t orMemcpyAsync(
     orStream_t stream);
 OPENREG_EXPORT orError_t
 orPointerGetAttributes(orPointerAttributes* attributes, const void* ptr);
+// The simulated DRAM address of a device pointer: its block's 16 KiB-aligned range, given at orMalloc and
+// returned at orFree, plus the pointer's offset in it. orErrorUnknown for a pointer of no device block.
+OPENREG_EXPORT orError_t orPointerGetSimAddress(uint64_t* simAddr, const void* devPtr);
+OPENREG_EXPORT size_t orSimAddressAlignment(void);
 OPENREG_EXPORT orError_t orMemoryUnprotect(void* devPtr);
 OPENREG_EXPORT orError_t orMemoryProtect(void* devPtr);
 

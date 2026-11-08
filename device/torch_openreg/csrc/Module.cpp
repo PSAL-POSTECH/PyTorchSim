@@ -241,6 +241,24 @@ PyObject* _addTaskToStream(PyObject* self, PyObject* args) {
   END_HANDLE_TH_ERRORS
 }
 
+// The simulated DRAM address of the device pointer `arg` (an int): orPointerGetSimAddress's.
+PyObject* _simAddress(PyObject* self, PyObject* arg) {
+  HANDLE_TH_ERRORS
+  TORCH_CHECK(THPUtils_checkLong(arg), "_sim_address expects an int pointer");
+  const void* ptr = reinterpret_cast<const void*>(THPUtils_unpackUInt64(arg));
+  uint64_t addr = 0;
+  TORCH_CHECK(orPointerGetSimAddress(&addr, ptr) == orSuccess, "pointer ", ptr,
+              " is in no npu storage, so it has no simulated DRAM address");
+  return THPUtils_packUInt64(addr);
+  END_HANDLE_TH_ERRORS
+}
+
+PyObject* _simAddressAlignment(PyObject* self, PyObject* noargs) {
+  HANDLE_TH_ERRORS
+  return THPUtils_packUInt64(orSimAddressAlignment());
+  END_HANDLE_TH_ERRORS
+}
+
 static PyMethodDef methods[] = {
     {"_init", _initExtension, METH_NOARGS, nullptr},
     {"_get_default_generator", _getDefaultGenerator, METH_O, nullptr},
@@ -261,6 +279,8 @@ static PyMethodDef methods[] = {
     {"_device_synchronize", _deviceSynchronize, METH_NOARGS, nullptr},
     // Stream task functions
     {"_add_task_to_stream", _addTaskToStream, METH_VARARGS, nullptr},
+    {"_sim_address", _simAddress, METH_O, nullptr},
+    {"_sim_address_alignment", _simAddressAlignment, METH_NOARGS, nullptr},
     {nullptr, nullptr, 0, nullptr}};
 
 /*

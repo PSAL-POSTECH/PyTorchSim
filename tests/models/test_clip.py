@@ -62,7 +62,8 @@ def test_clip(device, batch=2, num_layers=2, dtype="bfloat16"):
 
         model.to(device)
         opt_model = torch.compile(dynamic=False)(model)
-        out_device = opt_model(pixel_values=x.to(device)).last_hidden_state
+        with torch.npu.TOGSimulator():
+            out_device = opt_model(pixel_values=x.to(device)).last_hidden_state
 
     check_result(f"CLIP vision (batch={batch})", out_device, out_cpu, *_TOL[dtype])
     print("Max diff >", torch.max(torch.abs(out_device.cpu() - out_cpu)))

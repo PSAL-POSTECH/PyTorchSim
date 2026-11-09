@@ -353,8 +353,9 @@ def run_qwen(
         model_npu = copy.deepcopy(model_cpu).to(device).eval()
         if compile_model:
             model_npu = torch.compile(model_npu, dynamic=False)
-        npu_out = _out(model_npu(input_ids=input_ids.to(device),
-                                 attention_mask=attn_mask.to(device)))
+        with torch.npu.TOGSimulator():
+            npu_out = _out(model_npu(input_ids=input_ids.to(device),
+                                     attention_mask=attn_mask.to(device)))
 
     row_share = _ROUTED.get(dtype, 0.0) if p.get("num_experts") else 0.0
     check_routed_rows(f"Qwen {part} ({preset})", npu_out, cpu_out, rtol, atol, row_share)

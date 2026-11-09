@@ -73,7 +73,7 @@ def test_swinv2(device, batch=2, depths=(2, 2, 2, 2), dtype="bfloat16"):
         x_device = x.to(device=device)
         model.to(device)
         opt_model = torch.compile(dynamic=False)(model)
-        with torch.device(device):
+        with torch.npu.TOGSimulator(), torch.device(device):
             out_device = opt_model(pixel_values=x_device).last_hidden_state
 
         out_cpu = f32_reference(model.cpu())(pixel_values=x.float()).last_hidden_state

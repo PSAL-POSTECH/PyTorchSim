@@ -182,12 +182,13 @@ def run_decoder_layer_test(
     if isinstance(out_cpu, tuple):
         out_cpu = out_cpu[0]
 
-    out_dev = compiled_layer(
-        hidden_states=hs_dev,
-        attention_mask=att_dev,
-        position_ids=pos_dev,
-        position_embeddings=pos_emb_dev
-    )
+    with torch.npu.TOGSimulator():
+        out_dev = compiled_layer(
+            hidden_states=hs_dev,
+            attention_mask=att_dev,
+            position_ids=pos_dev,
+            position_embeddings=pos_emb_dev
+        )
     if isinstance(out_dev, tuple):
         out_dev = out_dev[0]
 
@@ -239,7 +240,8 @@ def run_custom_llama_test(
     compiled = torch.compile(model, dynamic=False)
 
     logits_cpu = cpu_model(input_ids=input_ids_cpu, attention_mask=attn_mask_cpu)#.logits
-    logits_dev = compiled(input_ids=input_ids_dev, attention_mask=attn_mask_dev)#.logits
+    with torch.npu.TOGSimulator():
+        logits_dev = compiled(input_ids=input_ids_dev, attention_mask=attn_mask_dev)#.logits
 
     check_result("Custom Llama forward(logits)", logits_dev, logits_cpu, rtol=rtol, atol=atol)
     print("Max diff >", (logits_dev.detach().cpu() - logits_cpu.detach().cpu()).abs().max().item())

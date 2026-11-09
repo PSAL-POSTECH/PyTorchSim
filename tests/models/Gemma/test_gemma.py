@@ -531,7 +531,8 @@ def run_gemma(
         model_npu = copy.deepcopy(model_cpu).to(device).eval()
         if compile_model:
             model_npu = torch.compile(model_npu, dynamic=False)
-        npu_out = _out(model_npu(**{k: v.to(device) for k, v in cpu_inputs.items()}))
+        with torch.npu.TOGSimulator():
+            npu_out = _out(model_npu(**{k: v.to(device) for k, v in cpu_inputs.items()}))
 
     check_result(f"Gemma {part} ({preset})", npu_out, cpu_out, rtol=rtol, atol=atol)
     print("Max diff > ", torch.max(torch.abs(npu_out.cpu() - cpu_out)))

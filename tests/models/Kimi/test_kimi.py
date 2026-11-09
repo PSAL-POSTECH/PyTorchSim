@@ -354,8 +354,9 @@ def run_rung(rung, device, dtype="bfloat16", batch=1, seq_len=128, layers=2,
 
     if compile_model:
         model_npu = torch.compile(model_npu, dynamic=False)
-    npu_out = _logits(model_npu(cpu_ids.to(device),
-                                **{k: v.to(device) for k, v in extra.items()}))
+    with torch.npu.TOGSimulator():
+        npu_out = _logits(model_npu(cpu_ids.to(device),
+                                    **{k: v.to(device) for k, v in extra.items()}))
 
     print(f"  max abs diff: {(npu_out.cpu() - cpu_out).abs().max().item():.6g}")
     check_routed_rows(f"Kimi {rung}", npu_out, cpu_out, rtol, atol, _ROUTED.get(dtype, 0.0))

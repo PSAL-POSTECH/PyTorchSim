@@ -109,9 +109,10 @@ def run_decoder_layer_test(device, batch=1, seq_len=128, dtype="float32",
     out_cpu = f32_reference(cpu_layer)(hidden_states=hidden_cpu.float(), attention_mask=attn_mask_cpu.float(),
                                        position_ids=position_ids_cpu,
                                        position_embeddings=f32(pos_emb_cpu))[0]
-    out_dev = compiled_layer(hidden_states=hidden_dev, attention_mask=attn_mask_dev,
-                             position_ids=position_ids_dev,
-                             position_embeddings=pos_emb_dev)[0]
+    with torch.npu.TOGSimulator():
+        out_dev = compiled_layer(hidden_states=hidden_dev, attention_mask=attn_mask_dev,
+                                 position_ids=position_ids_dev,
+                                 position_embeddings=pos_emb_dev)[0]
 
     check_result("Llama3 DecoderLayer forward", out_dev, out_cpu, rtol=rtol, atol=atol)
     diff = (out_dev.detach().cpu() - out_cpu.detach().cpu()).abs().max().item()
@@ -152,7 +153,8 @@ def run_model_test(device, batch=1, seq_len=128, dtype="float32",
     compiled_model = torch.compile(model, dynamic=False)
 
     out_cpu = f32_reference(cpu_model)(input_ids=input_ids_cpu, attention_mask=attn_mask_cpu.float())
-    out_dev = compiled_model(input_ids=input_ids_dev, attention_mask=attn_mask_dev)
+    with torch.npu.TOGSimulator():
+        out_dev = compiled_model(input_ids=input_ids_dev, attention_mask=attn_mask_dev)
 
     check_result("Llama3 Model (last_hidden_state)", out_dev.last_hidden_state,
                 out_cpu.last_hidden_state, rtol=rtol, atol=atol)

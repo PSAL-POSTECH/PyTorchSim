@@ -509,7 +509,8 @@ def run_yolo(device, version="v8", batch=1, imgsz=None, compile_model=True, rtol
     model_npu = copy.deepcopy(model_cpu).to(device).eval()
     if compile_model:
         model_npu = torch.compile(model_npu, dynamic=False)
-    npu_out = _tensors(model_npu(x.to(device)))
+    with torch.npu.TOGSimulator():
+        npu_out = _tensors(model_npu(x.to(device)))
 
     assert len(npu_out) == len(cpu_out), (
         f"output structure differs: {len(npu_out)} tensors on npu, {len(cpu_out)} on cpu"

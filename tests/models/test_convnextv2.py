@@ -61,7 +61,8 @@ def test_convnextv2(device, batch=2, depths=(1, 1, 1, 1), dtype="bfloat16"):
 
         model.to(device)
         opt_model = torch.compile(dynamic=False)(model)
-        out_device = opt_model(pixel_values=x.to(device)).last_hidden_state
+        with torch.npu.TOGSimulator():
+            out_device = opt_model(pixel_values=x.to(device)).last_hidden_state
 
     check_result(f"ConvNeXt V2 (batch={batch})", out_device, out_cpu, *_TOL[dtype])
     print("Max diff >", torch.max(torch.abs(out_device.cpu() - out_cpu)))

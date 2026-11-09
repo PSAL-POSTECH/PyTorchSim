@@ -221,7 +221,7 @@ def run_family(family, seq_len=128, dtype="bfloat16", rtol=None, atol=None, comp
     model_npu = model.to(device)
     kw_npu = {k: (v.to(device) if torch.is_tensor(v) else v) for k, v in kw.items()}
     runner = torch.compile(model_npu, dynamic=False) if compile_it else model_npu
-    with torch.no_grad():
+    with torch.no_grad(), torch.npu.TOGSimulator():
         npu_out = first(runner(**kw_npu)).cpu()
 
     check_result(f"Qwen {family}", npu_out, cpu_out, rtol=rtol, atol=atol)
@@ -272,7 +272,7 @@ def run_audio(family, dtype="bfloat16", rtol=None, atol=None, compile_it=True):
     model_npu = model.to("npu")
     kw_npu = {k: (v.to("npu") if torch.is_tensor(v) else v) for k, v in kw.items()}
     runner = torch.compile(model_npu, dynamic=False) if compile_it else model_npu
-    with torch.no_grad():
+    with torch.no_grad(), torch.npu.TOGSimulator():
         npu_out = first(runner(**kw_npu)).cpu()
 
     check_result(f"Qwen {family} audio", npu_out, cpu_out, rtol=rtol, atol=atol)

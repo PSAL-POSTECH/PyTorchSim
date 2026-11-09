@@ -21,8 +21,6 @@ SHAPE_TXT = "tog_shape.txt"
 TENSORS_TXT = "tog_tensors.txt"
 TENSOR_SHAPES_TXT = "tog_tensor_shapes.txt"
 
-AXES_TXT = "tog_axes.txt"
-
 LOCK_NAME = ".timing.lock"
 LOCK_TIMEOUT = 1800
 
@@ -167,7 +165,6 @@ def write_cycle_tables(workdir, meta):
     with open(types_path) as fh:
         tiles = json.load(fh)
     offsets = tiles["overlap_offset"]
-    axes = tiles["parallel_axes"]
     n_tiles = len(offsets)
 
     m5out = gem5.run_cycle_binary(workdir, meta)
@@ -179,9 +176,6 @@ def write_cycle_tables(workdir, meta):
 
     if os.path.abspath(so_path) != os.path.abspath(os.path.join(workdir, TOG_SO)):
         shutil.copyfile(so_path, os.path.join(workdir, TOG_SO))
-    with open(os.path.join(workdir, AXES_TXT), "w") as f:
-        f.write(f"{len(axes)}\n")
-
     with open(os.path.join(workdir, UNITS_TSV), "w") as f:
         f.write("".join("\t".join(str(v) for v in r) + "\n" for r in rows))
     gem5.dump_cycle_table_tsv(table, os.path.join(workdir, CYCLE_TSV))
@@ -218,17 +212,8 @@ def write_shape(workdir, meta, args=(), into=None):
 
 def _write_extents(workdir, ext, what, meta, args, into=None):
     """Write `ext` and the launch's integer scalars as this launch's shape_args in its launch
-    directory (`into`, else this process's), refusing a grid count the shared TOG cannot use."""
-    path = os.path.join(workdir, AXES_TXT)
-    if os.path.isfile(path):
-        with open(path) as f:
-            want = int(f.read().strip())
-        if want != len(ext):
-            raise ValueError(
-                f"{TOG_SO} in {workdir} was compiled to read {want} grid "
-                f"extent(s) and this launch has {len(ext)} ({ext}); the TOG "
-                f"would read past the end of shape_args. Delete the workdir to "
-                f"rebuild it.")
+    directory (`into`, else this process's). A count the TOG was not compiled for is refused by the TOG itself
+    (togsim::shape), before it reads past shape_args."""
     ko = compiler_bridge.compiler_contract("kernel_object")
     shape = ko.shape_args(contract.kernel_object(workdir), dict(zip(meta.get("call_params", ()), args)),
                           grid=ext)

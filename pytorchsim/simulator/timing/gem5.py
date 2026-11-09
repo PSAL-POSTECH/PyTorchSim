@@ -1,5 +1,5 @@
 """gem5 over the compiler's cycle binary, one sampled tile per dump, and the tables TOGSim reads
-beside the TOG from those dumps: tog_cycles.tsv (cycle, overlapping) and tog_units.tsv."""
+beside the TOG from those dumps: tog_tile_cycles.tsv (cycle, overlapping) and tog_unit_table.tsv."""
 
 import os
 import re

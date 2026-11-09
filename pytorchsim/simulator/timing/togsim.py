@@ -239,11 +239,11 @@ class TOGSimProcess():
 
         try:
             tog_so = os.path.join(os.path.dirname(str(model_path)), "tog.so")
-            cycle_tsv = os.path.join(os.path.dirname(str(model_path)), "tog_cycles.tsv")
+            cycle_tsv = os.path.join(os.path.dirname(str(model_path)), "tog_tile_cycles.tsv")
             if not os.path.exists(tog_so):
                 raise FileNotFoundError(f"{tog_so} not found -- the kernel has no TOG to simulate")
             base_cmd = TOGSimProcess.get_togsim_command(config_path, togsim_path)
-            unit_tsv = os.path.join(os.path.dirname(str(model_path)), "tog_units.tsv")
+            unit_tsv = os.path.join(os.path.dirname(str(model_path)), "tog_unit_table.tsv")
             cmd = (f"{base_cmd} --tog_so {tog_so} --cycle_table {cycle_tsv} --unit_table {unit_tsv}"
                    f" --result {result_path}")
             if attribute_path:
@@ -324,7 +324,7 @@ if __name__ == "__main__":
     import argparse
 
     ap = argparse.ArgumentParser(description="Send kernels to TOGSim directly.")
-    ap.add_argument("kernel_dir", help="directory holding tog.so and tog_cycles.tsv")
+    ap.add_argument("kernel_dir", help="directory holding tog.so and tog_tile_cycles.tsv")
     ap.add_argument("attribute", help="kernel attribute file")
     ap.add_argument("--config", default=None, help="TOGSim hardware YAML")
     ap.add_argument("--repeat", type=int, default=1)

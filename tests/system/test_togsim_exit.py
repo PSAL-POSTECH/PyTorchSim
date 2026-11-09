@@ -36,7 +36,7 @@ def _checkout(root, status, version=VERSION):
         f.write("core_freq_mhz: 1\n")
     kernel = os.path.join(root, "k")
     os.makedirs(kernel)
-    for name in ("tog.so", "tog_cycles.tsv", "tog_units.tsv"):
+    for name in ("tog.so", "tog_tile_cycles.tsv", "tog_unit_table.tsv"):
         open(os.path.join(kernel, name), "w").close()
     return machine, os.path.join(kernel, "tile_graph.onnx"), os.path.join(kernel, "attribute")
 

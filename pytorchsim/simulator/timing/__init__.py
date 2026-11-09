@@ -14,11 +14,11 @@ from pytorchsim.simulator.timing import gem5
 logger = config.setup_logger()
 
 TOG_SO = "tog.so"
-CYCLE_TSV = "tog_cycles.tsv"
-UNITS_TSV = "tog_units.tsv"
+CYCLE_TSV = "tog_tile_cycles.tsv"
+UNITS_TSV = "tog_unit_table.tsv"
 SHARED = (TOG_SO, CYCLE_TSV, UNITS_TSV)
-SHAPE_TXT = "tog_shape.txt"
-TENSORS_TXT = "tog_tensors.txt"
+SHAPE_TXT = "tog_shape_args.txt"
+TENSORS_TXT = "tog_tensor_bytes.txt"
 TENSOR_SHAPES_TXT = "tog_tensor_shapes.txt"
 
 LOCK_NAME = ".timing.lock"
@@ -149,7 +149,7 @@ def _held_for_the_session(sim, mine, attribute):
 
 
 def write_cycle_tables(workdir, meta):
-    """Place the compiler's tog.so in the workdir and write tog_cycles.tsv and tog_units.tsv beside it.
+    """Place the compiler's tog.so in the workdir and write tog_tile_cycles.tsv and tog_unit_table.tsv beside it.
 
     Returns the number of compute tiles gem5 measured.
     """

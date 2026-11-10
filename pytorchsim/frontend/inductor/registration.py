@@ -3,6 +3,7 @@
     Dynamo's device interfaces    NPUDeviceInterface: what Inductor asks of the device
     GPU_TYPES                     npu as a Triton GPU (a patch: it has no hook)
     Inductor's device codegens    scheduling, wrapper, post-grad pass
+    Inductor's pre-grad pass      SDPA on shared K/V heads, pregrad.py's (one slot for every device)
     Inductor's reinplace          a chain of view scatters in place (a patch: it has no hook), postgrad/'s
     device op overrides           NPUDeviceOpOverrides: the device code in a wrapper
     Inductor's choices class      NPUChoices, answered by autotune/
@@ -27,6 +28,7 @@ def install():
     _register_device_interface()
     _register_triton_gpu()
     _register_device_codegen()
+    _register_pre_grad_pass()
     _register_scatter_reinplace()
     _register_device_op_overrides()
     _register_choices()
@@ -112,6 +114,21 @@ def _register_device_codegen():
 
     register_backend_for_device("npu", TritonNPUScheduling, TritonNPUWrapperCodegen,
                                 device_custom_pass=pytorchsim_post_grad_pass)
+
+
+# Inductor's pre-grad pass (config.pre_grad_custom_pass): one slot for every device, so ours joins the list
+
+def _register_pre_grad_pass():
+    """Add pytorchsim_pre_grad_pass to pre_grad_custom_pass, after any pass already there; it rewrites npu
+    nodes only."""
+    from torch._inductor import config as inductor_config
+    from torch._inductor.custom_graph_pass import get_custom_graph_passes
+
+    from pytorchsim.frontend.inductor.pregrad import pytorchsim_pre_grad_pass
+
+    passes = get_custom_graph_passes(inductor_config.pre_grad_custom_pass)
+    if pytorchsim_pre_grad_pass not in passes:
+        inductor_config.pre_grad_custom_pass = [*passes, pytorchsim_pre_grad_pass]
 
 
 # Inductor's reinplace (fx_passes.reinplace.inplaceable_ops): a patch, it has no hook

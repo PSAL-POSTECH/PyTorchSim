@@ -1,10 +1,12 @@
-"""Eager GQA attention as transformers writes it (repeat_kv: unsqueeze, expand, reshape) takes the shared key
-and value heads, not repeat_kv's copies: with a mask both bmms (gqa_shared_kv), without one the fused SDPA
-it becomes (gqa_shared_kv_fused); the output matches the CPU."""
+"""A model's SDPA call over repeat_kv's copies (transformers' sdpa attention with a mask) hands the fused kernel the
+shared K and V heads: the pre-grad pass rewrites it to enable_gqa. Breaks when the kernel is planned over the
+H*R copies again (Qwen3-8B decode at 1024: 16 MiB of K and V read, not 4). Values match the CPU."""
 import os
 import sys
 
-import torch
+os.environ.setdefault("TORCHINDUCTOR_FORCE_DISABLE_CACHES", "1")
+
+import torch  # noqa: E402
 
 sys.path.insert(0, os.path.join(os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"), "tests"))
 from result_check import check_result  # noqa: E402
@@ -16,45 +18,38 @@ def repeat_kv(x, n_rep):
     return x[:, :, None, :, :].expand(b, h, n_rep, s, d).reshape(b, h * n_rep, s, d)
 
 
-def attention(q, k, v, mask=None):
-    """transformers' eager_attention_forward without dropout: the mask added to the scores."""
+def call(q, k, v, m):
+    """transformers' sdpa_attention_forward with a mask: repeat_kv, then SDPA without enable_gqa."""
     n_rep = q.shape[1] // k.shape[1]
-    k, v = repeat_kv(k, n_rep), repeat_kv(v, n_rep)
-    w = torch.matmul(q, k.transpose(2, 3)) * (q.shape[-1] ** -0.5)
-    if mask is not None:
-        w = w + mask
-    w = torch.softmax(w, dim=-1, dtype=torch.float32).to(q.dtype)
-    return torch.matmul(w, v)
+    return torch.nn.functional.scaled_dot_product_attention(q, repeat_kv(k, n_rep), repeat_kv(v, n_rep),
+                                                            attn_mask=m)
 
 
-def run(name, rewrite, batch, heads, kv_heads, q_len, kv_len, head_dim, dtype=torch.float32, masked=True):
-    """Compile `attention` on npu for one shape, compare it with the CPU, and check `rewrite` took it."""
-    from pytorchsim.frontend.inductor import postgrad
+def run(name, batch, heads, kv_heads, q_len, kv_len, head_dim, dtype=torch.bfloat16):
+    """Compile `call` on npu for one shape: the last plan, AOT's, the kernel takes, is over kv_heads key heads
+    (Dynamo's fake run plans before the pre-grad pass, over the copies); values match."""
+    from pytorchsim.frontend.dispatcher import attention
     torch._dynamo.reset()
-    for r in ("gqa_shared_kv", "gqa_shared_kv_fused"):
-        postgrad.CALLS.pop(r, None)
-    torch.manual_seed(0)
-    q = torch.randn(batch, heads, q_len, head_dim, dtype=dtype)
-    k = torch.randn(batch, kv_heads, kv_len, head_dim, dtype=dtype)
-    v = torch.randn(batch, kv_heads, kv_len, head_dim, dtype=dtype)
-    mask = torch.triu(torch.full((q_len, kv_len), -1e4, dtype=dtype), kv_len - q_len + 1) if masked else None
-    want = attention(q, k, v, mask)
-    dev = [t.to("npu:0") if t is not None else None for t in (q, k, v, mask)]
-    got = torch.compile(dynamic=False)(attention)(*dev)
-    tol = (2e-2, 1e-2) if dtype == torch.bfloat16 else (1e-4, 1e-4)
-    check_result(name, got.cpu(), want, *tol)
-    took = postgrad.CALLS.get(rewrite, {}).get("rewritten", 0)
-    expect = 2 if rewrite == "gqa_shared_kv" else 1
-    assert took == expect, f"{name}: {rewrite} took {took}, not {expect}"
-    print(f"PASS  {name}: {rewrite} x{took}")
+    planned = []
+    plan = attention.FUSED_SDPA.plan
+    attention.FUSED_SDPA.plan = lambda q, k, *a: (planned.append(k.shape[1]), plan(q, k, *a))[1]
+    try:
+        torch.manual_seed(0)
+        q = torch.randn(batch, heads, q_len, head_dim, dtype=dtype)
+        k = torch.randn(batch, kv_heads, kv_len, head_dim, dtype=dtype)
+        v = torch.randn(batch, kv_heads, kv_len, head_dim, dtype=dtype)
+        mask = torch.triu(torch.full((q_len, kv_len), -1e4, dtype=dtype), kv_len - q_len + 1)[None, None]
+        want = call(q.float(), k.float(), v.float(), mask.float())
+        got = torch.compile(dynamic=False)(call)(*[t.to("npu:0") for t in (q, k, v, mask)])
+    finally:
+        attention.FUSED_SDPA.plan = plan
+    check_result(name, got.cpu(), want, 2e-2, 1e-2)
+    assert planned and planned[-1] == kv_heads, f"{name}: the kernel planned over {planned[-1:]} key heads " \
+        f"(every plan {planned}), not the {kv_heads} shared ones"
+    print(f"PASS  {name}: planned over {kv_heads} key heads for {heads} query heads")
 
 
 if __name__ == "__main__":
-    run("decode", "gqa_shared_kv", batch=2, heads=8, kv_heads=2, q_len=1, kv_len=64, head_dim=32)
-    run("prefill", "gqa_shared_kv", batch=2, heads=8, kv_heads=2, q_len=16, kv_len=16, head_dim=32)
-    run("square", "gqa_shared_kv", batch=1, heads=4, kv_heads=2, q_len=8, kv_len=32, head_dim=32)
-    run("bf16 decode", "gqa_shared_kv", batch=2, heads=8, kv_heads=2, q_len=1, kv_len=64, head_dim=32,
-        dtype=torch.bfloat16)
-    run("fused decode", "gqa_shared_kv_fused", batch=2, heads=8, kv_heads=2, q_len=1, kv_len=64, head_dim=32,
-        masked=False)
+    run("decode", batch=1, heads=8, kv_heads=2, q_len=1, kv_len=256, head_dim=64)
+    run("prefill", batch=2, heads=8, kv_heads=2, q_len=16, kv_len=16, head_dim=32)
     print("Test Passed")

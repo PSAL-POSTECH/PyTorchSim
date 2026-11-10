@@ -185,7 +185,7 @@ def _compiled_metas(fn, *xs):
 
     def compile_(src, meta, kernel_name):
         got.append(meta)
-        return lambda *args: None
+        return lambda *args, **kwargs: None
     torch._dynamo.reset()
     with mock.patch.object(codecache, "torchsim_compile", compile_), \
             inductor_config.patch(fx_graph_cache=False):

@@ -27,7 +27,7 @@ LOCK_NAME = ".timing.lock"
 LOCK_TIMEOUT = 1800
 
 
-def run(workdir, meta, args=()):
+def run(workdir, meta, args=(), names=None):
     """Measure the tiles and write the cycle table if it is missing, then simulate. Returns TOGSim's
     result, or None for a launch queued on an open TOGSimulator. Only the build is locked."""
     from filelock import FileLock
@@ -45,10 +45,10 @@ def run(workdir, meta, args=()):
     else:
         logger.info("[Gem5] tile cycles reused from %s", os.path.join(workdir, CYCLE_TSV))
     with wallclock.span(wallclock.TOGSIM_RUN, kernel):
-        return run_togsim(workdir, meta, args)
+        return run_togsim(workdir, meta, args, names)
 
 
-def run_togsim(workdir, meta, args=()):
+def run_togsim(workdir, meta, args=(), names=None):
     """Simulate the TOG, or hand it to an open TOGSimulator. Standalone returns the result TOGSim wrote,
     read; a queued launch returns None, as the stream's numbers are whole only when it closes."""
     import torch
@@ -56,14 +56,14 @@ def run_togsim(workdir, meta, args=()):
     for need in SHARED:
         if not os.path.isfile(os.path.join(workdir, need)):
             raise FileNotFoundError(f"{os.path.join(workdir, need)} not found -- call write_cycle_tables first")
-    mine = contract.link_shared(workdir, SHARED)
-    write_shape(workdir, meta, args)
-    write_tensors(workdir)
+    mine = contract.new_launch_dir(workdir, SHARED, build_launch_record(meta, args, names))
+    write_shape(workdir, meta, args, mine)
+    write_tensors(workdir, mine)
 
     attribute = attribute_dir(workdir)
     sim = torch.npu.get_tog_simulator()
     if sim is not None:
-        for handle in copy_node_handles(workdir):
+        for handle in copy_node_handles(workdir, mine):
             torch.npu.launch_kernel(handle, "")
         torch.npu.launch_kernel(os.path.join(mine, "tile_graph.onnx"),
                                 _held_for_the_session(sim, mine, attribute) if attribute else "")
@@ -77,7 +77,7 @@ def simulate_standalone(workdir, mine, attribute, **kw):
     from pytorchsim.simulator.timing import npuwattch
     from pytorchsim.simulator.timing.togsim import TOGSimProcess
 
-    copy_paths = [TOGSimProcess.run_standalone(h, "", **kw) for h in copy_node_handles(workdir)]
+    copy_paths = [TOGSimProcess.run_standalone(h, "", **kw) for h in copy_node_handles(workdir, mine)]
     copies = [TOGSimProcess.read_result(p)["total_cycles"] for p in copy_paths]
     result_path = TOGSimProcess.run_standalone(os.path.join(mine, "tile_graph.onnx"), attribute, **kw)
     result = TOGSimProcess.read_result(result_path)
@@ -89,14 +89,14 @@ def simulate_standalone(workdir, mine, attribute, **kw):
     return result
 
 
-def copy_node_handles(workdir):
+def copy_node_handles(workdir, mine):
     """The handle of each copy node the kernel object lists (the compiler's kernel_object.copy_nodes), in
-    this process's launch directory beside the tensors it moves: a TOG that only loads, empty tables."""
+    the launch directory `mine` beside the tensors it moves: a TOG that only loads, empty tables."""
     ko = compiler_bridge.compiler_contract("kernel_object")
     handles = []
     for node in ko.copy_nodes(contract.kernel_object(workdir) or {}):
         so = os.path.join(workdir, node["tog_so"])
-        d = os.path.join(contract.dir_for(workdir), os.path.dirname(node["tog_so"]))
+        d = os.path.join(mine, os.path.dirname(node["tog_so"]))
         os.makedirs(d, exist_ok=True)
         if os.path.lexists(os.path.join(d, TOG_SO)):
             os.remove(os.path.join(d, TOG_SO))
@@ -104,9 +104,27 @@ def copy_node_handles(workdir):
         for name in (CYCLE_TSV, UNITS_TSV):
             open(os.path.join(d, name), "w").close()
         for name in (TENSORS_TXT, TENSOR_SHAPES_TXT):
-            shutil.copyfile(os.path.join(contract.dir_for(workdir), name), os.path.join(d, name))
+            shutil.copyfile(os.path.join(mine, name), os.path.join(d, name))
         handles.append(os.path.join(d, "tile_graph.onnx"))
     return handles
+
+
+def build_launch_record(meta, args, names=None):
+    """Which call a launch was: the kernel, and per argument its parameter name, the buffer the wrapper's call
+    names (`names`, codegen's torchsim_arg_names), and a tensor's shape, stride, dtype and address."""
+    import torch
+    params = list(meta.get("call_params", ()))
+    out = []
+    for i, a in enumerate(args):
+        entry = {"param": params[i] if i < len(params) else None,
+                 "name": names[i] if names is not None and i < len(names) else None}
+        if torch.is_tensor(a):
+            entry.update(shape=list(a.shape), stride=list(a.stride()), dtype=str(a.dtype).split(".")[-1],
+                         data_ptr=a.data_ptr())
+        elif isinstance(a, (int, float, bool)):
+            entry["value"] = a
+        out.append(entry)
+    return {"kernel": meta.get("kernel_name"), "args": out}
 
 
 def attribute_dir(workdir):
@@ -169,14 +187,14 @@ def write_cycle_tables(workdir, meta):
     return n_tiles
 
 
-def write_shape(workdir, meta, args=()):
+def write_shape(workdir, meta, args=(), into=None):
     """Write the shape_args the TOG reads: the grid extents, the parallel numels read off `args` by
     parameter name (a template's trailing arguments are its grid), then the integer scalars in the
     compiler's order (kernel_object.shape_args)."""
     numels = dict(meta["numels"])
     if meta.get("template_grid") is not None:
         grid = list(contract.launch_extents(meta))
-        _write_extents(workdir, grid, "template grid", meta, args)
+        _write_extents(workdir, grid, "template grid", meta, args, into)
         return grid
 
     passed = [k for k in numels if not k.startswith("r")]
@@ -192,13 +210,13 @@ def write_shape(workdir, meta, args=()):
                 numels[key] = val
 
     grid = list(contract.grid_of({**meta, "numels": numels}))
-    _write_extents(workdir, grid, "grid", meta, args)
+    _write_extents(workdir, grid, "grid", meta, args, into)
     return grid
 
 
-def _write_extents(workdir, ext, what, meta, args):
+def _write_extents(workdir, ext, what, meta, args, into=None):
     """Write `ext` and the launch's integer scalars as this launch's shape_args in its launch
-    directory, refusing a grid count the shared TOG cannot use."""
+    directory (`into`, else this process's), refusing a grid count the shared TOG cannot use."""
     path = os.path.join(workdir, AXES_TXT)
     if os.path.isfile(path):
         with open(path) as f:
@@ -212,12 +230,12 @@ def _write_extents(workdir, ext, what, meta, args):
     ko = compiler_bridge.compiler_contract("kernel_object")
     shape = ko.shape_args(contract.kernel_object(workdir), dict(zip(meta.get("call_params", ()), args)),
                           grid=ext)
-    with open(os.path.join(contract.dir_for(workdir), SHAPE_TXT), "w") as f:
+    with open(os.path.join(into or contract.dir_for(workdir), SHAPE_TXT), "w") as f:
         f.write("\n".join(str(int(g)) for g in shape) + "\n")
     logger.info("[TOGSim] %s %s, scalars %s -> %s", what, ext, shape[len(ext):], SHAPE_TXT)
 
 
-def write_tensors(workdir):
+def write_tensors(workdir, into=None):
     """Write each kernel argument's byte size, and its rows cols elem_bytes with every leading
     axis folded into the rows, in argument order, where TOGSim reads them to lay it out in DRAM."""
     import math
@@ -229,8 +247,9 @@ def write_tensors(workdir):
     if manifest is None:
         raise FileNotFoundError(f"{workdir} has no kernel.json -- compile the kernel first")
     args = [(a["shape"], getattr(torch, a["dtype"]).itemsize) for a in manifest["args"]]
-    with open(os.path.join(contract.dir_for(workdir), TENSORS_TXT), "w") as f:
+    into = into or contract.dir_for(workdir)
+    with open(os.path.join(into, TENSORS_TXT), "w") as f:
         f.write("".join(f"{math.prod(shape) * elem}\n" for shape, elem in args))
-    with open(os.path.join(contract.dir_for(workdir), TENSOR_SHAPES_TXT), "w") as f:
+    with open(os.path.join(into, TENSOR_SHAPES_TXT), "w") as f:
         f.write("".join(f"{math.prod(shape[:-1])} {shape[-1] if shape else 1} {elem}\n"
                         for shape, elem in args))

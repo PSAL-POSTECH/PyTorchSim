@@ -3,13 +3,16 @@
     launch          the axes a kernel's programs spread over, their extents and the grid
     storage         how far a strided layout reaches
     kernel object   the compiler's manifest in a workdir and the artifacts it names
-    launch dir      each process's corner of a shared workdir
+    launch dir      each process's corner of a shared workdir, and each launch's own record in it
 """
 
+import atexit
 import hashlib
+import itertools
 import json
 import os
 import shutil
+import tempfile
 
 
 class SpecIncomplete(RuntimeError):
@@ -155,6 +158,10 @@ def artifact(workdir, kind):
 # launch dir: each process's corner of a shared workdir
 
 LAUNCH_DIR_PREFIX = "launch"
+LAUNCH_RECORD = "launch.json"
+_LAUNCHES = itertools.count()
+_MADE = {}
+KEEP_LAUNCHES_ENV = "TORCHSIM_KEEP_LAUNCHES"
 
 
 def dir_for(workdir):
@@ -165,10 +172,13 @@ def dir_for(workdir):
 
 
 def workdir_of(path):
-    """The kernel workdir `path` is in: the one holding its launch directory when `path` is in one, as
-    dir_for names it, else `path`'s own directory."""
+    """The kernel workdir `path` is in: the one holding the launch directory `path` is in, or whose copy-node
+    directory it is in (launch-*/copy_node_1/), else `path`'s own directory."""
     d = os.path.dirname(os.path.abspath(path))
-    return os.path.dirname(d) if os.path.basename(d).startswith(f"{LAUNCH_DIR_PREFIX}-") else d
+    for up in (d, os.path.dirname(d)):
+        if os.path.basename(up).startswith(f"{LAUNCH_DIR_PREFIX}-"):
+            return os.path.dirname(up)
+    return d
 
 
 RUNTIME_ROOT_ENV = "TORCHSIM_RUNTIME_DIR"
@@ -194,23 +204,50 @@ def _runtime_key(d):
     return hashlib.sha256(os.path.abspath(d).encode()).hexdigest()[:24]
 
 
+def new_launch_dir(workdir, names, record):
+    """One launch's own directory, launch-<pid>-<n>-<unique>, `names` linked from the workdir and `record`
+    written as launch.json; removed at process exit unless TORCHSIM_KEEP_LAUNCHES=1 keeps it to read."""
+    if not _MADE and os.environ.get(KEEP_LAUNCHES_ENV, "0") in ("", "0"):
+        atexit.register(_remove_launches)
+    n = next(_LAUNCHES)
+    d = tempfile.mkdtemp(prefix=f"{LAUNCH_DIR_PREFIX}-{os.getpid()}-{n}-", dir=workdir)
+    _MADE.setdefault(os.path.abspath(workdir), []).append(d)
+    _link(workdir, d, names)
+    with open(os.path.join(d, LAUNCH_RECORD), "w") as f:
+        json.dump({"launch": n, **record}, f, indent=1)
+    return d
+
+
 def remove_launch_dir(workdir):
-    """Remove this process's launch directory, and the node-local runtime directory it links to."""
+    """Remove this process's launch directory, the runtime directory it links to, and its launches'."""
     d = dir_for(workdir)
     rt = os.path.join(d, "runtime")
     if os.path.islink(rt):
         shutil.rmtree(os.path.realpath(rt), ignore_errors=True)
     shutil.rmtree(d)
+    for own in _MADE.pop(os.path.abspath(workdir), []):
+        shutil.rmtree(own, ignore_errors=True)
+
+
+def _remove_launches():
+    for made in _MADE.values():
+        for d in made:
+            shutil.rmtree(d, ignore_errors=True)
+    _MADE.clear()
 
 
 def link_shared(workdir, names):
     """Relink `names` from the workdir into this launch directory, where TOGSim finds the cycle table and
     the shape file beside the TOG it is given. Returns it."""
     d = dir_for(workdir)
+    _link(workdir, d, names)
+    return d
+
+
+def _link(workdir, d, names):
     for name in names:
         src, dst = os.path.join(workdir, name), os.path.join(d, name)
         if os.path.lexists(dst):
             os.remove(dst)
         if os.path.exists(src):
             os.symlink(os.path.relpath(src, d), dst)
-    return d

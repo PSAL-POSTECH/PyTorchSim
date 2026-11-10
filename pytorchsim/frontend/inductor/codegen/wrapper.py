@@ -6,7 +6,7 @@ import contextlib
 from typing import Optional
 
 from torch._inductor.codegen import wrapper
-from torch._inductor.ir import GraphPartitionSignature
+from torch._inductor.ir import GraphPartitionSignature, IRNode
 from torch._inductor.virtualized import V
 
 from pytorchsim.frontend.inductor.codegen import kernel_metadata, verify
@@ -150,9 +150,11 @@ class TritonNPUWrapperCodegen(verify.VerifyLines, wrapper.PythonWrapperCodegen):
         unwrapped for the kernel's device; grid, stream and autotune do not apply. A C++ kernel keeps
         Inductor's own call."""
         if triton:
+            names = _get_arg_names(call_args, kwargs.get("raw_args"))
             with (V.graph.set_current_device(device) if device is not None
                   else contextlib.nullcontext()):
                 call_args = self.prepare_triton_kernel_call(call_args)
+            call_args = [*call_args, f"torchsim_arg_names={names!r}"]
         else:
             call_args = [a if isinstance(a, str) else str(a) if isinstance(a, (int, float, bool))
                          else wrapper.pexpr(V.graph.sizevars.simplify(a)) for a in call_args]
@@ -176,3 +178,21 @@ class TritonNPUWrapperCodegen(verify.VerifyLines, wrapper.PythonWrapperCodegen):
                 checks = []
             lines.extend(verify.VerifyLine(c) for c in checks)
         self.lines = lines
+
+
+def _get_arg_names(call_args, raw_args):
+    """Per call argument, the buffer it is: its IR node's name (a ReinterpretView's is its buffer's), or the
+    argument itself when the graph has a buffer or input of that name; None for a number, symbol or else."""
+    raw = list(raw_args) if raw_args is not None and len(raw_args) == len(call_args) else [None] * len(call_args)
+    return tuple(_get_buffer_name(a, r) for a, r in zip(call_args, raw))
+
+
+def _get_buffer_name(arg, raw):
+    if isinstance(raw, IRNode):
+        try:
+            return raw.get_name()
+        except NotImplementedError:
+            return None
+    if isinstance(arg, str) and (arg in V.graph.graph_inputs or V.graph.try_get_buffer(arg) is not None):
+        return arg
+    return None

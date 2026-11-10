@@ -36,7 +36,7 @@ class TritonNPULauncher:
         self.workdir = workdir
         self.meta = meta
 
-    def __call__(self, *args):
+    def __call__(self, *args, torchsim_arg_names=None):
         launch_hooks.notify_launch(self, args)
         if config.pytorchsim_functional_mode:
             with wallclock.span(wallclock.SPIKE, self.kernel_name):
@@ -53,7 +53,7 @@ class TritonNPULauncher:
                 self.kernel_name)
             return None
 
-        result = timing.run(self.workdir, self.meta, args)
+        result = timing.run(self.workdir, self.meta, args, torchsim_arg_names)
         if result is None:
             logger.info("[TOGSim] %s queued on the open TOGSimulator; the stream's cycles "
                         "are reported when the simulator closes", self.kernel_name)

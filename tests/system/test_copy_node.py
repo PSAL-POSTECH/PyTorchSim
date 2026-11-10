@@ -284,7 +284,7 @@ def test_a_launch_alone_sums_its_copy_node():
     saved = (togsim.TOGSimProcess.run_standalone, togsim.TOGSimProcess.read_result, timing.copy_node_handles)
     togsim.TOGSimProcess.run_standalone = staticmethod(lambda h, a, **kw: "copy" if "copy" in h else "kernel")
     togsim.TOGSimProcess.read_result = staticmethod(lambda r: {"total_cycles": logs[r], "units": {}})
-    timing.copy_node_handles = lambda wd: ["copy_node_1/tile_graph.onnx"]
+    timing.copy_node_handles = lambda wd, mine: ["copy_node_1/tile_graph.onnx"]
     try:
         got = timing.simulate_standalone("wd", "mine", "attr")
     finally:

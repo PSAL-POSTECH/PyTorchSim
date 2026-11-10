@@ -315,7 +315,8 @@ def run_qwen_vl(device, version="2", seq=128, dtype="bfloat16",
     if compile_model:
         model_npu = torch.compile(model_npu, dynamic=False)
     npu_kwargs = {k: (v.to(device) if torch.is_tensor(v) else v) for k, v in kwargs.items()}
-    npu_out = _logits(model_npu(**npu_kwargs))
+    with torch.npu.TOGSimulator():
+        npu_out = _logits(model_npu(**npu_kwargs))
 
     check_result(f"Qwen{'2' if version == '2' else '2.5'}-VL (seq {seq})",
                 npu_out, cpu_out, rtol=rtol, atol=atol)

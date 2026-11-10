@@ -118,7 +118,8 @@ def run_gpt2(
         model_npu = copy.deepcopy(model_cpu).to(device).eval()
         if compile_model:
             model_npu = torch.compile(model_npu, dynamic=False)
-        npu_out = _logits(model_npu(input_ids.to(device)))
+        with torch.npu.TOGSimulator():
+            npu_out = _logits(model_npu(input_ids.to(device)))
 
     check_result(f"GPT-2 {part}", npu_out, cpu_out, rtol=rtol, atol=atol)
     print("Max diff > ", torch.max(torch.abs(npu_out.cpu() - cpu_out)))

@@ -203,8 +203,9 @@ def run_llama3x(
         model_npu = copy.deepcopy(model_cpu).to(device).eval()
         if compile_model:
             model_npu = torch.compile(model_npu, dynamic=False)
-        npu_out = _out(model_npu(input_ids=input_ids.to(device),
-                                 attention_mask=attn_mask.to(device)))
+        with torch.npu.TOGSimulator():
+            npu_out = _out(model_npu(input_ids=input_ids.to(device),
+                                     attention_mask=attn_mask.to(device)))
 
     check_result(f"Llama 3.x {part} ({preset})", npu_out, cpu_out, rtol=rtol, atol=atol)
     print("Max diff > ", torch.max(torch.abs(npu_out.cpu() - cpu_out)))

@@ -244,7 +244,8 @@ def run_llama4(device, batch=1, seq_len=128, dtype="bfloat16",
             model_npu = copy.deepcopy(model_cpu).to(device).eval()
             if compile_model:
                 model_npu = torch.compile(model_npu, dynamic=False)
-            npu_out = model_npu(input_ids=input_ids.to(device)).last_hidden_state
+            with torch.npu.TOGSimulator():
+                npu_out = model_npu(input_ids=input_ids.to(device)).last_hidden_state
 
     check_routed_rows(f"Llama 4 text{' layer' if layer else ''} (scout)", npu_out, cpu_out, rtol, atol,
                       _ROUTED.get(dtype, 0.0))
@@ -325,7 +326,8 @@ def run_llama4_vision(device, batch=1, dtype="bfloat16",
     model_npu = copy.deepcopy(model_cpu).to(device).eval()
     if compile_model:
         model_npu = torch.compile(model_npu, dynamic=False)
-    npu_out = model_npu(px.to(device)).last_hidden_state
+    with torch.npu.TOGSimulator():
+        npu_out = model_npu(px.to(device)).last_hidden_state
 
     check_result("Llama 4 vision (scout)", npu_out, cpu_out, rtol=rtol, atol=atol)
     print("Max diff > ", torch.max(torch.abs(npu_out.cpu() - cpu_out)))

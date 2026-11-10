@@ -55,7 +55,8 @@ def run_yolo(batch, dtype="bfloat16"):
     model_npu = model_cpu.to(device).eval()
     x_npu = copy.deepcopy(x).to(device)
     compiled_model_npu = torch.compile(dynamic=False)(model_npu)
-    y_npu = compiled_model_npu(x_npu)
+    with torch.npu.TOGSimulator():
+        y_npu = compiled_model_npu(x_npu)
 
     # Compare results
     # YOLOv5 output is typically a list or tensor, handle both cases
@@ -102,7 +103,8 @@ def test_c3_module(device, batch=1, c1=64, c2=128, n=1, h=64, w=64):
     model_npu = model_cpu.to(device).eval()
     x_npu = copy.deepcopy(x).to(device)
     compiled_model_npu = torch.compile(dynamic=False)(model_npu)
-    y_npu = compiled_model_npu(x_npu)
+    with torch.npu.TOGSimulator():
+        y_npu = compiled_model_npu(x_npu)
 
     # Compare results
     if isinstance(y_cpu, (list, tuple)):
@@ -147,7 +149,8 @@ def test_bottleneck_module(device, batch=1, c1=64, c2=64, shortcut=True, g=1, e=
     model_npu = model_cpu.to(device).eval()
     x_npu = copy.deepcopy(x).to(device)
     compiled_model_npu = torch.compile(dynamic=False)(model_npu)
-    y_npu = compiled_model_npu(x_npu)
+    with torch.npu.TOGSimulator():
+        y_npu = compiled_model_npu(x_npu)
 
     # Compare results
     check_result("Bottleneck Module", y_npu, y_cpu)
@@ -188,7 +191,8 @@ def test_conv_module(device, batch=1, c1=32, c2=64, k=3, s=1, p=None, g=1, d=1, 
     model_npu = model_cpu.to(device).eval()
     x_npu = copy.deepcopy(x).to(device)
     compiled_model_npu = torch.compile(dynamic=False)(model_npu)
-    y_npu = compiled_model_npu(x_npu)
+    with torch.npu.TOGSimulator():
+        y_npu = compiled_model_npu(x_npu)
 
     # Compare results
     check_result("Conv Module", y_npu, y_cpu)

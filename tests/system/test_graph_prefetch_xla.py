@@ -149,7 +149,7 @@ def pick(fn, shapes, names, xla_form):
     g = torch.Generator().manual_seed(0)
     xs = [torch.randn(*s, generator=g).to(BF).to("npu:0") for s in shapes]
     torch._dynamo.reset()
-    with mock.patch.object(codecache, "torchsim_compile", lambda src, meta, kernel_name: lambda *a: None), \
+    with mock.patch.object(codecache, "torchsim_compile", lambda src, meta, kernel_name: lambda *a, **k: None), \
             mock.patch.object(graph_prefetch, "elected", spy), \
             inductor_config.patch(fx_graph_cache=False, pattern_matcher=not xla_form):
         torch.compile(fn, dynamic=False, backend=backend)(*xs)

@@ -291,7 +291,7 @@ def test_unet2d_condition_model(
     t_dev = t_cpu.to(device)
     encoder_hidden_states_dev = encoder_hidden_states_cpu.to(device)
 
-    with torch.no_grad():
+    with torch.no_grad(), torch.npu.TOGSimulator():
         y_dev = unet_dev(
             sample=x_dev,
             timestep=t_dev,

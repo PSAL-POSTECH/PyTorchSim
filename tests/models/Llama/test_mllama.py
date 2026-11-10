@@ -161,9 +161,10 @@ def run_vision(device, batch=1, dtype="bfloat16", compile_model=True,
     model_npu = copy.deepcopy(model_cpu).to(device).eval()
     if compile_model:
         model_npu = torch.compile(model_npu, dynamic=False)
-    npu_out = model_npu(pixel_values=pixel_values.to(device),
-                        aspect_ratio_ids=aspect_ratio_ids.to(device),
-                        aspect_ratio_mask=aspect_ratio_mask.to(device)).last_hidden_state
+    with torch.npu.TOGSimulator():
+        npu_out = model_npu(pixel_values=pixel_values.to(device),
+                            aspect_ratio_ids=aspect_ratio_ids.to(device),
+                            aspect_ratio_mask=aspect_ratio_mask.to(device)).last_hidden_state
 
     check_result("Mllama vision tower", npu_out, cpu_out, rtol=rtol, atol=atol)
     print("Max diff > ", torch.max(torch.abs(npu_out.cpu() - cpu_out)))
@@ -222,7 +223,8 @@ def run_text(device, batch=1, seq_len=32, dtype="bfloat16", compile_model=True,
     model_npu = copy.deepcopy(model_cpu).to(device).eval()
     if compile_model:
         model_npu = torch.compile(model_npu, dynamic=False)
-    npu_out = call(model_npu, device, torch_dtype)
+    with torch.npu.TOGSimulator():
+        npu_out = call(model_npu, device, torch_dtype)
 
     check_result("Mllama text tower (cross-attention)", npu_out, cpu_out,
                 rtol=rtol, atol=atol)

@@ -241,7 +241,8 @@ def run_deepseek_v3_base(
         model_npu = model.to(device)
         if compile_model:
             model_npu = torch.compile(model_npu, dynamic=False)
-        npu_out = _extract_logits(model_npu(cpu_input_ids.to(device)))
+        with torch.npu.TOGSimulator():
+            npu_out = _extract_logits(model_npu(cpu_input_ids.to(device)))
 
     check_routed_rows(f"DeepSeek V3 Base {part}", npu_out, cpu_out, rtol, atol, row_share)
 

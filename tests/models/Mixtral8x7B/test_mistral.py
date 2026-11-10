@@ -103,7 +103,8 @@ def test_decode(device, prompt_length, nr_tokens, dtype="bfloat16"):
     cpu_cache = DynamicCache(config=config)
     kv_cache = DynamicCache(config=config)
     for _ in range(nr_tokens):
-        res = opt_fn(input_ids=cpu_ids.to(device), past_key_values=kv_cache, use_cache=True).logits
+        with torch.npu.TOGSimulator():
+            res = opt_fn(input_ids=cpu_ids.to(device), past_key_values=kv_cache, use_cache=True).logits
         cpu_res = cpu_model(input_ids=cpu_ids, past_key_values=cpu_cache, use_cache=True).logits
         cpu_ids = cpu_res[:, -1:].argmax(dim=-1)
         print(cpu_ids)

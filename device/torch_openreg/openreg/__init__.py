@@ -187,7 +187,8 @@ class TOGSimulator:
         return self._backend
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Drain this device's stream first, then shut the backend down."""
+        """Drain this device's stream first, shut the backend down, then print the session's cycles in one
+        "simulated: N cycles" line, as a launch run alone prints its own."""
         try:
             synchronize()
             self._backend.shutdown()
@@ -197,7 +198,15 @@ class TOGSimulator:
                 os.environ.pop("TORCHSIM_TARGET", None)
             else:
                 os.environ["TORCHSIM_TARGET"] = self._old_config_env
+        if exc_type is None:
+            self._print_cycles()
         return False
+
+    def _print_cycles(self):
+        backend = self._backend
+        result = backend.read_result(backend.result_path)
+        print(f"[TOGSim] session simulated: {result['total_cycles']} cycles, {len(result.get('kernels', []))} "
+              f"launches ({backend.result_path})", flush=True)
 
 
 def set_launch_context(stream_index=0, timestamp=0):

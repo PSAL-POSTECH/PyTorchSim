@@ -283,7 +283,8 @@ def run(body, layer, config, ids, device, decode=False, compile_model=True, **ex
     layer.to(device)
     device_layer = torch.compile(layer, dynamic=False) if compile_model else layer
     device_args, device_kwargs = _like(rounded, rounded, device, (ref_cache, device_cache))
-    device_out = _first_tensor(device_layer(*device_args, **device_kwargs))
+    with torch.npu.TOGSimulator():
+        device_out = _first_tensor(device_layer(*device_args, **device_kwargs))
     if decode:
         _check_written(ref_cache, device_cache, before)
     return ref_out, device_out
@@ -303,7 +304,7 @@ def _run_mla_decode(layer, ref_layer, mla, ref_mla, rounded, ref_args, ref_kwarg
     if "use_cache" in device_kwargs:
         device_kwargs["use_cache"] = False
     try:
-        with _given_kv(mla.config._attn_implementation, {}):
+        with _given_kv(mla.config._attn_implementation, {}), torch.npu.TOGSimulator():
             return ref_out, _first_tensor(device_layer(*device_args, **device_kwargs))
     finally:
         del mla._given_kv

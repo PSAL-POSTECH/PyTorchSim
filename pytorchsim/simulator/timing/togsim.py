@@ -298,7 +298,7 @@ class TOGSimProcess():
 def require_placement(bin):
     """Refuse a Simulator older than PLACEMENT_VERSION, which ignores tog_tensor_addrs.txt and lays every
     launch's tensors out from 0; what `bin --version` printed is kept per binary and mtime."""
-    from pytorchsim.simulator.timing import TENSOR_ADDRS_TXT
+    from pytorchsim.simulator.placement import tensor_addrs_file
     key = (bin, os.path.getmtime(bin))
     if key not in _VERSIONS:
         got = subprocess.run([bin, "--version"], capture_output=True, text=True)
@@ -311,7 +311,7 @@ def require_placement(bin):
         raise RuntimeError(
             f"{bin} reports {shown}; the timing path needs TOGSim "
             f"{'.'.join(map(str, PLACEMENT_VERSION))} or newer of the same major, which places each tensor at "
-            f"the address {TENSOR_ADDRS_TXT} gives instead of laying every launch out from 0. Rebuild TOGSIM_DIR")
+            f"the address {tensor_addrs_file()} gives instead of laying every launch out from 0. Rebuild TOGSIM_DIR")
 
 
 def _stamp():

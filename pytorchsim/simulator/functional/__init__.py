@@ -8,14 +8,11 @@ from pytorchsim import config, contract
 from pytorchsim.backend import compiler_bridge
 from pytorchsim.contract import storage_span
 from pytorchsim.simulator.functional import spike
+from pytorchsim.simulator.placement import ShapeMismatch, tensor_args, write_tensor_addrs  # noqa: F401
 
 logger = config.setup_logger()
 
 REPLAY_DIR = ".triton_replay"
-
-
-class ShapeMismatch(RuntimeError):
-    """The launch does not match the shapes the binary was compiled for."""
 
 
 def run(workdir, meta, args):
@@ -49,8 +46,8 @@ def run(workdir, meta, args):
 
 
 def write_inputs(workdir, meta, args):
-    """Write every arg as runtime/<name>.raw. Returns the runtime directory. Inputs are scattered
-    to the addresses the kernel computes; outputs are zeros, since the wrapper dumps by argv position."""
+    """Write every arg as runtime/<name>.raw, and placement's tensor addresses beside them. Returns
+    the runtime directory. Inputs are scattered to the addresses the kernel computes; outputs are zeros."""
     import numpy as np
     import torch
 
@@ -58,6 +55,7 @@ def write_inputs(workdir, meta, args):
     _check(meta, pairs)
 
     runtime = contract.runtime_dir(workdir)
+    write_tensor_addrs(workdir, meta, args)
     for m, t in pairs:
         path = os.path.join(runtime, f"{m['name']}.raw")
         if m["role"] not in ("in", "inout"):
@@ -68,21 +66,11 @@ def write_inputs(workdir, meta, args):
 
 
 def flat_input(m, t):
-    """The launch tensor `t` of arg `m` as the kernel sees it: a CPU tensor of m's numel elements, each
-    at the address `t`'s strides put it, what its .raw file holds."""
-    import torch
-
-    cpu = t.detach().to("cpu")
-    flat = torch.zeros(m["numel"], dtype=cpu.dtype, device="cpu")
-    shape, strides = list(t.shape), list(t.stride())
-    src = cpu
-    for i in range(len(strides) - 1, -1, -1):
-        if strides[i] == 0:
-            src = src.select(i, 0)
-            shape.pop(i)
-            strides.pop(i)
-    flat.as_strided(shape, strides).copy_(src)
-    return flat
+    """The launch tensor `t` of arg `m` as the kernel sees it: m's numel elements of t's storage from t's offset,
+    what its .raw file holds -- the storage's own bytes between t's elements, so args that are views of one
+    storage, placed overlapping, agree wherever the wrapper copies their .raw files over each other."""
+    span = t.detach().as_strided((m["numel"],), (1,), t.storage_offset())
+    return span.to("cpu").clone()
 
 
 def read_outputs(workdir, meta, args):
@@ -108,20 +96,6 @@ def read_outputs(workdir, meta, args):
         t.copy_(stored.as_strided(t.shape, t.stride()))
         written.append(m["name"])
     return written
-
-
-def tensor_args(meta, args):
-    """[(arg_meta, tensor)] for the launch, paired by position: Inductor passes the tensors first,
-    in signature order, so meta["args"] lines up with the leading arguments."""
-    import torch
-
-    tensors = [a for a in args if isinstance(a, torch.Tensor)]
-    metas = meta["args"]
-    if len(tensors) != len(metas):
-        raise ShapeMismatch(
-            f"{meta['kernel_name']}: launch passed {len(tensors)} tensor(s), "
-            f"but the spec declares {len(metas)} ({[m['name'] for m in metas]})")
-    return list(zip(metas, tensors))
 
 
 def _check(meta, pairs):

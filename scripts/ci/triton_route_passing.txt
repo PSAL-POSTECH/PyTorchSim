@@ -283,4 +283,5 @@ tests/system/test_bundle_reuse.py
 tests/system/test_eager.py
 tests/system/test_launch_record.py
 tests/system/test_session_cycles.py
+tests/system/test_spike_placement.py
 tests/system/test_tensor_placement.py

@@ -8,6 +8,8 @@
 is_npu and is_lowering_npu, here, are the device tests the patches share.
 """
 
+import os
+
 import torch
 
 from pytorchsim import config
@@ -23,11 +25,15 @@ def install():
 
 
 def _configure_inductor():
-    """mm/conv template autotune on, at compile time off, Inductor's autotune cache off (template_timing
-    records picks); no combo kernels, which pick tensors by program id (a TOG cannot time that) and skip
-    the triton_kernel_kwargs hook that pins blocks."""
+    """mm/conv template autotune on, at compile time off, its tables shown in debug mode unless the env sets
+    them; Inductor's autotune cache off (template_timing records picks); no combo kernels, which pick tensors
+    by program id (a TOG cannot time that) and skip the triton_kernel_kwargs hook that pins blocks."""
     from torch._inductor import config as inductor_config
 
+    if "TORCHINDUCTOR_AUTOTUNE_NUM_CHOICES_DISPLAYED" not in os.environ:
+        inductor_config.autotune_num_choices_displayed = 10 if config.CONFIG_DEBUG_MODE else 0
+    if "TORCHINDUCTOR_MAX_AUTOTUNE_REPORT_CHOICES_STATS" not in os.environ:
+        inductor_config.max_autotune_report_choices_stats = bool(config.CONFIG_DEBUG_MODE)
     inductor_config.max_autotune_gemm = True
     inductor_config.max_autotune_gemm_backends = "ATEN,TRITON"
     inductor_config.max_autotune_conv_backends = "ATEN,TRITON"

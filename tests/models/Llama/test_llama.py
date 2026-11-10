@@ -328,7 +328,7 @@ if __name__ == "__main__":
     args.rtol = tol[0] if args.rtol is None else args.rtol
     args.atol = tol[1] if args.atol is None else args.atol
 
-    sys.path.append(os.environ.get("PYTORCHSIM_ROOT_PATH", "/workspace/PyTorchSim"))
+    sys.path.append(os.environ.get("TORCHSIM_DIR", "/workspace/PyTorchSim"))
     device = torch.device("npu:0")
     if args.part == "layer":
         run_one_layer_test(device, batch=args.batch, seq_len=args.decode or args.seq, dtype=args.dtype,

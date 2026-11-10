@@ -1,6 +1,6 @@
-"""SDPA's overrideable op and torchsim::attention (a causal window and a logit softcap SDPA cannot
-state) on the npu: a splash-style prefill or a GQA (or MLA) decode kernel where `fused_plan` takes the call,
-SDPA's math elsewhere. `_fused_sdp_choice` sends the aten op only calls with no mask, dropout or gradient."""
+"""SDPA's overrideable op and torchsim::attention (a causal window and a logit softcap SDPA cannot state) on
+the npu: a splash-style prefill or a GQA (or MLA) decode kernel where `fused_plan` takes the call, SDPA's
+math elsewhere. `_fused_sdp_choice` sends the aten op calls with no dropout or gradient, masked or not."""
 
 import math
 from typing import Optional
@@ -36,7 +36,7 @@ class FusedSDPA(CustomFusedKernel):
 
     def plan(self, query, key, value, attn_bias, dropout_p, is_causal, scale, window, softcap):
         """Dropout declines (the op can be called directly with it), as does a window over a query
-        block that is not causal, and a mask whose axes the prefill kernel cannot read."""
+        block that is not causal, and a mask whose axes neither kernel can read."""
         if dropout_p:
             return Decline(f"a dropout of {dropout_p}")
         if window and not is_causal and query.shape[-2] != 1:
@@ -56,10 +56,11 @@ class FusedSDPA(CustomFusedKernel):
             q, k, v = query.contiguous(), key.contiguous(), value.contiguous()
             o = q.new_empty(B, Hq, L, DV)
             kv0 = (S - window) // plan["BKV"] * plan["BKV"] if window else 0
+            m, kind, mstride = _bias_as_strides(attn_bias, (B, Hq, L, S))
             wrap_triton(_decode_kernel)[(B * H, 1, 1)](
-                q, k, v, o, H, Hq // H, plan["GP"], S, plan["SP"], D, plan["DA"], plan["DB"],
+                q, k, v, o, m, H, Hq // H, plan["GP"], S, plan["SP"], D, plan["DA"], plan["DB"],
                 plan["DV"], DV, plan["BKV"], scale, softcap, window, kv0,
-                plan["KEYS"], plan["DW"], plan["VW"])
+                plan["KEYS"], plan["DW"], plan["VW"], kind, mstride[0], mstride[1], mstride[3])
             return o
         q, k, v = (t if t.stride(-1) == 1 else t.contiguous() for t in (query, key, value))
         o = q.new_empty(B, Hq, L, DV)
@@ -280,14 +281,16 @@ def _prefill_kernel(q_ptr, k_ptr, v_ptr, o_ptr, m_ptr, HQ: tl.constexpr, G: tl.c
 
 
 @triton.jit
-def _decode_kernel(q_ptr, k_ptr, v_ptr, o_ptr, HKV: tl.constexpr, G: tl.constexpr,
+def _decode_kernel(q_ptr, k_ptr, v_ptr, o_ptr, m_ptr, HKV: tl.constexpr, G: tl.constexpr,
                    GP: tl.constexpr, S: tl.constexpr, SP: tl.constexpr, D: tl.constexpr,
                    DA: tl.constexpr, DB: tl.constexpr, DV: tl.constexpr, DVT: tl.constexpr,
                    BKV: tl.constexpr, SCALE: tl.constexpr, SOFTCAP: tl.constexpr,
                    WINDOW: tl.constexpr, KV0: tl.constexpr, KEYS: tl.constexpr, DW: tl.constexpr,
-                   VW: tl.constexpr):
-    """q and K rows are D wide and covered by DA + DB (DB 0, or MLA's rope part), V rows DVT covered by DV.
-    The KV steps run to SP, and KEYS, DW, VW (0: none) are what that padding is masked back to."""
+                   VW: tl.constexpr, MKIND: tl.constexpr = 0, MB: tl.constexpr = 0,
+                   MH: tl.constexpr = 0, MK: tl.constexpr = 0):
+    """q and K rows are D wide and covered by DA + DB (DB 0, or MLA's rope part), V rows DVT covered by DV; a
+    row is a query head, so the MKIND (0: none) mask at m_ptr is read at the head its row is, its one query
+    row at 0. The KV steps run to SP, and KEYS, DW, VW (0: none) are what that padding is masked back to."""
     pid = tl.program_id(0)
     rg = tl.arange(0, GP)
     ra = tl.arange(0, DA)
@@ -296,6 +299,7 @@ def _decode_kernel(q_ptr, k_ptr, v_ptr, o_ptr, HKV: tl.constexpr, G: tl.constexp
     qbase = pid * (G * D)
     kbase = pid * (S * D)
     vbase = pid * (S * DVT)
+    mbase = (pid // HKV) * MB + ((pid % HKV) * G + tl.where(rows, rg[:, None], 0)) * MH
     pos = tl.full((GP,), S - 1, dtype=tl.int32)
     qp = q_ptr + qbase + rg[:, None] * D + ra[None, :]
     if DW > 0:
@@ -316,7 +320,7 @@ def _decode_kernel(q_ptr, k_ptr, v_ptr, o_ptr, HKV: tl.constexpr, G: tl.constexp
     for start in range(KV0, SP, BKV):
         m_i, l_i, acc = _attend(q, qx, m_i, l_i, acc, k_ptr, v_ptr, kbase, vbase, pos,
                                 start + tl.arange(0, BKV), D, DVT, DA, DB, DV, SCALE, SOFTCAP,
-                                False, WINDOW, False, KEYS, DW, VW, 0, None, 0, 0, 0, 0)
+                                False, WINDOW, False, KEYS, DW, VW, 0, m_ptr, mbase, 0, MK, MKIND)
     op = o_ptr + pid * (G * DVT) + rg[:, None] * DVT + rv[None, :]
     out = (acc / l_i[:, None]).to(o_ptr.dtype.element_ty)
     if VW > 0:
@@ -404,8 +408,8 @@ def _padding_masks(L, LP, S, SP, D, DP, DV, DVP):
 
 
 def _refuse_bias(query, key, bias):
-    """A Decline for a mask the prefill kernel cannot read -- a dtype no dot takes, or axes that are
-    not [B, Hq, L, S] with every broadcast one a 1 -- and None for a mask it can."""
+    """A Decline for a mask neither fused kernel can read -- a dtype no dot takes, or axes that are
+    not [B, Hq, L, S] with every broadcast one a 1 -- and None for a mask they can."""
     want = (query.shape[0], query.shape[1], query.shape[2], key.shape[2])
     if bias.dtype != torch.bool and bias.dtype not in _DOT_DTYPES:
         return Decline(f"a mask of {bias.dtype}")
@@ -418,7 +422,7 @@ def _refuse_bias(query, key, bias):
 
 
 def _bias_as_strides(bias, want):
-    """(the mask, its MKIND, its batch/head/row/key strides) for the prefill kernel: a broadcast axis
+    """(the mask, its MKIND, its batch/head/row/key strides) for the fused kernels: a broadcast axis
     carries stride 0, so one row or one head is read for all of them; (None, 0, zeros) for no mask."""
     if bias is None:
         return None, 0, (0, 0, 0, 0)
@@ -432,7 +436,7 @@ def _bias_as_strides(bias, want):
 def fused_plan(query, key, value, is_causal, window=0, softcap=0.0, masked=False):
     """The fused kernel and its blocks, or a Decline. Query rows, keys and both head widths are padded to
     the blocks a dot takes and masked back, so a shape is declined for what the kernel cannot state (a
-    top-left causal L != S, a mask on a decode, a scratchpad it overruns), not for its size."""
+    top-left causal L != S, a scratchpad it overruns), not for its size."""
     if query.dim() != 4 or key.dim() != 4 or value.dim() != 4 or value.shape[:3] != key.shape[:3]:
         return Decline("q, k, v not 4-D, or v's batch, heads or S not k's")
     dtype = query.dtype
@@ -453,8 +457,6 @@ def fused_plan(query, key, value, is_causal, window=0, softcap=0.0, masked=False
     exact = DA + DB == D and DVP == DV and _is_p2(S) and S >= rows
     extra = (2 if softcap else 0) + (1 if window else 0) + (2 if masked else 0)
     if L == 1 and S != 1:
-        if masked:
-            return Decline(f"a mask on an L 1 decode over S {S}")
         GP = max(rows, next_pow2(Hq // H))
         BKV = _choose_decode_step(GP, S, DA + DB, DVP, esize, extra + (0 if exact else 2), rows)
         if BKV is None:

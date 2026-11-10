@@ -12,12 +12,12 @@ CONFIG_SPIKE_JOBS = os.environ.get("TORCHSIM_SPIKE_JOBS", "").strip()
 CONFIG_GROUPED_MM_STRUCTURE = os.environ.get("TORCHSIM_GROUPED_MM_STRUCTURE", "pergroup").strip() or "pergroup"
 if CONFIG_GROUPED_MM_STRUCTURE not in ("pergroup", "megablox"):
     raise ValueError(f"TORCHSIM_GROUPED_MM_STRUCTURE={CONFIG_GROUPED_MM_STRUCTURE!r}: pergroup or megablox")
-#: How the harness lays out a decode's KV cache and the decode kernel reads it -- "headwise" (the
-#: default: [B, H, S, D], a program a KV head) or "paged" (ragged paged attention's tokenwise pages [S, K and V of
-#: every head, D], read in place, a program a sequence).
+#: How the harness lays out a decode's KV cache and the decode kernel reads it: "headwise" (default,
+#: [B, H, S, D], a program a KV head) or "tokenwise" (ragged paged attention's pages [S, K and V of every
+#: head, D], read in place, a program a sequence).
 CONFIG_KVCACHE_LAYOUT = os.environ.get("TORCHSIM_KVCACHE_LAYOUT", "headwise").strip() or "headwise"
-if CONFIG_KVCACHE_LAYOUT not in ("headwise", "paged"):
-    raise ValueError(f"TORCHSIM_KVCACHE_LAYOUT={CONFIG_KVCACHE_LAYOUT!r}: headwise or paged")
+if CONFIG_KVCACHE_LAYOUT not in ("headwise", "tokenwise"):
+    raise ValueError(f"TORCHSIM_KVCACHE_LAYOUT={CONFIG_KVCACHE_LAYOUT!r}: headwise or tokenwise")
 #: The compiler checkout (stages 1-5, ttir to the RISC-V ELF), a separate repository, not vendored.
 CONFIG_TORCHSIM_COMPILE_DIR = os.environ.get(
     "TORCHSIM_COMPILE_DIR", default=os.path.join(CONFIG_TORCHSIM_DIR, "pytorchsim-triton-compiler"))

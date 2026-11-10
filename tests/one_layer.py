@@ -127,7 +127,7 @@ def _reads_given(cache, given, device, dtype=None):
     writes nothing: the TPU decode row reads its full cache in place, with no copy of it per step."""
     given = [g if g is None else tuple(t.to(device, dtype or t.dtype).contiguous() for t in g) for g in given]
     from pytorchsim import config
-    if config.CONFIG_KVCACHE_LAYOUT == "paged":
+    if config.CONFIG_KVCACHE_LAYOUT == "tokenwise":
         given = [g if g is None else _paged(*g) for g in given]
     base = type(cache)
 
@@ -158,6 +158,21 @@ def _swap(x, old, new):
     return (tuple(new if a is old else a for a in args),
             {k: new if v is old else v for k, v in kwargs.items()})
 
+
+
+def _drop_plain_mask(kwargs):
+    """`kwargs` without an attention_mask that says only what no mask does (all keys at L 1, causal at L == S), as
+    the TPU rows pass none: ragged paged attention and causal splash read the shared KV heads, unmasked."""
+    m = kwargs.get("attention_mask")
+    if not torch.is_tensor(m) or m.dim() != 4 or m.shape[-2] not in (1, m.shape[-1]):
+        return kwargs
+    keep = m if m.dtype == torch.bool else m == 0
+    if m.dtype != torch.bool and not torch.all((m == 0) | (m <= torch.finfo(m.dtype).min / 2)):
+        return kwargs
+    q, k = m.shape[-2:]
+    if not torch.equal(keep, torch.ones(q, k, dtype=torch.bool).tril(k - q).expand_as(keep)):
+        return kwargs
+    return {**kwargs, "attention_mask": None}
 
 @contextlib.contextmanager
 def _given_kv(impl, seen):
@@ -227,6 +242,7 @@ def run(body, layer, config, ids, device, decode=False, compile_model=True, **ex
     else:
         probe = _run_until(body, layer, False, **point.tokens(0, 2, use_cache=False))
         args, kwargs = _run_until(ref_body, ref_layer, False, **point.tokens(0, s, use_cache=False))
+    kwargs = _drop_plain_mask(kwargs)
     rounded = _like((args, kwargs), probe)
 
     ref_args, ref_kwargs = f32(rounded)

@@ -281,3 +281,5 @@ tests/ops/sort/test_topk.py
 tests/ops/view/test_view3D_2D.py
 tests/system/test_bundle_reuse.py
 tests/system/test_eager.py
+tests/system/test_launch_record.py
+tests/system/test_session_cycles.py

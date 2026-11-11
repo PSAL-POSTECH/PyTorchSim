@@ -1,6 +1,6 @@
 """The timing path: the compiler's tile-operation graph (tog.so) -> TOGSim. run writes the cycle
 tables if needed (write_cycle_tables: tog.so + gem5's sampled tiles) and simulates (run_togsim);
-write_shape and write_tensors are the per-launch files TOGSim reads."""
+write_shape, write_tensors and placement.write_tensor_addrs are the per-launch files TOGSim reads."""
 
 import json
 import os
@@ -8,20 +8,18 @@ import shutil
 
 from pytorchsim import config, contract
 from pytorchsim.backend import compiler_bridge
-from pytorchsim.simulator import wallclock
+from pytorchsim.simulator import placement, wallclock
 from pytorchsim.simulator.timing import gem5
 
 logger = config.setup_logger()
 
 TOG_SO = "tog.so"
-CYCLE_TSV = "tog_cycles.tsv"
-UNITS_TSV = "tog_units.tsv"
+CYCLE_TSV = "tog_tile_cycles.tsv"
+UNITS_TSV = "tog_unit_table.tsv"
 SHARED = (TOG_SO, CYCLE_TSV, UNITS_TSV)
-SHAPE_TXT = "tog_shape.txt"
-TENSORS_TXT = "tog_tensors.txt"
+SHAPE_TXT = "tog_shape_args.txt"
+TENSORS_TXT = "tog_tensor_bytes.txt"
 TENSOR_SHAPES_TXT = "tog_tensor_shapes.txt"
-
-AXES_TXT = "tog_axes.txt"
 
 LOCK_NAME = ".timing.lock"
 LOCK_TIMEOUT = 1800
@@ -59,6 +57,7 @@ def run_togsim(workdir, meta, args=(), names=None):
     mine = contract.new_launch_dir(workdir, SHARED, build_launch_record(meta, args, names))
     write_shape(workdir, meta, args, mine)
     write_tensors(workdir, mine)
+    placement.write_tensor_addrs(workdir, meta, args, launch_dir=mine)
 
     attribute = attribute_dir(workdir)
     sim = torch.npu.get_tog_simulator()
@@ -103,8 +102,9 @@ def copy_node_handles(workdir, mine):
         os.symlink(so, os.path.join(d, TOG_SO))
         for name in (CYCLE_TSV, UNITS_TSV):
             open(os.path.join(d, name), "w").close()
-        for name in (TENSORS_TXT, TENSOR_SHAPES_TXT):
-            shutil.copyfile(os.path.join(mine, name), os.path.join(d, name))
+        for name in (TENSORS_TXT, TENSOR_SHAPES_TXT, placement.tensor_addrs_file()):
+            if os.path.isfile(os.path.join(mine, name)):
+                shutil.copyfile(os.path.join(mine, name), os.path.join(d, name))
         handles.append(os.path.join(d, "tile_graph.onnx"))
     return handles
 
@@ -149,7 +149,7 @@ def _held_for_the_session(sim, mine, attribute):
 
 
 def write_cycle_tables(workdir, meta):
-    """Place the compiler's tog.so in the workdir and write tog_cycles.tsv and tog_units.tsv beside it.
+    """Place the compiler's tog.so in the workdir and write tog_tile_cycles.tsv and tog_unit_table.tsv beside it.
 
     Returns the number of compute tiles gem5 measured.
     """
@@ -165,7 +165,6 @@ def write_cycle_tables(workdir, meta):
     with open(types_path) as fh:
         tiles = json.load(fh)
     offsets = tiles["overlap_offset"]
-    axes = tiles["parallel_axes"]
     n_tiles = len(offsets)
 
     m5out = gem5.run_cycle_binary(workdir, meta)
@@ -177,9 +176,6 @@ def write_cycle_tables(workdir, meta):
 
     if os.path.abspath(so_path) != os.path.abspath(os.path.join(workdir, TOG_SO)):
         shutil.copyfile(so_path, os.path.join(workdir, TOG_SO))
-    with open(os.path.join(workdir, AXES_TXT), "w") as f:
-        f.write(f"{len(axes)}\n")
-
     with open(os.path.join(workdir, UNITS_TSV), "w") as f:
         f.write("".join("\t".join(str(v) for v in r) + "\n" for r in rows))
     gem5.dump_cycle_table_tsv(table, os.path.join(workdir, CYCLE_TSV))
@@ -216,17 +212,8 @@ def write_shape(workdir, meta, args=(), into=None):
 
 def _write_extents(workdir, ext, what, meta, args, into=None):
     """Write `ext` and the launch's integer scalars as this launch's shape_args in its launch
-    directory (`into`, else this process's), refusing a grid count the shared TOG cannot use."""
-    path = os.path.join(workdir, AXES_TXT)
-    if os.path.isfile(path):
-        with open(path) as f:
-            want = int(f.read().strip())
-        if want != len(ext):
-            raise ValueError(
-                f"{TOG_SO} in {workdir} was compiled to read {want} grid "
-                f"extent(s) and this launch has {len(ext)} ({ext}); the TOG "
-                f"would read past the end of shape_args. Delete the workdir to "
-                f"rebuild it.")
+    directory (`into`, else this process's). A count the TOG was not compiled for is refused by the TOG itself
+    (togsim::shape), before it reads past shape_args."""
     ko = compiler_bridge.compiler_contract("kernel_object")
     shape = ko.shape_args(contract.kernel_object(workdir), dict(zip(meta.get("call_params", ()), args)),
                           grid=ext)
@@ -240,16 +227,22 @@ def write_tensors(workdir, into=None):
     axis folded into the rows, in argument order, where TOGSim reads them to lay it out in DRAM."""
     import math
 
-    import torch
-
-
     manifest = contract.kernel_object(workdir)
     if manifest is None:
         raise FileNotFoundError(f"{workdir} has no kernel.json -- compile the kernel first")
-    args = [(a["shape"], getattr(torch, a["dtype"]).itemsize) for a in manifest["args"]]
     into = into or contract.dir_for(workdir)
     with open(os.path.join(into, TENSORS_TXT), "w") as f:
-        f.write("".join(f"{math.prod(shape) * elem}\n" for shape, elem in args))
+        f.write("".join(f"{_get_arg_bytes(a)}\n" for a in manifest["args"]))
     with open(os.path.join(into, TENSOR_SHAPES_TXT), "w") as f:
-        f.write("".join(f"{math.prod(shape[:-1])} {shape[-1] if shape else 1} {elem}\n"
-                        for shape, elem in args))
+        f.write("".join(f"{math.prod(a['shape'][:-1])} {a['shape'][-1] if a['shape'] else 1} {_get_itemsize(a)}\n"
+                        for a in manifest["args"]))
+
+
+def _get_itemsize(arg):
+    import torch
+    return getattr(torch, arg["dtype"]).itemsize
+
+
+def _get_arg_bytes(arg):
+    import math
+    return math.prod(arg["shape"]) * _get_itemsize(arg)

@@ -16,6 +16,9 @@ from pytorchsim import config
 
 logger = config.setup_logger()
 
+#: The first TOGSim that places a launch's tensors at the addresses tog_tensor_addrs.txt gives.
+PLACEMENT_VERSION = (1, 1, 0)
+_VERSIONS = {}
 
 
 class Cut(RuntimeError):
@@ -68,6 +71,7 @@ class TOGSimProcess():
         self.config_path = config_path
         if not os.path.isfile(self.config_path):
             raise FileNotFoundError(f"machine file not found: {self.config_path}")
+        self._command = self.get_togsim_command(self.config_path, self.base_dir)
         self.process = None
         self.held = []
         self._next_kernel_id = 0
@@ -95,7 +99,7 @@ class TOGSimProcess():
             raise RuntimeError(f"Failed to open trace file: {e}")
 
     def _start_process(self):
-        cmd = (f"{self.get_togsim_command(self.config_path, self.base_dir)} --models_list {self.trace_file_path}"
+        cmd = (f"{self._command} --models_list {self.trace_file_path}"
                f" --result {self.result_path}")
         if config.CONFIG_TOGSIM_DEBUG_LEVEL:
             cmd += f" --log_level {config.CONFIG_TOGSIM_DEBUG_LEVEL}"
@@ -193,6 +197,7 @@ class TOGSimProcess():
             raise FileNotFoundError(
                 f"{bin} not found: TOGSIM_DIR must name a TOGSim checkout that has been built "
                 f"(the compiler's setup/toolchain.sh togsim builds the one it carries)")
+        require_placement(bin)
         config_file = os.path.join(togsim_path, config_path)
         cmd = f"{bin} --config {config_file}"
         return cmd
@@ -234,11 +239,11 @@ class TOGSimProcess():
 
         try:
             tog_so = os.path.join(os.path.dirname(str(model_path)), "tog.so")
-            cycle_tsv = os.path.join(os.path.dirname(str(model_path)), "tog_cycles.tsv")
+            cycle_tsv = os.path.join(os.path.dirname(str(model_path)), "tog_tile_cycles.tsv")
             if not os.path.exists(tog_so):
                 raise FileNotFoundError(f"{tog_so} not found -- the kernel has no TOG to simulate")
             base_cmd = TOGSimProcess.get_togsim_command(config_path, togsim_path)
-            unit_tsv = os.path.join(os.path.dirname(str(model_path)), "tog_units.tsv")
+            unit_tsv = os.path.join(os.path.dirname(str(model_path)), "tog_unit_table.tsv")
             cmd = (f"{base_cmd} --tog_so {tog_so} --cycle_table {cycle_tsv} --unit_table {unit_tsv}"
                    f" --result {result_path}")
             if attribute_path:
@@ -290,6 +295,25 @@ class TOGSimProcess():
             return json.load(f)
 
 
+def require_placement(bin):
+    """Refuse a Simulator older than PLACEMENT_VERSION, which ignores tog_tensor_addrs.txt and lays every
+    launch's tensors out from 0; what `bin --version` printed is kept per binary and mtime."""
+    from pytorchsim.simulator.placement import tensor_addrs_file
+    key = (bin, os.path.getmtime(bin))
+    if key not in _VERSIONS:
+        got = subprocess.run([bin, "--version"], capture_output=True, text=True)
+        said = got.stdout.strip().split(".")
+        _VERSIONS[key] = tuple(int(v) for v in said) if got.returncode == 0 and all(
+            v.isdigit() for v in said) and len(said) == 3 else None
+    have = _VERSIONS[key]
+    if have is None or have[0] != PLACEMENT_VERSION[0] or have < PLACEMENT_VERSION:
+        shown = "no version (it has no --version)" if have is None else ".".join(map(str, have))
+        raise RuntimeError(
+            f"{bin} reports {shown}; the timing path needs TOGSim "
+            f"{'.'.join(map(str, PLACEMENT_VERSION))} or newer of the same major, which places each tensor at "
+            f"the address {tensor_addrs_file()} gives instead of laying every launch out from 0. Rebuild TOGSIM_DIR")
+
+
 def _stamp():
     """The name a run's .log, .trace and .json share: when it started, and a random suffix."""
     return datetime.datetime.now().strftime('%Y%m%d_%H%M%S') + f"_{uuid.uuid4().hex[:8]}"
@@ -300,7 +324,7 @@ if __name__ == "__main__":
     import argparse
 
     ap = argparse.ArgumentParser(description="Send kernels to TOGSim directly.")
-    ap.add_argument("kernel_dir", help="directory holding tog.so and tog_cycles.tsv")
+    ap.add_argument("kernel_dir", help="directory holding tog.so and tog_tile_cycles.tsv")
     ap.add_argument("attribute", help="kernel attribute file")
     ap.add_argument("--config", default=None, help="TOGSim hardware YAML")
     ap.add_argument("--repeat", type=int, default=1)

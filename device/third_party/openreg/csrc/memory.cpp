@@ -2,6 +2,8 @@
 
 #include <include/openreg.h>
 
+#include <cstdint>
+#include <iterator>
 #include <map>
 #include <mutex>
 
@@ -13,6 +15,56 @@ struct Block {
   void* pointer = nullptr;
   size_t size = 0;
   int refcount{0};
+  uint64_t sim_addr = 0;
+  uint64_t sim_size = 0;
+};
+
+// The simulated DRAM device blocks are allocated in: 16 KiB-aligned ranges from 0, first fit over the holes that
+// freed blocks left, else above everything allocated; a freed range coalesces with its neighbours.
+class SimDram {
+ public:
+  static constexpr uint64_t kAlign = 16 * 1024;
+
+  uint64_t allocate(uint64_t bytes) {
+    const uint64_t need = (bytes + kAlign - 1) / kAlign * kAlign;
+    for (auto it = m_holes.begin(); it != m_holes.end(); ++it) {
+      if (it->second < need)
+        continue;
+      const uint64_t at = it->first, left = it->second - need;
+      m_holes.erase(it);
+      if (left)
+        m_holes[at + need] = left;
+      return at;
+    }
+    const uint64_t at = m_top;
+    m_top += need;
+    return at;
+  }
+
+  void free(uint64_t at, uint64_t bytes) {
+    uint64_t start = at, len = (bytes + kAlign - 1) / kAlign * kAlign;
+    auto next = m_holes.lower_bound(start);
+    if (next != m_holes.end() && start + len == next->first) {
+      len += next->second;
+      next = m_holes.erase(next);
+    }
+    if (next != m_holes.begin()) {
+      auto prev = std::prev(next);
+      if (prev->first + prev->second == start) {
+        start = prev->first;
+        len += prev->second;
+        m_holes.erase(prev);
+      }
+    }
+    if (start + len == m_top)
+      m_top = start;
+    else
+      m_holes[start] = len;
+  }
+
+ private:
+  std::map<uint64_t, uint64_t> m_holes;
+  uint64_t m_top = 0;
 };
 
 class MemoryManager {
@@ -48,7 +100,12 @@ class MemoryManager {
       }
     }
 
-    m_registry[mem] = {type, current_device, mem, aligned_size, 0};
+    Block block{type, current_device, mem, aligned_size, 0};
+    if (type == orMemoryType::orMemoryTypeDevice) {
+      block.sim_size = size;
+      block.sim_addr = m_sim_dram.allocate(size);
+    }
+    m_registry[mem] = block;
     *ptr = mem;
     return orSuccess;
   }
@@ -64,6 +121,7 @@ class MemoryManager {
 
     const auto& info = it->second;
     if (info.type == orMemoryType::orMemoryTypeDevice) {
+      m_sim_dram.free(info.sim_addr, info.sim_size);
       openreg::mprotect(info.pointer, info.size, F_PROT_READ | F_PROT_WRITE);
       openreg::munmap(info.pointer, info.size);
     } else {
@@ -140,6 +198,18 @@ class MemoryManager {
     return orSuccess;
   }
 
+  orError_t getSimAddress(uint64_t* addr, const void* ptr) {
+    if (!addr || !ptr)
+      return orErrorUnknown;
+    std::lock_guard<std::mutex> lock(m_mutex);
+    Block* info = getBlockInfoNoLock(ptr);
+    if (!info || info->type != orMemoryType::orMemoryTypeDevice)
+      return orErrorUnknown;
+    *addr = info->sim_addr + static_cast<uint64_t>(static_cast<const char*>(ptr) -
+                                                   static_cast<const char*>(info->pointer));
+    return orSuccess;
+  }
+
   orError_t unprotect(void* ptr) {
     std::lock_guard<std::mutex> lock(m_mutex);
     return unprotectNoLock(getBlockInfoNoLock(ptr));
@@ -197,6 +267,7 @@ class MemoryManager {
   }
 
   std::map<void*, Block> m_registry;
+  SimDram m_sim_dram;
   std::mutex m_mutex;
 };
 
@@ -248,6 +319,14 @@ orError_t orPointerGetAttributes(
     orPointerAttributes* attributes,
     const void* ptr) {
   return MemoryManager::getInstance().getPointerAttributes(attributes, ptr);
+}
+
+orError_t orPointerGetSimAddress(uint64_t* simAddr, const void* devPtr) {
+  return MemoryManager::getInstance().getSimAddress(simAddr, devPtr);
+}
+
+size_t orSimAddressAlignment(void) {
+  return SimDram::kAlign;
 }
 
 orError_t orMemoryUnprotect(void* devPtr) {

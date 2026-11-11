@@ -12,11 +12,12 @@ sys.path.insert(0, os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim
 from pytorchsim import config
 from pytorchsim.backend import codecache
 from pytorchsim.simulator import timing
-from pytorchsim.simulator.timing.togsim import TOGSimProcess
+from pytorchsim.simulator.timing.togsim import PLACEMENT_VERSION, TOGSimProcess
 
 RESULT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "togsim_tpuv6e.json")
 SAID = "[info] [TOGSim] the stub ran"
 STUB = """#!/bin/sh
+[ "$1" = --version ] && {{ echo {version}; exit 0; }}
 echo "{said}"
 while [ $# -gt 0 ]; do
   [ "$1" = --models_list ] && cat "$2" > /dev/null
@@ -32,14 +33,15 @@ def _checkout(root, writes=True):
     os.makedirs(os.path.join(root, "build", "bin"))
     simulator = config.togsim_simulator(root)
     with open(simulator, "w") as f:
-        f.write(STUB.format(said=SAID, write=f'cp {RESULT} "$2"' if writes else "true"))
+        f.write(STUB.format(said=SAID, write=f'cp {RESULT} "$2"' if writes else "true",
+                            version=".".join(map(str, PLACEMENT_VERSION))))
     os.chmod(simulator, os.stat(simulator).st_mode | stat.S_IXUSR)
     machine = os.path.join(root, "machine.yml")
     with open(machine, "w") as f:
         f.write("core_freq_mhz: 1\n")
     kernel = os.path.join(root, "k")
     os.makedirs(kernel)
-    for name in ("tog.so", "tog_cycles.tsv", "tog_units.tsv"):
+    for name in ("tog.so", "tog_tile_cycles.tsv", "tog_unit_table.tsv"):
         open(os.path.join(kernel, name), "w").close()
     return machine, os.path.join(kernel, "tile_graph.onnx"), os.path.join(kernel, "attribute")
 

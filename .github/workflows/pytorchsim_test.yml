@@ -106,6 +106,8 @@ jobs:
           - tests/system/test_route_allowlist.py
           - tests/system/test_select.py
           - tests/system/test_session_cycles.py
+          - tests/system/test_spike_placement.py
+          - tests/system/test_tensor_placement.py
           - tests/system/test_togsim_exit.py
           - tests/system/test_togsim_result.py
           - tests/system/test_verify_golden.py

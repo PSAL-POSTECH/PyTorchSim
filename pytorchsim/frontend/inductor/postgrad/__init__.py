@@ -4,6 +4,7 @@ the device, one module per op family; the one-op graph patterns run first, in im
     histc.py         histc                    aten.histc counted on the device
     gemm.py          mm_row, addmm_row        a 1 x K row times a matrix as a multiply and a sum: vector work
                      gemm_zero_length         a matmul with an empty output, or K = 0 and no bias, as zeros
+                     int_mm                   an int8 matmul widened to int32 as aten._int_mm: the mm template
     convolution.py   convolution_transposed   a transposed conv as its direct equivalent
                      convolution_1d           a 1-D conv as a 2-D one over a height of 1
                      convolution_pointwise    a 1x1 conv as [O, C] times the pixels: one mm, lanes on pixels

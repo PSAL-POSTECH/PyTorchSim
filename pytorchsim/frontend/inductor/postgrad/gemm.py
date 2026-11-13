@@ -21,18 +21,21 @@ def _is_row(match):
             and av.shape[0] == 1 and av.is_floating_point() and bv.is_floating_point())
 
 
-def _row_times(a, b):
+def _row_times(a, b, acc=None):
     """The row stored first (a no-op when it already is), broadcast down the matrix, a multiply and a sum over
-    K: every block reads the stored row, where a row computed in the kernel is spread over the lanes per block."""
+    K in `acc` when given (both operands widened to it): every block reads the stored row."""
     from torch._inductor import inductor_prims
-    return (inductor_prims.force_stride_order(a, [a.shape[1], 1]).reshape(-1, 1) * b).sum(0, keepdim=True)
+    row = inductor_prims.force_stride_order(a, [a.shape[1], 1]).reshape(-1, 1)
+    if acc is not None:
+        row, b = row.to(acc), b.to(acc)
+    return (row * b).sum(0, keepdim=True, dtype=acc)
 
 
 @register_rewrite(CallFunction(aten.mm.default, Arg(), Arg()), _is_row)
 def mm_row(node, a, b):
     """A 1 x K row times a K x N matrix as _row_times: vector work, where the mm template would run it on
     the array."""
-    return _row_times, [a, b]
+    return (lambda a, b: _row_times(a, b)), [a, b]
 
 
 @register_rewrite(CallFunction(aten.addmm.default, Arg(), Arg(), Arg()), _is_row)
@@ -83,6 +86,8 @@ def _is_int8_widened(match):
 
 @register_rewrite(CallFunction(aten.mm.default, _widened(), _widened()), _is_int8_widened)
 def int_mm(node, a, b):
-    """mm(a.to(int32), b.to(int32)) of int8 a and b as aten._int_mm(a, b), equal bit for bit: Inductor has no
-    int32 mm template and runs it as an extern mm on the CPU, where _int_mm takes the mm template."""
+    """mm(a.to(int32), b.to(int32)) of int8 a and b as aten._int_mm(a, b) on the mm template, a 1 x K row as
+    _row_times summed in int32 (vector work, as mm_row): equal bit for bit to the int32 mm."""
+    if fake_value(a).shape[0] == 1:
+        return (lambda a, b: _row_times(a, b, torch.int32)), [a, b]
     return (lambda a, b: aten._int_mm(a, b)), [a, b]

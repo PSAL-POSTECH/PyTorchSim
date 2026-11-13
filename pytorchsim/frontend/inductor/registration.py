@@ -11,6 +11,7 @@
     codegen heuristics            the configs of a generated pointwise or reduction kernel, autotune/'s
     PTB's Triton driver           the runner a launch goes to: Spike and TOGSim
     Inductor's benchmarker        what picks one of a kernel's compiled configs
+    Inductor's decompositions     npu's mm and bmm as with coordinate descent off (a patch: it has no hook)
 """
 
 import functools
@@ -45,6 +46,7 @@ def install():
     _register_codegen_heuristics()
     _register_launcher()
     _register_benchmarker()
+    _register_decompositions()
 
 
 # Dynamo's device interfaces (torch._dynamo.device_interface)
@@ -403,3 +405,32 @@ def _register_benchmarker():
     from pytorchsim.backend import config_pick
 
     register_benchmarker("npu", config_pick.benchmark, override=True)
+
+
+# Inductor's decompositions (torch._inductor.decomposition.decompositions): a patch, the table has no device hook
+
+def _register_decompositions():
+    """npu's mm and bmm decomposed as with coordinate descent tuning off, which torchao's quantize_ turns on
+    for the process: a 1-row matmul stays one for postgrad/'s gemm rewrites, not a multiply and a sum."""
+    from torch._inductor import decomposition
+
+    packets = (torch.ops.aten.mm, torch.ops.aten.bmm)
+    for op, fn in list(decomposition.decompositions.items()):
+        if getattr(op, "overloadpacket", None) in packets and not getattr(fn, "_npu_without_cdt", False):
+            decomposition.decompositions[op] = _without_coordinate_descent(fn)
+    decomposition.fast_random_decomps.cache_clear()
+
+
+def _without_coordinate_descent(fn):
+    """`fn`, traced with coordinate descent tuning off when its first operand is on npu."""
+    from torch._inductor import config as inductor_config
+
+    @functools.wraps(fn)
+    def decompose(self, *args, **kwargs):
+        if getattr(getattr(self, "device", None), "type", None) != "npu":
+            return fn(self, *args, **kwargs)
+        with inductor_config.patch(coordinate_descent_tuning=False):
+            return fn(self, *args, **kwargs)
+
+    decompose._npu_without_cdt = True
+    return decompose

@@ -1,6 +1,7 @@
 """An int8 matmul widened to int32 (torchao's W8A8 on a device out_dtype has no _int_mm for) on the npu, against
-the CPU. Cases: int_mm, int_mm_weight_t (a Linear's [N, K] weight), pass_graph (the mm is aten._int_mm, counted)
-and pass_graph_int16 (an int16 one stays an mm); run with [case ...], all when none is named."""
+the CPU. Cases: int_mm, int_mm_weight_t (a Linear's [N, K] weight), int_mm_row (a 1 x K row), pass_graph (the mm
+is aten._int_mm, counted), pass_graph_int16 (an int16 one stays an mm) and row_cdt (a row with coordinate descent
+tuning on, as torchao's quantize_ sets it); run with [case ...], all when none is named."""
 import os
 import sys
 
@@ -25,6 +26,7 @@ def _widened_mm_weight_t(a, w):
 CASES = {
     "int_mm": (_widened_mm, [(64, 512), (512, 256)]),
     "int_mm_weight_t": (_widened_mm_weight_t, [(64, 512), (256, 512)]),
+    "int_mm_row": (_widened_mm, [(1, 512), (512, 256)]),
 }
 
 
@@ -73,7 +75,25 @@ def run_pass_graph_int16(name):
     return ok
 
 
-EXTRA = {"pass_graph": run_pass_graph, "pass_graph_int16": run_pass_graph_int16}
+def run_row_cdt(name):
+    """A 1 x K row compiled with coordinate descent tuning on, which would decompose the mm before the post-grad
+    pass: still int_mm's row on the npu, rewritten once, equal to the CPU."""
+    from torch._inductor import config as inductor_config
+
+    from pytorchsim.frontend.inductor import postgrad as pg
+    args = _inputs([(1, 512), (512, 256)])
+    ref = _widened_mm(*args)
+    pg.CALLS.clear()
+    torch._dynamo.reset()
+    with inductor_config.patch(coordinate_descent_tuning=True):
+        out = torch.compile(_widened_mm, dynamic=False)(*[a.to(device) for a in args])
+    ok = pg.CALLS.get("int_mm") == {"rewritten": 1}
+    check_result("IntMM row_cdt", out, ref)
+    check_result("IntMM row_cdt rewritten", torch.tensor([ok]), torch.tensor([True]))
+    return ok
+
+
+EXTRA = {"pass_graph": run_pass_graph, "pass_graph_int16": run_pass_graph_int16, "row_cdt": run_row_cdt}
 
 
 if __name__ == "__main__":

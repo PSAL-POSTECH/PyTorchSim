@@ -94,8 +94,9 @@ DOT_DTYPES = (torch.bfloat16, torch.float16, torch.float32)
 
 
 def templates_for(kernel_inputs, templates, op_name):
-    """`templates` for one npu mm or addmm: only the resident mm where it holds the graph's prefetch
-    (decline), else as offered; the decision and why are logged."""
+    """`templates` for one npu mm or addmm: the resident mm where it holds the graph's prefetch (decline),
+    with the mm template beside it when the streamed operand is widened from a narrower dtype (the mm template
+    can load it narrow and widen it in place), else as offered; the decision and why are logged."""
     from torch._inductor.kernel.mm import mm_template
     if op_name not in GEMMS or kernel_inputs.device_type != "npu" or mm_template not in templates:
         return templates
@@ -103,8 +104,28 @@ def templates_for(kernel_inputs, templates, op_name):
     if why is not None:
         logger.info("[mm_resident] %s: the mm template, %s", _label(kernel_inputs), why)
         return templates
+    if _widened(kernel_inputs.mat1mat2()[1 - got.resident]):
+        logger.info("[mm_resident] %s: %s; the mm template too, the streamed operand widened",
+                    _label(kernel_inputs), got.why)
+        return [mm_resident_template, mm_template]
     logger.info("[mm_resident] %s: %s", _label(kernel_inputs), got.why)
     return [mm_resident_template]
+
+
+def _widened(node):
+    """Whether `node` is computed elementwise from buffers all of a narrower dtype, as an int8 weight widened
+    to bf16 is: a prologue the mm template takes, which the resident mm, loading its operands raw, does not."""
+    from torch._inductor import ir
+    from torch._inductor.virtualized import V
+    try:
+        buf = V.graph.get_buffer(node.get_name())
+    except (AttributeError, NotImplementedError):
+        return False
+    if not isinstance(buf, ir.ComputedBuffer) or not isinstance(buf.data, ir.Pointwise):
+        return False
+    reads = buf.get_read_names()
+    size = buf.get_dtype().itemsize
+    return bool(reads) and all(V.graph.get_dtype(r).itemsize < size for r in reads)
 
 
 def decline(kernel_inputs):

@@ -91,3 +91,24 @@ def int_mm(node, a, b):
     if fake_value(a).shape[0] == 1:
         return (lambda a, b: _row_times(a, b, torch.int32)), [a, b]
     return (lambda a, b: aten._int_mm(a, b)), [a, b]
+
+
+# mm_widened_weight: an mm's right operand widened from a narrower dtype, stored row-major
+
+def _is_widened_strided(match):
+    """The right operand of a 2-D mm is a widening convert (int8 to bf16, say) whose result is not row-major,
+    as a transposed weight's is: its strides follow the narrow source."""
+    a, conv = match.args[0], match.output_node().args[1]
+    src, wide = fake_value(conv.args[0]), fake_value(conv)
+    return (src is not None and wide is not None and fake_value(a) is not None and wide.dim() == 2
+            and src.dtype.itemsize < wide.dtype.itemsize and not wide.is_contiguous())
+
+
+@register_rewrite(CallFunction(aten.mm.default, Arg(), CallFunction(prims.convert_element_type.default, Arg(),
+                                                                   Arg())), _is_widened_strided)
+def mm_widened_weight(node, a, w, dtype):
+    """The widened right operand stored row-major (force_stride_order): the layout the mm template reads, so
+    it can load the narrow source and widen it in place, where a transposed one conflicts and has no fallback."""
+    from torch._inductor import inductor_prims
+    n = fake_value(node).shape[1]
+    return (lambda a, w: torch.mm(a, inductor_prims.force_stride_order(w.to(dtype), [n, 1]))), [a, w]

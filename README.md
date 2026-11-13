@@ -48,16 +48,16 @@ PyTorchSim **supports**:
 | ViT | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | `tests/models/test_vit.py` |
 | Mistral | <img src="https://avatars.githubusercontent.com/u/21003710?s=48&v=4" width="20"/> | ✅ | |
 | Stable-diffusion v1 | 🤗 | ✅ | |
-| Llama 2 / 3 / 3.1 / 3.2 / 3.3 | 🤗 | ✅ | `tests/models/Llama/` — one block at the real 8B width |
+| Llama 2 / 3 / 3.1 / 3.2 | 🤗 | ✅ | `tests/models/Llama/` — one block each of Llama-2-7B, 3-8B, 3.1-8B, 3.2-1B and 3.2-3B at the published sizes |
 | Llama 3.2 Vision (Mllama) | 🤗 | ✅ | `tests/models/Llama/test_mllama.py` — both towers, the vision one at its real 4 tiles |
-| Qwen 1.5 / 2 / 2.5 / 3 | 🤗 | ✅ 🎯 | `tests/models/Qwen/` — one block per version at its real width; Qwen 1 is not covered |
-| Qwen2-VL / Qwen2.5-VL | 🤗 | ⚠️ | `tests/models/Qwen/test_qwen_vl.py` — end to end, and at the real 1280 vision width with `--preset 2b` |
-| Qwen1.5-MoE / Qwen3-MoE | 🤗 | ✅ 🎯 | `tests/models/Qwen/test_qwen.py --preset 2-moe / 3-moe` — 8 experts instead of the shipped 60 and 128 |
+| Qwen 2.5 / 3 | 🤗 | ✅ 🎯 | `tests/models/Qwen/` — one block each of Qwen2.5-7B, Qwen3-0.6B and Qwen3-8B at the published sizes; dense Qwen 1, 1.5 and 2 are not covered |
+| Qwen2-VL / Qwen2.5-VL | 🤗 | ⚠️ | `tests/models/Qwen/test_qwen_vl.py` — Qwen2-VL-2B and Qwen2.5-VL-3B at the published sizes, one text and one vision layer |
+| Qwen1.5-MoE / Qwen3-MoE | 🤗 | ✅ 🎯 | `tests/models/Qwen/test_qwen.py --preset 2-moe / 3-moe` — one block at the published sizes, all 60 and 128 experts |
 | DeepSeek-V3 (base) | 🤗 | ✅ | `tests/models/DeepSeek/` — a few ops (the gate among them) are not cycle-modeled |
 | SwinV2 | 🤗 | ✅ | `tests/models/test_swinv2.py` (shifted-window attention) |
 | CLIP (vision) | 🤗 | ✅ | `tests/models/test_clip.py` |
 | ConvNeXt V2 | 🤗 | ✅ | `tests/models/test_convnextv2.py` (channels-first LayerNorm, depthwise conv) |
-| Llama 4 | 🤗 | ✅ | `tests/models/Llama/test_llama4.py` — MoE in every layer, experts scaled to 4; `--preset scout` builds the real 5120 width but stops in the functional simulator |
+| Llama 4 | 🤗 | ✅ | `tests/models/Llama/test_llama4.py` — Scout at the published sizes with all 16 experts, 4 of its 48 text layers; `--part vision` runs 2 of the 34 vision layers |
 | Broader model support | — | ⏳ | In development |
 
 ✅ runs end to end on PyTorchSim · ⚠️ runs with the noted limits · ⏳ in development · 🎯 timing validated against TPU v6e

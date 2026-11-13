@@ -8,7 +8,7 @@ import sys
 import tempfile
 from unittest import mock
 
-TORCHSIM_DIR = os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim")
+TORCHSIM_DIR = os.environ.get("TORCHSIM_DIR") or os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, TORCHSIM_DIR)
 
 from pytorchsim import contract  # noqa: E402
@@ -74,7 +74,7 @@ def test_a_launch_log_joins_its_workdir_timing():
         with open(os.path.join(workdir, "timing.json"), "w") as f:
             json.dump(TIMING, f)
         timing = {}
-        VIEWER["join_workdir_timing"]([{"tog_so": os.path.join(launch, "tog.so")}], timing)
+        VIEWER["join_workdir_timing"]([{"kernels": [{"tog": os.path.join(launch, "tog.so")}]}], timing)
         assert list(timing) == [workdir] and timing[workdir]["label"] == KERNEL, timing
 
 if __name__ == "__main__":

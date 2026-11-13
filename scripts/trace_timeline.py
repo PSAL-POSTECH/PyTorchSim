@@ -8,6 +8,7 @@ Each instruction becomes one duration slice, grouped per core (pid). Lanes:
   dram-wr -- stores crossing the DRAM bus (write bandwidth)
   sa / sa0.. -- COMP compute_type 1 (matmul) / 2 (preload)
   vector  -- COMP compute_type 0 (vector)
+  unit<ct> -- any other COMP compute_type, one lane each
 Time unit = core cycles. Barriers (MEMORY_BAR/COMPUTE_BAR) are not drawn. A DMA bar
 runs from the op's first DRAM response (DRAM_RESP_FIRST, logged by the Core -- so it
 captures data moving even while still injecting) to its completion (load: data-ready;
@@ -123,11 +124,16 @@ def to_chrome(insts, num_sa=1):
         op, detail, core = r["opcode"], r["detail"], r["core"]
         if op in _HIDE:
             continue
-        u = by_core.setdefault(core, {"dma": [], "vector": [], "sa": []})
+        u = by_core.setdefault(core, {"dma": [], "vector": [], "sa": [], "other": {}})
         if op == "COMP":
             m = re.search(r"compute_type=(\d+)", detail)
             ct = int(m.group(1)) if m else -1
-            u["vector" if ct == 0 else "sa"].append(r)
+            if ct in (1, 2):
+                u["sa"].append(r)
+            elif ct == 0:
+                u["vector"].append(r)
+            else:
+                u["other"].setdefault(ct, []).append(r)
         else:
             u["dma"].append(r)
 
@@ -195,16 +201,26 @@ def to_chrome(insts, num_sa=1):
             lane = "sa" if max_sa == 1 else f"sa{s}"
             add(core, lane, start, dur, _label(r["opcode"], r["detail"]), r)
 
+        for ct, rows in sorted(u["other"].items()):
+            lane, free = f"unit{ct}", 0
+            for r in sorted(rows, key=issue_key):
+                if r["issued"] is None:
+                    continue
+                dur = max(_cycles(r["detail"]), 1)
+                start = max(r["issued"], free)
+                free = start + dur
+                add(core, lane, start, dur, lane, r)
+
     for c in sorted(cores):
         events.append({"name": "process_name", "ph": "M", "pid": c, "tid": 0,
                        "args": {"name": f"Core {c}"}})
     order = {"dram-rd": 0, "dram-wr": 1,
              "sa": 2, "sa0": 2, "sa1": 3, "sa2": 4, "sa3": 5, "vector": 7}
-    for c, lane in sorted(lanes, key=lambda x: (x[0], order.get(x[1], 5))):
+    for c, lane in sorted(lanes, key=lambda x: (x[0], order.get(x[1], 20))):
         events.append({"name": "thread_name", "ph": "M", "pid": c, "tid": lane,
                        "args": {"name": lane}})
         events.append({"name": "thread_sort_index", "ph": "M", "pid": c, "tid": lane,
-                       "args": {"sort_index": order.get(lane, 5)}})
+                       "args": {"sort_index": order.get(lane, 20)}})
     return {"traceEvents": events, "displayTimeUnit": "ns"}
 
 

@@ -1,0 +1,57 @@
+[2026-11-13 19:44:24.417] [info] [TOGSim] Command line: /opt/togsim/build/bin/Simulator --config /opt/togsim/configs/tpuv6e.yml --models_list /tmp/fifo
+[2026-11-13 19:44:24.418] [info] [LoadConfig] Loaded configuration file "/opt/togsim/configs/tpuv6e.yml"
+[2026-11-13 19:44:24.418] [info] PyTorchSim config:
+num_cores: 1
+core_freq_mhz: 1751
+core_stats_print_period_cycles: 200
+num_systolic_array_per_core: 2
+systolic_array_split: round_robin
+systolic_array_unit: TPUV6E_MXU
+dma_load_latency_cycles: 27
+dma_load_ready_cycles: 842
+dma_store_latency_cycles: 24
+dma_store_ready_cycles: 784
+vpu_num_lanes: 128
+vpu_spad_size_kb_per_lane: 1024
+isa: [m, a, f, d, c, v, zvfh, zvfbfmin, zvl256b, pytorchsim_tpuv6e, spad-vector-memory]
+vcix: {tpu_mxu_queue_entries: 512, tpu_mxu_delay_cycles: 187, tpu_mxu_registers: 2, tpu_mxu_issue_slots: 2, tpu_mxu_word_a_cycle: 1, tpu_xlu_queue_entries: 256, tpu_xlu_latency_cycles: 137, tpu_xlu_move_latency_cycles: 123, tpu_xlu_elements_per_cycle: 16, tpu_xlu_issue_per_cycle: 2, tpu_sfu_latency_cycles: 10, tpu_sfu_queue_registers: 16}
+address_map: {spad_vaddr: 0x40000000, dram_base: 0x80000000, dram_size: 107374182400}
+dram_type: ramulator2
+dram_channels: 32
+dram_stats_print_period_cycles: 200
+[2026-11-13 19:44:24.420] [info] [Config/DRAM] Total bandwidth 1638.40 GB/s, 3205 MHz, 32 channels, 32 bytes per request
+[2026-11-13 19:44:29.451] [info] [Scheduler 0] Enqueued kernel_id: 0, tog_path: /data/dump/triton_fixture/launch-1-1-abcd/tog.so, operation: kernel, request_time_cycles: 0
+[2026-11-13 19:44:29.457] [info] ========= Core stat =========
+[2026-11-13 19:44:29.457] [info] Core [0] : Issue utilization(%): 0.00, active_cycles: 0, idle_cycles: 200
+[2026-11-13 19:44:29.457] [info] Core [0] : TPUV6E_MISC.instructions utilization(%): 0.00, active_cycles: 0, idle_cycles: 200
+[2026-11-13 19:44:29.457] [info] Core [0] : TPUV6E_MXU.rows utilization(%): 0.00, active_cycles: 0, idle_cycles: 200
+[2026-11-13 19:44:29.457] [info] Core [0] : TPUV6E_SFU.instructions utilization(%): 0.00, active_cycles: 0, idle_cycles: 200
+[2026-11-13 19:44:29.457] [info] Core [0] : TPUV6E_XLU.elements utilization(%): 0.00, active_cycles: 0, idle_cycles: 200
+[2026-11-13 19:44:29.457] [info] Core [0] : Vpu utilization(%): 0.00, active_cycles: 0, idle_cycles: 200
+[2026-11-13 19:44:29.457] [info] Core [0] : DMA active_cycles: 2, DMA idle_cycles: 198, DRAM BW: 8.000 GB/s (32 responses)
+[2026-11-13 19:44:29.457] [info] Core [0] : Total_cycles: 200
+[2026-11-13 19:44:29.457] [trace] [DRAM] channel 0 | 0.51 GB/s avg., 1.00% of utilization | 1 reads, 0 writes (interval 200 cycles)
+[2026-11-13 19:44:29.457] [info] [DRAM] all 32 channels combined | 16.41 GB/s aggregate, 1.00% of utilization (avg. per channel) | 32 reads, 0 writes (interval 200 cycles)
+[2026-11-13 19:44:29.479] [info] [Scheduler 0] Kernel 0 has completed - TOG path: x finished at cycle 1049
+[2026-11-13 19:44:29.499] [info] === DRAM statistics ===
+[2026-11-13 19:44:29.500] [info] [DRAM] Per-channel average bandwidth
+[2026-11-13 19:44:29.500] [info] [DRAM] channel 0 | 0.11 GB/s avg., 0.22% of utilization | 1 reads, 1 writes
+[2026-11-13 19:44:29.500] [info] [DRAM] channel 1 | 0.11 GB/s avg., 0.22% of utilization | 1 reads, 1 writes
+[2026-11-13 19:44:29.500] [info] ===== Instructions count =====
+[2026-11-13 19:44:29.500] [info] Core [0] : MOVIN    inst_count: 2
+[2026-11-13 19:44:29.500] [info] Core [0] : MOVOUT   inst_count: 2
+[2026-11-13 19:44:29.500] [info] Core [0] : COMP     inst_count: 2 (GEMM: 0, Vector: 2, XLU: 0)
+[2026-11-13 19:44:29.500] [info] Core [0] : MEMORY_BAR inst_count: 2
+[2026-11-13 19:44:29.500] [info] ========= Core stat =========
+[2026-11-13 19:44:29.500] [info] Core [0] : Issue utilization(%): 0.08, active_cycles: 2, idle_cycles: 1820
+[2026-11-13 19:44:29.500] [info] Core [0] : TPUV6E_MISC.instructions utilization(%): 0.00, active_cycles: 0, idle_cycles: 1822
+[2026-11-13 19:44:29.500] [info] Core [0] : TPUV6E_MXU.rows utilization(%): 0.00, active_cycles: 0, idle_cycles: 1822
+[2026-11-13 19:44:29.500] [info] Core [0] : TPUV6E_SFU.instructions utilization(%): 0.00, active_cycles: 0, idle_cycles: 1822
+[2026-11-13 19:44:29.500] [info] Core [0] : TPUV6E_XLU.elements utilization(%): 0.00, active_cycles: 0, idle_cycles: 1822
+[2026-11-13 19:44:29.500] [info] Core [0] : Vpu utilization(%): 0.11, active_cycles: 2, idle_cycles: 1820
+[2026-11-13 19:44:29.500] [info] Core [0] : DMA active_cycles: 4, DMA idle_cycles: 1818, DRAM BW: 1.000 GB/s (64 responses)
+[2026-11-13 19:44:29.500] [info] Core [0] : NUMA local memory: 64 requests, remote memory: 0 requests
+[2026-11-13 19:44:29.500] [info] Core [0] : Total_cycles: 1822
+[2026-11-13 19:44:29.500] [info] Core [0] : computes held at least once by the core's compute in flight: 0
+[2026-11-13 19:44:29.500] [info] Total execution cycles: 1822
+[2026-11-13 19:44:29.500] [info] Wall-clock time for simulation: 5.083092 seconds

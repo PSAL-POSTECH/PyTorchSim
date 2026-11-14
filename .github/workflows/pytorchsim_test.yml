@@ -19,7 +19,7 @@ on:
 # test_reduction_tiling and test_select, and test_autotune_tables, test_breakdown_viewer,
 # test_device_interface, test_launch_dir, test_module_form, test_npuwattch_json, test_one_layer_kv_write,
 # test_one_layer_mask, test_one_layer_softcap_mask, test_patch_scope, test_route_allowlist, test_togsim_exit,
-# test_togsim_result and test_verify_golden, which emit no kernel and so are no route coverage.
+# test_togsim_result, test_gem5_trace_split, test_util_viewer and test_verify_golden, which emit no kernel and so are no route coverage.
 # Regenerate the allowlist with
 #   python scripts/ci/triton_route_sweep.py --all --update-allowlist
 # and mirror its files here; a test absent from both is not gated anywhere.
@@ -94,6 +94,7 @@ jobs:
           - tests/system/test_compiler_failure.py
           - tests/system/test_device_interface.py
           - tests/system/test_eager.py
+          - tests/system/test_gem5_trace_split.py
           - tests/system/test_launch_dir.py
           - tests/system/test_launch_record.py
           - tests/system/test_module_form.py
@@ -110,6 +111,7 @@ jobs:
           - tests/system/test_tensor_placement.py
           - tests/system/test_togsim_exit.py
           - tests/system/test_togsim_result.py
+          - tests/system/test_util_viewer.py
           - tests/system/test_verify_golden.py
     steps:
       - name: Log in to GitHub Container Registry

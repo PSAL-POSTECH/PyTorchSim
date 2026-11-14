@@ -12,6 +12,7 @@
     PTB's Triton driver           the runner a launch goes to: Spike and TOGSim
     Inductor's benchmarker        what picks one of a kernel's compiled configs
     Inductor's decompositions     npu's mm and bmm as with coordinate descent off (a patch: it has no hook)
+    Inductor's realize on reuse   a value a broadcast reads again computed once (a patch: it has no hook)
 """
 
 import functools
@@ -47,6 +48,7 @@ def install():
     _register_launcher()
     _register_benchmarker()
     _register_decompositions()
+    _register_realize_on_broadcast()
 
 
 # Dynamo's device interfaces (torch._dynamo.device_interface)
@@ -434,3 +436,36 @@ def _without_coordinate_descent(fn):
 
     decompose._npu_without_cdt = True
     return decompose
+
+
+# Inductor's realize on reuse (ir.StorageBox.should_realize_on_reuse): a patch, it has no hook
+
+_NOT_ARITHMETIC = frozenset({"load", "load_seed", "to_dtype", "to_dtype_bitcast", "constant", "index_expr",
+                             "indirect_indexing"})
+
+
+def _register_realize_on_broadcast():
+    """A pointwise npu value a broadcast reads again is stored once when it does more than load and cast, as XLA
+    computes a row's scale in a fusion of its own: Inductor would compute it again at every element it reaches."""
+    from torch._inductor import ir
+
+    original = ir.StorageBox.should_realize_on_reuse
+    if getattr(original, "_npu_broadcast", False):
+        return
+
+    @functools.wraps(original)
+    def should_realize_on_reuse(self, users, *, graph_reuse=True):
+        if original(self, users, graph_reuse=graph_reuse):
+            return True
+        if graph_reuse or users <= 1 or not isinstance(self.data, ir.Pointwise) or not _is_npu_node(self.data):
+            return False
+        return self.num_reads() > 0 and bool(set(self.data.inner_fn_opcount().used_ops) - _NOT_ARITHMETIC)
+
+    should_realize_on_reuse._npu_broadcast = True
+    ir.StorageBox.should_realize_on_reuse = should_realize_on_reuse
+
+
+def _is_npu_node(node):
+    """Whether an IR node computes on npu."""
+    from . import is_npu
+    return is_npu(node.get_device())

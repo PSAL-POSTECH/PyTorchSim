@@ -446,7 +446,8 @@ _NOT_ARITHMETIC = frozenset({"load", "load_seed", "to_dtype", "to_dtype_bitcast"
 
 def _register_realize_on_broadcast():
     """A pointwise npu value a broadcast reads again is stored once when it does more than load and cast, as XLA
-    computes a row's scale in a fusion of its own: Inductor would compute it again at every element it reaches."""
+    computes a row's scale in a fusion of its own: Inductor would compute it again at every element it reaches.
+    A bool, a comparison its readers may index into, is computed where it is read, as before."""
     from torch._inductor import ir
 
     original = ir.StorageBox.should_realize_on_reuse
@@ -459,7 +460,8 @@ def _register_realize_on_broadcast():
             return True
         if graph_reuse or users <= 1 or not isinstance(self.data, ir.Pointwise) or not _is_npu_node(self.data):
             return False
-        return self.num_reads() > 0 and bool(set(self.data.inner_fn_opcount().used_ops) - _NOT_ARITHMETIC)
+        return (self.num_reads() > 0 and self.get_dtype() != torch.bool
+                and bool(set(self.data.inner_fn_opcount().used_ops) - _NOT_ARITHMETIC))
 
     should_realize_on_reuse._npu_broadcast = True
     ir.StorageBox.should_realize_on_reuse = should_realize_on_reuse

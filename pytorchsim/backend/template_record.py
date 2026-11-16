@@ -73,6 +73,30 @@ def keep_recorded(choices):
     return choices
 
 
+def refuse_external_that_does_not_compile(choices):
+    """Inductor's preprocessing step: an external mapping's tile is the only candidate, so its failure to compile is
+    an error naming the mapping file and the entry, with why."""
+    if len(choices) == 1:
+        ktc = choices[0].annotations.get("ktc")
+        if ktc is not None and ktc.annotations.get(SOURCE) == EXTERNAL:
+            m, n, k = ktc.inputs.mnk_hinted()
+            try:
+                choices[0].precompile()
+            except Exception as e:  # noqa: BLE001
+                raise ValueError(f"{config.codegen_external_mapping_file}: the entry {m}_{n}_{k} -> "
+                                 f"{choices[0].description} does not compile on this machine: {e}") from e
+    return choices
+
+
+def mark_timed(timings, name, input_nodes, choices, *_):
+    """Inductor's feedback saver: the configs of a timed template that the strategy autotuned are marked TIMED."""
+    from pytorchsim.backend import template_timing
+    if config.pytorchsim_timing_mode and template_timing.times(choices):
+        for c in choices:
+            if is_timed(c):
+                c.annotations["ktc"].annotations[SOURCE] = TIMED
+
+
 def record(timings, name, input_nodes, choices, *_):
     """Inductor's feedback saver: append a timed pick to RECORD_LOG in lookup-table form, keyed
     the way the choices handler looks it up. Called before any fusion is benchmarked, so this is

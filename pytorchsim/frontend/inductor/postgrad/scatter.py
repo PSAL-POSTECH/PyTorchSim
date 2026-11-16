@@ -9,8 +9,8 @@ import torch
 # scatter_chain: a view scatter onto a scatter's result, reinplaced on the npu
 
 def install_scatter_chain():
-    """A view scatter onto another scatter's result reinplaces on the npu when reinplace may: upstream
-    writes it functionally unless both are realized, a full copy of x per write."""
+    """A view scatter onto another scatter's result reinplaces on the npu: upstream's extra_check (reinplace.py:385, read
+    at :822/:909 from the inplaceable_ops dict, no registration API) says no unless both are realized."""
     from torch._inductor.fx_passes import reinplace
 
     scatter = reinplace._generalized_scatter

@@ -82,9 +82,9 @@ class TritonNPUScheduling(TritonScheduling):
 
     def generate_kernel_code_from_nodes(self, nodes, benchmark_kernel=False, hint_override=None,
                                         **kwargs):
-        """The source Inductor benchmarks a fusion with, without its harness, and its metadata read as
-        define_kernel reads it (the operand it holds too), kept for benchmark_codegened_module by the path
-        the source loads from. A template's source takes its spec here, as define_kernel gives it."""
+        """The source Inductor benchmarks a fusion with, without its harness (triton.py:8308-8313 launches
+        it once unmeasured, :8340-8349 subtracts a no-launch benchmark: -inf cycles), its metadata kept for
+        benchmark_codegened_module by the path the source loads from."""
         src_code = super().generate_kernel_code_from_nodes(nodes, False, hint_override, **kwargs)
         kernel = self._codegen_kernel
         meta = kernel_metadata.collect_meta(kernel, "triton_")

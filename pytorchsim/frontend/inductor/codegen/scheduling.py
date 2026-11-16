@@ -28,11 +28,17 @@ class TritonNPUKernel(TritonKernel):
         return out
 
     def _get_candidates(self):
-        """The candidate tiles, as dicts over the blocks this kernel takes as arguments, none twice."""
+        """The candidate tiles, as dicts over the blocks this kernel takes as arguments, none twice; where
+        Inductor dropped an axis's mask (numel a multiple of its max_block) only blocks dividing numel."""
         taken = {f"{t.prefix.upper()}BLOCK" for t in self.range_trees
                  if t.tensor_dim is not None and not (t.is_reduction and self.persistent_reduction)}
+        multiple = V.graph.sizevars.statically_known_multiple_of
+        unmasked = {f"{t.prefix.upper()}BLOCK": t.numel for t in self.range_trees
+                    if f"{t.prefix.upper()}BLOCK" in taken and multiple(t.numel, self.max_block(t.prefix))}
         out = []
         for tile in generated_kernel_blocks.candidates_for(self.numels, self.features):
+            if any(not multiple(n, tile[k]) for k, n in unmasked.items() if k in tile):
+                continue
             tile = {k: v for k, v in tile.items() if k in taken}
             if self.no_x_dim:
                 tile.pop("XBLOCK", None)

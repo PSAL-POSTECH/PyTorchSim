@@ -115,9 +115,9 @@ def _dtype_from_str(name):
     }.get(name, torch.float32)
 
 
-def _vision_config():
+def _vision_config(image_size=None):
     from transformers.models.mllama.configuration_mllama import MllamaVisionConfig
-    return MllamaVisionConfig(_attn_implementation="sdpa", **VISION)
+    return MllamaVisionConfig(_attn_implementation="sdpa", **dict(VISION, **({"image_size": image_size} if image_size else {})))
 
 
 def _text_config():
@@ -127,14 +127,14 @@ def _text_config():
 
 @torch.no_grad()
 def run_vision(device, batch=1, dtype="bfloat16", compile_model=True,
-               rtol=None, atol=None):
+               rtol=None, atol=None, image_size=None):
     """The vision tower on one image of 4 tiles, CPU against `device`, at `dtype`'s `_TOL` unless given."""
     tol = _TOL.get(dtype, _TOL["float32"])
     rtol, atol = tol[0] if rtol is None else rtol, tol[1] if atol is None else atol
     from transformers.models.mllama.modeling_mllama import MllamaVisionModel
 
     torch_dtype = _dtype_from_str(dtype)
-    cfg = _vision_config()
+    cfg = _vision_config(image_size)
     torch.manual_seed(0)
     model_cpu = MllamaVisionModel(cfg).to(dtype=torch_dtype).eval()
 
@@ -240,6 +240,8 @@ if __name__ == "__main__":
     parser.add_argument("--seq", type=int, default=32)
     parser.add_argument("--dtype", type=str, default="bfloat16",
                         choices=["float32", "float16", "bfloat16"])
+    parser.add_argument("--image-size", type=int, default=None,
+                        help="vision image size, a multiple of 14 (default: the full 560)")
     parser.add_argument("--no-compile", dest="compile", action="store_false", default=True)
     parser.add_argument("--rtol", type=float, default=None, help="default: _TOL of --dtype")
     parser.add_argument("--atol", type=float, default=None, help="default: _TOL of --dtype")
@@ -253,7 +255,8 @@ if __name__ == "__main__":
 
     if args.part in ("vision", "all"):
         run_vision(device, batch=args.batch, dtype=args.dtype,
-                   compile_model=args.compile, rtol=args.rtol, atol=args.atol)
+                   compile_model=args.compile, rtol=args.rtol, atol=args.atol,
+                   image_size=args.image_size)
     if args.part in ("text", "all"):
         run_text(device, batch=args.batch, seq_len=args.seq, dtype=args.dtype,
                  compile_model=args.compile, rtol=args.rtol, atol=args.atol)

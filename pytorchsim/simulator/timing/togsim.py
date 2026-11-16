@@ -13,6 +13,7 @@ from pathlib import Path
 from tqdm import tqdm
 
 from pytorchsim import config
+from pytorchsim.simulator import profile_dump
 
 logger = config.setup_logger()
 
@@ -78,6 +79,7 @@ class TOGSimProcess():
         os.makedirs(config.CONFIG_TORCHSIM_LOG_PATH, exist_ok=True)
         stem = os.path.join(config.CONFIG_TORCHSIM_LOG_PATH, _stamp())
         self.log_path, self.trace_path, self.result_path = stem + ".log", stem + ".trace", stem + ".json"
+        profile_dump.record_log(self.log_path)
         self._log_handle = None
 
         self.fifo_dir = os.path.join("/tmp", f"togsim_fifo_{os.getpid()}")
@@ -227,6 +229,8 @@ class TOGSimProcess():
         base_dir.mkdir(parents=True, exist_ok=True)
         file_name = _stamp()
         log_path = base_dir / f"{file_name}.log"
+        if not autotune_mode:
+            profile_dump.record_log(str(log_path))
         result_path = base_dir / f"{file_name}.json"
         trace_file_path = base_dir / f"{file_name}.trace"
 

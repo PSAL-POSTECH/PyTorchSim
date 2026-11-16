@@ -21,6 +21,8 @@ SHAPE_TXT = "tog_shape_args.txt"
 TENSORS_TXT = "tog_tensor_bytes.txt"
 TENSOR_SHAPES_TXT = "tog_tensor_shapes.txt"
 
+TIMELINE_PFTRACE = "tog_tile_timeline.pftrace"
+
 LOCK_NAME = ".timing.lock"
 LOCK_TIMEOUT = 1800
 
@@ -179,6 +181,9 @@ def write_cycle_tables(workdir, meta):
     with open(os.path.join(workdir, UNITS_TSV), "w") as f:
         f.write("".join("\t".join(str(v) for v in r) + "\n" for r in rows))
     gem5.dump_cycle_table_tsv(table, os.path.join(workdir, CYCLE_TSV))
+    if config.CONFIG_GEM5_TRACE:
+        gem5.write_tile_timeline(m5out, table, gem5.read_tile_labels(m5out, n_tiles),
+                                 os.path.join(workdir, TIMELINE_PFTRACE))
     logger.info("[Gem5] tile cycles: %s", table)
     return n_tiles
 

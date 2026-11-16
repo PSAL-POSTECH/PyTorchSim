@@ -16,10 +16,10 @@ on:
 # test file, and is not identical to it: a file the allowlist runs as several entries (Gemma's
 # --preset) runs here once without arguments, which runs the same presets in one process, and
 # tests/system tests the allowlist leaves out run here too: test_compiler_failure,
-# test_reduction_tiling and test_select, and test_autotune_tables, test_breakdown_viewer,
+# test_reduction_tiling and test_select, and test_autotune_tables,
 # test_device_interface, test_launch_dir, test_module_form, test_npuwattch_json, test_one_layer_kv_write,
 # test_one_layer_mask, test_one_layer_softcap_mask, test_patch_scope, test_route_allowlist, test_togsim_exit,
-# test_togsim_result and test_verify_golden, which emit no kernel and so are no route coverage.
+# test_togsim_result, test_gem5_trace_split, test_perfetto_trace, test_profile_dump and test_verify_golden, which emit no kernel and so are no route coverage.
 # Regenerate the allowlist with
 #   python scripts/ci/triton_route_sweep.py --all --update-allowlist
 # and mirror its files here; a test absent from both is not gated anywhere.
@@ -88,12 +88,12 @@ jobs:
           - tests/ops/view/test_view3D_2D.py
           - tests/system/test_attribute_sources.py
           - tests/system/test_autotune_tables.py
-          - tests/system/test_breakdown_viewer.py
           - tests/system/test_bundle_reuse.py
           - tests/system/test_bundle_where.py
           - tests/system/test_compiler_failure.py
           - tests/system/test_device_interface.py
           - tests/system/test_eager.py
+          - tests/system/test_gem5_trace_split.py
           - tests/system/test_launch_dir.py
           - tests/system/test_launch_record.py
           - tests/system/test_module_form.py
@@ -102,6 +102,8 @@ jobs:
           - tests/system/test_one_layer_mask.py
           - tests/system/test_one_layer_softcap_mask.py
           - tests/system/test_patch_scope.py
+          - tests/system/test_perfetto_trace.py
+          - tests/system/test_profile_dump.py
           - tests/system/test_reduction_tiling.py
           - tests/system/test_route_allowlist.py
           - tests/system/test_select.py

@@ -11,7 +11,7 @@ from torch._inductor.virtualized import V
 
 from pytorchsim.backend import compiler_input, launch_hooks
 from pytorchsim.frontend.inductor.codegen import kernel_metadata, verify
-from pytorchsim.frontend.inductor.codegen.user_kernel import user_kernel_spec
+from pytorchsim.frontend.inductor.codegen.user_kernel import user_kernel_meta, user_kernel_source, user_kernel_spec
 
 
 class TritonNPUWrapperCodegen(verify.VerifyLines, wrapper.PythonWrapperCodegen):
@@ -115,7 +115,12 @@ class TritonNPUWrapperCodegen(verify.VerifyLines, wrapper.PythonWrapperCodegen):
             kernel, configs, {**kwargs, **options}, restore_value_args, reset_to_zero_args, grids,
             epilogue_fusion, [*launch_kwargs, *options])
         launch_hooks.name_user_kernel(kernel.__name__, kernel)
-        kernel_metadata.record_roles(got[0] if isinstance(got, tuple) else kernel.__name__, json.loads(spec))
+        name = got[0] if isinstance(got, tuple) else kernel.__name__
+        kernel_metadata.record_roles(name, json.loads(spec))
+        if isinstance(got, tuple) and len(got) > 1 and isinstance(got[1], dict) and "signature" in got[1]:
+            src, meta = user_kernel_source(kernel), user_kernel_meta(kernel, kwargs, got[1], grids[0])
+            for n in {name, kernel.__name__}:
+                kernel_metadata.record_source(n, src, meta)
         return got
 
     def run_wrapper_ir_passes(self, is_inference):

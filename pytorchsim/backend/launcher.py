@@ -122,7 +122,8 @@ def _get_workdir(binary, kernel_object, manifest, artifacts):
 
 def _get_meta(manifest, grid, args):
     """The launch's meta, as the functional and timing runners read it: the manifest's tensors by role,
-    dtype and storage span, each argument's parameter name in order, the launch's extents per axis."""
+    dtype and storage span, its scalars ({name, ctype, default}), the constexprs it was built with, each
+    argument's parameter name in order, the launch's extents per axis."""
     import torch
 
     tensors = iter(manifest["args"])
@@ -139,4 +140,6 @@ def _get_meta(manifest, grid, args):
         "launch_grid": tuple(int(g) for g in grid),
         "launch_extents": [int(grid[_AXES.index(a)]) for a in axes],
         "user_kernel": launch_hooks.user_kernel_of(manifest["name"]),
+        "scalars": [dict(x) for x in manifest.get("scalars", ())],
+        "constexprs": dict(manifest.get("constexprs", {})),
     }

@@ -100,10 +100,17 @@ def _roles(kernel):
 
 
 ROLES_BY_KERNEL = {}
+KERNEL_SOURCES = {}
+"""{kernel name: (module text, meta)} of every kernel this process defined, which a kernel file is written from."""
 
 
 def record_roles(kernel_name, meta):
     ROLES_BY_KERNEL[kernel_name] = [a["role"] for a in meta.get("args", ())]
+
+
+def record_source(kernel_name, src_code, meta):
+    """Keep `kernel_name`'s module text and meta (named after it) for a kernel file of it."""
+    KERNEL_SOURCES[kernel_name] = (src_code, {**meta, "kernel_name": kernel_name})
 
 
 def writes_arg(kernel_name, position):

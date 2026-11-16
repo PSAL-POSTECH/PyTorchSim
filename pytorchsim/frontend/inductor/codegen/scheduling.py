@@ -159,6 +159,8 @@ class TritonNPUScheduling(TritonScheduling):
         kernel_name = super().define_kernel(src_code, node_schedule, kernel)
         if meta is not None:
             kernel_metadata.record_roles(kernel_name, meta)
+            kernel_metadata.record_source(
+                kernel_name, src_code.replace(str(Placeholder.KERNEL_NAME), kernel_name), meta)
         return kernel_name
 
 

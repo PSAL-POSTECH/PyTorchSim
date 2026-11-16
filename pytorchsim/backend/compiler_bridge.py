@@ -136,7 +136,8 @@ def compiler_env():
 
 def run_pipeline(spec_path, workdir, to_stage="pytorchsim-compile", tog=False, timeout=None):
     """Drive the compiler's stages over `spec_path`, writing artifacts into `workdir`, up to
-    `to_stage` (by default `pytorchsim-compile`, the ELF). `timeout` is seconds, by default
+    `to_stage` (by default `pytorchsim-compile`, the ELF); a run that leaves failure.json stopped, even when
+    it exits 0 because the kernel file declares that stop. `timeout` is seconds, by default
     TORCHSIM_COMPILE_TIMEOUT or 1800; 0 waits as long as it takes."""
     if timeout is None:
         timeout = int(os.environ.get("TORCHSIM_COMPILE_TIMEOUT") or 1800)
@@ -147,8 +148,8 @@ def run_pipeline(spec_path, workdir, to_stage="pytorchsim-compile", tog=False, t
 
     proc = subprocess.run(cmd, capture_output=True, text=True,
                           cwd=compiler_dir(), env=compiler_env(), timeout=timeout)
-    if proc.returncode != 0:
-        failure = compiler_contract("failure").read(workdir)
+    failure = compiler_contract("failure").read(workdir)
+    if proc.returncode != 0 or failure:
         said = (f"at {failure['stage']} ({failure['kind']}): {failure['message']}" if failure
                 else f"outside every stage:\n{proc.stderr}")
         raise CompilerError(f"the compiler pipeline failed (exit {proc.returncode}) {said}",

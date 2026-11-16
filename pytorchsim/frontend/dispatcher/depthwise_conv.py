@@ -49,7 +49,7 @@ class DepthwiseConv2d(CustomFusedKernel):
         wo = _out_size(wd, kw, stride[1], padding[1], dilation[1])
         out = x.new_empty(n, c, ho, wo)
         b = bias if bias is not None else w.new_zeros(c)
-        kernel = autotuned(_depthwise_kernel, "BC", tiling.candidate_sizes(plan["BC"]))
+        kernel = autotuned(_depthwise_kernel, [{"BC": s} for s in tiling.candidate_sizes(plan["BC"])])
         wrap_triton(kernel)[lambda meta: (n * triton.cdiv(c, meta["BC"]), ho, 1)](
             x.contiguous(), w.contiguous(), b, out, c, h, wd, ho, wo, kh, kw, stride[0], stride[1],
             padding[0], padding[1], dilation[0], dilation[1], BW=plan["BW"])

@@ -12,8 +12,9 @@ from torch.library import wrap_triton
 from triton.language.extra import libdevice
 
 from pytorchsim import config
+from pytorchsim.frontend import tiling
 from pytorchsim.frontend.dispatcher.custom_fused_kernel import (
-    CustomFusedKernel, Decline, fits_scratchpad, next_pow2)
+    CustomFusedKernel, Decline, autotuned, fits_scratchpad, next_pow2)
 
 ATTENTION = "torchsim::attention"
 ATTENTION_SCHEMA = ("attention(Tensor query, Tensor key, Tensor value, float scale, bool is_causal=True, "
@@ -55,21 +56,21 @@ class FusedSDPA(CustomFusedKernel):
         if plan["kernel"] is _decode_kernel:
             q, k, v = query.contiguous(), key.contiguous(), value.contiguous()
             o = q.new_empty(B, Hq, L, DV)
-            kv0 = (S - window) // plan["BKV"] * plan["BKV"] if window else 0
             m, kind, mstride = _bias_as_strides(attn_bias, (B, Hq, L, S))
-            wrap_triton(_decode_kernel)[(B * H, 1, 1)](
-                q, k, v, o, m, H, Hq // H, plan["GP"], S, plan["SP"], D, plan["DA"], plan["DB"],
-                plan["DV"], DV, plan["BKV"], scale, softcap, window, kv0,
-                plan["KEYS"], plan["DW"], plan["VW"], kind, mstride[0], mstride[1], mstride[3])
+            wrap_triton(autotuned(_decode_kernel, plan["CONFIGS"]))[(B * H, 1, 1)](
+                q, k, v, o, m, HKV=H, G=Hq // H, GP=plan["GP"], S=S, D=D, DA=plan["DA"], DB=plan["DB"],
+                DV=plan["DV"], DVT=DV, SCALE=scale, SOFTCAP=softcap, WINDOW=window, DW=plan["DW"],
+                VW=plan["VW"], MKIND=kind, MB=mstride[0], MH=mstride[1], MK=mstride[3])
             return o
         q, k, v = (t if t.stride(-1) == 1 else t.contiguous() for t in (query, key, value))
         o = q.new_empty(B, Hq, L, DV)
         m, kind, mstride = _bias_as_strides(attn_bias, (B, Hq, L, S))
-        wrap_triton(_prefill_kernel)[(B * Hq, 1, 1)](
-            q, k, v, o, m, Hq, Hq // H, plan["LP"], plan["SP"], plan["DA"], plan["DB"], plan["DV"],
-            plan["BQ"], plan["BKV"], is_causal, scale, softcap, window,
-            plan["QROWS"], plan["KEYS"], plan["DW"], plan["VW"], kind,
-            *q.stride()[:3], *k.stride()[:3], *v.stride()[:3], *o.stride()[:3], *mstride)
+        qs, ks, vs, os_ = q.stride()[:3], k.stride()[:3], v.stride()[:3], o.stride()[:3]
+        wrap_triton(autotuned(_prefill_kernel, plan["CONFIGS"]))[(B * Hq, 1, 1)](
+            q, k, v, o, m, HQ=Hq, G=Hq // H, DA=plan["DA"], DB=plan["DB"], DV=plan["DV"], CAUSAL=is_causal,
+            SCALE=scale, SOFTCAP=softcap, WINDOW=window, DW=plan["DW"], VW=plan["VW"], MKIND=kind,
+            QB=qs[0], QH=qs[1], QS=qs[2], KB=ks[0], KH=ks[1], KS=ks[2], VB=vs[0], VH=vs[1], VS=vs[2],
+            OB=os_[0], OH=os_[1], OS=os_[2], MB=mstride[0], MH=mstride[1], MQ=mstride[2], MK=mstride[3])
         return o
 
     def fallback(self, query, key, value, attn_bias, dropout_p, is_causal, scale, window, softcap):
@@ -376,11 +377,16 @@ def _choose_head_split(D, rows):
     return min(_enumerate_head_splits(D, rows), key=lambda s: (s[0] + s[1], 1 if s[1] else 0, -s[0]))
 
 
+def _prefill_cap(n, rows):
+    """The most rows of a block over an extent of `n`: SPLASH_BLOCK, or what covers it."""
+    return min(SPLASH_BLOCK, max(rows, next_pow2(n)))
+
+
 def _choose_prefill_blocks(L, S, DP, DVP, esize, causal, extra, rows):
     """BQ over L and BKV over S, each a power of two from min(SPLASH_BLOCK, what covers it) down to one
     row a lane, halved together until one query block's tiles fit the scratchpad; None when none does."""
     lanes = int(config.CONFIG_MACHINE.vector_lanes)
-    qcap, kcap = (min(SPLASH_BLOCK, max(rows, next_pow2(n))) for n in (L, S))
+    qcap, kcap = _prefill_cap(L, rows), _prefill_cap(S, rows)
     qfloor, kfloor = min(qcap, lanes), min(kcap, lanes)
     for t in range(max(qcap // qfloor, kcap // kfloor).bit_length()):
         bq, bkv = max(qfloor, qcap >> t), max(kfloor, kcap >> t)
@@ -461,17 +467,36 @@ def fused_plan(query, key, value, is_causal, window=0, softcap=0.0, masked=False
         BKV = _choose_decode_step(GP, S, DA + DB, DVP, esize, extra + (0 if exact else 2), rows)
         if BKV is None:
             return Decline(f"a KV step of {rows} overruns the scratchpad budget")
-        SP = -(-S // BKV) * BKV
-        return {"kernel": _decode_kernel, "GP": GP, "BKV": BKV, "DA": DA, "DB": DB, "DV": DVP,
-                "SP": SP, **_padding_masks(1, 1, S, SP, D, DA + DB, DV, DVP)}
+        configs = [_decode_config(bkv, S, window, D, DA + DB, DV, DVP)
+                   for bkv in tiling.candidate_sizes(BKV, floor=rows)]
+        return {"kernel": _decode_kernel, "GP": GP, "DA": DA, "DB": DB, "DV": DVP, "CONFIGS": configs,
+                **configs[0], **_padding_masks(1, 1, S, configs[0]["SP"], D, DA + DB, DV, DVP)}
     extra += 0 if exact and _is_p2(L) and L >= rows else 2
     blocks = _choose_prefill_blocks(L, S, DA + DB, DVP, esize, is_causal, extra, rows)
     if blocks is None:
         return Decline(f"no query block of L {L} over S {S} fits the scratchpad budget")
-    BQ, BKV = blocks
-    LP, SP = -(-L // BQ) * BQ, -(-S // BKV) * BKV
-    return {"kernel": _prefill_kernel, "BQ": BQ, "BKV": BKV, "DA": DA, "DB": DB, "DV": DVP,
-            "LP": LP, "SP": SP, **_padding_masks(L, LP, S, SP, D, DA + DB, DV, DVP)}
+    floors = {"BQ": min(_prefill_cap(L, rows), int(config.CONFIG_MACHINE.vector_lanes)),
+              "BKV": min(_prefill_cap(S, rows), int(config.CONFIG_MACHINE.vector_lanes))}
+    configs = [_prefill_config(t["BQ"], t["BKV"], L, S, D, DA + DB, DV, DVP)
+               for t in tiling.candidate_tiles({"BQ": blocks[0], "BKV": blocks[1]}, floors)]
+    return {"kernel": _prefill_kernel, "DA": DA, "DB": DB, "DV": DVP, "CONFIGS": configs, **configs[0],
+            **_padding_masks(L, configs[0]["LP"], S, configs[0]["SP"], D, DA + DB, DV, DVP)}
+
+
+def _decode_config(bkv, S, window, D, DK, DV, DVP):
+    """What one KV step `bkv` sets of _decode_kernel's constexprs: the steps' keys padded to SP, the keys masked
+    back to KEYS, and the window's first block."""
+    sp = -(-S // bkv) * bkv
+    return {"BKV": bkv, "SP": sp, "KV0": (S - window) // bkv * bkv if window else 0,
+            "KEYS": _padding_masks(1, 1, S, sp, D, DK, DV, DVP)["KEYS"]}
+
+
+def _prefill_config(bq, bkv, L, S, D, DK, DV, DVP):
+    """What blocks `bq` and `bkv` set of _prefill_kernel's constexprs: L and S padded to LP and SP, and the rows
+    and keys masked back to QROWS and KEYS."""
+    lp, sp = -(-L // bq) * bq, -(-S // bkv) * bkv
+    masks = _padding_masks(L, lp, S, sp, D, DK, DV, DVP)
+    return {"BQ": bq, "BKV": bkv, "LP": lp, "SP": sp, "QROWS": masks["QROWS"], "KEYS": masks["KEYS"]}
 
 
 def _math(query, key, value, attn_bias=None, dropout_p=0.0, is_causal=False, *, scale=None):

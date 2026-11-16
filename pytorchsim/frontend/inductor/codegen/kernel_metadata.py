@@ -121,13 +121,14 @@ def _held_blocks(kernel):
 
 
 def _blocks_without_pin(kernel, numels, args):
-    """Blocks for a kernel holding none: a TritonNPUKernel's smallest candidate tile, the one that
-    launches the most programs (the grid its spec states bounds every candidate's); a template's from
-    its numels and args alone."""
+    """Blocks for a kernel holding none: a TritonNPUKernel's smallest block per axis over its candidates, so
+    the grid its spec states is the most programs any candidate launches there; a template's from its
+    numels and args alone."""
     from pytorchsim.frontend.inductor.codegen.scheduling import TritonNPUKernel
     if isinstance(kernel, TritonNPUKernel) and all(isinstance(v, int) for v in numels.values()):
         tiles = candidates_for(kernel.numels, kernel.features)
-        tile = tiles[-1] if tiles else blocks_for(numels, kernel.features)
+        tile = {k: min(t[k] for t in tiles if k in t) for k in {k for t in tiles for k in t}} \
+            if tiles else blocks_for(numels, kernel.features)
         return {**tile, "XBLOCK": 1} if kernel.no_x_dim else tile
     return tiling.fixed_config_for(kernel, numels, args)
 

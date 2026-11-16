@@ -5,6 +5,7 @@ from torch._inductor.codecache import PyCodeCache, get_hash
 from torch._inductor.codegen.common import BackendFeature
 from torch._inductor.codegen.triton import TritonKernel, TritonScheduling
 from torch._inductor.ir import MultiTemplateBuffer
+from torch._inductor.runtime.runtime_utils import get_max_y_grid
 from torch._inductor.utils import Placeholder, get_fused_kernel_name
 from torch._inductor.virtualized import V
 
@@ -28,17 +29,35 @@ class TritonNPUKernel(TritonKernel):
         return out
 
     def _get_candidates(self):
-        """The candidate tiles, as dicts over the blocks this kernel takes as arguments, none twice."""
+        """The candidate tiles over the blocks this kernel takes, none twice. On an axis whose mask Inductor
+        drops (_is_mask_dropped) a block is cut to the largest power of two dividing numel, so every tile is
+        one the generated code is correct for; no tile at all is an error, never an empty config."""
         taken = {f"{t.prefix.upper()}BLOCK" for t in self.range_trees
                  if t.tensor_dim is not None and not (t.is_reduction and self.persistent_reduction)}
+        cap = {f"{t.prefix.upper()}BLOCK": _get_pow2_divisor(t.numel) for t in self.range_trees
+               if f"{t.prefix.upper()}BLOCK" in taken and self._is_mask_dropped(t)}
         out = []
         for tile in generated_kernel_blocks.candidates_for(self.numels, self.features):
-            tile = {k: v for k, v in tile.items() if k in taken}
+            tile = {k: min(v, cap[k]) if k in cap else v for k, v in tile.items() if k in taken}
             if self.no_x_dim:
                 tile.pop("XBLOCK", None)
             if tile not in out:
                 out.append(tile)
+        if not out and taken:
+            raise RuntimeError(f"no candidate tile for the blocks {sorted(taken)} of numels {self.numels}")
         return out or [{}]
+
+    def _is_mask_dropped(self, tree):
+        """Inductor's constant-mask rule (TritonKernel._has_constant_mask) over its public facts: the axis
+        mask is dropped when numel is a multiple of the axis's max block, and for y only within one y grid."""
+        sizevars = V.graph.sizevars
+        if not tree.supports_constant_mask() or not self.optimize_mask or self.fixed_config:
+            return False
+        if tree.prefix == "x" and self.no_x_dim:
+            return False
+        if not sizevars.statically_known_multiple_of(tree.numel, self.max_block(tree.prefix)):
+            return False
+        return tree.grid_dim != 1 or tree.has_zdim or sizevars.statically_known_leq(tree.numel, get_max_y_grid())
 
     @property
     def triton_meta(self):
@@ -162,3 +181,9 @@ def _tile_source(node_schedule):
     if source == template_record.RECORDED and len(nodes) > 1:
         return template_record.RECORDED_UNFUSED
     return source or template_record.HEURISTIC
+
+
+def _get_pow2_divisor(numel):
+    """The largest power of two dividing `numel` (a block that tiles it exactly)."""
+    n = int(numel)
+    return n & -n

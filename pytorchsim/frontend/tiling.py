@@ -123,13 +123,14 @@ def fixed_config_for(kernel, numels, args, contiguous=None):
     return cfg
 
 
-#: How many tiles a kernel offers its compile: each costs a compile of its own, and the first that fits wins.
-CANDIDATE_LIMIT = 3
+#: The most tiles a kernel offers its compile: each costs a compile of its own, so the halving stops at the floor
+#: (the lanes, or 2) and, for several blocks, at this many.
+CANDIDATE_LIMIT = 16
 
 
 def candidate_blocks(kernel, numels, args, contiguous=None):
-    """fixed_config_for's tile and the smaller ones after it, each block halved down to 2, largest tile
-    first (ties to the larger reduction block), at most CANDIDATE_LIMIT: the configs a kernel is offered."""
+    """fixed_config_for's tile and the smaller ones after it, each block halved down to 2 while the tile holds
+    at least the lanes, largest tile first (ties to the larger reduction block), at most CANDIDATE_LIMIT."""
     cfg = fixed_config_for(kernel, numels, args, contiguous)
     movable = [k for k, v in cfg.items() if k.endswith("BLOCK") and v and v >= 2]
     ranges = []
@@ -147,16 +148,19 @@ def candidate_blocks(kernel, numels, args, contiguous=None):
                 n *= v
         return n
 
-    tiles = [dict(zip(movable, vs)) for vs in itertools.product(*ranges)]
+    lanes = int(config.CONFIG_MACHINE.vector_lanes)
+    floor = min(lanes, product(dict(zip(movable, (vs[0] for vs in ranges))), lambda k: True))
+    tiles = [t for t in (dict(zip(movable, vs)) for vs in itertools.product(*ranges))
+             if product(t, lambda k: True) >= floor]
     tiles.sort(key=lambda t: (-product(t, lambda k: True), -product(t, lambda k: k.startswith("R")),
                               [-t[k] for k in movable]))
     rest = {k: v for k, v in cfg.items() if k.endswith("BLOCK") and v}
     return [{**rest, **t} for t in tiles[:CANDIDATE_LIMIT]]
 
 
-def candidate_sizes(first, limit=CANDIDATE_LIMIT, floor=1):
+def candidate_sizes(first, limit=CANDIDATE_LIMIT, floor=2):
     """The sizes a hand-written kernel's one block is offered: `first` and its halves, largest first, down to
-    `floor`, at most `limit`; each is a config its compile may drop when it overflows."""
+    `floor` (2 unless stated), at most `limit`; each is a config its compile may drop when it overflows."""
     sizes = []
     while first >= floor and len(sizes) < limit:
         sizes.append(int(first))

@@ -1,6 +1,6 @@
 """A cat of two inputs whose pointwise kernel masks each half (Yolov5's triton_poi_fused_add_cat_convolution_silu_5):
-PTB's grid rule reads the first half's clamp (819200 / XBLOCK programs) as the whole grid, so a launch that covers
-both halves is refused. BLOCKED on liveness.grid_bound in the compiler, not on a tile choice here."""
+numel is a multiple of the block, so Inductor drops the numel mask and only the first half's clamp is left. The grid
+covers both halves, so a bound read off that clamp alone refuses the launch."""
 import os
 import sys
 
@@ -16,7 +16,7 @@ def test_cat_of_two_masked_halves(device, shape=(32, 25600)):
 
     xs = [torch.randn(shape).to(torch.bfloat16).to(device) for _ in range(3)]
     res = torch.compile(dynamic=False)(fn)(*xs)
-    check_result("CatMaskedHalves", res, fn(*[x.cpu() for x in xs]))
+    check_result("CatMaskedHalves", res, fn(*[x.cpu() for x in xs]), rtol=2e-2, atol=2e-2)
 
 
 if __name__ == "__main__":

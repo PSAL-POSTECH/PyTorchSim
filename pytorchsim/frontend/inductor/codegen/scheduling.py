@@ -5,7 +5,6 @@ from torch._inductor.codecache import PyCodeCache, get_hash
 from torch._inductor.codegen.common import BackendFeature
 from torch._inductor.codegen.triton import TritonKernel, TritonScheduling
 from torch._inductor.ir import MultiTemplateBuffer
-from torch._inductor.select_algorithm import TritonTemplateKernel
 from torch._inductor.utils import Placeholder, get_fused_kernel_name
 from torch._inductor.virtualized import V
 
@@ -41,15 +40,16 @@ class TritonNPUKernel(TritonKernel):
                 out.append(tile)
         return out or [{}]
 
-    def codegen_kernel(self, name=None):
-        """Inductor's source with the kernel's spec in its triton_meta (kernel_metadata.apply_spec_to_source)."""
-        src = super().codegen_kernel(name)
-        if name is not None:
-            return src
-        meta = kernel_metadata.collect_meta(self, str(Placeholder.KERNEL_NAME))
-        meta["graph_prefetch"] = graph_prefetch.statement(self, meta["args"])
-        self._npu_meta = meta
-        return kernel_metadata.apply_spec_to_source(src, self, meta)
+    @property
+    def triton_meta(self):
+        return self.__dict__.get("_triton_meta")
+
+    @triton_meta.setter
+    def triton_meta(self, meta):
+        """Inductor sets triton_meta once its signature is whole; the spec joins it there, before it renders."""
+        self.__dict__["_triton_meta"] = meta
+        if meta is not None:
+            meta["backend_options"] = kernel_metadata.spec_options(self, str(Placeholder.KERNEL_NAME))
 
 
 class TritonNPUScheduling(TritonScheduling):
@@ -76,6 +76,7 @@ class TritonNPUScheduling(TritonScheduling):
     def _codegen_single_template(self, kernel, render, template_node, epilogue_nodes,
                                  prologue_nodes, *, only_gen_src_code=False):
         self._codegen_kernel = kernel
+        kernel.triton_meta = kernel_metadata.TemplateTritonMeta(kernel)
         return super()._codegen_single_template(kernel, render, template_node, epilogue_nodes,
                                                 prologue_nodes, only_gen_src_code=only_gen_src_code)
 
@@ -88,10 +89,8 @@ class TritonNPUScheduling(TritonScheduling):
         kernel = self._codegen_kernel
         meta = kernel_metadata.collect_meta(kernel, "triton_")
         meta["graph_prefetch"] = graph_prefetch.statement(kernel, meta["args"])
-        loaded = kernel_metadata.apply_spec_to_source(src_code, kernel, meta) \
-            if isinstance(kernel, TritonTemplateKernel) else src_code
-        self._benchmarked[PyCodeCache.write(loaded)[1]] = (src_code, meta)
-        return loaded
+        self._benchmarked[PyCodeCache.write(src_code)[1]] = (src_code, meta)
+        return src_code
 
     def can_fuse_vertical(self, node1, node2):
         """Inductor's answer, and for a template fused with an epilogue or prologue, whether the fused
@@ -138,10 +137,6 @@ class TritonNPUScheduling(TritonScheduling):
         template's source takes the spec of its final form first, and the roles of the arguments are kept by
         the kernel's name for the launch hooks."""
         meta = getattr(kernel, "_npu_meta", None)
-        if isinstance(kernel, TritonTemplateKernel):
-            meta = kernel_metadata.collect_meta(kernel, "")
-            meta["graph_prefetch"] = graph_prefetch.statement(kernel, meta["args"])
-            src_code = kernel_metadata.apply_spec_to_source(src_code, kernel, meta)
         kernel_name = super().define_kernel(src_code, node_schedule, kernel)
         if meta is not None:
             kernel_metadata.record_roles(kernel_name, meta)

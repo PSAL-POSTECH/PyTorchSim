@@ -1,6 +1,7 @@
 """One Linear quantized W8A8 with torchao's quantize_ (int8 weights, int8 activations, int32 accumulation) on
-the npu, against the same quantized Linear on the CPU. Cases: dynamic (a scale per activation row) and static
-(one calibrated activation scale); [case ...], all when none. Without torchao, W8A8Linear does the same math."""
+the npu, against the same quantized Linear on the CPU. Cases: dynamic (a scale per activation row), static
+(one calibrated activation scale) and rownorm (bf16, its output read by a row norm); [case ...], all when none.
+Without torchao, W8A8Linear does the same math."""
 import os
 import sys
 
@@ -58,22 +59,58 @@ def _quantized(name, linear, x):
 def run_case(name):
     torch.manual_seed(0)
     linear, x = nn.Linear(K, N).eval(), torch.randn(M, K)
+    step = (x.abs().max() / 127 * linear.weight.detach().abs().max()).item()
     with torch.no_grad():
         fp32 = linear(x)
         model, by = _quantized(name, linear, x)
         ref = model(x)
         torch._dynamo.reset()
         out = torch.compile(model.to(device), dynamic=False)(x.to(device)).cpu()
-    step = (x.abs().max() / 127 * linear.weight.detach().abs().max()).item()
     print(f"W8A8Linear {name} ({by}): max |npu - cpu int8| {(out - ref).abs().max().item():.3g}, "
           f"max |cpu int8 - fp32| {(ref - fp32).abs().max().item():.3g}, one step {step:.3g}")
     check_result(f"W8A8Linear {name}", out, ref, atol=step)
     return True
 
 
-CASES = ("dynamic", "static")
+def run_rownorm(name):
+    """A bf16 dynamic W8A8 Linear whose output a row RMS norm reads, as Qwen3's q_norm does: the npu result against
+    the CPU's, and its dequantized result stored by the int8 matmul's epilogue, so the wrapper holds no int32 buffer."""
+    from torch._inductor.utils import run_and_get_code
+
+    torch.manual_seed(0)
+    linear, x = nn.Linear(K, N, bias=False).to(torch.bfloat16).eval(), torch.randn(M, K, dtype=torch.bfloat16)
+    inner, by = _quantized("dynamic", linear, x)
+    if by != "torchao":
+        print(f"W8A8Linear {name}: skipped, it needs torchao's bf16 dequantization")
+        return True
+    model = _ThenRowNorm(inner)
+    with torch.no_grad():
+        ref = model(x)
+        torch._dynamo.reset()
+        out, codes = run_and_get_code(torch.compile(model.to(device), dynamic=False), x.to(device))
+    int32 = [l.strip() for c in codes for l in c.splitlines() if "empty_strided" in l and "torch.int32" in l]
+    print(f"W8A8Linear {name}: max |npu - cpu int8| {(out.cpu().float() - ref.float()).abs().max().item():.3g}, "
+          f"int32 buffers {int32}")
+    check_result(f"W8A8Linear {name}", out.cpu(), ref, rtol=5e-2, atol=5e-2)
+    check_result(f"W8A8Linear {name} (no int32 buffer)", torch.tensor([not int32]), torch.tensor([True]))
+    return True
+
+
+class _ThenRowNorm(nn.Module):
+    """`inner`, then each output row divided by its root mean square taken in float32."""
+
+    def __init__(self, inner):
+        super().__init__()
+        self.inner = inner
+
+    def forward(self, x):
+        y = self.inner(x)
+        return y * torch.rsqrt(y.float().pow(2).mean(-1, keepdim=True) + 1e-6).to(y.dtype)
+
+
+CASES = ("dynamic", "static", "rownorm")
 
 
 if __name__ == "__main__":
     for n in sys.argv[1:] or CASES:
-        run_case(n)
+        (run_rownorm if n == "rownorm" else run_case)(n)

@@ -13,9 +13,11 @@
     Inductor's benchmarker        what picks one of a kernel's compiled configs
     Inductor's decompositions     npu's mm and bmm as with coordinate descent off (a patch: it has no hook)
     Inductor's realize on reuse   a value a broadcast reads again computed once (a patch: it has no hook)
+    Inductor's node lowering      an int8 matmul's dequantized result stored, its epilogue (a patch: it has no hook)
 """
 
 import functools
+import weakref
 from textwrap import dedent
 
 import torch
@@ -49,6 +51,7 @@ def install():
     _register_benchmarker()
     _register_decompositions()
     _register_realize_on_broadcast()
+    _register_realize_dequant()
 
 
 # Dynamo's device interfaces (torch._dynamo.device_interface)
@@ -336,6 +339,19 @@ class NPUChoices(LookupTableChoices):
         return ktcs
 
     @staticmethod
+    def can_fuse_vertical(scheduler, node1, node2, shared_data_score):
+        """Inductor's answer, but an npu int32 matmul's stored reader fuses into no node but a matmul: taken into
+        its own reader it would leave the matmul writing its int32 accumulator out."""
+        return (not _int32_reader_apart(node1, node2) and
+                LookupTableChoices.can_fuse_vertical(scheduler, node1, node2, shared_data_score))
+
+    @staticmethod
+    def can_fuse_horizontal(scheduler, node1, node2, shared_data_score):
+        """Inductor's answer, but an npu int32 matmul's stored reader fuses into no node but a matmul."""
+        return (not _int32_reader_apart(node1, node2) and
+                LookupTableChoices.can_fuse_horizontal(scheduler, node1, node2, shared_data_score))
+
+    @staticmethod
     def should_use_persistent_reduction(features, cooperative_reduction):
         return generated_kernel_blocks.use_persistent_reduction(
             features,
@@ -471,3 +487,97 @@ def _is_npu_node(node):
     """Whether an IR node computes on npu."""
     from . import is_npu
     return is_npu(node.get_device())
+
+
+# Inductor's node lowering (GraphLowering.run_node): a patch, it has no hook
+
+def _register_realize_dequant():
+    """An int8 matmul's 16-bit dequantized npu result is stored, so it is the matmul's epilogue as XLA's convolution
+    fusion ends in bf16: inlined into its reader (a row norm, SiLU(gate) * up, the next quantization) it left the
+    matmul writing its int32 accumulator out and the reader reading it back."""
+    from torch._inductor import ir
+    from torch._inductor.graph import GraphLowering
+
+    original = GraphLowering.run_node
+    if getattr(original, "_npu_dequant", False):
+        return
+
+    @functools.wraps(original)
+    def run_node(self, n):
+        result = original(self, n)
+        if isinstance(result, ir.TensorBox) and n in _dequant_ends(n.graph) and _is_npu_node(result):
+            result.realize()
+        return result
+
+    run_node._npu_dequant = True
+    GraphLowering.run_node = run_node
+
+
+_DEQUANT_ENDS = weakref.WeakKeyDictionary()
+
+
+def _dequant_ends(graph):
+    """The FX nodes ending each aten._int_mm's dequantization: along its only users while they cast, view, or scale
+    or shift by a smaller operand, up to a cast back to float32, the first 16-bit float cast after the last scale."""
+    if graph in _DEQUANT_ENDS:
+        return _DEQUANT_ENDS[graph]
+    aten, prims = torch.ops.aten, torch.ops.prims
+    casts = {prims.convert_element_type.default, aten._to_copy.default}
+    views = {aten.view.default, aten._unsafe_view.default, aten.reshape.default}
+    scales = {aten.mul.Tensor, aten.add.Tensor}
+    ends = set()
+    for mm in graph.find_nodes(op="call_function", target=aten._int_mm.default):
+        chain, node = [], mm
+        while len(node.users) == 1:
+            user = next(iter(node.users))
+            if user.target in scales:
+                other = [a for a in user.args if a is not node]
+                if not other or (isinstance(other[0], torch.fx.Node) and _reach(other[0]) >= _reach(node)):
+                    break
+            elif user.target not in casts | views:
+                break
+            if user.target in casts and _dtype(user) == torch.float32 and any(_dtype(c).itemsize == 2 for c in chain):
+                break
+            chain.append(user)
+            node = user
+        last = max((i for i, u in enumerate(chain) if u.target in scales), default=None)
+        if last is None:
+            continue
+        end = next((u for u in chain[last + 1:] if u.target in casts and _dtype(u) in (torch.bfloat16, torch.float16)),
+                   chain[last] if _dtype(chain[last]) in (torch.bfloat16, torch.float16) else None)
+        if end is not None:
+            ends.add(end)
+    _DEQUANT_ENDS[graph] = ends
+    return ends
+
+
+def _int32_reader_apart(node1, node2):
+    """Whether one of two scheduler nodes, neither a template, reads an npu template's int32 result."""
+    if node1.is_template() or node2.is_template():
+        return False
+    return _reads_int32_template(node1) or _reads_int32_template(node2)
+
+
+def _reads_int32_template(node):
+    """Whether a scheduler node reads the int32 result of an npu matmul template."""
+    from torch._inductor import ir
+    from torch._inductor.virtualized import V
+    for name in node.read_writes.buffer_names() - node.get_buffer_names():
+        buf = V.graph.try_get_buffer(name)
+        if isinstance(buf, ir.TemplateBuffer) and buf.get_dtype() == torch.int32 and _is_npu_node(buf):
+            return True
+    return False
+
+
+def _reach(node):
+    """The distinct elements an FX node's value holds (a broadcast dimension counted once), 0 when it records none."""
+    val = node.meta.get("val")
+    if not isinstance(val, torch.Tensor):
+        return 0
+    return functools.reduce(lambda a, b: a * b, (n for n, st in zip(val.shape, val.stride()) if st != 0), 1)
+
+
+def _dtype(node):
+    """The dtype of an FX node's value, int8 when it records none."""
+    val = node.meta.get("val")
+    return val.dtype if isinstance(val, torch.Tensor) else torch.int8

@@ -195,7 +195,7 @@ def spec_json(meta):
                              f"collect_meta could not resolve them from V.graph")
     scalars = scalar_args(meta)
     return json.dumps(spec_dict(
-        [(a["role"], a["numel"]) for a in meta["args"]], contract.grid_xyz(meta),
+        [(a["role"], a["numel"], _UNSIGNED.get(a.get("dtype"))) for a in meta["args"]], contract.grid_xyz(meta),
         list(graph_prefetch(meta)), list(contract.launch_axes(meta)),
         {"scalar_args": [[n, c] for n, c, _ in scalars],
          "scalar_values": {n: v for n, _, v in scalars if v is not None}}))
@@ -209,10 +209,15 @@ def backend_options(spec):
             "pytorchsim_target": compiler_bridge.target().file}
 
 
+_UNSIGNED = {"uint8": "uint8", "uint16": "uint16", "uint32": "uint32", "uint64": "uint64"}
+"""The dtypes a spec must state: Triton IR spells an unsigned pointer as its signed width (!tt.ptr<i8>)."""
+
+
 def spec_dict(tensors, grid, held=(), axes=("x",), extra=None):
-    """A JSON spec: `tensors` as (role, numel) per pointer parameter in order, the default launch `grid`, the
-    tensor indices held, the axes the launch spreads over."""
-    return {"args": [{"role": r, "shape": [n]} for r, n in tensors], "grid": list(grid), "grid_rule": True,
+    """A JSON spec: `tensors` as (role, numel[, dtype]) per pointer parameter in order (a dtype only where the IR
+    cannot say it), the default launch `grid`, the tensor indices held, the axes the launch spreads over."""
+    return {"args": [dict({"role": t[0], "shape": [t[1]]}, **({"dtype": t[2]} if len(t) > 2 and t[2] else {}))
+                     for t in tensors], "grid": list(grid), "grid_rule": True,
             "graph_prefetch": list(held), "parallel_axes": list(axes), "extra": extra or {}}
 
 

@@ -394,3 +394,135 @@ def test_tile_trace_names_its_kernel_and_keeps_the_timeline():
 def test_cli_without_logs_fails():
     with tempfile.TemporaryDirectory() as root, redirect_stderr(StringIO()):
         assert dump_profile.main([os.path.join(root, "none"), "-o", os.path.join(root, "o")]) == 1
+
+
+def _dump(root, **kw):
+    """Run dump_profile.dump on the fixture log in `root`; returns (out dir, index text)."""
+    path, wd = _log(root)
+    with open(os.path.join(wd, "timing.json"), "w") as fh:
+        json.dump({"stages": []}, fh)
+    with open(os.path.join(wd, "01-ttir.mlir"), "w") as fh:
+        fh.write("module {}\n")
+    with open(os.path.join(wd, f"{KERNEL}_triton.py"), "w") as fh:
+        fh.write("@triton.jit\n")
+    out = os.path.join(root, "profile")
+    dump_profile.dump([path], out, **kw)
+    with open(os.path.join(out, "index.html"), encoding="utf-8") as fh:
+        return out, fh.read()
+
+
+def _hrefs(text):
+    return re.findall(r'href="([^"]+)"', text)
+
+
+def test_index_lists_kernels_with_relative_links_that_resolve():
+    """One row per kernel with its cycles including copy and its share; every link is relative and
+    points at a file that exists next to the dump."""
+    with tempfile.TemporaryDirectory() as root:
+        out, text = _dump(root)
+        hrefs = _hrefs(text)
+        missing = [h for h in hrefs if not os.path.exists(os.path.normpath(os.path.join(out, h)))]
+        assert not [h for h in hrefs if h.startswith(("/", "http", "file:"))], hrefs
+        assert not missing, missing
+        for name in ("trace.pftrace", "tiles/triton_fixture.pftrace", "../dump/triton_fixture/timing.json",
+                     "../dump/triton_fixture/01-ttir.mlir", "../dump/triton_fixture"):
+            assert name in hrefs, (name, hrefs)
+        assert f"{KERNEL}_triton.py" in " ".join(hrefs)
+    assert "fused_add" in text and "1,049" in text and "100.0%" not in text
+    assert "1,822 cycles" in text and "1 kernel launches (1 distinct)" in text and "tpuv6e.yml" in text
+
+
+def test_index_has_speed_of_light_columns_verdict_and_the_axis_sentence():
+    """The kernel row shows compute % with its unit, DRAM %, DMA % and a verdict badge; the summary has a
+    cycle-weighted run verdict; the note states the thresholds and that it is utilization-based."""
+    with tempfile.TemporaryDirectory() as root:
+        _, text = _dump(root)
+    for head in ("compute (unit)", '<th class="n">DRAM</th>', '<th class="n">DMA</th>', "<th>verdict</th>"):
+        assert head in text, head
+    assert '<td class="n">37.5% Vpu</td><td class="n">1.0%</td><td class="n">1.0%</td>' in text
+    assert '<span class="badge v-latency">latency/dependency-bound</span>' in text
+    assert "Run verdict: <b>latency/dependency-bound</b>" in text and "100% latency/dependency-bound" in text
+    assert "Utilization-based, not a FLOP roofline" in text and "at least 60%" in text and "under 20%" in text
+    assert "1 &micro;s = 1751 cycles" in text and "Time axis" in text
+
+
+def test_index_row_links_start_with_tile_detail_source_and_the_earliest_stage():
+    """Per kernel the first links are tile detail, source and 01-ttir.mlir, then the dump and the rest; the
+    tile also has an Open in Perfetto button for its own file."""
+    with tempfile.TemporaryDirectory() as root:
+        _, text = _dump(root)
+    cell = re.search(r'<td class="links">(.*?)</td>', text, re.S).group(1)
+    labels = re.findall(r">([^<]+)</a>", cell)
+    assert labels[:3] == ["tile detail", "source", "01-ttir.mlir"], labels
+    assert labels[3:] == ["dump", "timing.json"], labels
+    assert 'class="open" data-file="tiles/triton_fixture.pftrace"' in cell
+    assert 'id="open" class="open" data-file="trace.pftrace"' in text and "trace.json" not in text
+
+
+def test_index_has_one_script_that_hands_the_trace_to_perfetto():
+    with tempfile.TemporaryDirectory() as root:
+        _, text = _dump(root)
+    assert text.count("<script") == 1 and "https://ui.perfetto.dev" in text and "postMessage" in text
+    assert 'id="open"' in text and '<meta charset="utf-8">' in text
+    assert "width=device-width" in text and "prefers-color-scheme: dark" in text
+
+
+def test_index_links_torch_trace_and_tlparse_and_is_utf8():
+    """TORCH_TRACE and tlparse dirs are linked when given (tlparse by its index.html); a non-ASCII path
+    survives in a UTF-8 file."""
+    with tempfile.TemporaryDirectory() as root:
+        tp = os.path.join(root, "tlparse_é")
+        tt = os.path.join(root, "torch_trace")
+        os.makedirs(tp)
+        os.makedirs(tt)
+        with open(os.path.join(tp, "index.html"), "w") as fh:
+            fh.write("<html></html>")
+        _, text = _dump(root, torch_trace=[tt], tlparse=tp)
+        raw = open(os.path.join(root, "profile", "index.html"), "rb").read()
+    assert "../tlparse_%C3%A9/index.html" in _hrefs(text) and "../torch_trace" in _hrefs(text)
+    assert "tlparse_é" in raw.decode("utf-8") and b"\xc3\x83" not in raw
+
+
+def test_index_omits_links_to_files_that_are_not_there():
+    """A kernel whose workdir is not on this host still gets a row, without dump, stage or tile links."""
+    with tempfile.TemporaryDirectory() as root:
+        path, wd = _log(root, tiles=False)
+        with open(path) as fh:
+            gone = fh.read().replace(wd, "/nowhere/dump/triton_fixture")
+        with open(path, "w") as fh:
+            fh.write(gone)
+        out = os.path.join(root, "profile")
+        dump_profile.dump([path], out)
+        with open(os.path.join(out, "index.html"), encoding="utf-8") as fh:
+            text = fh.read()
+    assert "triton_fixture" in text and _hrefs(text) == ["trace.pftrace"]
+
+
+def test_exit_hook_writes_the_dump_only_with_the_flag():
+    """TORCHSIM_PROFILE_DUMP=1 makes a process that recorded a TOGSim log write its profile/ at exit."""
+    import subprocess
+    code = ("from pytorchsim.simulator import profile_dump; import sys; profile_dump.record_log(sys.argv[1])")
+    with tempfile.TemporaryDirectory() as root:
+        path, _ = _log(root)
+        found = {}
+        for flag in ("1", "0"):
+            dump_path = os.path.join(root, f"dump_{flag}")
+            env = dict(os.environ, TORCHSIM_PROFILE_DUMP=flag, TORCHSIM_DUMP_PATH=dump_path,
+                       TORCHSIM_DIR=TORCHSIM_DIR)
+            subprocess.run([sys.executable, "-c", code, path], cwd=TORCHSIM_DIR, env=env, check=True,
+                           capture_output=True)
+            found[flag] = sorted(os.listdir(os.path.join(dump_path, "profile"))) \
+                if os.path.isdir(os.path.join(dump_path, "profile")) else None
+    assert found == {"1": ["index.html", "tiles", "trace.pftrace"], "0": None}, found
+
+
+def test_timing_roots_map_each_workdir_to_its_timing_json():
+    with tempfile.TemporaryDirectory() as root:
+        wd = os.path.join(root, "a", "triton_x")
+        os.makedirs(wd)
+        with open(os.path.join(wd, "timing.json"), "w") as fh:
+            fh.write("{}")
+        import profile_index
+        assert profile_index.find_timing([root]) == {wd: os.path.join(wd, "timing.json")}
+        file = os.path.join(wd, "timing.json")
+        assert profile_index.find_timing([file]) == {wd: file}

@@ -6,6 +6,8 @@ import contextlib
 import itertools
 import threading
 
+from pytorchsim.backend import template_record
+
 _ORDER = itertools.count(1)
 _STATE = threading.local()
 
@@ -26,6 +28,7 @@ def benchmark(benchmarker, fn, *, warmup, rep, **kwargs):
     inf when it launched nothing (an extern kernel) or did not simulate."""
     from pytorchsim import config
     if not config.pytorchsim_timing_mode:
+        template_record.warn_untimed_autotune()
         return next(_ORDER) * 1e-3
     with _measure() as got:
         fn()

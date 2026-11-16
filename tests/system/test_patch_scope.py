@@ -55,8 +55,8 @@ def test_conv_grid_is_upstream_off_device():
     import torch._inductor.kernel.conv as conv_kernel
 
     meta = {"BLOCK_M": 64, "BLOCK_N": 128, "GROUPS": 4}
-    got = torch.tensor(list(conv_kernel.conv2d_grid(2, 256, 8, 8, meta))
-                       + list(conv_kernel.conv3d_grid(2, 256, 4, 8, 8, meta)))
+    got = torch.tensor(list(conv_kernel.conv2d_template.grid(2, 256, 8, 8, meta))
+                       + list(conv_kernel.conv3d_template.grid(2, 256, 4, 8, 8, meta)))
     check_result("ConvGridOffDevice", got, torch.tensor([2, 2, 4, 8, 2, 4]))
 
 

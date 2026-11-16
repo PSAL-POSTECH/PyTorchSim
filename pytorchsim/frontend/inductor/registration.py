@@ -20,7 +20,13 @@ import torch
 from torch._dynamo.device_interface import DeviceInterface
 from torch._inductor.codegen.common import DeviceOpOverrides
 
+from torch._inductor.choices import InductorChoices
+from torch._inductor.lookup_table import LookupTableChoices
+
 from pytorchsim import config
+from pytorchsim.backend import template_record
+from pytorchsim.frontend.inductor import is_lowering_npu
+from pytorchsim.frontend.inductor.autotune import generated_kernel_blocks, template_kernel_configs
 
 logger = config.setup_logger()
 
@@ -144,7 +150,8 @@ def _register_triton_gpu():
 
 
 def _add_gpu_type():
-    """Add npu to Inductor's GPU_TYPES, so Triton codegen is chosen for it."""
+    """Add npu to GPU_TYPES (torch/_inductor/utils.py:107), a plain list is_gpu reads (:3443; use_triton_template
+    :1936, scheduler fusion :1497): no registry takes a device there."""
     import torch._inductor.utils as inductor_utils
 
     if "npu" not in inductor_utils.GPU_TYPES:
@@ -229,135 +236,118 @@ def _register_choices():
         inductor_config.inductor_choices_class = npu_choices_class()
 
 
-_NPU_CHOICES = None
+class NPUChoices(LookupTableChoices):
+    """Inductor's lookup-table choices whose npu answers come from autotune/ (template kernels' configs and
+    recorded picks, generated kernels' reductions); every other device keeps Inductor's."""
+
+    def uuid(self):
+        """This class's part of Inductor's cache key: the machine and the picks it hands out."""
+        return f"pytorchsim-npu-choices-5-{template_record.graph_digest()}"
+
+    def _finalize_template_configs(self, template_choices, kernel_inputs, templates, op_name,
+                                   kwarg_overrides=None):
+        """An npu template's choices: the external mapping's tile, else a recorded pick (an
+        autotune strategy's only), else the heuristic's tiles."""
+        if getattr(kernel_inputs, "device_type", None) == "npu":
+            external = self._external_choices(kernel_inputs, templates, op_name)
+            if external:
+                return external
+            if not template_record.autotunes():
+                return InductorChoices._finalize_template_configs(
+                    self, template_choices, kernel_inputs, templates, op_name, kwarg_overrides)
+        return super()._finalize_template_configs(
+            template_choices, kernel_inputs, templates, op_name, kwarg_overrides)
+
+    @staticmethod
+    def _external_tile_for(kernel_inputs, templates):
+        """The tile the external mapping states for this npu mm or bmm, or None."""
+        from torch._inductor.kernel_inputs import MMKernelInputs
+
+        if getattr(kernel_inputs, "device_type", None) != "npu" or \
+                not isinstance(kernel_inputs, MMKernelInputs) or \
+                not any(t.uid in template_record.EXTERNAL_TEMPLATES for t in templates):
+            return None
+        return template_record.external_tile(*kernel_inputs.mnk_hinted())
+
+    def _external_choices(self, kernel_inputs, templates, op_name):
+        """The choice built at the tile the external mapping states for this mm or bmm's
+        shape, marked external; [] when it states none. A tile this machine cannot build is refused."""
+        from pytorchsim.frontend import tiling
+
+        tile = self._external_tile_for(kernel_inputs, templates)
+        if tile is None:
+            return []
+        uids = [t.uid for t in templates if t.uid in template_record.EXTERNAL_TEMPLATES]
+        m, n, k = kernel_inputs.mnk_hinted()
+        legal = [(c.block_m, c.block_n, c.block_k)
+                 for c in tiling.gemm_tiles(m, n, k, kernel_inputs.dtype().itemsize)]
+        if tile not in legal:
+            raise ValueError(
+                f"{config.codegen_external_mapping_file}: {m}_{n}_{k} -> {tile} is no tile this "
+                f"machine builds (each side a lane multiple times a power of two, A, B and C in "
+                f"the spad budget); its tiles, largest first: {legal[:8]}")
+        tm, tn, tk = tile
+        entry = {"BLOCK_M": tm, "BLOCK_N": tn, "BLOCK_K": tk, "EVEN_K": k % tk == 0}
+        ktcs = LookupTableChoices._create_lookup_choices(
+            self, {uid: [entry] for uid in uids}, templates, kernel_inputs, op_name)
+        for ktc in ktcs:
+            ktc.annotations[template_record.SOURCE] = template_record.EXTERNAL
+        logger.info("[select] %s %sx%sx%s: the external mapping's tile %s", op_name, m, n, k, tile)
+        return ktcs
+
+    def get_template_configs(self, kernel_inputs, templates, op_name, kwarg_overrides=None):
+        """Inductor's choices of `templates`, an npu mm or addmm offered the resident mm alone where
+        it holds (mm_resident.templates_for) and the external mapping states no tile for it, its
+        config marked as planned."""
+        from pytorchsim.frontend.inductor.autotune import mm_resident
+        offered = templates if self._external_tile_for(kernel_inputs, templates) else \
+            mm_resident.templates_for(kernel_inputs, templates, op_name)
+        got = super().get_template_configs(kernel_inputs, offered, op_name, kwarg_overrides)
+        for c in got:
+            ktc = c.annotations.get("ktc")
+            if ktc is not None and ktc.template is mm_resident.mm_resident_template:
+                ktc.annotations.setdefault(template_record.SOURCE, template_record.PLANNED)
+        return got
+
+    def get_config_heuristics(self, device_type="cuda"):
+        if device_type == "npu":
+            return template_kernel_configs.conv_config_heuristic()
+        return super().get_config_heuristics(device_type)
+
+    def _get_lookup_table(self):
+        """This machine's recorded picks; Inductor's own looks only on CUDA."""
+        return template_record.lookup_table()
+
+    @staticmethod
+    def _get_device_key(device):
+        if getattr(device, "type", None) == "npu":
+            return template_record.device_key()
+        return LookupTableChoices._get_device_key(device)
+
+    def _create_lookup_choices(self, *args, **kwargs):
+        """Inductor's choices from the recorded configs, each marked as recorded."""
+        ktcs = super()._create_lookup_choices(*args, **kwargs)
+        for ktc in ktcs:
+            ktc.annotations[template_record.SOURCE] = template_record.RECORDED
+        return ktcs
+
+    @staticmethod
+    def should_use_persistent_reduction(features, cooperative_reduction):
+        return generated_kernel_blocks.use_persistent_reduction(
+            features,
+            InductorChoices.should_use_persistent_reduction(features, cooperative_reduction))
+
+    def reduction_split_factor(self, device, reduction_numel_hint, numel_hint, inner_reduction):
+        upstream = functools.partial(super().reduction_split_factor, device,
+                                     reduction_numel_hint, numel_hint, inner_reduction)
+        if getattr(device, "type", device) != "npu":
+            return upstream()
+        return generated_kernel_blocks.reduction_split(reduction_numel_hint, numel_hint,
+                                                       upstream)
 
 
 def npu_choices_class():
-    """NPUChoices, built once: Inductor's lookup-table choices whose npu answers come from autotune/
-    (template kernels' configs and recorded picks, generated kernels' reductions); every other
-    device keeps Inductor's."""
-    global _NPU_CHOICES
-    if _NPU_CHOICES is not None:
-        return _NPU_CHOICES
-    from torch._inductor.choices import InductorChoices
-    from torch._inductor.lookup_table import LookupTableChoices
-
-    from pytorchsim.backend import template_record
-    from pytorchsim.frontend.inductor import is_lowering_npu
-    from pytorchsim.frontend.inductor.autotune import (generated_kernel_blocks,
-                                                       template_kernel_configs)
-
-    class NPUChoices(LookupTableChoices):
-        def uuid(self):
-            """This class's part of Inductor's cache key: the machine and the picks it hands out."""
-            return f"pytorchsim-npu-choices-5-{template_record.graph_digest()}"
-
-        def _finalize_template_configs(self, template_choices, kernel_inputs, templates, op_name,
-                                       kwarg_overrides=None):
-            """An npu template's choices: the external mapping's tile, else a recorded pick (an
-            autotune strategy's only), else the heuristic's tiles."""
-            if getattr(kernel_inputs, "device_type", None) == "npu":
-                external = self._external_choices(kernel_inputs, templates, op_name)
-                if external:
-                    return external
-                if not template_record.autotunes():
-                    return InductorChoices._finalize_template_configs(
-                        self, template_choices, kernel_inputs, templates, op_name, kwarg_overrides)
-            return super()._finalize_template_configs(
-                template_choices, kernel_inputs, templates, op_name, kwarg_overrides)
-
-        @staticmethod
-        def _external_tile_for(kernel_inputs, templates):
-            """The tile the external mapping states for this npu mm or bmm, or None."""
-            from torch._inductor.kernel_inputs import MMKernelInputs
-
-            if getattr(kernel_inputs, "device_type", None) != "npu" or \
-                    not isinstance(kernel_inputs, MMKernelInputs) or \
-                    not any(t.uid in template_record.EXTERNAL_TEMPLATES for t in templates):
-                return None
-            return template_record.external_tile(*kernel_inputs.mnk_hinted())
-
-        def _external_choices(self, kernel_inputs, templates, op_name):
-            """The choice built at the tile the external mapping states for this mm or bmm's
-            shape, marked external; [] when it states none. A tile this machine cannot build is refused."""
-            from pytorchsim.frontend import tiling
-
-            tile = self._external_tile_for(kernel_inputs, templates)
-            if tile is None:
-                return []
-            uids = [t.uid for t in templates if t.uid in template_record.EXTERNAL_TEMPLATES]
-            m, n, k = kernel_inputs.mnk_hinted()
-            legal = [(c.block_m, c.block_n, c.block_k)
-                     for c in tiling.gemm_tiles(m, n, k, kernel_inputs.dtype().itemsize)]
-            if tile not in legal:
-                raise ValueError(
-                    f"{config.codegen_external_mapping_file}: {m}_{n}_{k} -> {tile} is no tile this "
-                    f"machine builds (each side a lane multiple times a power of two, A, B and C in "
-                    f"the spad budget); its tiles, largest first: {legal[:8]}")
-            tm, tn, tk = tile
-            entry = {"BLOCK_M": tm, "BLOCK_N": tn, "BLOCK_K": tk, "EVEN_K": k % tk == 0}
-            ktcs = LookupTableChoices._create_lookup_choices(
-                self, {uid: [entry] for uid in uids}, templates, kernel_inputs, op_name)
-            for ktc in ktcs:
-                ktc.annotations[template_record.SOURCE] = template_record.EXTERNAL
-            logger.info("[select] %s %sx%sx%s: the external mapping's tile %s", op_name, m, n, k, tile)
-            return ktcs
-
-        def get_template_configs(self, kernel_inputs, templates, op_name, kwarg_overrides=None):
-            """Inductor's choices of `templates`, an npu mm or addmm offered the resident mm alone where
-            it holds (mm_resident.templates_for) and the external mapping states no tile for it, its
-            config marked as planned."""
-            from pytorchsim.backend import template_record
-            from pytorchsim.frontend.inductor.autotune import mm_resident
-            offered = templates if self._external_tile_for(kernel_inputs, templates) else \
-                mm_resident.templates_for(kernel_inputs, templates, op_name)
-            got = super().get_template_configs(kernel_inputs, offered, op_name, kwarg_overrides)
-            for c in got:
-                ktc = c.annotations.get("ktc")
-                if ktc is not None and ktc.template is mm_resident.mm_resident_template:
-                    ktc.annotations.setdefault(template_record.SOURCE, template_record.PLANNED)
-            return got
-
-        def get_config_heuristics(self, device_type="cuda"):
-            if device_type == "npu":
-                return template_kernel_configs.conv_config_heuristic()
-            return super().get_config_heuristics(device_type)
-
-        def _get_lookup_table(self):
-            """This machine's recorded picks; Inductor's own looks only on CUDA."""
-            return template_record.lookup_table()
-
-        @staticmethod
-        def _get_device_key(device):
-            if getattr(device, "type", None) == "npu":
-                return template_record.device_key()
-            return LookupTableChoices._get_device_key(device)
-
-        def _create_lookup_choices(self, *args, **kwargs):
-            """Inductor's choices from the recorded configs, each marked as recorded."""
-            ktcs = super()._create_lookup_choices(*args, **kwargs)
-            for ktc in ktcs:
-                ktc.annotations[template_record.SOURCE] = template_record.RECORDED
-            return ktcs
-
-        @staticmethod
-        def should_use_persistent_reduction(features, cooperative_reduction):
-            return generated_kernel_blocks.use_persistent_reduction(
-                features,
-                InductorChoices.should_use_persistent_reduction(features, cooperative_reduction))
-
-        def reduction_split_factor(self, device, reduction_numel_hint, numel_hint, inner_reduction):
-            upstream = functools.partial(super().reduction_split_factor, device,
-                                         reduction_numel_hint, numel_hint, inner_reduction)
-            if getattr(device, "type", device) != "npu":
-                return upstream()
-            return generated_kernel_blocks.reduction_split(reduction_numel_hint, numel_hint,
-                                                           upstream)
-
-    NPUChoices.__module__ = __name__
-    NPUChoices.__qualname__ = "NPUChoices"
-    globals()["NPUChoices"] = NPUChoices
-    _NPU_CHOICES = NPUChoices
+    """NPUChoices, the class registered as Inductor's choices."""
     return NPUChoices
 
 

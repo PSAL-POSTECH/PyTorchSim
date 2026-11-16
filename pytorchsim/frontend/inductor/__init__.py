@@ -39,8 +39,8 @@ def _configure_inductor():
     inductor_config.max_autotune_gemm_backends = "ATEN,TRITON" if config.pytorchsim_timing_mode else "TRITON"
     inductor_config.max_autotune_conv_backends = "ATEN,TRITON"
     inductor_config.triton.autotune_at_compile_time = False
-    timed = bool(config.pytorchsim_timing_mode)
-    inductor_config.benchmark_epilogue_fusion = timed
+    from pytorchsim.backend import template_record
+    inductor_config.benchmark_epilogue_fusion = bool(config.pytorchsim_timing_mode) and template_record.autotunes()
     inductor_config.max_epilogue_benchmarked_choices = config.codegen_autotune_template_topk
     inductor_config.autotune_local_cache = False
     inductor_config.combo_kernels = False

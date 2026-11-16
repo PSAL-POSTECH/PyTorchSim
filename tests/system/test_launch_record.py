@@ -86,7 +86,26 @@ def test_an_inline_view_is_named_by_its_buffer():
     assert first["name"] == "arg0_1" and first["data_ptr"] == x.data_ptr() + 128 * 4, record
 
 
+def test_addrs_file_and_record_name_each_argument():
+    """tog_tensor_addrs.txt lines are `name addr bytes align role` with the kernel's parameter as the name, and
+    launch.json says which buffer each parameter is: an add of two inputs reads arg0_1 and arg1_1, writes buf0."""
+    device = torch.device("npu:0")
+    x, y = torch.randn(64, 256).to(device), torch.randn(64, 256).to(device)
+    with torch.no_grad(), torch.npu.TOGSimulator() as sim:
+        out = torch.compile(lambda a, b: a * 2 + b, dynamic=False)(x, y)
+    torch.testing.assert_close(out.cpu(), x.cpu() * 2 + y.cpu())
+    (d,) = _launch_dirs(sim.trace_path)
+    with open(os.path.join(d, "tog_tensor_addrs.txt")) as f:
+        lines = [line.split() for line in f]
+    with open(os.path.join(d, "launch.json")) as f:
+        args = json.load(f)["args"]
+    assert [(n, r) for n, _, _, _, r in lines] == [("in_ptr0", "in"), ("in_ptr1", "in"), ("out_ptr0", "out")], lines
+    assert [(a["param"], a["name"]) for a in args if "data_ptr" in a] == [
+        ("in_ptr0", "arg0_1"), ("in_ptr1", "arg1_1"), ("out_ptr0", "buf0")], args
+
+
 if __name__ == "__main__":
+    test_addrs_file_and_record_name_each_argument()
     test_each_launch_keeps_its_own_record()
     test_an_inline_view_is_named_by_its_buffer()
     print("PASS")

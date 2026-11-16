@@ -1,6 +1,7 @@
 """TOGSim's results reach the frontend through the file it writes with --result, never its log; a
 session keeps the Simulator's output in its .log, a launch it queues has no result yet, and the attribute
 copies its launches held go when it shuts down. The Simulator is a stub, so no TOGSim is needed."""
+import json
 import os
 import stat
 import sys
@@ -10,7 +11,7 @@ from unittest import mock
 sys.path.insert(0, os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"))
 
 from pytorchsim import config
-from pytorchsim.backend import codecache
+from pytorchsim.backend import launcher
 from pytorchsim.simulator import timing
 from pytorchsim.simulator.timing.togsim import PLACEMENT_VERSION, TOGSimProcess
 
@@ -101,10 +102,12 @@ def test_a_session_removes_the_attribute_copies_its_launches_held():
 
 
 def test_a_launch_queued_on_a_session_returns_no_result():
-    launcher = codecache.TritonNPULauncher("k", "/nonexistent", {"kernel_name": "k"})
+    kernel_object = json.dumps({"name": "k", "artifacts": {"elf": "k.elf"}})
     with mock.patch.dict(os.environ, TORCHSIM_TIMING_MODE="1", TORCHSIM_FUNCTIONAL_MODE="0"), \
-         mock.patch.object(codecache.timing, "run", return_value=None):
-        assert launcher() is None
+         mock.patch.object(launcher, "_get_workdir", return_value="/nonexistent"), \
+         mock.patch.object(launcher, "_get_meta", return_value={"kernel_name": "k"}), \
+         mock.patch.object(launcher.timing, "run", return_value=None):
+        assert launcher.run_launch(b"", kernel_object, (1, 1, 1), ()) is None
 
 
 if __name__ == "__main__":

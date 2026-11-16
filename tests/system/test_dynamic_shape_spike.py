@@ -1,6 +1,6 @@
-"""A graph compiled once over a dynamic size runs on Spike at every size: the launcher builds the ELF for
-extents it was not built for (each tensor's span, each numel passed as a scalar). Breaks when a launch
-reuses the import-time ELF, which Spike's placement refuses (ShapeMismatch). Values match the CPU."""
+"""A graph compiled once over a dynamic size runs on Spike at every size: PTB's Triton launcher builds the ELF for
+extents it was not built for (each tensor's span, each numel passed as a scalar). Breaks when a launch reuses the
+compile's ELF, which Spike's placement refuses (ShapeMismatch). Values match the CPU."""
 import os
 import sys
 

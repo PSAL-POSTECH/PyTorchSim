@@ -185,6 +185,37 @@ def write(src_code, meta, path, recorded=None, scalars=None):
     return path
 
 
+def spec_json(meta):
+    """The kernel's spec in the compiler's JSON_FIELDS form (contract/kernel_spec), as the PTB Triton backend
+    takes it in the pytorchsim_spec option: what its Triton IR does not hold. The kernel's name, signature
+    and each tensor's name and dtype are the IR's; each tensor is stated by role and storage span, in order."""
+    missing = [a["name"] for a in meta["args"] if not a["numel"]]
+    if missing:
+        raise SpecIncomplete(f"{meta['kernel_name']}: no numel for {missing} -- "
+                             f"collect_meta could not resolve them from V.graph")
+    scalars = scalar_args(meta)
+    return json.dumps(spec_dict(
+        [(a["role"], a["numel"]) for a in meta["args"]], contract.grid_xyz(meta),
+        list(graph_prefetch(meta)), list(contract.launch_axes(meta)),
+        {"scalar_args": [[n, c] for n, c, _ in scalars],
+         "scalar_values": {n: v for n, _, v in scalars if v is not None}}))
+
+
+def backend_options(spec):
+    """The Triton backend's options for a kernel whose spec JSON is `spec`: the spec, whether the compile builds the
+    TOG (timing mode), and the machine TORCHSIM_TARGET names, which the compile otherwise takes from its environment."""
+    from pytorchsim import config
+    return {"pytorchsim_spec": spec, "pytorchsim_tog": bool(config.pytorchsim_timing_mode),
+            "pytorchsim_target": compiler_bridge.target().file}
+
+
+def spec_dict(tensors, grid, held=(), axes=("x",), extra=None):
+    """A JSON spec: `tensors` as (role, numel) per pointer parameter in order, the default launch `grid`, the
+    tensor indices held, the axes the launch spreads over."""
+    return {"args": [{"role": r, "shape": [n]} for r, n in tensors], "grid": list(grid), "grid_rule": True,
+            "graph_prefetch": list(held), "parallel_axes": list(axes), "extra": extra or {}}
+
+
 META_JSON = "meta.json"
 
 

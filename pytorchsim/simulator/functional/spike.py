@@ -5,7 +5,7 @@ from pytorchsim import config
 from pytorchsim.backend import compiler_bridge
 
 
-def launch(obj_dir, manifest, runtime, raw_paths, log, scalar_values=None):
+def launch(obj_dir, manifest, runtime, raw_paths, log, scalar_values=None, grid=None):
     """Run the whole launch grid with the compiler's launcher, under the options the object was
     compiled for, leaving each written argument in its .raw."""
     ko = compiler_bridge.compiler_contract("kernel_object")
@@ -16,7 +16,7 @@ def launch(obj_dir, manifest, runtime, raw_paths, log, scalar_values=None):
         raise launcher().SpikeError(str(e)) from None
     tools = compiler_bridge.toolchain()
     return launcher().launch(elf, manifest, runtime, raw_paths, run, spike=tools.SPIKE, pk=tools.PK, log=log,
-                             want_jobs=config.CONFIG_SPIKE_JOBS,                             scalar_values=scalar_values)
+                             want_jobs=config.CONFIG_SPIKE_JOBS,                             scalar_values=scalar_values, grid=grid)
 
 
 def launcher():

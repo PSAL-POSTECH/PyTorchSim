@@ -1,6 +1,7 @@
-"""How a template's config is picked for npu: TOGSim cycles in timing mode (backend/template_timing.py), the
-offered order otherwise, a recorded pick when there is one (through Inductor's recording hooks). Inductor has
-no hook for timing a choice, so four AlgorithmSelectorCache methods are replaced, each Inductor's off npu."""
+"""How a template's config is picked for npu: Inductor's own selection over the choices that compiled, the npu's
+benchmarker (backend/config_pick.py) ranking them by TOGSim cycles in timing mode and in offered order otherwise;
+a recorded pick is the only choice (Inductor's recording hooks). Inductor has no hook for an unread operand or
+for fusing only choices timed in cycles, so three AlgorithmSelectorCache methods are wrapped, each Inductor's off npu."""
 
 import torch
 
@@ -9,19 +10,17 @@ from pytorchsim.frontend.inductor import is_npu
 
 
 def install():
-    """Patch algorithm selection for npu choices: cycles from TOGSim in timing mode, the offered
-    order otherwise; no precompile; allocate-only examples. A recorded pick is the only choice,
-    and a timed one is recorded."""
+    """Patch algorithm selection for npu choices: allocate-only examples; no multi-template buffer unless timed.
+    A recorded pick is the only choice, and a timed one is recorded."""
     from torch._inductor import config as inductor_config
     from torch._inductor import select_algorithm
-    from torch._inductor.select_algorithm import AlgorithmSelectorCache
+    from torch._inductor.select_algorithm import AlgorithmSelectorCache, NoValidChoicesError
 
     from pytorchsim.backend import template_timing
     from pytorchsim.backend import template_record
 
     orig_benchmark = AlgorithmSelectorCache.__dict__["benchmark_choices"].__func__
     orig_call = AlgorithmSelectorCache.__call__
-    orig_precompile = AlgorithmSelectorCache.make_precompile_fn
     orig_example = AlgorithmSelectorCache.__dict__["generate_example_value"].__func__
 
     def _choices_are_npu(choices):
@@ -35,22 +34,38 @@ def install():
             raise RuntimeError(
                 "TORCHSIM_TIMING_MODE changed after pytorchsim was installed: Inductor's "
                 "epilogue-fusion benchmark follows the mode the process started in")
-        if timed and template_timing.times(choices):
-            return template_timing.time_choices(choices)
         if not timed:
             template_record.warn_untimed_autotune()
-        return pick_config(choices)
+        timings = orig_benchmark(cls, choices, autotune_args, is_collective)
+        if timed and template_timing.times(choices):
+            for c in choices:
+                if template_record.is_timed(c):
+                    c.annotations["ktc"].annotations[template_record.SOURCE] = template_record.TIMED
+        return timings
 
     def __call__(self, name, choices, *args, **kwargs):
         """Inductor's selection; a fusion is benchmarked only for choices timed in cycles."""
         if _choices_are_npu(choices) and not template_timing.times(choices):
             kwargs["return_multi_template"] = False
-        return orig_call(self, name, choices, *args, **kwargs)
+        try:
+            return orig_call(self, name, choices, *args, **kwargs)
+        except NoValidChoicesError:
+            _refuse_external(choices)
+            raise
 
-    def make_precompile_fn(self, choices, *args, **kwargs):
-        if not _choices_are_npu(choices):
-            return orig_precompile(self, choices, *args, **kwargs)
-        return lambda: None
+    def _refuse_external(choices):
+        """An external mapping's tile is the only candidate: its failure to compile is an error naming the
+        mapping file and the entry, with why."""
+        for c in choices:
+            ktc = getattr(c, "annotations", {}).get("ktc")
+            if ktc is None or ktc.annotations.get(template_record.SOURCE) != template_record.EXTERNAL:
+                continue
+            m, n, k = ktc.inputs.mnk_hinted()
+            try:
+                c.precompile()
+            except Exception as e:  # noqa: BLE001
+                raise ValueError(f"{config.codegen_external_mapping_file}: the entry {m}_{n}_{k} -> "
+                                 f"{c.description} does not compile on this machine: {e}") from e
 
     def generate_example_value(size, stride, device, dtype, extra_size,
                                allocation_size=None):
@@ -68,16 +83,7 @@ def install():
 
     AlgorithmSelectorCache.benchmark_choices = classmethod(benchmark_choices)
     AlgorithmSelectorCache.__call__ = __call__
-    AlgorithmSelectorCache.make_precompile_fn = make_precompile_fn
     AlgorithmSelectorCache.generate_example_value = staticmethod(
         generate_example_value)
     select_algorithm.add_preprocessing_fn(template_record.keep_recorded)
     select_algorithm.add_feedback_saver(template_record.record)
-
-
-def pick_config(choices):
-    """Timings in place of benchmarking: the offered order wins, extern last."""
-    from torch._inductor.select_algorithm import ExternKernelCaller
-
-    return {c: (1e3 if isinstance(c, ExternKernelCaller) else 1.0) + i * 1e-3
-            for i, c in enumerate(choices)}

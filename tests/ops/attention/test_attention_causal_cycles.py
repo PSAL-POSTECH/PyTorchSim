@@ -12,7 +12,7 @@ os.environ.setdefault("TORCHSIM_FUNCTIONAL_MODE", "0")
 
 import re  # noqa: E402
 import torch  # noqa: E402  the npu backend loads pytorchsim whole, before its parts are imported
-from pytorchsim.backend import codecache  # noqa: E402,F401  its logger set up before a handler joins it
+from pytorchsim.backend import launcher  # noqa: E402,F401  its logger set up before a handler joins it
 
 HQ, HKV, S, D = 16, 8, 4096, 128
 BOUND = 800_000
@@ -31,7 +31,7 @@ class _Cycles(logging.Handler):
 
 def test_a_causal_prefill_takes_its_earlier_blocks_before_the_diagonal():
     seen = _Cycles()
-    logging.getLogger("pytorchsim.backend.codecache").addHandler(seen)
+    logging.getLogger("pytorchsim.backend.launcher").addHandler(seen)
     dev = torch.device("npu:0")
     g = torch.Generator().manual_seed(0)
     q, k, v = (torch.randn(1, h, S, D, generator=g).bfloat16().to(dev) for h in (HQ, HKV, HKV))

@@ -36,7 +36,8 @@ def run(workdir, meta, args):
                  for a in manifest["args"]}
     values = dict(zip(meta.get("call_params", ()), args))
     try:
-        spike.launch(workdir, manifest, runtime, raw_paths, logger.debug, scalar_values=values)
+        spike.launch(workdir, manifest, runtime, raw_paths, logger.debug, scalar_values=values,
+                     grid=meta.get("launch_grid"))
     except spike.launcher().SpikeError as e:
         raise RuntimeError(f"[Spike] {meta['kernel_name']} failed:\n{e}") from None
 

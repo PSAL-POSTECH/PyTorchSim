@@ -31,13 +31,14 @@ class W8A8Linear(nn.Module):
         w_scale = w.abs().amax(1, keepdim=True).clamp(min=1e-8) / 127
         self.register_buffer("w_q", _symmetric(w, w_scale))
         self.register_buffer("w_scale", w_scale.reshape(1, -1))
-        self.register_buffer("bias", linear.bias.detach().clone())
+        self.register_buffer("bias", None if linear.bias is None else linear.bias.detach().clone())
         self.register_buffer("act_scale", act_scale)
 
     def forward(self, x):
         s = self.act_scale if self.act_scale is not None else x.abs().amax(-1, keepdim=True).clamp(min=1e-8) / 127
         acc = torch.mm(_symmetric(x, s).to(torch.int32), self.w_q.t().to(torch.int32))
-        return acc.to(torch.float32) * s * self.w_scale + self.bias
+        out = acc.to(torch.float32) * s * self.w_scale
+        return out if self.bias is None else out + self.bias
 
 
 def _quantized(name, linear, x):

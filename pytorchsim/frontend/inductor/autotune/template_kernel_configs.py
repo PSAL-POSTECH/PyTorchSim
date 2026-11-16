@@ -8,6 +8,7 @@ import torch
 
 from pytorchsim import config
 from pytorchsim.frontend import tiling
+from pytorchsim.frontend.inductor.autotune import template_kernel_spec
 from pytorchsim.frontend.inductor import is_lowering_npu
 
 logger = config.setup_logger()
@@ -32,6 +33,26 @@ def mm_config_heuristics():
     class NPUMMTemplateConfigHeuristic(MMTemplateConfigMixin, BaseConfigHeuristic):
         bias = False
 
+        def _offered_tiles(self, m, n, k, dtype_size):
+            """The tiles one mm is offered, best first: the first codegen_autotune_template_topk of gemm_tiles
+            where the strategy autotunes, else tiling.GEMM_CANDIDATES of them, each compiled until one fits."""
+            from pytorchsim.backend import template_record
+            limit = config.codegen_autotune_template_topk if template_record.autotunes() \
+                else tiling.GEMM_CANDIDATES
+            return tiling.gemm_tiles(m, n, k, dtype_size, bias=self.bias)[:limit]
+
+        def get_extra_kwargs(self, kernel_inputs, op_name):
+            """The mm kwargs and the spec its choices compile with (template_kernel_spec)."""
+            from torch._inductor.virtualized import V
+            kwargs = super().get_extra_kwargs(kernel_inputs, op_name)
+            mnk = [int(V.graph.sizevars.optimization_hint(s)) for s in kernel_inputs.mnk_symbolic()]
+            tiles = [(t.block_m, t.block_n) for t in
+                     self._offered_tiles(*mnk, kernel_inputs.dtype().itemsize)]
+            if not tiles:
+                return kwargs
+            grids = [template_kernel_spec.mm_grid(kernel_inputs, t) for t in tiles]
+            return {**kwargs, "triton_meta": template_kernel_spec.triton_meta_for(kernel_inputs, grids)}
+
         def _get_config_generator(self):
             """Configs for one m, n, k: the first codegen_autotune_template_topk of gemm_tiles (the
             first alone unless the strategy autotunes), or the generic set when none is a legal block."""
@@ -47,9 +68,7 @@ def mm_config_heuristics():
                         "Triton block; falling back to the generic set", *mnk)
                     yield from generic(m, n, k, **kwargs)
                     return
-                from pytorchsim.backend import template_record
-                topk = config.codegen_autotune_template_topk if template_record.autotunes() else 1
-                yield from self._finalize_mm_configs(mapped[:topk])
+                yield from self._finalize_mm_configs(self._offered_tiles(*mnk, kwargs.get("dtype_size", 4)))
 
             return configs
 
@@ -71,6 +90,10 @@ def mm_resident_config_heuristic():
     class NPUResidentMMConfigHeuristic(TemplateConfigHeuristics):
         def _get_template_configs_impl(self, kernel_inputs, op_name):
             yield from mm_resident.configs(kernel_inputs)
+
+        def get_extra_kwargs(self, kernel_inputs, op_name):
+            """The spec the resident mm compiles with: one program over the whole output."""
+            return {"triton_meta": template_kernel_spec.triton_meta_for(kernel_inputs, [(1, 1, 1)])}
 
     class NPUResidentAddmmConfigHeuristic(AddMMConfigMixin, NPUResidentMMConfigHeuristic):
         pass
@@ -103,7 +126,7 @@ def conv_config_heuristic():
         def get_conv_configs(self):
             def per_group(m, n, k, **kwargs):
                 """Every tile a timed run ranks, the first alone otherwise: one candidate is picked by the
-                order it was offered, which is no ranking (template_timing.time_choices ranks the rest)."""
+                order it was offered, which is no ranking (the benchmarker ranks the rest)."""
                 from torch._inductor.virtualized import V
                 from pytorchsim.backend import template_record
                 groups = conv_groups_now()

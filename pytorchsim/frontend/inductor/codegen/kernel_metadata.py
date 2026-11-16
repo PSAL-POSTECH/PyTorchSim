@@ -6,7 +6,7 @@ from torch._inductor.codegen.common import InplacedBuffer, is_buffer_removed
 from torch._inductor.virtualized import V
 
 from pytorchsim.frontend import tiling
-from pytorchsim.frontend.inductor.autotune.generated_kernel_blocks import blocks_for
+from pytorchsim.frontend.inductor.autotune.generated_kernel_blocks import blocks_for, candidates_for
 from pytorchsim import config
 from pytorchsim.contract import SpecIncomplete, storage_span
 
@@ -121,18 +121,29 @@ def _held_blocks(kernel):
 
 
 def _blocks_without_pin(kernel, numels, args):
-    """Blocks for a kernel holding none: a TritonNPUKernel's from blocks_for, the answer pinning
-    gives; a template's from its numels and args alone."""
+    """Blocks for a kernel holding none: a TritonNPUKernel's smallest candidate tile, the one that
+    launches the most programs (the grid its spec states bounds every candidate's); a template's from
+    its numels and args alone."""
     from pytorchsim.frontend.inductor.codegen.scheduling import TritonNPUKernel
     if isinstance(kernel, TritonNPUKernel) and all(isinstance(v, int) for v in numels.values()):
-        return blocks_for(numels, kernel.features)
+        tiles = candidates_for(kernel.numels, kernel.features)
+        tile = tiles[-1] if tiles else blocks_for(numels, kernel.features)
+        return {**tile, "XBLOCK": 1} if kernel.no_x_dim else tile
     return tiling.fixed_config_for(kernel, numels, args)
 
 
-def compile_call(src_code, meta, kernel_name):
-    """The wrapper's line compiling one kernel, torchsim_compile(source, meta=..., kernel_name=...):
-    the source as a Python literal, so a quote or backslash in it reaches the compiler as written."""
-    return f"torchsim_compile({src_code!r},\n    meta={meta!r},\n    kernel_name={kernel_name!r})"
+def apply_spec_to_source(src_code, kernel, meta):
+    """The one text edit of Inductor's source: `kernel`'s triton_meta, as the decorator holds it, gains the spec of
+    `meta` as backend_options. No hook can do it: triton_meta_common runs before the signature the spec needs
+    exists, and a template's decorator reads its triton_meta after its epilogue is fused, at render time."""
+    from pytorchsim.backend import compiler_input
+    old = repr(kernel.triton_meta)
+    if src_code.count(f"triton_meta={old}") != 1:
+        raise SpecIncomplete(f"{kernel.__class__.__name__}: triton_meta is not in the source once; "
+                             f"Inductor's decorator changed")
+    options = compiler_input.backend_options(compiler_input.spec_json(meta))
+    new = repr({**kernel.triton_meta, "backend_options": options})
+    return src_code.replace(f"triton_meta={old}", f"triton_meta={new}")
 
 
 def collect_meta(kernel, kernel_name):

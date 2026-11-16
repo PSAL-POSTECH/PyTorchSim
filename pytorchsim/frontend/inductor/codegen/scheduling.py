@@ -1,33 +1,60 @@
-"""npu's Inductor scheduling: Triton's, emitting a torchsim_compile call for each kernel's source into
-the wrapper, and timing on TOGSim the modules Inductor's epilogue-fusion benchmark writes."""
+"""npu's Inductor scheduling: Triton's, each kernel's source carrying its spec to PTB's Triton backend, and the
+modules Inductor's epilogue-fusion benchmark writes timed on TOGSim."""
 
 from torch._inductor.codecache import PyCodeCache, get_hash
 from torch._inductor.codegen.common import BackendFeature
 from torch._inductor.codegen.triton import TritonKernel, TritonScheduling
+from torch._inductor.ir import MultiTemplateBuffer
+from torch._inductor.select_algorithm import TritonTemplateKernel
 from torch._inductor.utils import Placeholder, get_fused_kernel_name
 from torch._inductor.virtualized import V
 
 from pytorchsim import config
-from pytorchsim.frontend.inductor.autotune import graph_prefetch
+from pytorchsim.backend import compiler_input
+from pytorchsim.frontend.inductor.autotune import generated_kernel_blocks, graph_prefetch
+from pytorchsim.frontend.inductor.autotune.generated_kernel_configs import CANDIDATES_KEY
 from pytorchsim.frontend.inductor.codegen import kernel_metadata
 
 _logger = config.setup_logger()
 
 
 class TritonNPUKernel(TritonKernel):
-    """A TritonKernel launched as a plain call: upstream emits `kernel.run(..., grid=..., stream=...)`,
-    resolved at runtime. Its blocks are fixed when it is made (NPUChoices.triton_kernel_kwargs)."""
+    """A TritonKernel whose heuristics' configs are this machine's candidate tiles (inductor_meta) and whose
+    compile options carry its spec: the source is Inductor's own, autotune-ready, and each config that
+    overflows the scratchpad is dropped when it is compiled."""
 
-    def call_kernel(self, name: str, node=None, **kwargs):
-        wrapper = V.graph.wrapper_code
-        _, call_args, _, arg_types = self.args.python_argdefs()
-        self.add_numel_to_call_args(name, call_args, arg_types)
-        wrapper.generate_kernel_call(name, call_args, triton=True)
+    def inductor_meta_per_kernel(self):
+        out = super().inductor_meta_per_kernel()
+        out[CANDIDATES_KEY] = self._get_candidates()
+        return out
+
+    def _get_candidates(self):
+        """The candidate tiles, as dicts over the blocks this kernel takes as arguments, none twice."""
+        taken = {f"{t.prefix.upper()}BLOCK" for t in self.range_trees
+                 if t.tensor_dim is not None and not (t.is_reduction and self.persistent_reduction)}
+        out = []
+        for tile in generated_kernel_blocks.candidates_for(self.numels, self.features):
+            tile = {k: v for k, v in tile.items() if k in taken}
+            if self.no_x_dim:
+                tile.pop("XBLOCK", None)
+            if tile not in out:
+                out.append(tile)
+        return out or [{}]
+
+    def codegen_kernel(self, name=None):
+        """Inductor's source with the kernel's spec in its triton_meta (kernel_metadata.apply_spec_to_source)."""
+        src = super().codegen_kernel(name)
+        if name is not None:
+            return src
+        meta = kernel_metadata.collect_meta(self, str(Placeholder.KERNEL_NAME))
+        meta["graph_prefetch"] = graph_prefetch.statement(self, meta["args"])
+        self._npu_meta = meta
+        return kernel_metadata.apply_spec_to_source(src, self, meta)
 
 
 class TritonNPUScheduling(TritonScheduling):
-    """Triton's scheduling, emitting torchsim_compile calls, and timing on TOGSim the modules
-    Inductor's epilogue-fusion benchmark writes."""
+    """Triton's scheduling over TritonNPUKernel, and the modules Inductor's epilogue-fusion benchmark writes
+    timed on TOGSim."""
     kernel_type = TritonNPUKernel
 
     def __init__(self, scheduler):
@@ -56,17 +83,47 @@ class TritonNPUScheduling(TritonScheduling):
                                         **kwargs):
         """The source Inductor benchmarks a fusion with, without its harness, and its metadata read as
         define_kernel reads it (the operand it holds too), kept for benchmark_codegened_module by the path
-        the source loads from."""
+        the source loads from. A template's source takes its spec here, as define_kernel gives it."""
         src_code = super().generate_kernel_code_from_nodes(nodes, False, hint_override, **kwargs)
-        meta = kernel_metadata.collect_meta(self._codegen_kernel, "triton_")
-        meta["graph_prefetch"] = graph_prefetch.statement(self._codegen_kernel, meta["args"])
-        self._benchmarked[PyCodeCache.write(src_code)[1]] = (src_code, meta)
-        return src_code
+        kernel = self._codegen_kernel
+        meta = kernel_metadata.collect_meta(kernel, "triton_")
+        meta["graph_prefetch"] = graph_prefetch.statement(kernel, meta["args"])
+        loaded = kernel_metadata.apply_spec_to_source(src_code, kernel, meta) \
+            if isinstance(kernel, TritonTemplateKernel) else src_code
+        self._benchmarked[PyCodeCache.write(loaded)[1]] = (src_code, meta)
+        return loaded
+
+    def can_fuse_vertical(self, node1, node2):
+        """Inductor's answer, and for a template fused with an epilogue or prologue, whether the fused
+        kernel compiles: the choice was picked for the template alone, and a fusion adds tiles to its
+        scratchpad (OutOfResources). A template still holding its timed choices is fused by benchmark."""
+        if not super().can_fuse_vertical(node1, node2):
+            return False
+        if not (node1.is_template() or node2.is_template()):
+            return True
+        if any(isinstance(n.node, MultiTemplateBuffer) for n in (node1, node2) if n.is_template()):
+            return True
+        return self._compiles([*node1.get_nodes(), *node2.get_nodes()])
+
+    def _compiles(self, nodes):
+        """Whether the kernel fusing `nodes` compiles through the Triton backend with a config that fits."""
+        from torch._inductor.runtime.triton_heuristics import NoTritonConfigsError
+        from triton.runtime.errors import OutOfResources
+
+        with V.graph.set_current_device(nodes[0].get_device()):
+            mod = PyCodeCache.load(self.generate_kernel_code_from_nodes(nodes))
+        try:
+            mod.triton_.precompile()
+        except (NoTritonConfigsError, OutOfResources) as e:
+            _logger.info("[torchsim-compile] %s: not fused, its kernel does not fit: %s",
+                         [n.get_name() for n in nodes], e)
+            return False
+        return True
 
     def benchmark_codegened_module(self, mod, n_spills_threshold=8, node_names=None,
                                    skip_perf_cache=False):
         """(TOGSim cycles, path) of a module generate_kernel_code_from_nodes wrote: Inductor
-        compares these with the cycles template_timing.time_choices gave the unfused choices."""
+        compares these with the cycles the benchmarker gave the unfused choices."""
         from pytorchsim.backend import template_timing
 
         got = self._benchmarked.get(mod.__file__)
@@ -77,37 +134,17 @@ class TritonNPUScheduling(TritonScheduling):
         return template_timing.time_module(*got, mod.__file__), mod.__file__
 
     def define_kernel(self, src_code, node_schedule, kernel):
-        """Name the kernel by its source, capture its metadata and what it holds, and emit our compile call.
-
-        The name is resolved into the source here, because the compiler side parses it.
-        """
-        wrapper = V.graph.wrapper_code
-        if src_code in wrapper.src_to_kernel:
-            return wrapper.src_to_kernel[src_code]
-
-        fused_name = get_fused_kernel_name(node_schedule, "original_aten")
-        kernel_name = "_".join(
-            x for x in ("pytorchsim_triton_compiler", fused_name, get_hash(src_code.strip())[1:9]) if x
-        )
-        wrapper.src_to_kernel[src_code] = kernel_name
-
-        src_code = src_code.replace(str(Placeholder.DESCRIPTIVE_NAME), kernel_name)
-        src_code = src_code.replace(str(Placeholder.KERNEL_NAME), kernel_name)
-
-        meta = kernel_metadata.collect_meta(kernel, kernel_name)
-        meta["graph_prefetch"] = graph_prefetch.statement(kernel, meta["args"])
-        meta["aten_ops"] = kernel_metadata.aten_ops(node_schedule)
-        kernel_metadata.record_roles(kernel_name, meta)
-        source = _tile_source(node_schedule)
-        if source is not None:
-            meta["tile_source"] = source
-
-        origins = ", ".join(
-            sorted({str(o) for n in node_schedule
-                    for o in getattr(getattr(n, "node", None), "origins", ()) or ()})
-        )
-        wrapper.define_kernel(kernel_name, kernel_metadata.compile_call(src_code, meta, kernel_name),
-                              f"# origins: {origins}")
+        """Inductor's own: the kernel is an async_compile.triton call, compiled through the Triton backend; a
+        template's source takes the spec of its final form first, and the roles of the arguments are kept by
+        the kernel's name for the launch hooks."""
+        meta = getattr(kernel, "_npu_meta", None)
+        if isinstance(kernel, TritonTemplateKernel):
+            meta = kernel_metadata.collect_meta(kernel, "")
+            meta["graph_prefetch"] = graph_prefetch.statement(kernel, meta["args"])
+            src_code = kernel_metadata.apply_spec_to_source(src_code, kernel, meta)
+        kernel_name = super().define_kernel(src_code, node_schedule, kernel)
+        if meta is not None:
+            kernel_metadata.record_roles(kernel_name, meta)
         return kernel_name
 
 

@@ -10,8 +10,9 @@ import triton.language as tl
 from torch.library import wrap_triton
 
 from pytorchsim import config
+from pytorchsim.frontend import tiling
 from pytorchsim.frontend.dispatcher.custom_fused_kernel import (
-    CustomFusedKernel, Decline, fits_scratchpad, next_pow2)
+    CustomFusedKernel, Decline, autotuned, fits_scratchpad, next_pow2)
 
 
 class DepthwiseConv2d(CustomFusedKernel):
@@ -24,7 +25,7 @@ class DepthwiseConv2d(CustomFusedKernel):
 
     def plan(self, x, w, bias, stride, padding, dilation):
         """BC channels a program: the lanes, doubled toward the channels' cover while a row's tiles fit the
-        scratchpad budget, else halved until they do."""
+        scratchpad budget, else halved until they do; the launch offers it and its halves as configs."""
         if not x.is_floating_point() or x.dtype != w.dtype:
             return Decline(f"input {x.dtype}, weight {w.dtype}")
         wo = _out_size(x.shape[3], w.shape[3], stride[1], padding[1], dilation[1])
@@ -48,9 +49,10 @@ class DepthwiseConv2d(CustomFusedKernel):
         wo = _out_size(wd, kw, stride[1], padding[1], dilation[1])
         out = x.new_empty(n, c, ho, wo)
         b = bias if bias is not None else w.new_zeros(c)
-        wrap_triton(_depthwise_kernel)[(n * triton.cdiv(c, plan["BC"]), ho, 1)](
+        kernel = autotuned(_depthwise_kernel, "BC", tiling.candidate_sizes(plan["BC"]))
+        wrap_triton(kernel)[lambda meta: (n * triton.cdiv(c, meta["BC"]), ho, 1)](
             x.contiguous(), w.contiguous(), b, out, c, h, wd, ho, wo, kh, kw, stride[0], stride[1],
-            padding[0], padding[1], dilation[0], dilation[1], plan["BC"], plan["BW"])
+            padding[0], padding[1], dilation[0], dilation[1], BW=plan["BW"])
         return out
 
     def fallback(self, x, w, bias, stride, padding, dilation):

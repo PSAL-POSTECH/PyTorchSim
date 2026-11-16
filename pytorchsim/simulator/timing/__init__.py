@@ -188,6 +188,10 @@ def write_shape(workdir, meta, args=(), into=None):
     parameter name (a template's trailing arguments are its grid), then the integer scalars in the
     compiler's order (kernel_object.shape_args)."""
     numels = dict(meta["numels"])
+    if meta.get("launch_extents") is not None:
+        grid = list(meta["launch_extents"])
+        _write_extents(workdir, grid, "launch grid", meta, args, into)
+        return grid
     if meta.get("template_grid") is not None:
         grid = list(contract.launch_extents(meta))
         _write_extents(workdir, grid, "template grid", meta, args, into)

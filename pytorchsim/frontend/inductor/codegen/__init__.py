@@ -2,8 +2,8 @@
 
     Inductor -> TritonNPUScheduling.define_kernel   (scheduling.py; the wrapper module: wrapper.py,
                                                      a model's own Triton kernels: user_kernel.py)
-             -> torchsim_compile                  (backend/codecache.py, backend/compiler_input.py)
-             -> pytorchsim-triton-compiler, in a subprocess         (backend/compiler_bridge.py)
+             -> async_compile.triton, through the PTB Triton backend (spec: backend/compiler_input.py)
+             -> backend/launcher.py (driver.set_launcher)
              -> Spike (simulator/functional/__init__.py) / TOGSim (simulator/timing/__init__.py)
 
 Registered for `npu` by frontend/inductor/registration.py.

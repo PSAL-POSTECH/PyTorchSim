@@ -2,14 +2,26 @@
 launch's inputs, and at every call Inductor leaves to aten (the generated wrapper's torchsim_extern)."""
 
 _LAUNCH_OBSERVERS = {}
+_USER_KERNEL_NAMES = {}
 _EVERY_LAUNCH = []
 _EVERY_LAUNCH_INPUTS = []
 _EVERY_EXTERN = []
+_CALL_NAMES = []
 
 
 def user_kernel_id(kernel):
     """A user-defined Triton kernel's name in its launch meta: its module and qualified name."""
     return f"{kernel.__module__}.{kernel.__qualname__}"
+
+
+def user_kernel_of(kernel_name):
+    """The id of the user-defined Triton kernel that compiled as `kernel_name`, or None."""
+    return _USER_KERNEL_NAMES.get(kernel_name)
+
+
+def name_user_kernel(kernel_name, kernel):
+    """Record that `kernel_name` is the compile of the user-defined Triton kernel `kernel`."""
+    _USER_KERNEL_NAMES[kernel_name] = user_kernel_id(kernel)
 
 
 def observe_launches(kernel, callback):
@@ -38,6 +50,19 @@ def torchsim_extern(call):
     """The generated wrapper's note before an extern call; see observe_every_extern."""
     for callback in _EVERY_EXTERN:
         callback(call)
+
+
+def torchsim_call(names):
+    """The generated wrapper's note before a Triton kernel's call: the buffer each argument is, taken by the
+    launch that follows it (a kernel's variable in the wrapper is not the name its binary carries)."""
+    _CALL_NAMES[:] = [names]
+
+
+def take_call_names(count):
+    """The buffer names of the first `count` arguments the wrapper noted for this launch, once (a template's
+    call also lists its grid), or None when it noted none (a launch made while Inductor benchmarks)."""
+    names = _CALL_NAMES.pop() if _CALL_NAMES else None
+    return names[:count] if names is not None and len(names) >= count else None
 
 
 def notify_launch(launcher, args):

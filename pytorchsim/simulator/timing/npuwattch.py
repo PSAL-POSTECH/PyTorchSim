@@ -350,9 +350,8 @@ def _sfu_vector_elems(workdir):
 
 
 def _fused_name(kernel_name):
-    """What Inductor named the kernel's ops, `pytorchsim_triton_compiler_fused__softmax_<hash>` ->
-    `softmax`, or None."""
-    m = re.match(r"pytorchsim_triton_compiler_(?:fused_)?(.+)_[a-z0-9]+$", kernel_name or "")
+    """What Inductor named the kernel's ops, `triton_per_fused__softmax_0` -> `softmax`, or None."""
+    m = re.match(r"triton_[a-z]+_(?:fused_)?(.+)_\d+$", kernel_name or "")
     return m.group(1).strip("_") or None if m else None
 
 

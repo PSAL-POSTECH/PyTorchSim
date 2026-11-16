@@ -8,6 +8,9 @@
     device op overrides           NPUDeviceOpOverrides: the device code in a wrapper
     Inductor's choices class      NPUChoices, answered by autotune/
     template heuristics           the mm/bmm configs and the resident mm's, autotune/'s
+    codegen heuristics            the configs of a generated pointwise or reduction kernel, autotune/'s
+    PTB's Triton driver           the runner a launch goes to: Spike and TOGSim
+    Inductor's benchmarker        what picks one of a kernel's compiled configs
 """
 
 import functools
@@ -33,6 +36,9 @@ def install():
     _register_device_op_overrides()
     _register_choices()
     _register_template_heuristics()
+    _register_codegen_heuristics()
+    _register_launcher()
+    _register_benchmarker()
 
 
 # Dynamo's device interfaces (torch._dynamo.device_interface)
@@ -69,9 +75,51 @@ class NPUDeviceInterface(DeviceInterface):
             """One set for every npu device: the simulated machine's."""
             return NPUDeviceProperties()
 
+    class device:
+        """`with interface.device(index):` -- the one npu device, so nothing is switched."""
+
+        def __init__(self, device):
+            self.idx = device
+
+        def __enter__(self):
+            return self.idx
+
+        def __exit__(self, *exc):
+            return False
+
+    @staticmethod
+    def current_device() -> int:
+        return torch.npu.current_device()
+
+    @staticmethod
+    def set_device(device: torch.types.Device) -> None:
+        torch.npu.set_device(device)
+
+    @staticmethod
+    def exchange_device(device: int) -> int:
+        """The device a kernel loads on is the one device: nothing to switch, the previous is the same."""
+        return torch.npu.current_device()
+
+    @staticmethod
+    def maybe_exchange_device(device: int) -> int:
+        return torch.npu.current_device()
+
+    @staticmethod
+    def device_count() -> int:
+        return 1
+
+    @staticmethod
+    def get_raw_stream(device_idx: int) -> int:
+        """The npu has no stream a kernel is launched on: 0, as the wrapper's get_raw_stream says."""
+        return 0
+
+    @staticmethod
+    def synchronize(device: torch.types.Device = None) -> None:
+        pass
+
     @staticmethod
     def get_compute_capability(device: torch.types.Device = None) -> int:
-        """None of CUDA's; Triton's compile metadata carries it, and torchsim_compile ignores it."""
+        """None of CUDA's; Triton's compile metadata carries it, and PTB's backend ignores it."""
         return 0
 
     @staticmethod
@@ -292,15 +340,6 @@ def npu_choices_class():
                 ktc.annotations[template_record.SOURCE] = template_record.RECORDED
             return ktcs
 
-        def triton_kernel_kwargs(self, kernel_cls, features, groups, kernel_kwargs):
-            """This machine's blocks pinned into every npu kernel Inductor generates (Inductor's
-            hook for a fixed config): the one it emits and the one its fusion benchmark times are
-            made the same way, so they are the same kernel."""
-            kwargs = super().triton_kernel_kwargs(kernel_cls, features, groups, kernel_kwargs)
-            if is_lowering_npu() and kwargs.get("fixed_config") is None:
-                kwargs["fixed_config"] = generated_kernel_blocks.pinned_blocks(groups[0], features)
-            return kwargs
-
         @staticmethod
         def should_use_persistent_reduction(features, cooperative_reduction):
             return generated_kernel_blocks.use_persistent_reduction(
@@ -342,3 +381,35 @@ def _register_template_heuristics():
     resident, resident_addmm = mm_resident_config_heuristic()
     register_template_heuristic(mm_resident.mm_resident_template.uid, "npu", op_name="mm")(resident)
     register_template_heuristic(mm_resident.mm_resident_template.uid, "npu", op_name="addmm")(resident_addmm)
+
+
+# Inductor's codegen heuristics (torch._inductor.heuristics.registry)
+
+def _register_codegen_heuristics():
+    """Register npu's pointwise and reduction config heuristics."""
+    from torch._inductor.heuristics.registry import register_codegen_heuristic
+
+    from pytorchsim.frontend.inductor.autotune import generated_kernel_configs
+
+    register_codegen_heuristic("pointwise", "npu")(generated_kernel_configs.NPUPointwiseConfigs)
+    register_codegen_heuristic("reduction", "npu")(generated_kernel_configs.NPUReductionConfigs)
+
+
+# PTB's Triton driver (set_launcher)
+
+def _register_launcher():
+    """Register the runner a compiled kernel's launch goes to."""
+    from pytorchsim.backend import launcher
+
+    launcher.install()
+
+
+# Inductor's benchmarker (torch._inductor.runtime.benchmarking.register_benchmarker)
+
+def _register_benchmarker():
+    """Register npu's benchmarker: the pick among a kernel's compiled configs."""
+    from torch._inductor.runtime.benchmarking import register_benchmarker
+
+    from pytorchsim.backend import config_pick
+
+    register_benchmarker("npu", config_pick.benchmark, override=True)

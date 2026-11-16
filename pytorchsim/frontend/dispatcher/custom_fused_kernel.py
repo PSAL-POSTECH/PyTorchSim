@@ -118,6 +118,20 @@ class CustomFusedKernel:
         self.calls[route] = self.calls.get(route, 0) + 1
 
 
+_AUTOTUNED = {}
+
+
+def autotuned(kernel, name, sizes):
+    """`kernel` offered to Inductor with a config per size of its constexpr `name`, largest first: Triton's own
+    autotune, whose configs the compile drops one by one when they overflow the scratchpad."""
+    import triton
+    key = (kernel, name, tuple(sizes))
+    if key not in _AUTOTUNED:
+        _AUTOTUNED[key] = triton.autotune(configs=[triton.Config({name: s}, num_warps=1, num_stages=1)
+                                                   for s in sizes], key=[])(kernel)
+    return _AUTOTUNED[key]
+
+
 def _describe(call):
     return ", ".join(f"{tuple(a.shape)} {a.dtype}" if isinstance(a, torch.Tensor) else repr(a)
                      for a in call)

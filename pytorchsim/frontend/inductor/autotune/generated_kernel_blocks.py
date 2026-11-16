@@ -25,6 +25,18 @@ def pinned_blocks(kernel_tiling, features):
     return FixedTritonConfig(cfg) if cfg else None
 
 
+def candidates_for(kernel_tiling, features):
+    """The tiles a generated kernel of `kernel_tiling` is offered, largest first (tiling.candidate_blocks),
+    as dicts of block name to size, over the size hints of numels that are not static."""
+    if features is None or not kernel_tiling:
+        return []
+    from torch._inductor.virtualized import V
+    numels = {f"{prefix}numel": int(V.graph.sizevars.optimization_hint(n)) for prefix, n in kernel_tiling.items()}
+    shim = type("K", (), {"inside_reduction": bool(features.is_reduction()), "numels": numels})()
+    return tiling.candidate_blocks(shim, numels, _widest_dtype_args(features),
+                                   contiguous=_kept_axis_contiguous(features))
+
+
 def blocks_for(numels, features):
     """tiling.fixed_config_for for a scheduled kernel of `numels` (<prefix>numel -> int)."""
     shim = type("K", (), {"inside_reduction": bool(features.is_reduction()), "numels": numels})()

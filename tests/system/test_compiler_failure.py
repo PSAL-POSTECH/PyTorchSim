@@ -1,6 +1,7 @@
 """Why a compile failed is read from the failure.json the compiler leaves, never from what it
-printed: a scratchpad over its budget is a tile too big by usage / budget, and a kernel file the
-compiler cannot load stops outside every stage and is no reason to shrink anything."""
+printed: a scratchpad over its budget is a tile too big by usage / budget (PTB's Triton backend raises it as
+OutOfResources, and Inductor drops that config), and a kernel file the compiler cannot load stops outside
+every stage and is no reason to shrink anything."""
 import os
 import sys
 import tempfile
@@ -8,7 +9,7 @@ import tempfile
 sys.path.insert(0, os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"))
 
 import torch  # noqa: F401  the npu backend loads pytorchsim whole, before its parts are imported
-from pytorchsim.backend import retile, compiler_bridge
+from pytorchsim.backend import compiler_bridge
 
 
 def _failed(spec_path):
@@ -26,7 +27,7 @@ def test_spad_overflow_is_too_big():
     e = _failed(spec)
     usage, budget = e.failure["usage"], e.failure["budget"]
     assert e.failure["kind"] == "spad-overflow" and usage > budget > 0
-    assert retile.too_big(e) == "%d bytes/lane over a budget of %d" % (usage, budget)
+    assert e.failure["message"], e.failure
 
 
 def test_unloadable_kernel_is_not_too_big():
@@ -36,7 +37,7 @@ def test_unloadable_kernel_is_not_too_big():
         e = _failed(f.name)
     finally:
         os.unlink(f.name)
-    assert e.failure is None and retile.too_big(e) is None
+    assert e.failure is None
     assert "not a kernel file" in str(e)
 
 

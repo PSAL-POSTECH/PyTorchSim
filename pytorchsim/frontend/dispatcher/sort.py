@@ -33,7 +33,9 @@ class Sort(CustomFusedKernel):
 
     def plan(self, x, dim, descending):
         """The [L, D] tile of a row of the last axis padded to n, on L = min(lanes, n) lanes; a row
-        longer than BLOCK_REGS registers a lane is sorted in blocks of that many and merged."""
+        longer than BLOCK_REGS registers a lane is sorted in blocks of that many and merged. D is not offered as
+        configs: four kernels must agree on it and the merge launches below are scheduled from it, so a declined row
+        (the estimate here) falls back to the network as aten ops."""
         if x.dtype not in _KEYS:
             return Decline(f"{x.dtype} is not a key the kernel orders")
         if x.dim() == 0 or x.numel() == 0:

@@ -9,7 +9,9 @@ import triton
 import triton.language as tl
 from torch.library import wrap_triton
 
-from pytorchsim.frontend.dispatcher.custom_fused_kernel import Decline
+from pytorchsim import config
+from pytorchsim.frontend import tiling
+from pytorchsim.frontend.dispatcher.custom_fused_kernel import Decline, autotuned
 from pytorchsim.frontend.dispatcher.grouped_mm import GroupedMM, _math
 
 #: torch_xla 2.9's gmm tiling (custom_kernel._get_tiling_size_for_gmm_kernel), which both its registered experts
@@ -25,7 +27,8 @@ class GroupedMMMegablox(GroupedMM):
 
     def plan(self, a, b, offs, bias, out_dtype):
         """(TM, BN, BK): torch_xla's tiling; TK and TN as the largest power of two within it (triton's blocks), TM
-        exactly or declined, as the visits are counted in it."""
+        exactly or declined, as the visits are counted in it; the launch offers BN and BK and their halves (down to the
+        lanes) as configs, TM fixed."""
         declined = super().plan(a, b, offs, bias, out_dtype)
         if isinstance(declined, str):
             return declined
@@ -38,12 +41,15 @@ class GroupedMMMegablox(GroupedMM):
                bias: Optional[torch.Tensor], out_dtype: Optional[torch.dtype]) -> torch.Tensor:
         s, k = a.shape
         g, _, n = b.shape
-        tm, bn, bk = plan["BM"], plan["BN"], plan["BK"]
+        tm = plan["BM"]
         group, tile = _visits(offs, tm, triton.cdiv(s, tm) + g - 1)
         c = a.new_zeros(s, n)
-        wrap_triton(_megablox_kernel)[(group.shape[0], triton.cdiv(n, bn), 1)](
+        lanes = int(config.CONFIG_MACHINE.vector_lanes)
+        tiles = tiling.candidate_tiles({"BN": plan["BN"], "BK": plan["BK"]}, {"BN": lanes, "BK": lanes})
+        kernel = autotuned(_megablox_kernel, [{**t, "KP": triton.cdiv(k, t["BK"]) * t["BK"]} for t in tiles])
+        wrap_triton(kernel)[lambda meta: (group.shape[0], triton.cdiv(n, meta["BN"]), 1)](
             a.contiguous(), b, group, tile, offs, c, b.stride(0), b.stride(1), b.stride(2),
-            s, k, triton.cdiv(k, bk) * bk, n, g, tm, bn, bk)
+            s, k, N=n, G=g, TM=tm)
         return c
 
     def fallback(self, a, b, offs, bias, out_dtype):

@@ -7,6 +7,7 @@ import sys
 from unittest import mock
 
 os.environ["TORCHSIM_TARGET"] = "tpuv3_32x32"
+os.environ["TORCHINDUCTOR_COMPILE_THREADS"] = "1"
 
 import torch
 

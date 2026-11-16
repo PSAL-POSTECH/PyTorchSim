@@ -9,6 +9,7 @@ import triton
 import triton.language as tl
 from torch.library import wrap_triton
 
+from pytorchsim.frontend.dispatcher.custom_fused_kernel import autotuned
 from pytorchsim.frontend.dispatcher.attention import FusedSDPA, _attend, _bias_as_strides, _decode_kernel
 
 
@@ -26,12 +27,13 @@ class PagedSDPA(FusedSDPA):
         k, v = (t if t.stride(-1) == 1 else t.contiguous() for t in (key, value))
         q = query.contiguous()
         o = q.new_empty(B, Hq, L, DV)
-        kv0 = (S - window) // plan["BKV"] * plan["BKV"] if window else 0
         m, kind, mstride = _bias_as_strides(attn_bias, (B, Hq, L, S))
-        wrap_triton(_paged_decode_kernel)[(B, 1, 1)](
-            q, k, v, o, m, H, Hq // H, plan["GP"], S, D, plan["DA"], D - plan["DA"], DV, plan["BKV"],
-            scale, softcap, window, kv0, plan["KEYS"], plan["DW"], plan["VW"],
-            *k.stride()[:3], *v.stride()[:3], kind, mstride[0], mstride[1], mstride[3])
+        configs = [{n: v for n, v in c.items() if n != "SP"} for c in plan["CONFIGS"]]
+        ks, vs = k.stride()[:3], v.stride()[:3]
+        wrap_triton(autotuned(_paged_decode_kernel, configs))[(B, 1, 1)](
+            q, k, v, o, m, HKV=H, G=Hq // H, GP=plan["GP"], S=S, D=D, DA=plan["DA"], DB=D - plan["DA"], DV=DV,
+            SCALE=scale, SOFTCAP=softcap, WINDOW=window, DW=plan["DW"], VW=plan["VW"], KB=ks[0], KH=ks[1],
+            KS=ks[2], VB=vs[0], VH=vs[1], VS=vs[2], MKIND=kind, MB=mstride[0], MH=mstride[1], MK=mstride[3])
         return o
 
 

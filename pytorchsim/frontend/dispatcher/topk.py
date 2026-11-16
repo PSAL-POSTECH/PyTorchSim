@@ -7,8 +7,9 @@ import triton.language as tl
 from torch.library import wrap_triton
 
 from pytorchsim import config
+from pytorchsim.frontend import tiling
 from pytorchsim.frontend.dispatcher.custom_fused_kernel import (
-    CustomFusedKernel, Decline, fits_scratchpad, next_pow2)
+    CustomFusedKernel, Decline, autotuned, fits_scratchpad, next_pow2)
 
 
 class TopK(CustomFusedKernel):
@@ -23,7 +24,8 @@ class TopK(CustomFusedKernel):
         return x, int(k), dim % max(x.dim(), 1), bool(largest)
 
     def plan(self, x, k, dim, largest):
-        """A row per lane, the block halved while its tiles overrun the scratchpad budget."""
+        """A row per lane, the block halved while its tiles overrun the scratchpad budget; the launch offers it
+        and its halves (a row stays whole: K rounds read all of it) as configs the compile may drop."""
         if not x.is_floating_point():
             return Decline(f"{x.dtype} is not a floating dtype")
         if x.dim() == 0 or x.numel() == 0:
@@ -45,8 +47,9 @@ class TopK(CustomFusedKernel):
         rows = x.numel() // E
         v = torch.empty(*x.shape[:-1], k, dtype=x.dtype, device=x.device)
         i = torch.empty(*x.shape[:-1], k, dtype=torch.int64, device=x.device)
-        wrap_triton(_topk_kernel)[(triton.cdiv(rows, plan["XBLOCK"]), 1, 1)](
-            x.contiguous(), v, i, rows, E, plan["EP"], k, plan["KP"], plan["XBLOCK"], largest)
+        kernel = autotuned(_topk_kernel, [{"XBLOCK": b} for b in tiling.candidate_sizes(plan["XBLOCK"])])
+        wrap_triton(kernel)[lambda meta: (triton.cdiv(rows, meta["XBLOCK"]), 1, 1)](
+            x.contiguous(), v, i, rows, E, plan["EP"], k, plan["KP"], LARGEST=largest)
         return v, i
 
     def fallback(self, x, k, dim, largest):

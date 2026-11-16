@@ -154,14 +154,28 @@ def candidate_blocks(kernel, numels, args, contiguous=None):
     return [{**rest, **t} for t in tiles[:CANDIDATE_LIMIT]]
 
 
-def candidate_sizes(first, limit=CANDIDATE_LIMIT):
-    """The sizes a hand-written kernel's one block is offered: `first` and its halves, largest first, down to 1,
-    at most `limit`; each is a config its compile may drop when it overflows."""
+def candidate_sizes(first, limit=CANDIDATE_LIMIT, floor=1):
+    """The sizes a hand-written kernel's one block is offered: `first` and its halves, largest first, down to
+    `floor`, at most `limit`; each is a config its compile may drop when it overflows."""
     sizes = []
-    while first >= 1 and len(sizes) < limit:
+    while first >= floor and len(sizes) < limit:
         sizes.append(int(first))
         first //= 2
     return sizes
+
+
+def candidate_tiles(first, floors, limit=CANDIDATE_LIMIT):
+    """The tiles a kernel with several blocks is offered: `first` ({block: size}) and then every block halved
+    together, each held at its floor, largest first, at most `limit`; a block that cannot halve stays."""
+    tiles = []
+    t = 0
+    while len(tiles) < limit:
+        tile = {k: min(int(v), max(int(floors.get(k, 1)), int(v) >> t)) for k, v in first.items()}
+        if tiles and tile == tiles[-1]:
+            break
+        tiles.append(tile)
+        t += 1
+    return tiles
 
 
 def kept_axis_rows_block(xnumel, rblock, elem_bytes, lanes, lane_bytes, max_numel):

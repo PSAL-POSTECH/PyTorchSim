@@ -175,6 +175,11 @@ struct OpenRegGuardImpl final : public c10::impl::DeviceGuardImplInterface {
   void synchronizeEvent(void* event) const override {}
 
   /**
+   * Wait until all work on the device is done; the device runs synchronously.
+   */
+  void synchronizeDevice(const c10::DeviceIndex device_index) const override {}
+
+  /**
    * Ensure the caching allocator (if any) is aware that the given DataPtr is
    * being used on the given stream, and that it should thus avoid recycling the
    * DataPtr until all work on that stream is done.

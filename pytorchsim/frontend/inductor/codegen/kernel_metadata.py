@@ -132,18 +132,28 @@ def _blocks_without_pin(kernel, numels, args):
     return tiling.fixed_config_for(kernel, numels, args)
 
 
-def apply_spec_to_source(src_code, kernel, meta):
-    """The one text edit of Inductor's source: `kernel`'s triton_meta, as the decorator holds it, gains the spec of
-    `meta` as backend_options. No hook can do it: triton_meta_common runs before the signature the spec needs
-    exists, and a template's decorator reads its triton_meta after its epilogue is fused, at render time."""
+def spec_options(kernel, name):
+    """The backend_options carrying `kernel`'s spec; its meta is kept as kernel._npu_meta."""
     from pytorchsim.backend import compiler_input
-    old = repr(kernel.triton_meta)
-    if src_code.count(f"triton_meta={old}") != 1:
-        raise SpecIncomplete(f"{kernel.__class__.__name__}: triton_meta is not in the source once; "
-                             f"Inductor's decorator changed")
-    options = compiler_input.backend_options(compiler_input.spec_json(meta))
-    new = repr({**kernel.triton_meta, "backend_options": options})
-    return src_code.replace(f"triton_meta={old}", f"triton_meta={new}")
+    from pytorchsim.frontend.inductor.autotune import graph_prefetch
+    meta = collect_meta(kernel, name)
+    meta["graph_prefetch"] = graph_prefetch.statement(kernel, meta["args"])
+    kernel._npu_meta = meta
+    return compiler_input.backend_options(compiler_input.spec_json(meta))
+
+
+class TemplateTritonMeta(dict):
+    """A template kernel's triton_meta, where TritonNPUKernel's setter cannot reach: its class is TritonTemplate.kernel_type
+    (select_algorithm.py:2687, :3121), Inductor's own instances' to choose, and jit_lines only .update()s a pre-set
+    triton_meta (select_algorithm.py:932-935), which is where the spec joins."""
+
+    def __init__(self, kernel):
+        super().__init__()
+        self._kernel = kernel
+
+    def update(self, *args, **kwargs):
+        super().update(*args, **kwargs)
+        self["backend_options"] = spec_options(self._kernel, "")
 
 
 def collect_meta(kernel, kernel_name):

@@ -1,5 +1,7 @@
 #include "Extra.h"
 
+#include <ATen/Dispatch.h>
+#include <ATen/OpMathType.h>
 #include <ATen/core/grad_mode.h>
 
 namespace at::native::openreg {
@@ -124,15 +126,12 @@ at::Tensor custom_autograd_fn_aliasing(at::Tensor x) {
  capabilities are fully supported.
 
  Current Limitations:
- - dtype: Float only
- - input tensor: must be contiguous layout
+ - dtype: integral, Float, Double, Half and BFloat16 (no Bool or complex)
+ - a non-contiguous iteration runs on a contiguous copy of the input
 */
 // LITERALINCLUDE START: STUB ABS
 void abs_kernel(at::TensorIteratorBase& iter) {
   TORCH_CHECK(iter.ntensors() == 2, "Abs kernel expects 2 tensors");
-  TORCH_CHECK(
-      iter.common_dtype() == at::ScalarType::Float,
-      "Abs kernel only supports float type");
 
   auto& output_tensor = iter.tensor(0);
   auto& input_tensor = iter.tensor(1);
@@ -141,37 +140,34 @@ void abs_kernel(at::TensorIteratorBase& iter) {
       input_tensor.sizes() == output_tensor.sizes(),
       "Input and output tensor sizes must match.");
 
-  auto abs_loop = [](float* out_ptr, const float* in_ptr, int64_t n) {
-    for (int64_t i = 0; i < n; ++i) {
-      out_ptr[i] = std::abs(in_ptr[i]);
-    }
-  };
+  AT_DISPATCH_ALL_TYPES_AND2(
+      at::kHalf, at::kBFloat16, iter.common_dtype(), "abs_kernel", [&]() {
+        auto abs_loop = [](scalar_t* out_ptr, const scalar_t* in_ptr, int64_t n) {
+          for (int64_t i = 0; i < n; ++i) {
+            out_ptr[i] = static_cast<scalar_t>(
+                std::abs(static_cast<at::opmath_type<scalar_t>>(in_ptr[i])));
+          }
+        };
 
-  MemoryGuard guard(input_tensor, output_tensor);
-
-  if (iter.is_contiguous()) {
-    abs_loop(
-        static_cast<float*>(iter.data_ptr(0)),
-        static_cast<float*>(iter.data_ptr(1)),
-        iter.numel());
-  } else {
-    TORCH_CHECK(
-        input_tensor.is_contiguous(), "Input tensor must be contiguous.")
-
-    auto output = at::empty(
-        input_tensor.sizes(),
-        input_tensor.options().memory_format(
-            input_tensor.suggest_memory_format()));
-
-    MemoryGuard guard(output);
-
-    abs_loop(
-        static_cast<float*>(output.data_ptr()),
-        static_cast<float*>(iter.data_ptr(1)),
-        iter.numel());
-
-    output_tensor.copy_(output);
-  }
+        if (iter.is_contiguous()) {
+          MemoryGuard guard(input_tensor, output_tensor);
+          abs_loop(
+              static_cast<scalar_t*>(iter.data_ptr(0)),
+              static_cast<const scalar_t*>(iter.data_ptr(1)),
+              iter.numel());
+        } else {
+          auto input = input_tensor.contiguous();
+          auto output = at::empty(input.sizes(), input.options());
+          {
+            MemoryGuard guard(input, output);
+            abs_loop(
+                static_cast<scalar_t*>(output.data_ptr()),
+                static_cast<const scalar_t*>(input.const_data_ptr()),
+                input.numel());
+          }
+          output_tensor.copy_(output);
+        }
+      });
 }
 // LITERALINCLUDE END: STUB ABS
 

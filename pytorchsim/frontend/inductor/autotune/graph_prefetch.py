@@ -63,8 +63,17 @@ def fits(node):
     shape, size = (contract.storage_span(sizes(val.shape), sizes(val.stride())),), val.dtype.itemsize
     if cn.resident_fits(target, shape, size):
         return None
-    return (f"{cn.resident_lane_bytes(target, shape, size)} bytes a lane held whole, over "
-            f"{cn.resident_budget(target)}")
+    return f"{lane_bytes(node)} bytes a lane held whole, over {cn.resident_budget(target)}"
+
+
+def lane_bytes(node):
+    """A lane's bytes of the tensor FX node `node` makes held whole (contract/copy_node.resident_lane_bytes),
+    as the kernel spec states it: its storage span."""
+    from pytorchsim.backend import compiler_bridge
+    val = node.meta["val"]
+    return compiler_bridge.compiler_contract("copy_node").resident_lane_bytes(
+        compiler_bridge.target(), (contract.storage_span(sizes(val.shape), sizes(val.stride())),),
+        val.dtype.itemsize)
 
 
 def elected(graph):

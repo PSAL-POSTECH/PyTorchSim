@@ -1,6 +1,6 @@
 """What the compile step needs from an Inductor kernel, read while `V.graph` is live: collect_meta
 gathers the arguments with their roles, dtypes and storage spans, the numels, the pinned blocks and the grid;
-define_kernel adds what it holds (graph_prefetch), none until then."""
+define_kernel adds what it holds (graph_prefetch, on_chip), none until then."""
 
 from torch._inductor.codegen.common import InplacedBuffer, is_buffer_removed
 from torch._inductor.virtualized import V
@@ -143,9 +143,10 @@ def _blocks_without_pin(kernel, numels, args):
 def spec_options(kernel, name):
     """The backend_options carrying `kernel`'s spec; its meta is kept as kernel._npu_meta."""
     from pytorchsim.backend import compiler_input
-    from pytorchsim.frontend.inductor.autotune import graph_prefetch
+    from pytorchsim.frontend.inductor.autotune import graph_prefetch, on_chip
     meta = collect_meta(kernel, name)
     meta["graph_prefetch"] = graph_prefetch.statement(kernel, meta["args"])
+    meta["on_chip"] = on_chip.statement(meta["args"])
     kernel._npu_meta = meta
     return compiler_input.backend_options(compiler_input.spec_json(meta))
 
@@ -208,6 +209,7 @@ def collect_meta(kernel, kernel_name):
         "fixed_config": _held_blocks(kernel) or _blocks_without_pin(kernel, numels, args),
         "template_grid": template_grid(kernel),
         "graph_prefetch": [],
+        "on_chip": [],
     }
 
 
@@ -244,6 +246,7 @@ def benchmark_request_meta(req):
         "fixed_config": tiling.fixed_config_for(None, numels, args),
         "template_grid": [int(g) for g in req.extra_args],
         "graph_prefetch": [],
+        "on_chip": [],
     }
 
 

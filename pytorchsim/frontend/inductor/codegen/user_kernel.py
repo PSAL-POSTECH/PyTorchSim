@@ -97,7 +97,7 @@ def user_kernel_meta(kernel, kwargs, triton_meta, grid):
     where torch's mutation analysis says the launch writes it (every pointer, without that analysis)."""
     from pytorchsim.contract import storage_span
     from pytorchsim.backend.launch_hooks import user_kernel_id
-    from pytorchsim.frontend.inductor.autotune import graph_prefetch
+    from pytorchsim.frontend.inductor.autotune import graph_prefetch, on_chip
     from pytorchsim.frontend.inductor.codegen import kernel_metadata
 
     hint = V.graph.sizevars.optimization_hint
@@ -128,4 +128,5 @@ def user_kernel_meta(kernel, kwargs, triton_meta, grid):
         "template_grid": ([int(hint(g)) for g in grid] + [1, 1, 1])[:3],
         "user_defined": True, "user_kernel": user_kernel_id(kernel),
         "graph_prefetch": graph_prefetch.statement(kernel, args),
+        "on_chip": on_chip.statement(args),
     }

@@ -11,7 +11,7 @@ from torch._inductor.virtualized import V
 
 from pytorchsim import config
 from pytorchsim.backend import compiler_input
-from pytorchsim.frontend.inductor.autotune import generated_kernel_blocks, graph_prefetch
+from pytorchsim.frontend.inductor.autotune import generated_kernel_blocks, graph_prefetch, on_chip
 from pytorchsim.frontend.inductor.autotune.generated_kernel_configs import CANDIDATES_KEY
 from pytorchsim.frontend.inductor.codegen import kernel_metadata
 
@@ -108,6 +108,7 @@ class TritonNPUScheduling(TritonScheduling):
         kernel = self._codegen_kernel
         meta = kernel_metadata.collect_meta(kernel, "triton_")
         meta["graph_prefetch"] = graph_prefetch.statement(kernel, meta["args"])
+        meta["on_chip"] = on_chip.statement(meta["args"])
         self._benchmarked[PyCodeCache.write(src_code)[1]] = (src_code, meta)
         return src_code
 

@@ -82,6 +82,7 @@ SPEC = KernelSpec(
     grid={grid!r},
     parallel_axes={parallel_axes!r},
     graph_prefetch={graph_prefetch!r},
+    on_chip={on_chip!r},
     reference=reference,
     make_inputs=make_inputs,
     extra={{"scalar_args": {scalar_decls!r},
@@ -119,6 +120,15 @@ def graph_prefetch(meta):
     if unknown:
         raise SpecIncomplete(f"{meta['kernel_name']}: graph_prefetch names {unknown}, no parameter of it")
     return tuple(sorted(names.index(n) for n in meta["graph_prefetch"]))
+
+
+def on_chip(meta):
+    """The spec's on_chip: the tensor indices of the arguments meta's on_chip names."""
+    names = parameter_names(meta)
+    unknown = sorted(set(meta.get("on_chip", ())) - set(names))
+    if unknown:
+        raise SpecIncomplete(f"{meta['kernel_name']}: on_chip names {unknown}, no parameter of it")
+    return tuple(sorted(names.index(n) for n in meta.get("on_chip", ())))
 
 
 def recorded_file(kernel_name):
@@ -174,6 +184,7 @@ def write(src_code, meta, path, recorded=None, scalars=None):
         grid=contract.grid_xyz(meta),
         parallel_axes=tuple(contract.launch_axes(meta)),
         graph_prefetch=graph_prefetch(meta),
+        on_chip=on_chip(meta),
         scalar_decls=[(n, c) for n, c, _ in scalars],
         scalar_values={n: v if v is not None else given[n] for n, _, v in scalars if v is not None or n in given},
     )
@@ -198,7 +209,7 @@ def spec_json(meta):
         [(a["role"], a["numel"], _UNSIGNED.get(a.get("dtype"))) for a in meta["args"]], contract.grid_xyz(meta),
         list(graph_prefetch(meta)), list(contract.launch_axes(meta)),
         {"scalar_args": [[n, c] for n, c, _ in scalars],
-         "scalar_values": {n: v for n, _, v in scalars if v is not None}}))
+         "scalar_values": {n: v for n, _, v in scalars if v is not None}}, on_chip(meta)))
 
 
 def backend_options(spec):
@@ -213,12 +224,14 @@ _UNSIGNED = {"uint8": "uint8", "uint16": "uint16", "uint32": "uint32", "uint64":
 """The dtypes a spec must state: Triton IR spells an unsigned pointer as its signed width (!tt.ptr<i8>)."""
 
 
-def spec_dict(tensors, grid, held=(), axes=("x",), extra=None):
+def spec_dict(tensors, grid, held=(), axes=("x",), extra=None, on_chip=()):
     """A JSON spec: `tensors` as (role, numel[, dtype]) per pointer parameter in order (a dtype only where the IR
-    cannot say it), the default launch `grid`, the tensor indices held, the axes the launch spreads over."""
+    cannot say it), the default launch `grid`, the tensor indices held, the axes the launch spreads over, and
+    the tensor indices the graph keeps on chip (stated only when there are any)."""
     return {"args": [dict({"role": t[0], "shape": [t[1]]}, **({"dtype": t[2]} if len(t) > 2 and t[2] else {}))
                      for t in tensors], "grid": list(grid), "grid_rule": True,
-            "graph_prefetch": list(held), "parallel_axes": list(axes), "extra": extra or {}}
+            "graph_prefetch": list(held), "parallel_axes": list(axes), "extra": extra or {},
+            **({"on_chip": list(on_chip)} if on_chip else {})}
 
 
 META_JSON = "meta.json"

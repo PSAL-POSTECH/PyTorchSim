@@ -1,28 +1,24 @@
-"""A template config timed in TOGSim cycles, in timing mode: every config of a timed template at once
-(time_choices, a slow one cut), and a module Inductor wrote to benchmark a fusion (time_module). What a
-timed pick leaves for next time is template_record.py."""
+"""A module Inductor wrote to benchmark an epilogue fusion, timed in TOGSim cycles (time_module); the configs of a
+template are timed by Inductor's own selection through the npu benchmarker (config_pick.py). What a timed pick
+leaves for next time is template_record.py."""
 
-import concurrent.futures
 import hashlib
 import json
 import os
 import subprocess
-import time
 
 from pytorchsim import config, contract
 from pytorchsim.frontend.inductor.autotune import graph_prefetch
 from pytorchsim.frontend.inductor.codegen import kernel_metadata
-from pytorchsim.backend import retile, compiler_bridge, compiler_input, template_record
+from pytorchsim.backend import compiler_bridge, compiler_input, template_record
 from pytorchsim.simulator import timing
 
 logger = config.setup_logger()
 
 
-def _time_tile(src_code, meta, kernel_name, workdir, cut=None):
+def _time_tile(src_code, meta, kernel_name, workdir):
     """TOGSim cycles of one kernel, simulated alone; inf if it does not compile in the bridge's timeout
-    or run, or `cut` stops its simulation. TOGSim's refusal of a tile over the spad and a cut reach here
-    as RuntimeError."""
-    from pytorchsim.simulator.timing.togsim import Cut
+    or run. TOGSim's refusal of a tile over the spad reaches here as RuntimeError."""
     os.makedirs(workdir, exist_ok=True)
     spec_path = os.path.join(workdir, f"{kernel_name}_spec.py")
     with open(os.path.join(workdir, "kernel.py"), "w") as f:
@@ -36,14 +32,26 @@ def _time_tile(src_code, meta, kernel_name, workdir, cut=None):
         timing.write_shape(workdir, meta)
         timing.write_tensors(workdir)
         return timing.simulate_standalone(workdir, mine, _records(workdir, meta),
-                                          autotune_mode=True, cut=cut)["total_cycles"]
+                                          autotune_mode=True)["total_cycles"]
     except subprocess.TimeoutExpired as exc:
         logger.info("[select] %s %s: not compiled in %.0f s", kernel_name, workdir, exc.timeout)
         return float("inf")
     except (compiler_bridge.CompilerError, RuntimeError, FileNotFoundError) as exc:
-        why = retile.too_big(exc) or (f"cut, {exc}" if isinstance(exc, Cut) else f"{type(exc).__name__}: {exc}")
+        why = _too_big(exc) or f"{type(exc).__name__}: {exc}"
         logger.info("[select] %s %s: %s", kernel_name, workdir, why)
         return float("inf")
+
+
+def _too_big(exc):
+    """Why this compiler failure means the tile is too big, else None: the scratchpad budget it broke or
+    the register file (llc spilled), as the compiler's failure.json names it."""
+    got = getattr(exc, "failure", None) or {}
+    kinds = compiler_bridge.compiler_contract("failure")
+    if got.get("kind") == kinds.SPAD_OVERFLOW:
+        return "%d bytes/lane over a budget of %d" % (got["usage"], got["budget"])
+    if got.get("kind") == kinds.SPILL_NOT_ALLOWED:
+        return "the vector register file spills"
+    return None
 
 
 def _records(workdir, meta):
@@ -92,55 +100,6 @@ def times(choices):
     """Whether these choices are picked by their cycles: the strategy autotunes, and some are
     configs of a timed template that no record or external mapping fixed."""
     return template_record.autotunes() and any(template_record.is_timed(c) for c in choices)
-
-
-#: A config still simulating this many times the wall time the first config to finish took is cut.
-#: The configs run at once, so a loaded host slows them alike and the ratio stands.
-CUT_FACTOR = 3
-
-
-def time_choices(choices):
-    """Cycles per choice for AlgorithmSelectorCache: each config of a timed template as Inductor
-    rendered it, all at once, every other choice inf. A config whose simulation runs past
-    CUT_FACTOR times the wall time of the first one timed is cut, and is inf."""
-    out = {c: float("inf") for c in choices}
-    timed = [c for c in choices if template_record.is_timed(c)]
-    jobs = [(c, *kernel_metadata.benchmark_request_meta(c.bmreq)) for c in timed]
-    for c, _, meta in jobs:
-        meta["graph_prefetch"] = graph_prefetch.choice_statement(c.annotations["ktc"], meta["args"])
-    keys = {c: _timing_key(src, meta) for c, src, meta in jobs}
-    for c, _, _ in jobs:
-        if keys[c] in _timed:
-            logger.info("[select] %s %s: %s cycles, timed before in this process",
-                        c.name, c.description, _timed[keys[c]])
-            c.annotations["ktc"].annotations[template_record.SOURCE] = template_record.TIMED
-            out[c] = _timed[keys[c]]
-    jobs = [j for j in jobs if keys[j[0]] not in _timed]
-    t0, first = time.monotonic(), []
-
-    def cut():
-        if first and time.monotonic() - t0 > CUT_FACTOR * first[0]:
-            return f"past {CUT_FACTOR}x the {first[0]:.0f} s the first config took"
-        return None
-
-    def one(job):
-        c, src, meta = job
-        got = _time_tile(src, meta, c.bmreq.kernel_name, _workdir(c.bmreq.module_cache_key), cut)
-        if got != float("inf") and not first:
-            first.append(time.monotonic() - t0)
-        return got
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max(len(jobs), 1)) as pool:
-        cycles = pool.map(one, jobs)
-        for (c, _, _), got in zip(jobs, cycles):
-            logger.info("[select] %s %s: %s cycles", c.name, c.description, got)
-            c.annotations["ktc"].annotations[template_record.SOURCE] = template_record.TIMED
-            out[c] = _timed[keys[c]] = got
-    if timed and all(out[c] == float("inf") for c in timed):
-        raise RuntimeError(
-            f"no template config of {[c.name for c in timed]} compiled and ran on TOGSim; "
-            f"the [select] lines above say why each one did not")
-    return out
 
 
 def time_module(src_code, meta, path):

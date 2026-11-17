@@ -377,7 +377,7 @@ def attribute_inputs(launcher, args):
 def launch_scalars(launcher, args):
     """{name: launch value} of `launcher`'s scalars its meta gives no value for (a user kernel's row count),
     which a kernel file run on its own needs."""
-    unset = {n for n, _, v in compiler_input.scalar_args(launcher.meta) if v is None}
+    unset = {x["name"] for x in launcher.meta.get("scalars", ()) if x["default"] is None}
     return {n: a.item() if isinstance(a, torch.Tensor) else a
             for n, a in zip(launcher.meta["call_params"], args) if n in unset}
 
@@ -393,17 +393,19 @@ def kernel_files(launcher):
 
 
 def copy_kernel(launcher, recorded, dest):
-    """`launcher`'s kernel files into `dest`; with `recorded` (its attribute args' and unset scalars' launch
-    values) its kernel file is written again to take them from the launch."""
+    """`launcher`'s kernel files into `dest`, written from the source and meta its definition left
+    (kernel_metadata.KERNEL_SOURCES) with the constexprs it was built with pinned; `recorded` (its attribute
+    args' and unset scalars' launch values) is what its make_inputs takes from the launch."""
+    from pytorchsim.frontend.inductor.codegen import kernel_metadata
     tensors, scalars = recorded
-    if not tensors and not scalars:
-        for f in kernel_files(launcher):
-            shutil.copy(os.path.join(launcher.workdir, f), os.path.join(dest, f))
-        return
-    spec, triton = kernel_files(launcher)
-    with open(os.path.join(launcher.workdir, triton)) as f:
-        src = f.read()
-    compiler_input.write(src, launcher.meta, os.path.join(dest, spec), recorded=tensors, scalars=scalars)
+    got = kernel_metadata.KERNEL_SOURCES.get(launcher.kernel_name)
+    if got is None:
+        raise RuntimeError(f"{launcher.kernel_name}: launched, but no definition of it left its source")
+    src, meta = got
+    pinned = {**(meta.get("fixed_config") or {}), **launcher.meta.get("constexprs", {})}
+    meta = {**meta, "fixed_config": {k: v for k, v in pinned.items() if k in meta["signature"]}}
+    spec, _ = kernel_files(launcher)
+    compiler_input.write(src, meta, os.path.join(dest, spec), recorded=tensors, scalars=scalars)
 
 
 def same_values(a, b):

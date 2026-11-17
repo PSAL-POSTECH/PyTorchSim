@@ -1,24 +1,23 @@
 """The configs a template kernel (mm, bmm, addmm, baddbmm, conv) is offered on npu: this machine's
 mm tiles, for an ungrouped conv those of one tap's GEMM. A conv's groups reach the heuristic
-through its lowering and size its grid per group, two patches Inductor has no hook for."""
-
-import threading
+through the node being lowered and size its grid per group, a template's grid Inductor has no hook for."""
 
 import torch
 
 from pytorchsim import config
 from pytorchsim.frontend import tiling
+from pytorchsim.frontend.inductor.autotune import template_kernel_spec
 from pytorchsim.frontend.inductor import is_lowering_npu
 
 logger = config.setup_logger()
 
-conv_groups = threading.local()
+_CONVOLUTIONS = (torch.ops.aten.convolution, *(getattr(torch.ops.aten.convolution, o)
+                                              for o in torch.ops.aten.convolution.overloads()))
 
 
 def install():
-    """Apply the two conv patches (Inductor has no hook for either); the heuristics are registered
-    by registration.py."""
-    _record_conv_groups()
+    """Grid a grouped conv per group (Inductor's conv templates take no grid but the module's); the heuristics are
+    registered by registration.py."""
     _size_grouped_conv_grid_per_group()
 
 
@@ -31,6 +30,26 @@ def mm_config_heuristics():
 
     class NPUMMTemplateConfigHeuristic(MMTemplateConfigMixin, BaseConfigHeuristic):
         bias = False
+
+        def _offered_tiles(self, m, n, k, dtype_size):
+            """The tiles one mm is offered, best first: the first codegen_autotune_template_topk of gemm_tiles
+            where the strategy autotunes, else tiling.GEMM_CANDIDATES of them, each compiled until one fits."""
+            from pytorchsim.backend import template_record
+            limit = config.codegen_autotune_template_topk if template_record.autotunes() \
+                else tiling.GEMM_CANDIDATES
+            return tiling.gemm_tiles(m, n, k, dtype_size, bias=self.bias)[:limit]
+
+        def get_extra_kwargs(self, kernel_inputs, op_name):
+            """The mm kwargs and the spec its choices compile with (template_kernel_spec)."""
+            from torch._inductor.virtualized import V
+            kwargs = super().get_extra_kwargs(kernel_inputs, op_name)
+            mnk = [int(V.graph.sizevars.optimization_hint(s)) for s in kernel_inputs.mnk_symbolic()]
+            tiles = [(t.block_m, t.block_n) for t in
+                     self._offered_tiles(*mnk, kernel_inputs.dtype().itemsize)]
+            if not tiles:
+                return kwargs
+            grids = [template_kernel_spec.mm_grid(kernel_inputs, t) for t in tiles]
+            return {**kwargs, "triton_meta": template_kernel_spec.triton_meta_for(kernel_inputs, grids)}
 
         def _get_config_generator(self):
             """Configs for one m, n, k: the first codegen_autotune_template_topk of gemm_tiles (the
@@ -47,9 +66,7 @@ def mm_config_heuristics():
                         "Triton block; falling back to the generic set", *mnk)
                     yield from generic(m, n, k, **kwargs)
                     return
-                from pytorchsim.backend import template_record
-                topk = config.codegen_autotune_template_topk if template_record.autotunes() else 1
-                yield from self._finalize_mm_configs(mapped[:topk])
+                yield from self._finalize_mm_configs(self._offered_tiles(*mnk, kwargs.get("dtype_size", 4)))
 
             return configs
 
@@ -71,6 +88,10 @@ def mm_resident_config_heuristic():
     class NPUResidentMMConfigHeuristic(TemplateConfigHeuristics):
         def _get_template_configs_impl(self, kernel_inputs, op_name):
             yield from mm_resident.configs(kernel_inputs)
+
+        def get_extra_kwargs(self, kernel_inputs, op_name):
+            """The spec the resident mm compiles with: one program over the whole output."""
+            return {"triton_meta": template_kernel_spec.triton_meta_for(kernel_inputs, [(1, 1, 1)])}
 
     class NPUResidentAddmmConfigHeuristic(AddMMConfigMixin, NPUResidentMMConfigHeuristic):
         pass
@@ -103,7 +124,7 @@ def conv_config_heuristic():
         def get_conv_configs(self):
             def per_group(m, n, k, **kwargs):
                 """Every tile a timed run ranks, the first alone otherwise: one candidate is picked by the
-                order it was offered, which is no ranking (template_timing.time_choices ranks the rest)."""
+                order it was offered, which is no ranking (the benchmarker ranks the rest)."""
                 from torch._inductor.virtualized import V
                 from pytorchsim.backend import template_record
                 groups = conv_groups_now()
@@ -125,55 +146,29 @@ def conv_config_heuristic():
 
 
 def conv_groups_now():
-    """The groups of the convolution being lowered right now (1 outside one)."""
-    return getattr(conv_groups, "value", 1) or 1
+    """The groups of the aten.convolution being lowered right now (1 outside one): the lowering hands the conv
+    heuristic its channels, not its groups, so they are read off the node V.graph is lowering."""
+    from torch._inductor.virtualized import V
 
-
-def _record_conv_groups():
-    """Wrap aten.convolution's lowering to record its groups, which narrow the conv heuristic's BLOCK_N
-    to one group's channels (conv_groups_now)."""
-    import functools
-    import inspect
-
-    from torch._inductor import lowering as inductor_lowering
-    from torch._inductor.kernel import conv as conv_kernel
-
-    sig = inspect.signature(conv_kernel.convolution)
-
-    def wrap(inner):
-        @functools.wraps(inner)
-        def convolution(*args, **kwargs):
-            bound = sig.bind(*args, **kwargs)
-            bound.apply_defaults()
-            groups = bound.arguments.get("groups", 1)
-            prev = getattr(conv_groups, "value", 1)
-            conv_groups.value = groups if isinstance(groups, int) else 1
-            try:
-                return inner(*args, **kwargs)
-            finally:
-                conv_groups.value = prev
-
-        return convolution
-
-    packet = torch.ops.aten.convolution
-    for key in [packet] + [getattr(packet, o) for o in packet.overloads()]:
-        inner = inductor_lowering.lowerings.get(key)
-        if inner is not None:
-            inductor_lowering.lowerings[key] = wrap(inner)
+    node = getattr(V.graph, "current_node", None)
+    if node is None or node.target not in _CONVOLUTIONS:
+        return 1
+    groups = node.kwargs.get("groups", node.args[8] if len(node.args) > 8 else 1)
+    return groups if isinstance(groups, int) else 1
 
 
 def _size_grouped_conv_grid_per_group():
-    """Grid a grouped convolution over one group's channels, not all of them."""
+    """Grid a grouped convolution over one group's channels, not all of them: the two conv templates' grid, an
+    upstream grid off the npu (the module's own functions are left as they are)."""
     from torch._inductor.kernel import conv as conv_kernel
     from torch._inductor.select_algorithm import SymbolicGridFn
 
-    orig2d = conv_kernel.conv2d_grid
-    orig3d = conv_kernel.conv3d_grid
+    upstream = {"conv2d_template": conv_kernel.conv2d_grid, "conv3d_template": conv_kernel.conv3d_grid}
 
     @SymbolicGridFn
     def conv2d_grid(n, c, h, w, meta, *, cdiv):
         if not is_lowering_npu():
-            return orig2d(n, c, h, w, meta)
+            return upstream["conv2d_template"](n, c, h, w, meta)
         groups = meta.get("GROUPS", 1) or 1
         return (
             cdiv(n * h * w, meta["BLOCK_M"]),
@@ -184,7 +179,7 @@ def _size_grouped_conv_grid_per_group():
     @SymbolicGridFn
     def conv3d_grid(n, c, d, h, w, meta, *, cdiv):
         if not is_lowering_npu():
-            return orig3d(n, c, d, h, w, meta)
+            return upstream["conv3d_template"](n, c, d, h, w, meta)
         groups = meta.get("GROUPS", 1) or 1
         return (
             cdiv(n * d * h * w, meta["BLOCK_M"]),
@@ -192,9 +187,5 @@ def _size_grouped_conv_grid_per_group():
             groups,
         )
 
-    conv_kernel.conv2d_grid = conv2d_grid
-    conv_kernel.conv3d_grid = conv3d_grid
-    for tmpl, fn in ((getattr(conv_kernel, "conv2d_template", None), conv2d_grid),
-                     (getattr(conv_kernel, "conv3d_template", None), conv3d_grid)):
-        if tmpl is not None:
-            tmpl.grid = fn
+    conv_kernel.conv2d_template.grid = conv2d_grid
+    conv_kernel.conv3d_template.grid = conv3d_grid

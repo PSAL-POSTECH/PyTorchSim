@@ -6,7 +6,7 @@ from torch._inductor.codegen.common import InplacedBuffer, is_buffer_removed
 from torch._inductor.virtualized import V
 
 from pytorchsim.frontend import tiling
-from pytorchsim.frontend.inductor.autotune.generated_kernel_blocks import blocks_for
+from pytorchsim.frontend.inductor.autotune.generated_kernel_blocks import blocks_for, candidates_for
 from pytorchsim import config
 from pytorchsim.contract import SpecIncomplete, storage_span
 
@@ -100,10 +100,17 @@ def _roles(kernel):
 
 
 ROLES_BY_KERNEL = {}
+KERNEL_SOURCES = {}
+"""{kernel name: (module text, meta)} of every kernel this process defined, which a kernel file is written from."""
 
 
 def record_roles(kernel_name, meta):
     ROLES_BY_KERNEL[kernel_name] = [a["role"] for a in meta.get("args", ())]
+
+
+def record_source(kernel_name, src_code, meta):
+    """Keep `kernel_name`'s module text and meta (named after it) for a kernel file of it."""
+    KERNEL_SOURCES[kernel_name] = (src_code, {**meta, "kernel_name": kernel_name})
 
 
 def writes_arg(kernel_name, position):
@@ -121,18 +128,40 @@ def _held_blocks(kernel):
 
 
 def _blocks_without_pin(kernel, numels, args):
-    """Blocks for a kernel holding none: a TritonNPUKernel's from blocks_for, the answer pinning
-    gives; a template's from its numels and args alone."""
+    """Blocks for a kernel holding none: a TritonNPUKernel's smallest block per axis over its candidates, so
+    the grid its spec states is the most programs any candidate launches there; a template's from its
+    numels and args alone."""
     from pytorchsim.frontend.inductor.codegen.scheduling import TritonNPUKernel
     if isinstance(kernel, TritonNPUKernel) and all(isinstance(v, int) for v in numels.values()):
-        return blocks_for(numels, kernel.features)
+        tiles = candidates_for(kernel.numels, kernel.features)
+        tile = {k: min(t[k] for t in tiles if k in t) for k in {k for t in tiles for k in t}} \
+            if tiles else blocks_for(numels, kernel.features)
+        return {**tile, "XBLOCK": 1} if kernel.no_x_dim else tile
     return tiling.fixed_config_for(kernel, numels, args)
 
 
-def compile_call(src_code, meta, kernel_name):
-    """The wrapper's line compiling one kernel, torchsim_compile(source, meta=..., kernel_name=...):
-    the source as a Python literal, so a quote or backslash in it reaches the compiler as written."""
-    return f"torchsim_compile({src_code!r},\n    meta={meta!r},\n    kernel_name={kernel_name!r})"
+def spec_options(kernel, name):
+    """The backend_options carrying `kernel`'s spec; its meta is kept as kernel._npu_meta."""
+    from pytorchsim.backend import compiler_input
+    from pytorchsim.frontend.inductor.autotune import graph_prefetch
+    meta = collect_meta(kernel, name)
+    meta["graph_prefetch"] = graph_prefetch.statement(kernel, meta["args"])
+    kernel._npu_meta = meta
+    return compiler_input.backend_options(compiler_input.spec_json(meta))
+
+
+class TemplateTritonMeta(dict):
+    """A template kernel's triton_meta, where TritonNPUKernel's setter cannot reach: its class is TritonTemplate.kernel_type
+    (select_algorithm.py:2687, :3121), Inductor's own instances' to choose, and jit_lines only .update()s a pre-set
+    triton_meta (select_algorithm.py:932-935), which is where the spec joins."""
+
+    def __init__(self, kernel):
+        super().__init__()
+        self._kernel = kernel
+
+    def update(self, *args, **kwargs):
+        super().update(*args, **kwargs)
+        self["backend_options"] = spec_options(self._kernel, "")
 
 
 def collect_meta(kernel, kernel_name):

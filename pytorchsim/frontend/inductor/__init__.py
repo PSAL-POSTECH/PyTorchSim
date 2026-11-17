@@ -27,7 +27,8 @@ def install():
 def _configure_inductor():
     """mm/conv template autotune on, at compile time off, its tables shown in debug mode unless the env sets
     them; Inductor's autotune cache off (template_timing records picks); no combo kernels, which pick tensors
-    by program id (a TOG cannot time that) and skip the triton_kernel_kwargs hook that pins blocks."""
+    by program id (a TOG cannot time that); kernels compile in this process, where the Triton driver is the npu's; no device_assert in a kernel (a
+    debug compile, which the compiler does not lower)."""
     from torch._inductor import config as inductor_config
 
     if "TORCHINDUCTOR_AUTOTUNE_NUM_CHOICES_DISPLAYED" not in os.environ:
@@ -35,16 +36,15 @@ def _configure_inductor():
     if "TORCHINDUCTOR_MAX_AUTOTUNE_REPORT_CHOICES_STATS" not in os.environ:
         inductor_config.max_autotune_report_choices_stats = bool(config.CONFIG_DEBUG_MODE)
     inductor_config.max_autotune_gemm = True
-    inductor_config.max_autotune_gemm_backends = "ATEN,TRITON"
+    inductor_config.max_autotune_gemm_backends = "ATEN,TRITON" if config.pytorchsim_timing_mode else "TRITON"
     inductor_config.max_autotune_conv_backends = "ATEN,TRITON"
     inductor_config.triton.autotune_at_compile_time = False
-    timed = bool(config.pytorchsim_timing_mode)
-    inductor_config.benchmark_epilogue_fusion = timed
+    from pytorchsim.backend import template_record
+    inductor_config.benchmark_epilogue_fusion = bool(config.pytorchsim_timing_mode) and template_record.autotunes()
     inductor_config.max_epilogue_benchmarked_choices = config.codegen_autotune_template_topk
     inductor_config.autotune_local_cache = False
     inductor_config.combo_kernels = False
-    if timed:
-        inductor_config.compile_threads = 1
+    inductor_config.dynamic_scale_rblock = False
 
 
 def is_npu(obj):

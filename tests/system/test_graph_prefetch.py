@@ -7,9 +7,12 @@ import tempfile
 from unittest import mock
 
 sys.path.insert(0, os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import torch  # noqa: E402  the npu backend loads pytorchsim whole, before its parts are imported
-from pytorchsim.backend import codecache, compiler_bridge, compiler_input  # noqa: E402
+from pytorchsim.backend import compiler_input  # noqa: E402
+from pytorchsim.frontend.inductor.codegen import kernel_metadata  # noqa: E402
+from stub_compile import kernels_not_compiled  # noqa: E402
 from pytorchsim.frontend.inductor.autotune import graph_prefetch  # noqa: E402
 
 _A = torch.ops.aten
@@ -145,49 +148,26 @@ def test_a_kernel_of_no_resident_form_states_nothing():
         assert graph_prefetch.statement(object(), [{"name": "in_ptr0", "role": "in", "buffer": "w"}]) == []
 
 
-def test_a_refusal_is_an_error_naming_the_kernel_and_arg():
-    """Breaks if the compiler's refusal to hold the elected operand is retried, retiled or built holding
-    nothing: the two sides disagree, and torchsim_compile raises."""
-    kind = compiler_bridge.compiler_contract("failure").SPAD_OVERFLOW
-    calls = []
-
-    def refuse(*a, **kw):
-        calls.append(a)
-        raise compiler_bridge.CompilerError("x", failure={"kind": kind, "usage": 8, "budget": 4,
-                                                          "message": "over"})
-    meta = {"kernel_name": "mm", "signature": {"arg_A": "*bf16", "arg_B": "*bf16", "XBLOCK": "constexpr"},
-            "constants": {}, "numels": {"xnumel": 4096}, "fixed_config": {"XBLOCK": 1024},
-            "args": [{"name": n, "role": "in", "buffer": b, "dtype": "bfloat16", "numel": 64}
-                     for n, b in (("arg_A", "x"), ("arg_B", "w"))], "graph_prefetch": ["arg_B"]}
-    with tempfile.TemporaryDirectory() as dump, mock.patch.dict(os.environ, {"TORCHSIM_DUMP_PATH": dump}), \
-            mock.patch.object(codecache.compiler_bridge, "run_pipeline", refuse):
-        try:
-            codecache.torchsim_compile("def kernel(): pass\n", meta, "mm")
-        except compiler_bridge.CompilerError as e:
-            assert "mm" in str(e) and "arg_B" in str(e) and kind in str(e), e
-        else:
-            raise AssertionError("a refused hold compiled")
-    assert len(calls) == 1, calls
-
-
-def test_the_build_key_holds_the_statement():
-    """Breaks if an elected and a non-elected build of one source, constants and args share a workdir."""
-    meta = {"signature": {}, "constants": {}, "args": [], "graph_prefetch": ["arg_B"]}
-    with tempfile.TemporaryDirectory() as dump, mock.patch.dict(os.environ, {"TORCHSIM_DUMP_PATH": dump}):
-        streamed = dict(meta, graph_prefetch=[])
-        assert codecache._write_path("src", meta) != codecache._write_path("src", streamed)
+def test_the_compile_key_holds_the_statement():
+    """Breaks if an elected and a non-elected build of one source, constants and args share a Triton cache key:
+    the spec rides the compile's options, which the key hashes."""
+    import json
+    from triton.backends.pytorchsim.compiler import CPUOptions
+    spec = lambda held: json.dumps(compiler_input.spec_dict([("in", 64), ("in", 64)], (1, 1, 1), held))  # noqa: E731
+    assert CPUOptions(pytorchsim_spec=spec([1])).hash() != CPUOptions(pytorchsim_spec=spec([])).hash()
 
 
 def _compiled_metas(fn, *xs):
-    """The meta of each kernel torch.compile of `fn` defines, with the compiler faked away."""
+    """The meta of each kernel torch.compile of `fn` defines, with the kernels not compiled."""
     from torch._inductor import config as inductor_config
     got = []
+    real = kernel_metadata.record_roles
 
-    def compile_(src, meta, kernel_name):
+    def record(kernel_name, meta):
         got.append(meta)
-        return lambda *args, **kwargs: None
+        real(kernel_name, meta)
     torch._dynamo.reset()
-    with mock.patch.object(codecache, "torchsim_compile", compile_), \
+    with kernels_not_compiled(), mock.patch.object(kernel_metadata, "record_roles", record), \
             inductor_config.patch(fx_graph_cache=False):
         torch.compile(fn, dynamic=False)(*[x.to("npu:0") for x in xs])
     return got

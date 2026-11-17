@@ -1,6 +1,8 @@
 """How a kernel is cut into blocks: the sizes pinned at codegen time and the mm tiles this machine
 takes, decided from the machine and the kernel, since nothing tunes the compiled binary later."""
 
+import itertools
+
 from pytorchsim import config
 from pytorchsim.contract import block_name, parallel_axes, reduction_axes
 
@@ -121,6 +123,65 @@ def fixed_config_for(kernel, numels, args, contiguous=None):
     return cfg
 
 
+#: The most tiles a kernel offers its compile: each costs a compile of its own, so the halving stops at the floor
+#: (the lanes, or 2) and, for several blocks, at this many.
+CANDIDATE_LIMIT = 16
+
+
+def candidate_blocks(kernel, numels, args, contiguous=None):
+    """fixed_config_for's tile and the smaller ones after it, each block halved down to 2 while the tile holds
+    at least the lanes, largest tile first (ties to the larger reduction block), at most CANDIDATE_LIMIT."""
+    cfg = fixed_config_for(kernel, numels, args, contiguous)
+    movable = [k for k, v in cfg.items() if k.endswith("BLOCK") and v and v >= 2]
+    ranges = []
+    for k in movable:
+        vs, v = [], cfg[k]
+        while v >= 2:
+            vs.append(v)
+            v //= 2
+        ranges.append(vs)
+
+    def product(tile, keep):
+        n = 1
+        for k, v in tile.items():
+            if keep(k):
+                n *= v
+        return n
+
+    lanes = int(config.CONFIG_MACHINE.vector_lanes)
+    floor = min(lanes, product(dict(zip(movable, (vs[0] for vs in ranges))), lambda k: True))
+    tiles = [t for t in (dict(zip(movable, vs)) for vs in itertools.product(*ranges))
+             if product(t, lambda k: True) >= floor]
+    tiles.sort(key=lambda t: (-product(t, lambda k: True), -product(t, lambda k: k.startswith("R")),
+                              [-t[k] for k in movable]))
+    rest = {k: v for k, v in cfg.items() if k.endswith("BLOCK") and v}
+    return [{**rest, **t} for t in tiles[:CANDIDATE_LIMIT]]
+
+
+def candidate_sizes(first, limit=CANDIDATE_LIMIT, floor=2):
+    """The sizes a hand-written kernel's one block is offered: `first` and its halves, largest first, down to
+    `floor` (2 unless stated), at most `limit`; each is a config its compile may drop when it overflows."""
+    sizes = []
+    while first >= floor and len(sizes) < limit:
+        sizes.append(int(first))
+        first //= 2
+    return sizes
+
+
+def candidate_tiles(first, floors, limit=CANDIDATE_LIMIT):
+    """The tiles a kernel with several blocks is offered: `first` ({block: size}) and then every block halved
+    together, each held at its floor, largest first, at most `limit`; a block that cannot halve stays."""
+    tiles = []
+    t = 0
+    while len(tiles) < limit:
+        tile = {k: min(int(v), max(int(floors.get(k, 1)), int(v) >> t)) for k, v in first.items()}
+        if tiles and tile == tiles[-1]:
+            break
+        tiles.append(tile)
+        t += 1
+    return tiles
+
+
 def kept_axis_rows_block(xnumel, rblock, elem_bytes, lanes, lane_bytes, max_numel):
     """XBLOCK of a reduction along its contiguous axis: rows of `rblock` filling the tile budget
     the other blocks here take (one lane's, times the lanes), at least the lane cover and no more
@@ -203,6 +264,10 @@ def kept_axis_contiguous_blocks(xnumel, rnumel, elem_bytes, lanes, lane_bytes, m
     if best is None:
         return floor, reduction_block_for(rnumel, elem_bytes, lane_bytes)
     return best[1], best[2]
+
+
+#: How many mm tiles a template offers when nothing times them: each is compiled, the first that fits wins.
+GEMM_CANDIDATES = 3
 
 
 def gemm_tiles(m, n, k, dtype_size, out_size=None, bias=False):

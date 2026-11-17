@@ -10,7 +10,8 @@ import triton.language as tl
 from torch.library import wrap_triton
 
 from pytorchsim import config
-from pytorchsim.frontend.dispatcher.custom_fused_kernel import CustomFusedKernel, Decline
+from pytorchsim.frontend import tiling
+from pytorchsim.frontend.dispatcher.custom_fused_kernel import CustomFusedKernel, Decline, autotuned
 
 
 class GroupedMM(CustomFusedKernel):
@@ -26,7 +27,8 @@ class GroupedMM(CustomFusedKernel):
         return a, b, offs, bias, out_dtype
 
     def plan(self, a, b, offs, bias, out_dtype):
-        """(BM, BN, BK) for 2-D A times 3-D B grouped by offs, in one dtype, with no bias."""
+        """(BM, BN, BK) for 2-D A times 3-D B grouped by offs, in one dtype, with no bias; "TILES" is its ranked
+        (BN, BK) list, which the launch offers as configs (BM stays the lanes: a row block is a lane multiple)."""
         if a.dim() != 2 or b.dim() != 3 or offs is None:
             return Decline(f"A {a.dim()}-D, B {b.dim()}-D, offs {'given' if offs is not None else 'none'} "
                            "(it takes 2-D x 3-D)")
@@ -34,22 +36,23 @@ class GroupedMM(CustomFusedKernel):
             return Decline("a bias or another out_dtype")
         if a.dtype != b.dtype:
             return Decline(f"A {a.dtype} and B {b.dtype}")
-        tiles = _tiles(b.shape[2], a.shape[1], a.element_size(), -(-a.shape[0] // min(b.shape[0], a.shape[0])))
+        tiles = _rank_tiles(b.shape[2], a.shape[1], a.element_size(), -(-a.shape[0] // min(b.shape[0], a.shape[0])))
         if tiles is None:
             return Decline(f"no mm tile of {config.CONFIG_MACHINE.vector_lanes} rows fits the scratchpad")
-        bm, bn, bk = tiles
-        return {"BM": bm, "BN": bn, "BK": bk}
+        bm = int(config.CONFIG_MACHINE.vector_lanes)
+        return {"BM": bm, "BN": tiles[0][0], "BK": tiles[0][1], "TILES": tiles}
 
     def launch(self, plan, a: torch.Tensor, b: torch.Tensor, offs: Optional[torch.Tensor],
                bias: Optional[torch.Tensor], out_dtype: Optional[torch.dtype]) -> torch.Tensor:
         s, k = a.shape
         g, _, n = b.shape
-        bm, bn, bk = plan["BM"], plan["BN"], plan["BK"]
         programs = min(g, s)
         c = a.new_empty(s, n)
-        wrap_triton(_grouped_mm_kernel)[(programs, triton.cdiv(n, bn), 1)](
+        kernel = autotuned(_grouped_mm_kernel, [{"BN": bn, "BK": bk, "KP": triton.cdiv(k, bk) * bk}
+                                                for bn, bk in plan["TILES"]])
+        wrap_triton(kernel)[lambda meta: (programs, triton.cdiv(n, meta["BN"]), 1)](
             a.contiguous(), b, _groups(offs, programs), offs, c, b.stride(0), b.stride(1), b.stride(2),
-            k, triton.cdiv(k, bk) * bk, n, g, bm, bn, bk)
+            k, N=n, G=g, BM=plan["BM"])
         return c
 
     def fallback(self, a, b, offs, bias, out_dtype):
@@ -63,10 +66,10 @@ def install():
     GROUPED_MM.install()
 
 
-def _tiles(n, k, esize, rows):
-    """(BM, BN, BK) of the machine's mm tiles for BM = lanes, ranked: all of K first (each weight read once), then
-    the fewest N tiles where a group of `rows` rows is one row block, else no masked columns first; None for none."""
-    from pytorchsim.frontend import tiling
+def _rank_tiles(n, k, esize, rows):
+    """The (BN, BK) of the machine's mm tiles for BM = lanes, best first (at most CANDIDATE_LIMIT): all of K first
+    (each weight read once), then the fewest N tiles where a group of `rows` rows is one row block, else no masked
+    columns first; None for none."""
     bm = int(config.CONFIG_MACHINE.vector_lanes)
     acc = 4
     tiles = tiling.gemm_tile_candidates(bm, n, k, acc + esize, esize)
@@ -75,8 +78,13 @@ def _tiles(n, k, esize, rows):
     blocks = lambda t: -(-n // t[1])
     one = rows <= bm
     rank = lambda t: (t[2] < k, blocks(t) if one else n % t[1] != 0, n % t[1] != 0 if one else blocks(t))
-    _, tn, tk = min(tiles, key=rank)
-    return bm, tn, tk
+    return [(tn, tk) for _, tn, tk in sorted(tiles, key=rank)[:tiling.CANDIDATE_LIMIT]]
+
+
+def _tiles(n, k, esize, rows):
+    """(BM, BN, BK) of the best of _rank_tiles, None for none."""
+    ranked = _rank_tiles(n, k, esize, rows)
+    return None if not ranked else (int(config.CONFIG_MACHINE.vector_lanes), *ranked[0])
 
 
 @triton.jit

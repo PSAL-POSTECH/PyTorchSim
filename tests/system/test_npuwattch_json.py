@@ -99,3 +99,22 @@ def test_on_writes_a_kernel_per_launch():
         doc = json.load(f)
     assert doc["schema"] == "pytorchsim.run_stats" and doc["schema_version"] == "1.1"
     assert [k["order"] for k in doc["kernels"]] == [0, 1]
+
+
+def test_inductor_kernel_names_give_the_operation():
+    """Breaks if the operation is read off a name Inductor no longer gives (pytorchsim_triton_compiler_fused_*)."""
+    assert [npuwattch._fused_name(n) for n in ("triton_tem_fused_mm_0", "triton_per_fused__softmax_3",
+                                               "triton_poi_fused_add_mul_12", "_add_one_kernel")] == [
+        "mm", "softmax", "add_mul", None]
+
+
+def test_a_launch_leaves_the_meta_npuwattch_reads():
+    """Breaks if a launch leaves no meta.json in its workdir: kernel_entry reads each tensor's sizes and buffer."""
+    import torch
+    from pytorchsim.backend import launcher
+    meta = {"kernel_name": "k", "args": [{"name": "in_ptr0", "role": "in", "dtype": "float32"}]}
+    with tempfile.TemporaryDirectory() as workdir:
+        launcher._store_meta(workdir, meta, [torch.empty(4, 8), 32], ("arg0_1", None))
+        with open(os.path.join(workdir, "meta.json")) as f:
+            got = json.load(f)
+    assert got["args"][0]["sizes"] == [4, 8] and got["args"][0]["buffer"] == "arg0_1", got

@@ -1,5 +1,5 @@
 {
-  "kernel_name": "pytorchsim_triton_compiler_fused_mm_au7umwrt",
+  "kernel_name": "triton_tem_fused_mm_0",
   "signature": {
     "arg_A": "*bf16",
     "arg_B": "*bf16",

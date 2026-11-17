@@ -1,5 +1,5 @@
 """A template's config is Inductor's selection: in timing mode each offered config of a bmm is timed on TOGSim
-and the fewest cycles wins, an epilogue fused when one is there; the pick is recorded and built again untimed.
+(the npu benchmarker) and the fewest cycles wins, an epilogue fused when one is there; the pick is recorded and built again untimed.
 Each compile runs in a child process. A bmm, as an mm copy_node.plan holds is planned, not timed."""
 import json
 import os
@@ -19,31 +19,43 @@ from pytorchsim.backend import template_record, template_timing  # noqa: E402
 SHAPE = (128, 256, 256)
 
 #: One compile of OP, template_timing's record kept in SELECT_RECORD_DIR and what was timed written to
-#: SELECT_TIMED as [config, cycles] (unfused choices) and [meta, cycles] (fusion benchmarks).
+#: SELECT_TIMED as [config, cycles] (unfused choices), [meta, cycles] (fusion benchmarks) and what each kernel was
+#: built as: its name, how its config was chosen, a template's blocks, a generated kernel's blocks.
 CHILD = r"""
 import json, os, sys
 import torch
-from pytorchsim.frontend.inductor.codegen.scheduling import TritonNPUScheduling
+from torch._inductor.select_algorithm import AlgorithmSelectorCache
+from pytorchsim.frontend.inductor.codegen.scheduling import TritonNPUScheduling, _tile_source
 from pytorchsim.backend import template_timing
 from pytorchsim.backend import template_record
 
 template_record.RECORD_DIR = os.environ["SELECT_RECORD_DIR"]
-timed = {"choices": [], "modules": []}
+timed = {"choices": [], "modules": [], "built": []}
 
-def time_choices(choices, _orig=template_timing.time_choices):
-    out = _orig(choices)
-    for c, t in out.items():
+def benchmark(cls, choices, *a, _orig=AlgorithmSelectorCache.benchmark_choices.__func__, **k):
+    out = _orig(cls, choices, *a, **k)
+    for c, ms in out.items():
         ktc = c.annotations.get("ktc")
-        if ktc is not None and t != float("inf"):
-            timed["choices"].append([ktc.params.to_kwargs(), t])
+        if ktc is not None and ms != float("inf"):
+            timed["choices"].append([ktc.params.to_kwargs(), round(ms * 1e6)])
     return out
-template_timing.time_choices = time_choices
+AlgorithmSelectorCache.benchmark_choices = classmethod(benchmark)
 
 def bench(self, mod, *a, _orig=TritonNPUScheduling.benchmark_codegened_module, **k):
     t, path = _orig(self, mod, *a, **k)
     timed["modules"].append([self._benchmarked[mod.__file__][1], t])
     return t, path
 TritonNPUScheduling.benchmark_codegened_module = bench
+
+def define(self, src_code, node_schedule, kernel, _orig=TritonNPUScheduling.define_kernel):
+    name = _orig(self, src_code, node_schedule, kernel)
+    meta = getattr(kernel, "_npu_meta", None)
+    timed["built"].append({
+        "name": name, "tile_source": _tile_source(node_schedule),
+        "template_blocks": {k: v for k, v in (getattr(kernel, "meta", None) or {}).items() if k.startswith("BLOCK_")},
+        "blocks": None if meta is None else [meta["numels"], meta["fixed_config"], meta["inside_reduction"]]})
+    return name
+TritonNPUScheduling.define_kernel = define
 
 op = sys.argv[1]
 m, k, n = map(int, sys.argv[2:5])
@@ -71,19 +83,9 @@ def _compile(root, name, op, timing):
         return dump, json.load(f)
 
 
-def _kernels(dump):
-    """{workdir name: meta} of every kernel the compile built."""
-    out = {}
-    for name in os.listdir(dump):
-        meta = os.path.join(dump, name, "meta.json")
-        if name.startswith("triton_") and os.path.isfile(meta):
-            with open(meta) as f:
-                out[name] = json.load(f)
-    return out
-
-
-def _templates(dump):
-    return {k: m for k, m in _kernels(dump).items() if "tile_source" in m}
+def _templates(timed):
+    """What a compile built as a template: every built kernel whose config was chosen."""
+    return [b for b in timed["built"] if b["tile_source"] is not None]
 
 
 def _picks(dump):
@@ -103,18 +105,11 @@ def _merge(root, dump):
     assert proc.returncode == 0, proc.stderr[-4000:]
 
 
-def _same_kernel(meta):
-    """What decides a kernel's cycles, without the names it is called by."""
-    return {"signature": meta["signature"], "constants": meta["constants"],
-            "args": [(a["role"], a["dtype"], a["numel"]) for a in meta["args"]],
-            "numels": meta["numels"], "fixed_config": meta["fixed_config"],
-            "template_grid": meta["template_grid"], "inside_reduction": meta["inside_reduction"]}
-
-
 def test_select_record_and_rebuild():
     """Timed alone: the fewest cycles is picked, recorded and built as timed. Timed with an epilogue: the top configs
     are timed fused, the epilogue alone at its built blocks. Recorded: built again untimed. A record timed with
     another compiler is not used."""
+    blocks = lambda c: {k: c[k] for k in ("BLOCK_M", "BLOCK_N", "BLOCK_K")}  # noqa: E731
     with tempfile.TemporaryDirectory() as root:
         mm, mm_timed = _compile(root, "mm_timed", "bmm", timing=True)
         cycles = [t for _, t in mm_timed["choices"]]
@@ -122,39 +117,35 @@ def test_select_record_and_rebuild():
         (pick,) = _picks(mm)
         assert {k: v for k, v in pick["config"].items()
                 if k not in ("template_id", "template_hash")} == best
-        (built,) = _templates(mm).values()
+        (built,) = _templates(mm_timed)
         assert built["tile_source"] == template_record.TIMED
-        bench = [json.load(open(os.path.join(mm, "select", d, "meta.json")))
-                 for d in os.listdir(os.path.join(mm, "select"))]
-        assert _same_kernel(built) in [_same_kernel(b) for b in bench]
+        assert built["template_blocks"] == blocks(best), (built, best)
 
         relu, relu_timed = _compile(root, "mm_relu_timed", "bmm_relu", timing=True)
         fused = [m for m, _ in relu_timed["modules"] if m["template_grid"] is not None]
         assert 1 <= len(fused) <= len(relu_timed["choices"])
-        (built_relu,) = _templates(relu).values()
+        (built_relu,) = _templates(relu_timed)
         assert built_relu["tile_source"] == template_record.TIMED
         alone = [m for m, _ in relu_timed["modules"] if m["template_grid"] is None]
-        plain, _ = _compile(root, "relu", "relu", timing=False)
-        (relu_kernel,) = _kernels(plain).values()
-        blocks = lambda m: (m["numels"], m["fixed_config"], m["inside_reduction"])
-        assert alone and all(blocks(m) == blocks(relu_kernel) for m in alone), (alone, relu_kernel)
+        _, plain = _compile(root, "relu", "relu", timing=False)
+        (relu_kernel,) = [b for b in plain["built"] if b["blocks"] is not None]
+        same = lambda m: [m["numels"], m["fixed_config"], m["inside_reduction"]]  # noqa: E731
+        assert alone and all(same(m) == relu_kernel["blocks"] for m in alone), (alone, relu_kernel)
 
         _merge(root, mm)
         for timing in (False, True):
             again, timed = _compile(root, f"mm_recorded_{int(timing)}", "bmm", timing=timing)
-            assert timed == {"choices": [], "modules": []}
-            assert {k: m["tile_source"] for k, m in _templates(again).items()} == \
-                {k: template_record.RECORDED for k in _templates(mm)}
-        fused_again, _ = _compile(root, "mm_relu_recorded", "bmm_relu", timing=False)
-        assert [m["tile_source"] for m in _templates(fused_again).values()] == \
-            [template_record.RECORDED_UNFUSED]
+            assert timed["choices"] == [] and timed["modules"] == []
+            assert [b["tile_source"] for b in _templates(timed)] == [template_record.RECORDED]
+        _, fused_again = _compile(root, "mm_relu_recorded", "bmm_relu", timing=False)
+        assert [b["tile_source"] for b in _templates(fused_again)] == [template_record.RECORDED_UNFUSED]
 
         path = os.path.join(root, "record", os.listdir(os.path.join(root, "record"))[0])
         rec = json.load(open(path))
         rec["identity"]["compiler"] = "another"
         json.dump(rec, open(path, "w"))
-        stale, _ = _compile(root, "mm_stale", "bmm", timing=False)
-        assert [m["tile_source"] for m in _templates(stale).values()] == [template_record.HEURISTIC]
+        _, stale = _compile(root, "mm_stale", "bmm", timing=False)
+        assert [b["tile_source"] for b in _templates(stale)] == [template_record.HEURISTIC]
 
 
 def _choice(name, uid="triton::mm"):
@@ -165,61 +156,12 @@ def _choice(name, uid="triton::mm"):
     return c
 
 
-def _rendered(timed=None):
-    """Patches for time_choices off Inductor: each choice's source is its name, no prefetch, nothing timed yet."""
-    from contextlib import ExitStack
-    stack = ExitStack()
-    stack.enter_context(mock.patch.object(template_timing.kernel_metadata, "benchmark_request_meta",
-                                          side_effect=lambda req: (req.module_cache_key, {"args": []})))
-    stack.enter_context(mock.patch.object(template_timing.graph_prefetch, "choice_statement",
-                                          return_value=[]))
-    stack.enter_context(mock.patch.dict(template_timing._timed, timed or {}, clear=True))
-    return stack
-
-
-def test_a_refused_config_is_inf_and_none_left_is_an_error():
-    a, b = _choice("a"), _choice("b")
-    with _rendered(), \
-         mock.patch.object(template_timing, "_time_tile",
-                           side_effect=lambda src, meta, name, wd, cut: 7.0 if wd.endswith("b") else float("inf")):
-        assert template_timing.time_choices([a, b]) == {a: float("inf"), b: 7.0}
-    with _rendered(), \
-         mock.patch.object(template_timing, "_time_tile", return_value=float("inf")):
-        try:
-            template_timing.time_choices([a, b])
-        except RuntimeError as e:
-            assert "no template config" in str(e)
-        else:
-            raise AssertionError("every config refused, and time_choices returned")
-
-
-def test_a_config_running_past_the_cut_is_inf():
-    """The configs run at once; one still simulating CUT_FACTOR times after the first finished is cut."""
-    import time
-
-    def tile(src, meta, name, wd, cut):
-        if wd.endswith("fast"):
-            time.sleep(0.2)
-            return 5.0
-        while not cut():
-            time.sleep(0.05)
-        return float("inf")
-    fast, slow = _choice("fast"), _choice("slow")
-    with _rendered(), mock.patch.object(template_timing, "_time_tile", side_effect=tile):
-        t0 = time.monotonic()
-        assert template_timing.time_choices([slow, fast]) == {slow: float("inf"), fast: 5.0}
-        assert time.monotonic() - t0 < 0.2 * template_timing.CUT_FACTOR + 1
-
-
-def test_a_config_timed_once_is_not_timed_again():
-    """A config rendered the same at another node takes the cycles this process timed it at."""
-    tile = mock.Mock(side_effect=lambda src, meta, name, wd, cut: 3.0 if wd.endswith("a") else 4.0)
-    with _rendered(), mock.patch.object(template_timing, "_time_tile", tile):
-        a, b = _choice("a"), _choice("b")
-        assert template_timing.time_choices([a, b]) == {a: 3.0, b: 4.0}
-        a2, b2 = _choice("a"), _choice("b")
-        assert template_timing.time_choices([a2, b2]) == {a2: 3.0, b2: 4.0}
-    assert tile.call_count == 2
+def test_a_launch_that_does_not_simulate_is_inf():
+    """A configuration being timed whose TOGSim run refuses it (a tile over the spad) is inf, not an error: Inductor
+    drops it, and raises only when none is left."""
+    from pytorchsim.backend import launcher
+    with mock.patch.object(launcher.timing, "write_cycle_tables", side_effect=RuntimeError("over the spad")):
+        assert launcher._simulate_alone("/nonexistent", {"kernel_name": "k"}, ()) == float("inf")
 
 
 def _machine(root, sub, **change):
@@ -284,8 +226,6 @@ if __name__ == "__main__":
     test_a_convolution_config_is_timed()
     test_a_convolution_is_offered_every_tile_a_timed_run_ranks()
     test_graph_cache_key_names_the_machine()
-    test_a_config_running_past_the_cut_is_inf()
-    test_a_refused_config_is_inf_and_none_left_is_an_error()
-    test_a_config_timed_once_is_not_timed_again()
+    test_a_launch_that_does_not_simulate_is_inf()
     test_select_record_and_rebuild()
     print("PASS")

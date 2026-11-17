@@ -7,10 +7,12 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, os.environ.get("TORCHSIM_DIR", default="/workspace/PyTorchSim"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import torch  # noqa: E402  the npu backend loads pytorchsim whole, before its parts are imported
 import torch.nn.functional as F  # noqa: E402
-from pytorchsim.backend import codecache, compiler_bridge  # noqa: E402
+from pytorchsim.backend import compiler_bridge  # noqa: E402
+from stub_compile import kernels_not_compiled  # noqa: E402
 from pytorchsim.frontend.inductor.autotune import graph_prefetch  # noqa: E402
 
 BF = torch.bfloat16
@@ -149,7 +151,7 @@ def pick(fn, shapes, names, xla_form):
     g = torch.Generator().manual_seed(0)
     xs = [torch.randn(*s, generator=g).to(BF).to("npu:0") for s in shapes]
     torch._dynamo.reset()
-    with mock.patch.object(codecache, "torchsim_compile", lambda src, meta, kernel_name: lambda *a, **k: None), \
+    with kernels_not_compiled(), \
             mock.patch.object(graph_prefetch, "elected", spy), \
             inductor_config.patch(fx_graph_cache=False, pattern_matcher=not xla_form):
         torch.compile(fn, dynamic=False, backend=backend)(*xs)

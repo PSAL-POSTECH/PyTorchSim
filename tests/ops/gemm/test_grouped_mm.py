@@ -79,7 +79,8 @@ def case_routed():
 
 
 def _grids(sizes):
-    """(relative error, grouped-kernel launches, the grids it launched with) of one compiled call."""
+    """(relative error, grouped-kernel launches, the grids it launched with) of one compiled call; a grid that reads
+    its config (axis 1, the N tiles) is taken at BN 1, axis 0 being the programs of every config."""
     from torch._inductor import config as inductor_config
     from pytorchsim.frontend.dispatcher import grouped_mm
     grids, real = [], grouped_mm.wrap_triton
@@ -89,7 +90,7 @@ def _grids(sizes):
             self.wrapped = real(kernel)
 
         def __getitem__(self, grid):
-            grids.append(tuple(grid))
+            grids.append(tuple(grid({"BN": 1}) if callable(grid) else grid))
             return self.wrapped[grid]
 
     grouped_mm.wrap_triton = _Recorded

@@ -264,7 +264,10 @@ tests/ops/fusion/test_matmul_scalar.py
 tests/ops/fusion/test_matmul_vector.py
 tests/ops/fusion/test_prologue_fusion.py
 tests/ops/gemm/test_grouped_mm.py
+tests/ops/gemm/test_int_mm.py
 tests/ops/gemm/test_row_matmul.py
+tests/ops/gemm/test_w8a8_linear.py
+tests/ops/gemm/test_widened_weight_mm.py
 tests/ops/gemm/test_zero_length_gemm.py
 tests/ops/misc/test_complex_to_real.py
 tests/ops/misc/test_custom_fused_kernel.py

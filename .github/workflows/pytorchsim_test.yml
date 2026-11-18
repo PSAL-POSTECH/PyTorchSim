@@ -17,9 +17,9 @@ on:
 # --preset) runs here once without arguments, which runs the same presets in one process, and
 # tests/system tests the allowlist leaves out run here too: test_compiler_failure,
 # test_reduction_tiling and test_select, and test_autotune_tables, test_breakdown_viewer,
-# test_device_interface, test_launch_dir, test_module_form, test_npuwattch_json, test_one_layer_kv_write,
-# test_one_layer_mask, test_one_layer_softcap_mask, test_patch_scope, test_route_allowlist, test_togsim_exit,
-# test_togsim_result and test_verify_golden, which emit no kernel and so are no route coverage.
+# test_device_interface, test_launch_dir, test_module_form, test_npuwattch_json, test_on_chip,
+# test_one_layer_kv_write, test_one_layer_mask, test_one_layer_softcap_mask, test_patch_scope, test_route_allowlist,
+# test_togsim_exit, test_togsim_result and test_verify_golden, which emit no kernel and so are no route coverage.
 # Regenerate the allowlist with
 #   python scripts/ci/triton_route_sweep.py --all --update-allowlist
 # and mirror its files here; a test absent from both is not gated anywhere.
@@ -71,7 +71,10 @@ jobs:
           - tests/ops/fusion/test_matmul_vector.py
           - tests/ops/fusion/test_prologue_fusion.py
           - tests/ops/gemm/test_grouped_mm.py
+          - tests/ops/gemm/test_int_mm.py
           - tests/ops/gemm/test_row_matmul.py
+          - tests/ops/gemm/test_w8a8_linear.py
+          - tests/ops/gemm/test_widened_weight_mm.py
           - tests/ops/gemm/test_zero_length_gemm.py
           - tests/ops/misc/test_complex_to_real.py
           - tests/ops/misc/test_custom_fused_kernel.py
@@ -98,6 +101,7 @@ jobs:
           - tests/system/test_launch_record.py
           - tests/system/test_module_form.py
           - tests/system/test_npuwattch_json.py
+          - tests/system/test_on_chip.py
           - tests/system/test_one_layer_kv_write.py
           - tests/system/test_one_layer_mask.py
           - tests/system/test_one_layer_softcap_mask.py

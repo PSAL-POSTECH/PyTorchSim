@@ -14,6 +14,7 @@
     Inductor's decompositions     npu's mm and bmm as with coordinate descent off (a patch: it has no hook)
     Inductor's realize on reuse   a row value a broadcast reads again computed once (a patch: it has no hook)
     Inductor's node lowering      an int8 matmul's dequantized result stored, its epilogue (a patch: it has no hook)
+    Inductor's template fusions   each pending one benchmarked, though two compile one source (a patch: it has no hook)
 """
 
 import functools
@@ -52,6 +53,7 @@ def install():
     _register_decompositions()
     _register_realize_on_broadcast()
     _register_realize_dequant()
+    _register_template_fusion_futures()
 
 
 # Dynamo's device interfaces (torch._dynamo.device_interface)
@@ -584,3 +586,33 @@ def _dtype(node):
     """The dtype of an FX node's value, int8 when it records none."""
     val = node.meta.get("val")
     return val.dtype if isinstance(val, torch.Tensor) else torch.int8
+
+
+# Inductor's template fusions (Scheduler._evaluate_pending_template_fusions): a patch, it has no hook
+
+def _register_template_fusion_futures():
+    """Every pending template fusion is benchmarked: one whose compile future an earlier one already holds (two
+    templates whose fused kernels are one source, a W8A8 MLP's gate and up) is evaluated synchronously, since
+    Inductor maps each future to one pending fusion and dropped the other unbenchmarked."""
+    from torch._inductor.scheduler import Scheduler
+
+    original = Scheduler._evaluate_pending_template_fusions
+    if getattr(original, "_npu_futures", False):
+        return
+
+    @functools.wraps(original)
+    def evaluate(self, candidates, fused_nodes):
+        taken = set()
+        for pending_fusions in candidates.values():
+            for pending in pending_fusions:
+                future = pending.future.future if pending.future is not None else None
+                if future is None:
+                    continue
+                if future in taken:
+                    pending.future = None
+                else:
+                    taken.add(future)
+        return original(self, candidates, fused_nodes)
+
+    evaluate._npu_futures = True
+    Scheduler._evaluate_pending_template_fusions = evaluate

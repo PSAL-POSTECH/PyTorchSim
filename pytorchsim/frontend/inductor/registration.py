@@ -12,7 +12,7 @@
     PTB's Triton driver           the runner a launch goes to: Spike and TOGSim
     Inductor's benchmarker        what picks one of a kernel's compiled configs
     Inductor's decompositions     npu's mm and bmm as with coordinate descent off (a patch: it has no hook)
-    Inductor's realize on reuse   a value a broadcast reads again computed once (a patch: it has no hook)
+    Inductor's realize on reuse   a row value a broadcast reads again computed once (a patch: it has no hook)
     Inductor's node lowering      an int8 matmul's dequantized result stored, its epilogue (a patch: it has no hook)
 """
 
@@ -461,10 +461,11 @@ _NOT_ARITHMETIC = frozenset({"load", "load_seed", "to_dtype", "to_dtype_bitcast"
 
 
 def _register_realize_on_broadcast():
-    """A pointwise npu value a broadcast reads again is stored once when it does more than load and cast, as XLA
-    computes a row's scale in a fusion of its own: Inductor would compute it again at every element it reaches.
-    A bool, a comparison its readers may index into, is computed where it is read, as before."""
+    """A pointwise npu value of one element per row (last dimension 1) that a broadcast reads again is stored once
+    when it does more than load and cast, as XLA computes a row's scale in a fusion of its own; any other value,
+    and a bool, is computed where it is read, as before."""
     from torch._inductor import ir
+    from torch._inductor.virtualized import V
 
     original = ir.StorageBox.should_realize_on_reuse
     if getattr(original, "_npu_broadcast", False):
@@ -476,7 +477,9 @@ def _register_realize_on_broadcast():
             return True
         if graph_reuse or users <= 1 or not isinstance(self.data, ir.Pointwise) or not _is_npu_node(self.data):
             return False
-        return (self.num_reads() > 0 and self.get_dtype() != torch.bool
+        size = self.get_size()
+        return (len(size) > 0 and V.graph.sizevars.statically_known_equals(size[-1], 1)
+                and self.num_reads() > 0 and self.get_dtype() != torch.bool
                 and bool(set(self.data.inner_fn_opcount().used_ops) - _NOT_ARITHMETIC))
 
     should_realize_on_reuse._npu_broadcast = True
